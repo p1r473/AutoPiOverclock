@@ -1,0 +1,2 @@
+kernel: EXT4-fs error (device sda2): ext4_find_entry:1455: inode #2: comm test: reading directory lblock 0
+kernel: Buffer I/O error on dev sda2, logical block 42, lost sync page write

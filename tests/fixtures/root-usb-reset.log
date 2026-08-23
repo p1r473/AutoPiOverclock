@@ -1,0 +1,1 @@
+kernel: usb 2-1: reset SuperSpeed USB device number 2 using xhci-hcd

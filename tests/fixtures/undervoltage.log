@@ -1,0 +1,2 @@
+kernel: hwmon hwmon1: Undervoltage detected!
+throttled=0x50000

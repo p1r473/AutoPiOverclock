@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+APO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+export APO_ROOT
+
+# shellcheck source=lib/common.sh
+source "${APO_ROOT}/lib/common.sh"
+# shellcheck source=lib/config.sh
+source "${APO_ROOT}/lib/config.sh"
+# shellcheck source=lib/state.sh
+source "${APO_ROOT}/lib/state.sh"
+# shellcheck source=lib/logging.sh
+source "${APO_ROOT}/lib/logging.sh"
+# shellcheck source=lib/ssh.sh
+source "${APO_ROOT}/lib/ssh.sh"
+# shellcheck source=lib/classify.sh
+source "${APO_ROOT}/lib/classify.sh"
+# shellcheck source=lib/health.sh
+source "${APO_ROOT}/lib/health.sh"
+# shellcheck source=lib/detect.sh
+source "${APO_ROOT}/lib/detect.sh"
+# shellcheck source=lib/recovery.sh
+source "${APO_ROOT}/lib/recovery.sh"
+# shellcheck source=lib/candidates.sh
+source "${APO_ROOT}/lib/candidates.sh"
+# shellcheck source=lib/apply.sh
+source "${APO_ROOT}/lib/apply.sh"
+# shellcheck source=lib/report.sh
+source "${APO_ROOT}/lib/report.sh"
+
+APO_COMMAND=run
+APO_CONFIG_FILE=''
+APO_MODE_REQUESTED=auto
+APO_OUTPUT_DIR="${HOME}/overclock-results"
+APO_SSH_PORT=22
+APO_IDENTITY_FILE=''
+APO_SELECTED_RUN_ID=''
+APO_INSTALL_MISSING=0
+APO_REPAIR_WATCHDOGS=0
+APO_DRY_RUN=0
+APO_ASSUME_YES=0
+APO_REDACT=0
+APO_HAVE_REMOTE_CONTEXT=0
+APO_MUTATING_COMMAND=0
+APO_LOCK_FD=''
+
+usage() {
+    cat <<'USAGE'
+AutoPiOverclock — recoverable Raspberry Pi 5 overclock validation
+
+Usage:
+  ./autopioverclock TARGET [OPTIONS]
+  ./autopioverclock COMMAND TARGET [OPTIONS]
+
+Commands:
+  run       Prepare, sweep, conservatively select, and validate (default)
+  prepare   Read-only remote discovery and plan generation; no target writes or reboot
+  resume    Recover an interrupted tryboot if necessary and continue its saved phase
+  status    Show local state for the selected or latest run
+  recover   Return the target to its permanent normal config and verify health
+  apply     Show an exact diff and apply only a fully validated result
+  report    Generate a concise run report; supports --redact
+
+Target:
+  hostname | IP | username@hostname | username@IP
+  Without username@, the current controller username from `id -un` is used.
+
+Options:
+  --config FILE            Strict KEY=VALUE tuning plan
+  --mode MODE              auto (default), graphical, or headless
+  --output-dir DIR         Flat artifact directory (default: $HOME/overclock-results)
+  --ssh-port PORT          SSH port (default: 22)
+  --identity-file FILE     SSH private key; otherwise use agent/default keys
+  --run-id ID              Select a run for resume/status/recover/apply/report
+  --install-missing        Permit dependency installation/staging
+  --repair-watchdogs       Permit the separately confirmed watchdog remediation path
+  --dry-run                Read-only detection and plan rendering
+  --yes                    Accept ordinary prompts; never EEPROM repair or permanent apply
+  --redact                 Redact private target data from report output
+  --help                   Show help
+  --version                Show version
+USAGE
+}
+
+apo_parse_cli() {
+    local -a arguments=("$@")
+    local index=0 token target=''
+    (( ${#arguments[@]} > 0 )) || { usage >&2; exit "$APO_EXIT_USAGE"; }
+    case ${arguments[0]} in
+        run|prepare|resume|status|recover|apply|report) APO_COMMAND=${arguments[0]}; index=1 ;;
+        --help) usage; exit 0 ;;
+        --version) printf '%s\n' "$APO_VERSION"; exit 0 ;;
+        *) APO_COMMAND=run ;;
+    esac
+    while (( index < ${#arguments[@]} )); do
+        token=${arguments[$index]}
+        case $token in
+            --config|--mode|--output-dir|--ssh-port|--identity-file|--run-id)
+                (( index + 1 < ${#arguments[@]} )) || apo_die "$token requires a value." "$APO_EXIT_USAGE"
+                case $token in
+                    --config) APO_CONFIG_FILE=${arguments[$((index + 1))]} ;;
+                    --mode) APO_MODE_REQUESTED=${arguments[$((index + 1))]} ;;
+                    --output-dir) APO_OUTPUT_DIR=${arguments[$((index + 1))]} ;;
+                    --ssh-port) APO_SSH_PORT=${arguments[$((index + 1))]} ;;
+                    --identity-file) APO_IDENTITY_FILE=${arguments[$((index + 1))]} ;;
+                    --run-id) APO_SELECTED_RUN_ID=${arguments[$((index + 1))]} ;;
+                esac
+                index=$((index + 2))
+                ;;
+            --install-missing) APO_INSTALL_MISSING=1; index=$((index + 1)) ;;
+            --repair-watchdogs) APO_REPAIR_WATCHDOGS=1; index=$((index + 1)) ;;
+            --dry-run) APO_DRY_RUN=1; index=$((index + 1)) ;;
+            --yes) APO_ASSUME_YES=1; index=$((index + 1)) ;;
+            --redact) APO_REDACT=1; index=$((index + 1)) ;;
+            --help) usage; exit 0 ;;
+            --version) printf '%s\n' "$APO_VERSION"; exit 0 ;;
+            --*) apo_die "Unknown option: $token" "$APO_EXIT_USAGE" ;;
+            *) [[ -z $target ]] || apo_die "Unexpected extra argument: $token" "$APO_EXIT_USAGE"; target=$token; index=$((index + 1)) ;;
+        esac
+    done
+    [[ -n $target ]] || apo_die 'TARGET is required.' "$APO_EXIT_USAGE"
+    case $APO_MODE_REQUESTED in auto|graphical|headless) ;; *) apo_die '--mode must be auto, graphical, or headless.' "$APO_EXIT_USAGE" ;; esac
+    apo_validate_uint_range "$APO_SSH_PORT" 1 65535 || apo_die '--ssh-port must be 1-65535.' "$APO_EXIT_USAGE"
+    [[ -z $APO_SELECTED_RUN_ID ]] || apo_is_safe_run_id "$APO_SELECTED_RUN_ID" || apo_die 'Invalid --run-id.' "$APO_EXIT_USAGE"
+    [[ -z $APO_IDENTITY_FILE || -r $APO_IDENTITY_FILE ]] || apo_die "Identity file is unreadable: $APO_IDENTITY_FILE" "$APO_EXIT_USAGE"
+    case $APO_COMMAND in
+        run|prepare) ;;
+        *)
+            (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is valid only with run or prepare; saved-run commands may need recovery writes.' "$APO_EXIT_USAGE"
+            [[ -z $APO_CONFIG_FILE ]] || apo_die '--config is valid only with run or prepare; resume uses its recorded plan.' "$APO_EXIT_USAGE"
+            [[ $APO_MODE_REQUESTED == auto ]] || apo_die '--mode is valid only with run or prepare; saved runs use their recorded mode.' "$APO_EXIT_USAGE"
+            (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is valid only with run or prepare.' "$APO_EXIT_USAGE"
+            (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is valid only with run or prepare.' "$APO_EXIT_USAGE"
+            ;;
+    esac
+    case $APO_COMMAND in report|status) ;; *) (( APO_REDACT == 0 )) || apo_die '--redact is valid only with report or status.' "$APO_EXIT_USAGE" ;; esac
+    apo_parse_target "$target"
+    apo_ssh_init
+}
+
+apo_acquire_lock() {
+    local lock_file="${APO_OUTPUT_DIR}/.${APO_TARGET_SLUG}.lock"
+    apo_safe_mkdir "$APO_OUTPUT_DIR"
+    exec {APO_LOCK_FD}>"$lock_file"
+    flock -n "$APO_LOCK_FD" || apo_die "Another AutoPiOverclock process holds $lock_file" "$APO_EXIT_PREFLIGHT"
+}
+
+apo_store_artifact_state() {
+    apo_state_set LOG_FILE "$APO_LOG_FILE"
+    apo_state_set CSV_FILE "$APO_CSV_FILE"
+    apo_state_set JSONL_FILE "$APO_JSONL_FILE"
+    apo_state_set JSON_FILE "$APO_JSON_FILE"
+    apo_state_set SUMMARY_FILE "$APO_SUMMARY_FILE"
+    apo_state_set EFFECTIVE_CONFIG_FILE "$APO_EFFECTIVE_CONFIG_FILE"
+    apo_state_set DISCOVERY_FILE "$APO_DISCOVERY_FILE"
+    apo_state_save
+}
+
+apo_start_new_run() {
+    apo_config_load_for_new_run
+    apo_init_artifacts
+    apo_state_initialize
+    apo_config_store_in_state
+    apo_store_artifact_state
+    apo_write_effective_config "$APO_EFFECTIVE_CONFIG_FILE"
+    apo_summary_line 'AutoPiOverclock run'
+    apo_summary_line "Run ID: $APO_RUN_ID"
+    apo_summary_line "Target: $APO_REMOTE_TARGET"
+    apo_summary_line "CPU candidates: ${APO_CFG[CPU_CANDIDATES]:-none}"
+    apo_summary_line "GPU candidates: ${APO_CFG[GPU_CANDIDATES]:-none}"
+    apo_summary_line "Configured voltage delta: ${APO_CFG[VOLTAGE_DELTA_UV]}"
+    apo_summary_line "Candidate duration: ${APO_CFG[CANDIDATE_DURATION_S]}s"
+    apo_summary_line "Final duration: ${APO_CFG[FINAL_DURATION_S]}s"
+    apo_summary_line "Temperature ceiling: ${APO_CFG[MAX_TEMP_C]}C"
+    apo_summary_line "Telemetry interval: ${APO_CFG[TELEMETRY_INTERVAL_S]}s"
+    apo_summary_line "Candidate boot cycles: ${APO_CFG[CANDIDATE_BOOTS]}"
+    apo_summary_line "Final post-stress boot cycles: ${APO_CFG[FINAL_BOOTS]}"
+    apo_summary_line "Backoff steps: ${APO_CFG[BACKOFF_STEPS]}"
+    apo_summary_line ''
+    apo_event run-start INFO '' "command=$APO_COMMAND version=$APO_VERSION"
+
+    apo_prepare_target
+    APO_HAVE_REMOTE_CONTEXT=1
+    if [[ $APO_COMMAND == prepare || $APO_DRY_RUN == 1 ]]; then
+        apo_state_phase PREPARED READ_ONLY PASS
+        apo_summary_line "PREPARED: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
+        apo_event prepare PASS '' 'Read-only discovery and plan generation completed; no target file was written and no reboot was requested.'
+        return 0
+    fi
+    apo_info "Live plan ready: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU}MHz voltage=${APO_NORMAL_VOLTAGE}uV test-voltage=${APO_TEST_VOLTAGE}uV CPU-candidates=${APO_CFG[CPU_CANDIDATES]:-none} GPU-candidates=${APO_CFG[GPU_CANDIDATES]:-none} permanent-hash=$APO_PERMANENT_CONFIG_HASH"
+    apo_info "Review the full preflight summary before confirmation: $APO_SUMMARY_FILE"
+    apo_confirm_ordinary "Begin the recoverable tuning run against $APO_REMOTE_TARGET?" || { apo_state_phase PREPARED AWAITING_CONFIRMATION INTERRUPTED; apo_warn 'Run was not confirmed.'; return 0; }
+    apo_reset_throttle_history run-baseline || { apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"; return 1; }
+    if ! apo_health_check "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" normal-preflight; then apo_state_fail PREFLIGHT_FAILURE "$APO_LAST_REASON"; return 1; fi
+    apo_state_phase TRYBOOT_PROOF READY RUNNING
+    apo_run_tuning
+}
+
+apo_load_selected_run() {
+    local state_file stored_target stored_profile stored_run_id expected_state_file
+    state_file=$(apo_find_state_file "$APO_SELECTED_RUN_ID" || true)
+    [[ -n $state_file ]] || apo_die "No saved state found for $APO_TARGET_SLUG${APO_SELECTED_RUN_ID:+ run $APO_SELECTED_RUN_ID}." "$APO_EXIT_USAGE"
+    apo_state_load "$state_file"
+    stored_run_id=$(apo_state_get RUN_ID '')
+    apo_is_safe_run_id "$stored_run_id" || apo_die 'Saved state contains an invalid run ID.' "$APO_EXIT_INTERNAL"
+    expected_state_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${stored_run_id}.state"
+    [[ $state_file == "$expected_state_file" ]] || apo_die 'Saved state run ID does not match its selected state filename.' "$APO_EXIT_INTERNAL"
+    stored_target=$(apo_state_get REMOTE_TARGET)
+    [[ $stored_target == "$APO_REMOTE_TARGET" ]] || apo_die "Selected state belongs to $stored_target, not $APO_REMOTE_TARGET." "$APO_EXIT_USAGE"
+    apo_attach_artifacts_from_state
+    case $APO_COMMAND in status|report) return 0 ;; esac
+    stored_profile=$(apo_state_get PROFILE '')
+    if [[ -z $stored_profile ]]; then
+        case $APO_COMMAND in
+            status|report) return 0 ;;
+            *) apo_die 'The saved run was interrupted before target discovery produced a recoverable profile context. Remote mutation is refused; inspect it with status/report and start a new run after confirming a normal boot.' "$APO_EXIT_PREFLIGHT" ;;
+        esac
+    fi
+    apo_restore_context_from_state
+}
+
+apo_prepare_remote_for_saved_run() {
+    apo_ssh_preflight
+    apo_deploy_worker
+    APO_HAVE_REMOTE_CONTEXT=1
+}
+
+apo_cleanup_handler() {
+    local exit_code=$? saved_failure_class='' original_failure_class='' original_failure_reason='' recovery_reason=''
+    trap - EXIT INT TERM HUP
+    if [[ ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && ${APO_MUTATING_COMMAND:-0} == 1 ]]; then
+        local tryboot_flag=''
+        tryboot_flag=$(apo_remote_tryboot_flag || true)
+        if [[ $tryboot_flag == 00000001 || $(apo_state_get TRYBOOT_EXPECTED 0) == 1 ||
+              $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 1 || -n $(apo_state_get TRYBOOT_OWNED_HASH '') ||
+              -n $(apo_state_get TRYBOOT_RESERVATION_HASH '') || -n $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') ||
+              -n $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]]; then
+            apo_warn_plain 'Controller is exiting while tryboot may be active or staged; verifying normal recovery and owned-file cleanup.'
+            if ! apo_recover_normal exit-trap-recovery; then
+                recovery_reason=${APO_LAST_REASON:-unknown recovery error}
+                original_failure_class=$(apo_state_get FAILURE_CLASS '')
+                original_failure_reason=$(apo_state_get FAILURE_REASON '')
+                if [[ -n $original_failure_class ]]; then
+                    recovery_reason="Original $original_failure_class: ${original_failure_reason:-unspecified}; exit-trap recovery failed: $recovery_reason"
+                else
+                    recovery_reason="Exit-trap recovery failed: $recovery_reason"
+                fi
+                APO_LAST_CLASS=RECOVERY_FAILURE
+                APO_LAST_REASON=$recovery_reason
+                [[ -z ${APO_STATE_FILE:-} || ! -f ${APO_STATE_FILE:-} ]] || apo_state_fail RECOVERY_FAILURE "$recovery_reason" || true
+                exit_code=$APO_EXIT_RECOVERY
+            fi
+        fi
+    fi
+    if [[ -n ${APO_STATE_FILE:-} && -f ${APO_STATE_FILE:-} && $exit_code -ne 0 ]]; then
+        local state_status fatal_class=''
+        state_status=$(apo_state_get STATUS '')
+        if [[ $state_status == RUNNING || $state_status == PREPARING ]]; then
+            fatal_class=$(apo_exit_code_class "${APO_FATAL_EXIT_CODE:-$exit_code}" 2>/dev/null || true)
+            if [[ -n $fatal_class && -n ${APO_FATAL_MESSAGE:-} ]]; then
+                apo_state_fail "$fatal_class" "$APO_FATAL_MESSAGE" || true
+            else
+                apo_state_interrupt "Controller exited with code $exit_code." || true
+            fi
+        fi
+        saved_failure_class=$(apo_state_get FAILURE_CLASS '')
+        if [[ $exit_code == 1 && -n $saved_failure_class ]]; then exit_code=$(apo_class_exit_code "$saved_failure_class"); fi
+    fi
+    [[ -n ${APO_JSONL_FILE:-} && -f ${APO_JSONL_FILE:-} ]] && apo_finalize_json || true
+    if [[ ${APO_WORKER_DEPLOYED:-0} == 1 && ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && $(apo_remote_tryboot_flag 2>/dev/null || true) != 00000001 ]]; then apo_profile_cleanup_worker || true; fi
+    exit "$exit_code"
+}
+
+apo_exit_from_saved_failure() {
+    local failure_class
+    failure_class=$(apo_state_get FAILURE_CLASS HARNESS_FAILURE)
+    return "$(apo_class_exit_code "$failure_class")"
+}
+
+main() {
+    local status
+    apo_parse_cli "$@"
+    apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync
+    case $APO_COMMAND in run|prepare|resume|recover|apply) apo_acquire_lock ;; esac
+    trap apo_cleanup_handler EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    case $APO_COMMAND in
+        run|prepare)
+            APO_MUTATING_COMMAND=$([[ $APO_COMMAND == run && $APO_DRY_RUN == 0 ]] && printf 1 || printf 0)
+            apo_start_new_run
+            ;;
+        status)
+            apo_load_selected_run
+            apo_print_status
+            ;;
+        report)
+            apo_load_selected_run
+            apo_generate_report
+            ;;
+        resume)
+            APO_MUTATING_COMMAND=1
+            apo_load_selected_run
+            [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]] ||
+                apo_die 'This interrupted state predates the current safety/resume schema and cannot be resumed without bypassing required gates. Start a new run; status and report remain available.' "$APO_EXIT_USAGE"
+            if [[ $(apo_state_get ORIGIN_COMMAND '') == prepare || $(apo_state_get READ_ONLY_RUN 0) == 1 ]]; then
+                apo_die 'A read-only prepare/dry-run state cannot be resumed into a mutating tuning run. Start a new run with an approved tuning plan.' "$APO_EXIT_USAGE"
+            fi
+            if [[ $(apo_state_get PHASE '') == PREPARE ]]; then
+                apo_die "This run was interrupted during preflight${APO_STATE[WATCHDOG_REPAIR_STATUS]:+ (watchdog repair status: ${APO_STATE[WATCHDOG_REPAIR_STATUS]}, old hash: ${APO_STATE[WATCHDOG_REPAIR_OLD_HASH]:-missing}, expected hash: ${APO_STATE[WATCHDOG_REPAIR_EXPECTED_HASH]:-missing})}. Resume refuses to adopt any preflight config change as a new baseline; inspect status/report and start a new run after verifying the target's normal boot." "$APO_EXIT_PREFLIGHT"
+            fi
+            if [[ $(apo_state_get PHASE) == PREPARED && -z $(apo_state_get ORIGIN_COMMAND '') ]]; then
+                apo_die 'This legacy PREPARED state does not prove that mutating preflight completed. Start a new run instead of resuming it.' "$APO_EXIT_USAGE"
+            fi
+            if [[ $(apo_state_get PHASE '') == PREPARED || $(apo_state_get SUBPHASE '') == AWAITING_CONFIRMATION ]]; then
+                apo_die 'A run stopped before tuning confirmation cannot be resumed into a mutating run. Start a new run and complete preflight confirmation.' "$APO_EXIT_USAGE"
+            fi
+            if [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) == APPLYING ]]; then
+                if ! apo_wait_for_ssh "$APO_BOOT_TIMEOUT"; then
+                    apo_apply_pause 'Interrupted apply remains pending because SSH did not become reachable.' || true
+                    return "$APO_EXIT_APPLY"
+                fi
+                apo_prepare_remote_for_saved_run
+                if ! apo_reconcile_interrupted_apply; then return "$APO_EXIT_APPLY"; fi
+                apo_print_status
+                return 0
+            fi
+            if [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) == FAILED_NEEDS_MANUAL_RECOVERY ]]; then
+                apo_die "This run has an unresolved permanent-config mismatch: $(apo_state_get APPLY_FAILURE_REASON 'manual recovery required')" "$APO_EXIT_APPLY"
+            fi
+            status=$(apo_state_get STATUS)
+            if [[ $status == PASS && $(apo_state_get PHASE) == COMPLETE ]]; then apo_print_status; return 0; fi
+            apo_prepare_remote_for_saved_run
+            apo_recover_normal resume-initial-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
+            apo_state_set STATUS RUNNING
+            apo_state_set FAILURE_CLASS ''
+            apo_state_set FAILURE_REASON ''
+            apo_state_save
+            apo_run_tuning
+            ;;
+        recover)
+            APO_MUTATING_COMMAND=1
+            apo_load_selected_run
+            apo_prepare_remote_for_saved_run
+            apo_recover_normal explicit-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
+            apo_event recover PASS '' 'Target is back in permanent normal config and passed health.'
+            ;;
+        apply)
+            APO_MUTATING_COMMAND=1
+            apo_load_selected_run
+            if [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) == APPLYING ]] && ! apo_wait_for_ssh "$APO_BOOT_TIMEOUT"; then
+                apo_apply_pause 'Interrupted apply remains pending because SSH did not become reachable.' || true
+                return "$APO_EXIT_APPLY"
+            fi
+            apo_prepare_remote_for_saved_run
+            apo_apply_recommendation
+            ;;
+    esac
+    return 0
+}
+
+main "$@"

@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# Tryboot state machine and normal-boot recovery.
+
+APO_RECOVERY_IN_PROGRESS=0
+
+apo_prepare_candidate() {
+    local cpu_mhz=$1 gpu_mhz=$2 label=$3 tryboot_hash reservation_hash installed_hash
+    local ownership_token quarantine_path expected_quarantine
+    if [[ -n $(apo_state_get TRYBOOT_OWNED_HASH '') || -n $(apo_state_get TRYBOOT_RESERVATION_HASH '') ||
+          -n $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') || -n $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ||
+          $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 1 ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='A prior tryboot ownership checkpoint is still active; refusing to stage another candidate.'
+        return 1
+    fi
+    ownership_token=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n') || {
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON='Could not create a cryptographically random tryboot ownership token.'
+        return 1
+    }
+    if [[ ! $ownership_token =~ ^[0-9a-f]{64}$ ]]; then
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON='The generated tryboot ownership token is malformed.'
+        return 1
+    fi
+    apo_run_worker_capture "${label}-plan" plan-candidate \
+        "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_GPU_KEY" "$cpu_mhz" "$gpu_mhz" \
+        "$APO_TEST_VOLTAGE" "$APO_PERMANENT_CONFIG_HASH" "$APO_RUN_ID" "$ownership_token" || return 1
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    tryboot_hash=${APO_WORKER_DATA[TRYBOOT_HASH]:-}
+    reservation_hash=${APO_WORKER_DATA[TRYBOOT_RESERVATION_HASH]:-}
+    quarantine_path=${APO_WORKER_DATA[TRYBOOT_QUARANTINE]:-}
+    expected_quarantine="${APO_TRYBOOT_CONFIG%/*}/.autopioverclock-remove-${ownership_token}"
+    if [[ ! $tryboot_hash =~ ^[0-9a-f]{64}$ || ! $reservation_hash =~ ^[0-9a-f]{64}$ ||
+          $quarantine_path != "$expected_quarantine" ]]; then
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON='Candidate planning did not return valid token-bound tryboot ownership evidence.'
+        apo_event "${label}-plan" ERROR "$APO_LAST_CLASS" "$APO_LAST_REASON"
+        return 1
+    fi
+    apo_state_set TRYBOOT_OWNED_HASH "$tryboot_hash"
+    apo_state_set TRYBOOT_RESERVATION_HASH "$reservation_hash"
+    apo_state_set TRYBOOT_OWNERSHIP_TOKEN "$ownership_token"
+    apo_state_set TRYBOOT_QUARANTINE_PATH "$quarantine_path"
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+    apo_state_set MUTATIONS_STARTED 1
+    apo_state_save
+    apo_run_worker_capture "${label}-prepare" prepare-candidate \
+        "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_GPU_KEY" "$cpu_mhz" "$gpu_mhz" \
+        "$APO_TEST_VOLTAGE" "$APO_PERMANENT_CONFIG_HASH" "$APO_RUN_ID" \
+        "$tryboot_hash" "$reservation_hash" "$ownership_token" "$quarantine_path" || return 1
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    installed_hash=${APO_WORKER_DATA[TRYBOOT_HASH]:-}
+    if [[ $installed_hash != "$tryboot_hash" ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Candidate preparation did not confirm the persisted tryboot ownership hash.'
+        apo_event "${label}-prepare" ERROR "$APO_LAST_CLASS" "$APO_LAST_REASON"
+        return 1
+    fi
+    apo_state_set TRYBOOT_LAST_HASH "$installed_hash"
+    apo_state_save
+}
+
+apo_clear_managed_tryboot() {
+    local context=$1 expected_tryboot_hash expected_reservation_hash ownership_token quarantine_path failure_reason
+    if [[ $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 0 && -z $(apo_state_get TRYBOOT_OWNED_HASH '') &&
+          -z $(apo_state_get TRYBOOT_RESERVATION_HASH '') && -z $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') &&
+          -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]]; then
+        return 0
+    fi
+    expected_tryboot_hash=$(apo_state_get TRYBOOT_OWNED_HASH '')
+    expected_reservation_hash=$(apo_state_get TRYBOOT_RESERVATION_HASH '')
+    ownership_token=$(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '')
+    quarantine_path=$(apo_state_get TRYBOOT_QUARANTINE_PATH '')
+    if [[ $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) != 1 || ! $expected_tryboot_hash =~ ^[0-9a-f]{64}$ ||
+          ! $expected_reservation_hash =~ ^[0-9a-f]{64}$ || ! $ownership_token =~ ^[0-9a-f]{64}$ ||
+          $quarantine_path != "${APO_TRYBOOT_CONFIG%/*}/.autopioverclock-remove-${ownership_token}" ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Saved tryboot ownership evidence is missing or malformed; automatic cleanup is refused.'
+        return 1
+    fi
+    if ! apo_run_worker_capture "${context}-tryboot-cleanup" clear-tryboot \
+        "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$quarantine_path" "$APO_PERMANENT_CONFIG_HASH" \
+        "$expected_tryboot_hash" "$expected_reservation_hash" "$APO_RUN_ID" "$ownership_token"; then
+        failure_reason=$APO_LAST_REASON
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="Normal boot recovered, but managed tryboot cleanup failed: $failure_reason"
+        return 1
+    fi
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+    apo_state_set TRYBOOT_OWNED_HASH ''
+    apo_state_set TRYBOOT_RESERVATION_HASH ''
+    apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+    apo_state_set TRYBOOT_QUARANTINE_PATH ''
+    apo_state_save
+}
+
+apo_boot_candidate() {
+    local cpu_mhz=$1 gpu_mhz=$2 context=$3 old_boot_id new_boot_id tryboot_flag expected_tryboot_hash ownership_token
+    apo_prepare_candidate "$cpu_mhz" "$gpu_mhz" "$context" || return 1
+    expected_tryboot_hash=$(apo_state_get TRYBOOT_OWNED_HASH '')
+    ownership_token=$(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '')
+    apo_run_worker_capture "${context}-pre-trigger" verify-tryboot \
+        "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_PERMANENT_CONFIG_HASH" \
+        "$expected_tryboot_hash" "$APO_RUN_ID" "$ownership_token" || return 1
+    old_boot_id=$(apo_remote_boot_id) || { APO_LAST_CLASS=HARNESS_FAILURE; APO_LAST_REASON='Could not read boot ID before tryboot.'; return 1; }
+    apo_state_set LAST_BOOT_ID "$old_boot_id"
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$cpu_mhz"
+    apo_state_set CURRENT_GPU "$gpu_mhz"
+    apo_state_set CANDIDATE_BOOT_ID ''
+    apo_state_set SUBPHASE "$context"
+    apo_state_save
+    apo_event "$context" INFO '' "Triggering tryboot for CPU=$cpu_mhz GPU=$gpu_mhz"
+    apo_remote_worker "$APO_REMOTE_WORKER" trigger-tryboot \
+        "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_PERMANENT_CONFIG_HASH" \
+        "$expected_tryboot_hash" "$APO_RUN_ID" "$ownership_token" >/dev/null 2>&1 || true
+    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
+    if [[ -z $new_boot_id ]]; then APO_LAST_CLASS=BOOT_FAILURE; APO_LAST_REASON="No reboot/recovery reached SSH within ${APO_BOOT_TIMEOUT}s for $context."; return 1; fi
+    tryboot_flag=$(apo_remote_tryboot_flag || true)
+    if [[ $tryboot_flag != 00000001 ]]; then
+        APO_LAST_CLASS=BOOT_FAILURE
+        if [[ $tryboot_flag == 00000000 ]]; then
+            apo_state_set TRYBOOT_EXPECTED 0
+            apo_state_set CURRENT_CPU ''
+            apo_state_set CURRENT_GPU ''
+            apo_state_set NORMAL_BOOT_ID "$new_boot_id"
+            apo_state_set LAST_BOOT_ID "$new_boot_id"
+            apo_state_save
+            APO_LAST_REASON="Candidate $context did not remain in tryboot; it failed before SSH and recovered normally."
+        else
+            APO_LAST_REASON="Candidate $context rebooted, but its tryboot state could not be verified (${tryboot_flag:-missing})."
+        fi
+        return 1
+    fi
+    apo_state_set CANDIDATE_BOOT_ID "$new_boot_id"
+    apo_state_set LAST_BOOT_ID "$new_boot_id"
+    apo_state_save
+    sleep "$APO_BOOT_SETTLE_SECONDS"
+    apo_health_check "$cpu_mhz" "$gpu_mhz" "$APO_TEST_VOLTAGE" "$context"
+}
+
+apo_return_normal() {
+    local context=${1:-normal-recovery} old_boot_id new_boot_id tryboot_flag current_boot_id
+    local expected_tryboot pending_boot_id reboot_attempts=0
+    APO_RECOVERY_IN_PROGRESS=1
+    expected_tryboot=$(apo_state_get TRYBOOT_EXPECTED 0)
+    pending_boot_id=$(apo_state_get LAST_BOOT_ID '')
+    while :; do
+        if ! apo_wait_for_ssh "$APO_BOOT_TIMEOUT"; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="SSH is unavailable for normal recovery after ${APO_BOOT_TIMEOUT}s."; return 1; fi
+        current_boot_id=$(apo_remote_boot_id || true)
+        if [[ -z $current_boot_id ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Could not read the boot ID during normal recovery.'; return 1; fi
+        tryboot_flag=$(apo_remote_tryboot_flag || true)
+        if [[ $tryboot_flag == 00000000 ]]; then
+            if [[ $expected_tryboot != 1 || ( -n $pending_boot_id && $current_boot_id != "$pending_boot_id" ) ]]; then
+                new_boot_id=$current_boot_id
+                break
+            fi
+            apo_event "$context" WARN '' 'Tryboot was expected but the target is still on the pre-trigger boot; forcing a plain reboot to close the trigger/exit race.'
+        elif [[ $tryboot_flag == 00000001 ]]; then
+            apo_event "$context" INFO '' 'Rebooting from tryboot to permanent normal config.'
+        else
+            apo_event "$context" WARN '' "Tryboot state is unreadable (${tryboot_flag:-missing}); forcing a plain reboot before accepting normal recovery."
+        fi
+        if (( reboot_attempts >= 3 )); then
+            APO_RECOVERY_IN_PROGRESS=0
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON='Normal recovery exceeded three verified reboot attempts.'
+            return 1
+        fi
+        old_boot_id=$current_boot_id
+        pending_boot_id=$old_boot_id
+        apo_state_set LAST_BOOT_ID "$old_boot_id"
+        apo_state_save
+        apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
+        new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
+        if [[ -z $new_boot_id ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Normal recovery reboot did not return to SSH.'; return 1; fi
+        sleep "$APO_BOOT_SETTLE_SECONDS"
+        reboot_attempts=$((reboot_attempts + 1))
+    done
+    if [[ -z ${new_boot_id:-} ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Normal recovery did not produce a verified normal boot ID.'; return 1; fi
+    tryboot_flag=$(apo_remote_tryboot_flag || true)
+    if [[ $tryboot_flag != 00000000 ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="Normal recovery still reports tryboot flag ${tryboot_flag:-missing}."; return 1; fi
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+    apo_state_set NORMAL_BOOT_ID "$new_boot_id"
+    apo_state_set LAST_BOOT_ID "$new_boot_id"
+    apo_state_save
+    if ! apo_clear_managed_tryboot "$context"; then
+        APO_RECOVERY_IN_PROGRESS=0
+        return 1
+    fi
+    if ! apo_health_check "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" "$context"; then
+        [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]] || { APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="Normal config returned but failed health: $APO_LAST_REASON"; }
+        APO_RECOVERY_IN_PROGRESS=0
+        return 1
+    fi
+    APO_RECOVERY_IN_PROGRESS=0
+}
+
+apo_recover_normal() { apo_return_normal "${1:-explicit-recovery}"; }
+
+apo_recover_preserving_failure() {
+    local recovery_context=$1 original_class=$2 original_reason=$3 recovery_class recovery_reason
+    if apo_return_normal "$recovery_context"; then
+        APO_LAST_CLASS=$original_class
+        APO_LAST_REASON=$original_reason
+        return 0
+    fi
+    recovery_class=${APO_LAST_CLASS:-RECOVERY_FAILURE}
+    recovery_reason=${APO_LAST_REASON:-unknown-recovery-error}
+    APO_LAST_CLASS=RECOVERY_FAILURE
+    APO_LAST_REASON="Original $original_class: $original_reason; normal recovery failed with $recovery_class: $recovery_reason"
+    return 1
+}
+
+apo_record_failure_after_recovery() {
+    local recovery_context=$1 original_class=$2 original_reason=$3
+    if apo_recover_preserving_failure "$recovery_context" "$original_class" "$original_reason"; then
+        apo_state_fail "$original_class" "$original_reason"
+    else
+        apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+    fi
+}
+
+apo_prove_tryboot_recovery() {
+    apo_state_phase TRYBOOT_PROOF CANDIDATE_BOOT RUNNING
+    apo_boot_candidate "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" tryboot-proof-candidate || {
+        local candidate_class=$APO_LAST_CLASS candidate_reason=$APO_LAST_REASON
+        apo_record_failure_after_recovery tryboot-proof-fallback "$candidate_class" "$candidate_reason"
+        return 1
+    }
+    apo_return_normal tryboot-proof-normal || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return 1; }
+    apo_event tryboot-proof PASS '' 'Tryboot candidate and normal recovery were both verified.'
+}

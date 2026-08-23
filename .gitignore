@@ -1,0 +1,10 @@
+/dist/*
+!/dist/.gitkeep
+*.log
+!tests/fixtures/*.log
+*.state
+!tests/fixtures/*.state
+*.jsonl
+*.tmp
+*~
+.DS_Store

@@ -1,0 +1,3 @@
+Error: glwindow has never been initialized, check native-state code
+Error: main: Could not initialize canvas
+CPU_RC=0 GPU_RC=1
