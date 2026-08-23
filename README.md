@@ -233,7 +233,7 @@ This discovery-first template is valid for `prepare`. After reviewing the detect
 - Temperature remains below the configured ceiling.
 - No new filesystem, storage, USB-reset, GPU, kernel-oops, or watchdog fault appears.
 - The stress process exits successfully and within its hard deadline.
-- Graphical runs preserve the captured display and audio baseline, plus any configured frontend process.
+- Graphical runs always preserve the captured display baseline. Debian also preserves a default audio sink when discovery captured one or `audio_sink_pattern` requires one; Batocera graphical runs require and preserve both display and audio baselines.
 - Required services and processes remain healthy.
 - Permanent configuration retains its original SHA-256 hash.
 - The following recovery boot clears `tryboot` and passes normal health checks.

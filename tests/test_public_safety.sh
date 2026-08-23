@@ -131,4 +131,47 @@ if (
     echo 'live run accepted a pre-existing tryboot file' >&2
     exit 1
 fi
+
+graphical_audio_context() {
+    local profile=$1 audio_baseline=$2 audio_match=$3
+    (
+        APO_ROOT=$ROOT
+        source "$ROOT/lib/common.sh"
+        source "$ROOT/lib/config.sh"
+        source "$ROOT/lib/detect.sh"
+        apo_config_defaults
+        APO_COMMAND=prepare
+        APO_DRY_RUN=0
+        APO_PROFILE=$profile
+        APO_MODE_EFFECTIVE=graphical
+        APO_CFG[AUDIO_SINK_MATCH]=$audio_match
+        APO_DISCOVERY=(
+            [BOOT_CONFIG]=/boot/config.txt
+            [TRYBOOT_CONFIG]=/boot/tryboot.txt
+            [TRYBOOT_EXISTS]=0
+            [TRYBOOT_TYPE]=absent
+            [TRYBOOT_HASH]=unavailable
+            [BOOT_MOUNT]=/boot
+            [GPU_KEY]=v3d_freq
+            [NORMAL_CPU]=2400
+            [NORMAL_GPU]=960
+            [NORMAL_VOLTAGE]=0
+            [PERMANENT_HASH]=$(printf 'b%.0s' {1..64})
+            [DISPLAY_BASELINE]='connector=card1-HDMI-A-1;mode=1280x800;enabled=enabled'
+            [AUDIO_BASELINE]="$audio_baseline"
+        )
+        apo_context_from_discovery
+    )
+}
+
+graphical_audio_context debian '' '' >/dev/null
+graphical_audio_context debian fixture-audio '' >/dev/null
+if graphical_audio_context debian '' 'USB Audio' >/dev/null 2>&1; then
+    echo 'Debian accepted a configured audio sink requirement without a captured sink' >&2
+    exit 1
+fi
+if graphical_audio_context batocera '' '' >/dev/null 2>&1; then
+    echo 'Batocera graphical mode accepted a missing audio baseline' >&2
+    exit 1
+fi
 printf 'test_public_safety: PASS\n'

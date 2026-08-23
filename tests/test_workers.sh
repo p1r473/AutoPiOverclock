@@ -26,6 +26,22 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" AUDIO_ATTEMPTS
     [[ $(<"$AUDIO_ATTEMPTS_FILE") == 3 ]]
 '
 
+# A Debian graphical target can have a healthy DRM display without running a
+# desktop audio server.  Preserve audio when discovery captured it, but do not
+# misclassify a display-only graphical baseline as a failed display harness.
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    check_required_processes() { :; }
+    check_required_services() { :; }
+    check_display() { :; }
+    audio_identity() { return 1; }
+    application_health_ready graphical fixture-display "" "" "" ""
+    [[ -z ${APPLICATION_READINESS_LAST_FAILURE:-} ]]
+    if application_health_ready graphical fixture-display "" "" "" fixture-audio; then exit 1; fi
+    [[ $APPLICATION_READINESS_LAST_FAILURE == audio-unavailable ]]
+'
+
 APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" bash -c '
     set -Eeuo pipefail
     source "$WORKER"

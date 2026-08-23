@@ -209,7 +209,12 @@ apo_context_from_discovery() {
         (( candidate > APO_NORMAL_GPU )) || apo_die "GPU/V3D candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_GPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"
     done
     if [[ $APO_MODE_EFFECTIVE == graphical && -z $APO_AUDIO_BASELINE ]]; then
-        apo_die 'Graphical mode requires a healthy default audio-sink baseline, but none could be captured.' "$APO_EXIT_HARNESS"
+        if [[ $APO_PROFILE == batocera ]]; then
+            apo_die 'Batocera graphical mode requires a healthy default audio-sink baseline, but none could be captured.' "$APO_EXIT_HARNESS"
+        fi
+        if [[ -n ${APO_CFG[AUDIO_SINK_MATCH]} ]]; then
+            apo_die 'audio_sink_pattern was configured, but no default audio sink could be captured.' "$APO_EXIT_HARNESS"
+        fi
     fi
 }
 
@@ -299,7 +304,7 @@ apo_prepare_target() {
     apo_choose_mode
     if (( APO_NEED_GPU == 1 )) || [[ $APO_MODE_EFFECTIVE == graphical ]]; then APO_REQUIRE_GPU_STRESS=1; else APO_REQUIRE_GPU_STRESS=0; fi
     apo_context_from_discovery
-    local throttle=${APO_DISCOVERY[THROTTLED]:-} temp=${APO_DISCOVERY[TEMP]:-} baseline_boot_id
+    local throttle=${APO_DISCOVERY[THROTTLED]:-} temp=${APO_DISCOVERY[TEMP]:-} baseline_boot_id audio_summary
     apo_throttle_reading_valid "$throttle" || apo_die "Power/throttle telemetry is malformed: ${throttle:-missing}" "$APO_EXIT_PREFLIGHT"
     apo_throttle_active_bits_clear "$throttle" || apo_die "Current power/throttle conditions are active at preflight: $throttle" "$APO_EXIT_PREFLIGHT"
     APO_THROTTLE_BASELINE=$throttle
@@ -317,12 +322,16 @@ apo_prepare_target() {
     awk -v t="$temp" -v m="${APO_CFG[MAX_TEMP_C]}" 'BEGIN{exit !(t<m)}' || apo_die "Starting temperature ${temp}C is not below ${APO_CFG[MAX_TEMP_C]}C." "$APO_EXIT_PREFLIGHT"
     apo_dependency_preflight
     apo_watchdog_preflight
+    if [[ $APO_MODE_EFFECTIVE == graphical && $APO_PROFILE == debian && -z $APO_AUDIO_BASELINE ]]; then
+        apo_warn 'No default audio sink was captured. Debian graphical validation will preserve the display baseline and skip default-sink identity checks unless audio_sink_pattern is configured.'
+    fi
     apo_store_discovery_state
+    audio_summary=${APO_AUDIO_BASELINE:-not-captured}
     {
         printf 'Profile=%s\nMode=%s\nModel=%s\nOS=%s %s\nBootConfig=%s\nTrybootConfig=%s\nTrybootExists=%s\nTrybootType=%s\nTrybootHash=%s\nGPUKey=%s\nNormalCPU=%s\nNormalGPU=%s\nNormalVoltage=%s\nNormalVoltageSource=%s\nPermanentThrottleBaseline=%s\nRecentThrottle=%s\nRecentThrottleResetSupported=%s\nPermanentHash=%s\nStorage=%s\nDisplayBaseline=%s\nAudioBaseline=%s\n' \
             "$APO_PROFILE" "$APO_MODE_EFFECTIVE" "${APO_DISCOVERY[MODEL]:-}" "${APO_DISCOVERY[OS_ID]:-}" "${APO_DISCOVERY[OS_VERSION]:-}" \
             "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_INITIAL_TRYBOOT_EXISTS" "$APO_INITIAL_TRYBOOT_TYPE" "$APO_INITIAL_TRYBOOT_HASH" "$APO_GPU_KEY" "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" "${APO_DISCOVERY[NORMAL_VOLTAGE_SOURCE]:-missing}" "$APO_THROTTLE_BASELINE" "${APO_DISCOVERY[RECENT_THROTTLED]:-}" "$APO_THROTTLE_RECENT_SUPPORTED" \
-            "$APO_PERMANENT_CONFIG_HASH" "$APO_STORAGE_LAYOUT" "$APO_DISPLAY_BASELINE" "$APO_AUDIO_BASELINE"
+            "$APO_PERMANENT_CONFIG_HASH" "$APO_STORAGE_LAYOUT" "$APO_DISPLAY_BASELINE" "$audio_summary"
         printf 'CPUStressAvailable=%s\nGPUStressRequired=%s\nGPUStressAvailable=%s\nDependencyDetail=%s\n' \
             "${APO_DISCOVERY[CPU_STRESS_AVAILABLE]:-0}" "$APO_REQUIRE_GPU_STRESS" "${APO_DISCOVERY[GPU_STRESS_AVAILABLE]:-0}" "$(apo_dependency_description)"
         printf 'WatchdogEEPROMTimeout=%s\nWatchdogKernelHandoffTimeout=%s\nWatchdogDevice=%s\nWatchdogRuntimeTimeout=%s\nWatchdogOwner=%s\n' \
@@ -341,6 +350,8 @@ apo_prepare_target() {
     apo_summary_line "Candidate voltage: $APO_TEST_VOLTAGE uV (configured as ${APO_CFG[VOLTAGE_DELTA_UV]})"
     apo_summary_line "Throttle baseline: $APO_THROTTLE_BASELINE (historical bits retained; active/new bits remain failures)"
     apo_summary_line "Permanent config hash: $APO_PERMANENT_CONFIG_HASH"
+    apo_summary_line "Display baseline: ${APO_DISPLAY_BASELINE:-not captured}"
+    apo_summary_line "Audio baseline: $audio_summary"
     apo_summary_line ''
 }
 

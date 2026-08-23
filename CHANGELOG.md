@@ -14,6 +14,7 @@
 - Refused live runs when any `tryboot.txt` already exists; added per-attempt random ownership tokens, persisted reservation/completed hashes and quarantine paths, no-clobber held-descriptor creation, exact pre-trigger verification, and post-recovery quarantine/revalidation before removal.
 - Added random-suffixed run IDs, run-isolated remote workers, durable state flushes, and a target-side mutation lock shared by tryboot, normal-reboot, watchdog-repair, apply, and rollback operations.
 - Documented the supported ARM64 Debian-family Batocera payload-builder prerequisites and narrowed `resume` to interruptions after tuning confirmation.
+- Kept Debian display validation mandatory while allowing a graphical target with no desktop audio server; captured or explicitly required audio remains enforced, and Batocera's mandatory graphical audio baseline is unchanged.
 
 ## 0.1.0-alpha.3 — 2026-08-23
 

@@ -629,15 +629,17 @@ application_health_ready() {
         fi
     fi
     if [[ $mode == graphical ]]; then
-        current_audio=$(audio_identity || true)
-        APPLICATION_READINESS_LAST_AUDIO=$current_audio
-        if [[ -z $current_audio ]]; then
-            APPLICATION_READINESS_LAST_FAILURE=audio-unavailable
-            return 1
-        fi
-        if [[ $current_audio != "$audio_baseline" ]]; then
-            APPLICATION_READINESS_LAST_FAILURE=audio-changed
-            return 1
+        if [[ -n $audio_baseline ]]; then
+            current_audio=$(audio_identity || true)
+            APPLICATION_READINESS_LAST_AUDIO=$current_audio
+            if [[ -z $current_audio ]]; then
+                APPLICATION_READINESS_LAST_FAILURE=audio-unavailable
+                return 1
+            fi
+            if [[ $current_audio != "$audio_baseline" ]]; then
+                APPLICATION_READINESS_LAST_FAILURE=audio-changed
+                return 1
+            fi
         fi
         check_display "$baseline" || { APPLICATION_READINESS_LAST_FAILURE=display; return 1; }
     fi
@@ -704,9 +706,6 @@ cmd_health() {
     test_file=/var/tmp/autopioverclock-write-test-$$
     printf test > "$test_file" && sync "$test_file" && rm -f "$test_file" || { emit_result STABILITY_FAILURE "Filesystem write test failed in $context." "$temp"; return 1; }
     if [[ -n $extra_ping ]]; then ping -c 2 -W 2 "$extra_ping" >/dev/null 2>&1 || { emit_result BOOT_FAILURE "Configured ping target is unreachable in $context." "$temp"; return 1; }; fi
-    if [[ $mode == graphical ]]; then
-        [[ -n $audio_baseline ]] || { emit_result HARNESS_FAILURE "No saved graphical audio baseline is available in $context." "$temp"; return 1; }
-    fi
     if ! wait_application_health "$mode" "$baseline" "$required_processes" "$required_services" "$audio_match" "$audio_baseline"; then
         emit_application_health_failure "$context" "$temp" "$audio_baseline"
         return 1
