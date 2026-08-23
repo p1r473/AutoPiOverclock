@@ -101,11 +101,19 @@ If `user@` is omitted, the controller's current `id -un` value becomes the SSH u
 
 ## Quick start
 
+Clone from the directory you are currently in. `pwd` shows that directory, and Git creates the retained `AutoPiOverclock` checkout directly inside it:
+
 ```bash
+pwd
 git clone https://github.com/p1r473/AutoPiOverclock.git
 cd AutoPiOverclock
 make test
-./autopioverclock prepare target-host
+```
+
+The quick start does not switch directories before cloning and does not use or discard a temporary directory. After the fixtures pass, begin read-only target discovery:
+
+```bash
+./autopioverclock prepare target-host --mode auto
 ```
 
 `prepare` performs read-only discovery and produces a plan. It does not write target files or request a reboot.
