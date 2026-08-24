@@ -197,10 +197,11 @@ apo_context_from_discovery() {
     if [[ $APO_COMMAND == run && $APO_DRY_RUN == 0 && $APO_INITIAL_TRYBOOT_EXISTS == 1 ]]; then
         apo_die "An existing tryboot path is present at $APO_TRYBOOT_CONFIG (type $APO_INITIAL_TRYBOOT_TYPE, hash $APO_INITIAL_TRYBOOT_HASH). Live run refuses to overwrite it; inspect and remove or preserve it explicitly, then repeat prepare." "$APO_EXIT_PREFLIGHT"
     fi
-    apo_is_uint "$APO_NORMAL_CPU" && (( APO_NORMAL_CPU > 0 )) || apo_die "Discovery returned an invalid normal CPU clock: $APO_NORMAL_CPU" "$APO_EXIT_PREFLIGHT"
-    apo_is_uint "$APO_NORMAL_GPU" && (( APO_NORMAL_GPU > 0 )) || apo_die "Discovery returned an invalid normal GPU clock: $APO_NORMAL_GPU" "$APO_EXIT_PREFLIGHT"
+    [[ $APO_NORMAL_CPU =~ ^[1-9][0-9]{0,8}$ ]] || apo_die "Discovery returned an invalid normal CPU clock: $APO_NORMAL_CPU" "$APO_EXIT_PREFLIGHT"
+    [[ $APO_NORMAL_GPU =~ ^[1-9][0-9]{0,8}$ ]] || apo_die "Discovery returned an invalid normal GPU clock: $APO_NORMAL_GPU" "$APO_EXIT_PREFLIGHT"
     apo_is_int "$APO_NORMAL_VOLTAGE" || apo_die "Discovery returned an invalid normal voltage delta: $APO_NORMAL_VOLTAGE" "$APO_EXIT_PREFLIGHT"
     [[ $APO_PERMANENT_CONFIG_HASH =~ ^[0-9a-f]{64}$ ]] || apo_die 'Discovery returned an invalid permanent-config hash.' "$APO_EXIT_PREFLIGHT"
+    apo_config_resolve_auto_candidates "$APO_NORMAL_CPU" "$APO_NORMAL_GPU"
     local candidate
     for candidate in "${APO_CPU_CANDIDATES[@]}"; do
         (( candidate > APO_NORMAL_CPU )) || apo_die "CPU candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_CPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"
@@ -290,8 +291,17 @@ apo_watchdog_preflight() {
     apo_state_save
 }
 
-apo_prepare_target() {
+apo_finalize_discovered_config() {
     APO_NEED_GPU=$(( ${#APO_GPU_CANDIDATES[@]} > 0 ? 1 : 0 ))
+    if (( APO_NEED_GPU == 1 )) || [[ $APO_MODE_EFFECTIVE == graphical ]]; then APO_REQUIRE_GPU_STRESS=1; else APO_REQUIRE_GPU_STRESS=0; fi
+    apo_config_store_in_state
+    apo_state_save
+    apo_write_effective_config "$APO_EFFECTIVE_CONFIG_FILE"
+    apo_summary_line "CPU candidates: ${APO_CFG[CPU_CANDIDATES]:-none}"
+    apo_summary_line "GPU candidates: ${APO_CFG[GPU_CANDIDATES]:-none}"
+}
+
+apo_prepare_target() {
     apo_ssh_preflight
     APO_PROFILE=$(apo_probe_profile)
     apo_load_profile "$APO_PROFILE"
@@ -302,8 +312,8 @@ apo_prepare_target() {
     [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" ]] || apo_die 'Profile probe and worker discovery disagree.' "$APO_EXIT_PREFLIGHT"
     apo_validate_pi5
     apo_choose_mode
-    if (( APO_NEED_GPU == 1 )) || [[ $APO_MODE_EFFECTIVE == graphical ]]; then APO_REQUIRE_GPU_STRESS=1; else APO_REQUIRE_GPU_STRESS=0; fi
     apo_context_from_discovery
+    apo_finalize_discovered_config
     local throttle=${APO_DISCOVERY[THROTTLED]:-} temp=${APO_DISCOVERY[TEMP]:-} baseline_boot_id audio_summary
     apo_throttle_reading_valid "$throttle" || apo_die "Power/throttle telemetry is malformed: ${throttle:-missing}" "$APO_EXIT_PREFLIGHT"
     apo_throttle_active_bits_clear "$throttle" || apo_die "Current power/throttle conditions are active at preflight: $throttle" "$APO_EXIT_PREFLIGHT"

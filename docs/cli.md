@@ -26,7 +26,7 @@ Omitting `COMMAND` selects `run`. `TARGET` can be a hostname, an IP address, or 
 | Option | Default | Meaning |
 |---|---:|---|
 | `--config FILE` | none | Strict tuning plan. |
-| `--mode auto\|graphical\|headless` | `auto` | `auto` stores the detected semantics once for resume. |
+| `--mode auto\|graphical\|headless` | `auto` | `auto` detects graphical/headless semantics and, without `--config`, derives bounded candidates after discovery without reading candidate parameters from stdin. Explicit configurations remain authoritative. |
 | `--output-dir DIR` | `$HOME/overclock-results` | One flat artifact directory. |
 | `--ssh-port PORT` | `22` | SSH destination port. |
 | `--identity-file FILE` | normal SSH keys | Explicit identity. |
@@ -40,5 +40,7 @@ Omitting `COMMAND` selects `run`. `TARGET` can be a hostname, an IP address, or 
 | `--version` | n/a | Show the version. |
 
 `final_duration_seconds` in the approved configuration format must be between 28,800 and 604,800 seconds. `candidate_boots` must be between 2 and 10, and `final_boots` must be between 3 and 10. `apply` independently checks the saved final duration; editing only the completion flags in a state file does not satisfy the duration and validation-schema gates.
+
+Automatic candidates use the next 100 MHz CPU boundary through 3200 MHz and the next 50 MHz GPU/V3D boundary through 1200 MHz, always strictly above the discovered permanent baseline and with the existing voltage delta. The ordinary live-run confirmation remains required unless `--yes` is supplied.
 
 `status` and `report` remain local and usable for a run interrupted before discovery produced a complete profile. `resume`, `recover`, and `apply` refuse that incomplete context instead of guessing at a target layout or permanent hash.

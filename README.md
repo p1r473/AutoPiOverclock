@@ -136,15 +136,15 @@ Resolve preflight findings before tuning:
 - `Watchdogs: NOT READY` means no tryboot testing may begin. Debian-family targets can enter the separately confirmed `--repair-watchdogs` path. Batocera watchdog ownership is installation-specific, so automatic repair is refused; configure and verify that chain outside AutoPiOverclock, then repeat `prepare`.
 - Any active power/throttle condition, present or unknown tryboot file, missing telemetry, unhealthy graphical baseline, or unexpected permanent clock is a stop condition rather than a candidate result. Inspect and resolve an existing tryboot file explicitly; AutoPiOverclock will not replace it.
 
-AutoPiOverclock does not invent the first candidate ladder or optimize voltage. Build fresh, strictly increasing candidates from the reviewed baseline and cooling/power evidence; every supplied candidate must be above that domain's discovered normal clock. The result can only be the best value among the candidates actually tested. For the simplest public path, start `run` without a config and enter those CPU and GPU lists at its two guided prompts:
+With `--mode auto` and no configuration file, AutoPiOverclock performs discovery before resolving a bounded candidate ladder; it does not ask for CPU or GPU parameters. CPU candidates start at the next 100 MHz boundary above the discovered permanent baseline and stop at 3200 MHz. GPU/V3D candidates start at the next 50 MHz boundary and stop at 1200 MHz. A domain already at or above its automatic ceiling is skipped, and a live run refuses to start if neither domain has an automatic candidate. Voltage remains `existing`, so auto mode never silently raises it. The result can only be the best value among the candidates actually tested.
 
 ```bash
 ./autopioverclock run target-host --mode auto
 ```
 
-The guided run persists its complete effective configuration for repeatability. It defaults to `voltage_delta_uv=existing`, holding voltage constant so the first experiment changes one class of variable at a time. Before its ordinary confirmation, it prints the freshly rediscovered baseline, candidates, test voltage, and permanent hash; answer no if they differ from the reviewed `prepare`.
+The generated run persists its complete effective configuration for repeatability. `prepare --mode auto` previews the same baseline-relative ladder without changing the target. Before a live run's ordinary confirmation, the controller prints the freshly rediscovered baseline, generated candidates, test voltage, and permanent hash; answer no if they differ from the reviewed `prepare`. `--mode auto` removes parameter-entry prompts, but it does not bypass this safety confirmation; use the separate `--yes` option only when unattended confirmation is intended.
 
-For a noninteractive plan, copy the matching template, fill its deliberately empty lists after discovery, and review it with `prepare` before `run`:
+For a custom plan, copy the matching template, fill its deliberately empty lists after discovery, and review it with `prepare` before `run`. An explicit configuration file remains authoritative and is never auto-filled:
 
 ```bash
 cp examples/debian-headless.conf my-target.conf
@@ -204,7 +204,7 @@ frontend_process=
 audio_sink_pattern=
 ```
 
-This discovery-first template is valid for `prepare`. After reviewing the detected normal baseline, fill at least one candidate list before `run`. Candidate lists must be strictly increasing; an empty list skips that tuning domain, and a `run` must contain at least one CPU or GPU candidate.
+This discovery-first template is valid for `prepare`. When an explicit configuration file is supplied, fill at least one candidate list before `run`; the controller will not replace blank configured domains with automatic values. Candidate lists must be strictly increasing, an empty list skips that tuning domain, and a configured `run` must contain at least one CPU or GPU candidate. Without `--config`, `--mode auto` generates and persists the bounded baseline-relative lists described above.
 
 `voltage_delta_uv=existing` preserves the target's existing value; AutoPiOverclock never silently raises voltage. `final_duration_seconds` cannot be shorter than 28,800 seconds, candidate boots cannot be lower than two, and final boot/recovery cycles cannot be lower than three.
 

@@ -69,7 +69,7 @@ Target:
 
 Options:
   --config FILE            Strict KEY=VALUE tuning plan
-  --mode MODE              auto (default), graphical, or headless
+  --mode MODE              auto (default), graphical, or headless; auto derives candidates without --config
   --output-dir DIR         Flat artifact directory (default: $HOME/overclock-results)
   --ssh-port PORT          SSH port (default: 22)
   --identity-file FILE     SSH private key; otherwise use agent/default keys
@@ -168,8 +168,6 @@ apo_start_new_run() {
     apo_summary_line 'AutoPiOverclock run'
     apo_summary_line "Run ID: $APO_RUN_ID"
     apo_summary_line "Target: $APO_REMOTE_TARGET"
-    apo_summary_line "CPU candidates: ${APO_CFG[CPU_CANDIDATES]:-none}"
-    apo_summary_line "GPU candidates: ${APO_CFG[GPU_CANDIDATES]:-none}"
     apo_summary_line "Configured voltage delta: ${APO_CFG[VOLTAGE_DELTA_UV]}"
     apo_summary_line "Candidate duration: ${APO_CFG[CANDIDATE_DURATION_S]}s"
     apo_summary_line "Final duration: ${APO_CFG[FINAL_DURATION_S]}s"

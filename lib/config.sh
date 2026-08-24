@@ -4,6 +4,15 @@
 declare -Ag APO_CFG=()
 declare -ag APO_CPU_CANDIDATES=()
 declare -ag APO_GPU_CANDIDATES=()
+readonly APO_CPU_CLOCK_MIN_MHZ=600
+readonly APO_CPU_CLOCK_MAX_MHZ=4000
+readonly APO_GPU_CLOCK_MIN_MHZ=200
+readonly APO_GPU_CLOCK_MAX_MHZ=3000
+readonly APO_AUTO_CPU_STEP_MHZ=100
+readonly APO_AUTO_CPU_MAX_MHZ=3200
+readonly APO_AUTO_GPU_STEP_MHZ=50
+readonly APO_AUTO_GPU_MAX_MHZ=1200
+APO_AUTO_CANDIDATES_PENDING=0
 readonly -a APO_ALLOWED_CONFIG_KEYS=(
     cpu_candidates_mhz gpu_candidates_mhz voltage_delta_uv
     candidate_duration_seconds final_duration_seconds max_temp_c telemetry_interval_seconds
@@ -32,6 +41,7 @@ apo_config_internal_key() {
 
 apo_config_defaults() {
     APO_CFG=()
+    APO_AUTO_CANDIDATES_PENDING=0
     APO_CFG[CPU_CANDIDATES]=''
     APO_CFG[GPU_CANDIDATES]=''
     APO_CFG[VOLTAGE_DELTA_UV]='existing'
@@ -48,6 +58,38 @@ apo_config_defaults() {
     # Internal compatibility values, not accepted public configuration keys.
     APO_CFG[EXTRA_PING_TARGET]=''
     APO_CFG[HEALTH_HOOK]=''
+}
+
+apo_config_auto_ladder() {
+    local baseline=$1 step=$2 maximum=$3 minimum=${4:-0} candidate ladder=''
+    [[ $baseline =~ ^(0|[1-9][0-9]{0,8})$ && $step =~ ^[1-9][0-9]{0,3}$ && $maximum =~ ^[1-9][0-9]{0,3}$ && $minimum =~ ^(0|[1-9][0-9]{0,3})$ ]] || return 1
+    (( step <= APO_CPU_CLOCK_MAX_MHZ && maximum <= APO_CPU_CLOCK_MAX_MHZ && minimum <= maximum )) || return 1
+    if (( baseline >= maximum )); then
+        return 0
+    fi
+    candidate=$(( ((baseline / step) + 1) * step ))
+    if (( candidate < minimum )); then
+        candidate=$(( ((minimum + step - 1) / step) * step ))
+    fi
+    while (( candidate <= maximum )); do
+        ladder=$(apo_append_csv "$ladder" "$candidate")
+        candidate=$((candidate + step))
+    done
+    printf '%s' "$ladder"
+}
+
+apo_config_resolve_auto_candidates() {
+    local normal_cpu=$1 normal_gpu=$2
+    (( APO_AUTO_CANDIDATES_PENDING == 1 )) || return 0
+    APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_cpu" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") ||
+        apo_die 'Could not derive automatic CPU candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
+    APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_gpu" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") ||
+        apo_die 'Could not derive automatic GPU/V3D candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
+    APO_AUTO_CANDIDATES_PENDING=0
+    apo_config_validate
+    if [[ ${APO_COMMAND:-prepare} == run && ${APO_DRY_RUN:-0} == 0 && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
+        apo_die "The discovered CPU and GPU clocks are already at or above the automatic ceilings (${APO_AUTO_CPU_MAX_MHZ}/${APO_AUTO_GPU_MAX_MHZ} MHz). Supply an explicit --config plan." "$APO_EXIT_USAGE"
+    fi
 }
 
 apo_config_key_allowed() {
@@ -106,8 +148,8 @@ apo_validate_name_list() {
 }
 
 apo_config_validate() {
-    apo_parse_ordered_int_list "${APO_CFG[CPU_CANDIDATES]}" APO_CPU_CANDIDATES 600 4000 cpu_candidates_mhz
-    apo_parse_ordered_int_list "${APO_CFG[GPU_CANDIDATES]}" APO_GPU_CANDIDATES 200 3000 gpu_candidates_mhz
+    apo_parse_ordered_int_list "${APO_CFG[CPU_CANDIDATES]}" APO_CPU_CANDIDATES "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" cpu_candidates_mhz
+    apo_parse_ordered_int_list "${APO_CFG[GPU_CANDIDATES]}" APO_GPU_CANDIDATES "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" gpu_candidates_mhz
     apo_validate_uint_range "${APO_CFG[CANDIDATE_DURATION_S]}" 10 86400 || apo_die 'candidate_duration_seconds must be 10-86400.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]}" "$APO_MIN_FINAL_DURATION_S" 604800 || apo_die 'final_duration_seconds must be 28800-604800; final validation requires at least eight hours.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[MAX_TEMP_C]}" 40 95 || apo_die 'max_temp_c must be 40-95.' "$APO_EXIT_USAGE"
@@ -142,8 +184,13 @@ apo_config_guided_candidates() {
 apo_config_load_for_new_run() {
     apo_config_defaults
     [[ -z ${APO_CONFIG_FILE:-} ]] || apo_config_read_file "$APO_CONFIG_FILE"
+    if [[ -z ${APO_CONFIG_FILE:-} && ${APO_MODE_REQUESTED:-auto} == auto && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
+        APO_AUTO_CANDIDATES_PENDING=1
+    fi
     if [[ ${APO_COMMAND:-prepare} == run && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
-        if [[ -z ${APO_CONFIG_FILE:-} ]]; then
+        if (( APO_AUTO_CANDIDATES_PENDING == 1 )); then
+            : # Discovery will resolve a bounded, baseline-relative plan without reading stdin.
+        elif [[ -z ${APO_CONFIG_FILE:-} ]]; then
             apo_config_guided_candidates || apo_die 'A run needs cpu_candidates_mhz and/or gpu_candidates_mhz. Supply --config when noninteractive.' "$APO_EXIT_USAGE"
             [[ -n ${APO_CFG[CPU_CANDIDATES]} || -n ${APO_CFG[GPU_CANDIDATES]} ]] ||
                 apo_die 'A run needs at least one fresh CPU or GPU/V3D overclock candidate; use prepare when no tuning candidate is ready.' "$APO_EXIT_USAGE"
