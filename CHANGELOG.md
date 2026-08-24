@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.6 — 2026-08-23
+
+- Fixed Debian GPU-stressor discovery so `pipefail` cannot turn `grep`'s early help-text exit into a false unavailable result after a successful `stress-ng` installation.
+- Tightened capability matching to the exact `--gpu` option and added a large-output regression that distinguishes it from longer option names.
+
 ## 0.1.0-alpha.5 — 2026-08-23
 
 - Fixed the live worker-upload wrapper so nested root and passwordless-sudo execution preserves strict pre-install and post-install SHA-256 verification under `set -Eeuo pipefail`.

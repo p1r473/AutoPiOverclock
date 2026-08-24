@@ -94,6 +94,34 @@ arm_freq=9999
 CONF
 
 APO_WORKER_LIBRARY_ONLY=1 source "$ROOT/workers/debian-worker.sh"
+
+# grep -q can close this help pipe after the first match.  With pipefail that
+# turns the producer's expected SIGPIPE into a false "GPU unavailable" result.
+# Keep enough trailing help text to exercise that failure mode, and require an
+# exact --gpu option rather than accepting a longer option with the same prefix.
+mkdir -p "$TEMP_DIR/stress-ng-bin"
+cat > "$TEMP_DIR/stress-ng-bin/stress-ng" <<'STRESS_NG'
+#!/usr/bin/env bash
+set -e
+[[ ${1-} == --help ]] || exit 1
+printf '      %s N  start N GPU workers\n' "${MOCK_STRESS_NG_OPTION:---gpu}"
+for ((line = 0; line < 20000; line++)); do
+    printf '      --fixture-option-%05d N  trailing help text for pipe coverage\n' "$line"
+done
+STRESS_NG
+chmod 700 "$TEMP_DIR/stress-ng-bin/stress-ng"
+ORIGINAL_PATH=$PATH
+PATH="$TEMP_DIR/stress-ng-bin:$PATH"
+export MOCK_STRESS_NG_OPTION=--gpu
+stress_ng_has_gpu
+export MOCK_STRESS_NG_OPTION=--gpu-ops
+if stress_ng_has_gpu; then
+    echo 'stress-ng GPU detection accepted --gpu-ops as the --gpu stressor' >&2
+    exit 1
+fi
+unset MOCK_STRESS_NG_OPTION
+PATH=$ORIGINAL_PATH
+
 throttle_clean_relative throttled=0x50000 throttled=0x50000
 if throttle_clean_relative throttled=0x50001 throttled=0x50000; then exit 1; fi
 if throttle_clean_relative throttled=0xD0000 throttled=0x50000; then exit 1; fi

@@ -477,7 +477,11 @@ watchdog_health_ready() {
     }
 }
 
-stress_ng_has_gpu() { command -v stress-ng >/dev/null 2>&1 && stress-ng --help 2>&1 | grep -q -- '--gpu'; }
+stress_ng_has_gpu() {
+    command -v stress-ng >/dev/null 2>&1 &&
+        stress-ng --help 2>&1 |
+            grep -E -- '(^|[[:space:]])--gpu([[:space:]]|$)' >/dev/null
+}
 
 cmd_discover() {
     local boot_config tryboot_config boot_mount model compatible os_id os_version gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
