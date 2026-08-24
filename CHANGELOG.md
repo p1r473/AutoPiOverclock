@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.9 — 2026-08-24
+
+- Replaced Batocera `/boot` mount-option verification with a shell parser that does not assign to awk's reserved `index` builtin, fixing the false remount failure that occurred before the first candidate was written.
+- Added direct read-only and read-write mount-table regressions while forcing `awk` itself to fail, so the production verifier and its exact target portability boundary are exercised.
+
 ## 0.1.0-alpha.8 — 2026-08-24
 
 - Made `--mode auto` with no configuration file free of candidate-parameter prompts: it now discovers the permanent baseline first, then generates CPU candidates in 100 MHz steps through 3200 MHz and GPU/V3D candidates in 50 MHz steps through 1200 MHz while preserving the existing voltage.
