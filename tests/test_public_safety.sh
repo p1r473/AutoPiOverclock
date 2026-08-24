@@ -110,7 +110,10 @@ if (
     source "$ROOT/lib/config.sh"
     source "$ROOT/lib/detect.sh"
     apo_config_defaults
+    # This rejection fixture is intentionally isolated.
+    # shellcheck disable=SC2030
     APO_COMMAND=run
+    # shellcheck disable=SC2030
     APO_DRY_RUN=0
     APO_MODE_EFFECTIVE=headless
     APO_DISCOVERY=(
