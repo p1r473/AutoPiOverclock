@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.7 — 2026-08-24
+
+- Accepted current `wpctl inspect` output that prefixes the default sink's `node.name` property with `*`, while retaining the older unstarred format on both Debian and Batocera.
+- Added an identity-bound ARM64 Batocera fallback for systems whose watchdog driver omits the sysfs `timeout` attribute: the worker duplicates the already-open keeper descriptor with `pidfd_getfd` and issues only `WDIOC_GETTIMEOUT`, failing closed on malformed sysfs evidence, ownership changes, unsupported kernels, permission denial, or races.
+- Tightened watchdog sysfs parsing and device binding, kept Debian watchdog behavior unchanged, and added selector, malformed-input, owner-race, embedded-Python syntax, and forbidden-operation regressions.
+
 ## 0.1.0-alpha.6 — 2026-08-23
 
 - Fixed Debian GPU-stressor discovery so `pipefail` cannot turn `grep`'s early help-text exit into a false unavailable result after a successful `stress-ng` installation.

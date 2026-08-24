@@ -308,7 +308,7 @@ audio_identity() {
     local identity='' inspect_output
     inspect_output=$(audio_inspect || true)
     [[ -n $inspect_output ]] || return 1
-    identity=$(sed -n 's/^[[:space:]]*node\.name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$inspect_output" | head -1)
+    identity=$(sed -n 's/^[[:space:]]*[*]*[[:space:]]*node\.name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$inspect_output" | head -1)
     [[ -n $identity ]] || identity=$(head -1 <<< "$inspect_output" | tr -d '\r\n')
     [[ -n $identity ]] || return 1
     printf '%s' "$identity"

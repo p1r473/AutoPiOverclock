@@ -24,6 +24,7 @@ for WORKER_NAME in debian batocera; do
 
         mkdir -p "$TEST_ROOT/sys/class/watchdog/watchdog0"
         printf "console=serial0 root=/dev/mmcblk0p2 watchdog.open_timeout=45 quiet\n" > "$TEST_ROOT/cmdline"
+        printf "0:0\n" > "$TEST_ROOT/sys/class/watchdog/watchdog0/dev"
         printf "45\n" > "$TEST_ROOT/sys/class/watchdog/watchdog0/timeout"
         [[ $(watchdog_kernel_open_timeout "$TEST_ROOT/cmdline") == 45 ]]
         [[ $(watchdog_runtime_timeout "$TEST_ROOT/watchdog0" "$TEST_ROOT/sys") == 45 ]]
@@ -65,6 +66,178 @@ for WORKER_NAME in debian batocera; do
         [[ $WATCHDOG_LAST_REASON == "No userspace process owns "* ]]
     '
 done
+
+APO_WORKER_LIBRARY_ONLY=1 TEST_ROOT="$TEMP_DIR" WORKER="$ROOT/workers/batocera-worker.sh" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+
+    must_fail() {
+        if "$@" >/dev/null 2>&1; then
+            printf "unexpected success: %s\n" "$1" >&2
+            return 1
+        fi
+    }
+
+    DEVICE="$TEST_ROOT/watchdog0"
+    SYS_ROOT="$TEST_ROOT/pidfd-sys"
+    OWNER="pid=321;comm=generic-watchdog;fd=7"
+    CALL_LOG="$TEST_ROOT/pidfd-calls"
+    mkdir -p "$SYS_ROOT/class/watchdog/watchdog0"
+    : > "$DEVICE"
+    : > "$CALL_LOG"
+    printf "0:0\n" > "$SYS_ROOT/class/watchdog/watchdog0/dev"
+
+    EXPECTED_FIELDS=$(printf "321\t7\tgeneric-watchdog")
+    [[ $(watchdog_owner_pid_fd "$OWNER") == "$EXPECTED_FIELDS" ]]
+
+    watchdog_runtime_timeout_pidfd() {
+        printf "unexpected\n" >> "$CALL_LOG"
+        return 1
+    }
+    watchdog_userspace_owner() { printf "%s" "$OWNER"; }
+    printf "45\n" > "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    [[ $(watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT") == 45 ]]
+    [[ ! -s $CALL_LOG ]]
+
+    rm -f "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    watchdog_runtime_timeout_pidfd() {
+        if [[ $1 == "$DEVICE" && $2 == 321 && $3 == 7 && $4 == generic-watchdog ]]; then
+            printf "called\n" >> "$CALL_LOG"
+            printf 15
+        else
+            return 1
+        fi
+    }
+    [[ $(watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT") == 15 ]]
+    [[ $(wc -l < "$CALL_LOG") == 1 ]]
+
+    : > "$CALL_LOG"
+    printf "0\n" > "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    [[ ! -s $CALL_LOG ]]
+    for malformed_timeout in bogus "1 5"; do
+        printf "%s\n" "$malformed_timeout" > "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+        must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+        [[ ! -s $CALL_LOG ]]
+    done
+    printf "15\n16\n" > "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    [[ ! -s $CALL_LOG ]]
+    printf "15\n" > "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    cat() {
+        if [[ ${*: -1} == "$SYS_ROOT/class/watchdog/watchdog0/timeout" ]]; then return 1; fi
+        command cat "$@"
+    }
+    must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    [[ ! -s $CALL_LOG ]]
+    unset -f cat
+    rm -f "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    mkdir "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    [[ ! -s $CALL_LOG ]]
+    rmdir "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    ln -s "$SYS_ROOT/missing-timeout" "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+    must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    [[ ! -s $CALL_LOG ]]
+    rm -f "$SYS_ROOT/class/watchdog/watchdog0/timeout"
+
+    watchdog_runtime_timeout_pidfd() {
+        printf "called\n" >> "$CALL_LOG"
+        printf 15
+    }
+    BAD_NEWLINE_OWNER=$(printf "pid=321;comm=generic\nwatchdog;fd=7")
+    BAD_OWNERS=(
+        ""
+        "pid=0;comm=watchdog;fd=3"
+        "pid=0321;comm=watchdog;fd=3"
+        "pid=99999999999;comm=watchdog;fd=3"
+        "pid=321;comm=;fd=3"
+        "pid=321;comm=../watchdog;fd=3"
+        "pid=321;comm=watchdog;fd=-1"
+        "pid=321;comm=watchdog;fd=03"
+        "pid=321;comm=watchdog;fd=99999999999"
+        "pid=321;comm=watchdog;fd=3;extra=1"
+        "$BAD_NEWLINE_OWNER"
+    )
+    for bad_owner in "${BAD_OWNERS[@]}"; do
+        : > "$CALL_LOG"
+        must_fail watchdog_runtime_timeout_effective "$DEVICE" "$bad_owner" "$SYS_ROOT"
+        [[ ! -s $CALL_LOG ]]
+    done
+
+    PIDFD_MODE=zero
+    watchdog_runtime_timeout_pidfd() {
+        case $PIDFD_MODE in
+            zero) printf 0 ;;
+            whitespace) printf " 15" ;;
+            garbage) printf bogus ;;
+            multiline) printf "15\n16" ;;
+            failure) return 1 ;;
+            valid) printf 15 ;;
+            *) return 1 ;;
+        esac
+    }
+    for PIDFD_MODE in zero whitespace garbage multiline failure; do
+        must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    done
+
+    PIDFD_MODE=valid
+    OWNER_MODE=changed
+    watchdog_userspace_owner() {
+        case $OWNER_MODE in
+            stable) printf "%s" "$OWNER" ;;
+            changed) printf "pid=322;comm=generic-watchdog;fd=7" ;;
+            vanished) return 1 ;;
+            *) return 1 ;;
+        esac
+    }
+    must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    OWNER_MODE=vanished
+    must_fail watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT"
+    OWNER_MODE=stable
+    [[ $(watchdog_runtime_timeout_effective "$DEVICE" "$OWNER" "$SYS_ROOT") == 15 ]]
+
+    watchdog_boot_timeout() { printf 30; }
+    watchdog_kernel_open_timeout() { printf 60; }
+    watchdog_device_path() { printf "%s" "$DEVICE"; }
+    OWNER_MODE=vanished
+    : > "$CALL_LOG"
+    watchdog_runtime_timeout_effective() {
+        printf "called\n" >> "$CALL_LOG"
+        printf 15
+    }
+    must_fail watchdog_health_ready /boot/config.txt
+    [[ $WATCHDOG_LAST_REASON == "No userspace process owns "* ]]
+    [[ ! -s $CALL_LOG ]]
+
+    OWNER_MODE=stable
+    watchdog_runtime_timeout_effective() { printf 0; }
+    must_fail watchdog_health_ready /boot/config.txt
+    [[ $WATCHDOG_LAST_REASON == "The active watchdog device has no positive runtime timeout"* ]]
+    watchdog_runtime_timeout_effective() { printf 15; }
+    watchdog_health_ready /boot/config.txt
+    [[ $WATCHDOG_LAST_RUNTIME_TIMEOUT == 15 ]]
+    [[ $WATCHDOG_LAST_OWNER == "$OWNER" ]]
+'
+
+python3 - "$ROOT/workers/batocera-worker.sh" <<'APO_PIDFD_COMPILE'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = "<<'APO_WATCHDOG_PIDFD_PY'\n"
+end = "\nAPO_WATCHDOG_PIDFD_PY\n"
+assert text.count(start) == 1
+assert text.count(end) == 1
+body = text.split(start, 1)[1].split(end, 1)[0]
+compile(body, "<watchdog-pidfd>", "exec")
+assert body.count("fcntl.ioctl(") == 1
+assert "WDIOC_GETTIMEOUT = 0x80045707" in body
+assert "SYS_PIDFD_OPEN = 434" in body
+assert "SYS_PIDFD_GETFD = 438" in body
+for forbidden in ("WDIOC_SETTIMEOUT", "WDIOC_KEEPALIVE", "WDIOC_SETOPTIONS", "os.open(", "os.write("):
+    assert forbidden not in body
+APO_PIDFD_COMPILE
 
 PLAN_CONFIG="$TEMP_DIR/plan-config.txt"
 printf '[all]\narm_freq=2400\n' > "$PLAN_CONFIG"

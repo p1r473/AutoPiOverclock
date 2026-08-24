@@ -176,6 +176,8 @@ mkdir -p "$TEMP_DIR/debian-audio-bin"
 printf '#!/bin/sh\nprintf '\''    node.name = "alsa_output.debian-fixture"\\n'\''\n' > "$TEMP_DIR/debian-audio-bin/wpctl"
 chmod 755 "$TEMP_DIR/debian-audio-bin/wpctl"
 [[ $(PATH="$TEMP_DIR/debian-audio-bin:$PATH" audio_identity) == alsa_output.debian-fixture ]]
+printf '#!/bin/sh\nprintf '\''id 42, type PipeWire:Interface:Node/3\\n  * node.name = "alsa_output.debian-starred-fixture"\\n'\''\n' > "$TEMP_DIR/debian-audio-bin/wpctl"
+[[ $(PATH="$TEMP_DIR/debian-audio-bin:$PATH" audio_identity) == alsa_output.debian-starred-fixture ]]
 
 set +e
 DEBIAN_USB_OUTPUT=$("$ROOT/workers/debian-worker.sh" classify-kernel-log "$FIXTURES/root-usb-reset.log" /dev/sda2 2>&1)
@@ -207,6 +209,8 @@ mkdir -p "$TEMP_DIR/fake-bin"
 printf '#!/bin/sh\nprintf '\''    node.name = "alsa_output.usb-fixture"\\n'\''\n' > "$TEMP_DIR/fake-bin/wpctl"
 chmod 755 "$TEMP_DIR/fake-bin/wpctl"
 [[ $(PATH="$TEMP_DIR/fake-bin:$PATH" audio_identity) == alsa_output.usb-fixture ]]
+printf '#!/bin/sh\nprintf '\''id 42, type PipeWire:Interface:Node/3\\n  * node.name = "alsa_output.usb-starred-fixture"\\n'\''\n' > "$TEMP_DIR/fake-bin/wpctl"
+[[ $(PATH="$TEMP_DIR/fake-bin:$PATH" audio_identity) == alsa_output.usb-starred-fixture ]]
 mkdir -p "$TEMP_DIR/drm/card1-HDMI-A-1"
 printf 'connected\n' > "$TEMP_DIR/drm/card1-HDMI-A-1/status"
 display_hardware_present "$TEMP_DIR/drm"
