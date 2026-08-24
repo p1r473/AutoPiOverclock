@@ -340,7 +340,7 @@ audio_identity() {
     batocera_environment
     probe_timeout=$(bounded_probe_timeout 6) || return 1
     if command -v wpctl >/dev/null 2>&1; then
-        identity=$(timeout "$probe_timeout" wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null | sed -n 's/^[[:space:]]*node\.name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+        identity=$(timeout "$probe_timeout" wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null | sed -n 's/^[[:space:]]*[*]*[[:space:]]*node\.name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
     elif command -v pactl >/dev/null 2>&1; then
         identity=$(timeout "$probe_timeout" pactl get-default-sink 2>/dev/null | tr -d '\r\n')
     fi
@@ -473,22 +473,230 @@ watchdog_device_path() {
 }
 
 watchdog_runtime_timeout() {
-    local device_path=$1 sys_root=${2:-/sys} canonical_device watchdog_name device_id major_hex minor_hex timeout_file timeout_value
-    canonical_device=$(readlink -f "$device_path" 2>/dev/null || printf '%s' "$device_path")
-    watchdog_name=${canonical_device##*/}
-    if [[ ! $watchdog_name =~ ^watchdog[0-9]+$ ]]; then
-        device_id=$(stat -Lc '%t:%T' "$device_path" 2>/dev/null || true)
-        [[ $device_id == *:* ]] || return 1
-        major_hex=${device_id%:*}
-        minor_hex=${device_id#*:}
-        [[ $major_hex =~ ^[0-9a-fA-F]+$ && $minor_hex =~ ^[0-9a-fA-F]+$ ]] || return 1
-        watchdog_name=$(basename "$(readlink -f "$sys_root/dev/char/$((16#$major_hex)):$((16#$minor_hex))" 2>/dev/null || true)")
-    fi
+    local device_path=$1 sys_root=${2:-/sys} device_id major_hex minor_hex expected_dev class_dev_file class_dev watchdog_name='' matched_name timeout_file timeout_value
+    device_id=$(stat -Lc '%t:%T' "$device_path" 2>/dev/null || true)
+    [[ $device_id == *:* ]] || return 1
+    major_hex=${device_id%:*}
+    minor_hex=${device_id#*:}
+    [[ $major_hex =~ ^[0-9a-fA-F]+$ && $minor_hex =~ ^[0-9a-fA-F]+$ ]] || return 1
+    (( ${#major_hex} <= 8 && ${#minor_hex} <= 8 )) || return 1
+    expected_dev="$((16#$major_hex)):$((16#$minor_hex))"
+    for class_dev_file in "$sys_root"/class/watchdog/watchdog[0-9]*/dev; do
+        [[ -f $class_dev_file && -r $class_dev_file ]] || continue
+        class_dev=$(cat -- "$class_dev_file" 2>/dev/null) || return 1
+        [[ $class_dev =~ ^[0-9]+:[0-9]+$ ]] || return 1
+        [[ $class_dev == "$expected_dev" ]] || continue
+        matched_name=${class_dev_file%/dev}
+        matched_name=${matched_name##*/}
+        [[ -z $watchdog_name ]] || return 1
+        watchdog_name=$matched_name
+    done
     [[ $watchdog_name =~ ^watchdog[0-9]+$ ]] || return 1
     timeout_file="$sys_root/class/watchdog/$watchdog_name/timeout"
-    [[ -r $timeout_file ]] || return 1
-    timeout_value=$(tr -d '[:space:]' < "$timeout_file" 2>/dev/null || true)
-    [[ $timeout_value =~ ^[0-9]+$ ]] || return 1
+    if [[ ! -e $timeout_file ]]; then
+        [[ ! -L $timeout_file ]] || return 1
+        return 2
+    fi
+    [[ -f $timeout_file && -r $timeout_file ]] || return 1
+    timeout_value=$(cat -- "$timeout_file" 2>/dev/null) || return 1
+    [[ $timeout_value =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s' "$timeout_value"
+}
+
+watchdog_owner_pid_fd() {
+    local owner=${1-} owner_pattern pid owner_comm owner_fd
+    owner_pattern='^pid=([1-9][0-9]*);comm=([A-Za-z0-9_.:+@()-]+);fd=(0|[1-9][0-9]*)$'
+    [[ $owner =~ $owner_pattern ]] || return 1
+    pid=${BASH_REMATCH[1]}
+    owner_comm=${BASH_REMATCH[2]}
+    owner_fd=${BASH_REMATCH[3]}
+    (( ${#pid} <= 10 && ${#owner_comm} <= 64 && ${#owner_fd} <= 10 )) || return 1
+    printf '%s\t%s\t%s' "$pid" "$owner_fd" "$owner_comm"
+}
+
+watchdog_runtime_timeout_pidfd() {
+    local device_path=$1 owner_pid=$2 owner_fd=$3 owner_comm=$4
+    [[ $device_path =~ ^/dev/watchdog([0-9]+)?$ ]] || return 1
+    [[ $owner_pid =~ ^[1-9][0-9]*$ && ${#owner_pid} -le 10 ]] || return 1
+    [[ $owner_fd =~ ^(0|[1-9][0-9]*)$ && ${#owner_fd} -le 10 ]] || return 1
+    [[ $owner_comm =~ ^[A-Za-z0-9_.:+@()-]+$ && ${#owner_comm} -le 64 ]] || return 1
+    [[ $(uname -m 2>/dev/null || true) =~ ^(aarch64|arm64)$ ]] || return 1
+    [[ -x /usr/bin/python3 ]] || return 1
+    command -v timeout >/dev/null 2>&1 || return 1
+    timeout -k 1 6 /usr/bin/python3 - "$device_path" "$owner_pid" "$owner_fd" "$owner_comm" 2>/dev/null <<'APO_WATCHDOG_PIDFD_PY'
+import array
+import ctypes
+import fcntl
+import glob
+import os
+import re
+import select
+import stat
+import sys
+
+SYS_PIDFD_OPEN = 434
+SYS_PIDFD_GETFD = 438
+WDIOC_GETTIMEOUT = 0x80045707
+INT_MAX = 2**31 - 1
+
+
+def reject():
+    raise RuntimeError("watchdog proof failed")
+
+
+def read_bytes(path, limit):
+    with open(path, "rb") as handle:
+        value = handle.read(limit + 1)
+    if len(value) > limit:
+        reject()
+    return value
+
+
+def process_starttime(pid):
+    value = read_bytes(f"/proc/{pid}/stat", 8192).decode("ascii", "strict")
+    marker = value.rfind(") ")
+    if marker < 0:
+        reject()
+    fields = value[marker + 2:].split()
+    if len(fields) < 20 or not fields[19].isdigit():
+        reject()
+    return fields[19]
+
+
+def process_comm(pid):
+    value = read_bytes(f"/proc/{pid}/comm", 256)
+    return value.replace(b"\t", b"_").replace(b" ", b"_").replace(b"\r", b"").replace(b"\n", b"")
+
+
+def fdinfo_snapshot(pid, target_fd):
+    value = read_bytes(f"/proc/{pid}/fdinfo/{target_fd}", 8192).decode("ascii", "strict")
+    fields = {}
+    for line in value.splitlines():
+        key, separator, item = line.partition(":")
+        if separator:
+            fields[key] = item.strip()
+    if "flags" not in fields:
+        reject()
+    flags = int(fields["flags"], 8)
+    if (flags & os.O_ACCMODE) not in (os.O_WRONLY, os.O_RDWR):
+        reject()
+    return flags, fields.get("mnt_id", ""), fields.get("ino", "")
+
+
+def require_original(pid, target_fd, expected_starttime, expected_comm, expected_rdev):
+    if process_starttime(pid) != expected_starttime:
+        reject()
+    if process_comm(pid) != expected_comm:
+        reject()
+    target = os.stat(f"/proc/{pid}/fd/{target_fd}")
+    if not stat.S_ISCHR(target.st_mode) or target.st_rdev != expected_rdev:
+        reject()
+    return fdinfo_snapshot(pid, target_fd)
+
+
+def require_pidfd_live(poller):
+    if poller.poll(0):
+        reject()
+
+
+if len(sys.argv) != 5 or os.uname().machine not in ("aarch64", "arm64"):
+    reject()
+
+device_path, pid_text, fd_text, owner_comm_text = sys.argv[1:]
+if not re.fullmatch(r"/dev/watchdog(?:[0-9]+)?", device_path):
+    reject()
+if not re.fullmatch(r"[1-9][0-9]*", pid_text) or not re.fullmatch(r"(?:0|[1-9][0-9]*)", fd_text):
+    reject()
+pid = int(pid_text, 10)
+target_fd = int(fd_text, 10)
+if pid > INT_MAX or target_fd > INT_MAX:
+    reject()
+expected_comm = os.fsencode(owner_comm_text)
+
+device = os.stat(device_path)
+if not stat.S_ISCHR(device.st_mode):
+    reject()
+expected_rdev = device.st_rdev
+expected_dev_text = f"{os.major(expected_rdev)}:{os.minor(expected_rdev)}"
+class_matches = []
+for class_dev in glob.glob("/sys/class/watchdog/watchdog[0-9]*/dev"):
+    if read_bytes(class_dev, 64).decode("ascii", "strict").strip() == expected_dev_text:
+        class_matches.append(class_dev)
+if len(class_matches) != 1:
+    reject()
+
+starttime = process_starttime(pid)
+initial_snapshot = require_original(pid, target_fd, starttime, expected_comm, expected_rdev)
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+pidfd = -1
+duplicate_fd = -1
+timeout_value = 0
+try:
+    pidfd = libc.syscall(ctypes.c_long(SYS_PIDFD_OPEN), ctypes.c_long(pid), ctypes.c_long(0))
+    if pidfd < 0:
+        reject()
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+    require_pidfd_live(poller)
+    if require_original(pid, target_fd, starttime, expected_comm, expected_rdev) != initial_snapshot:
+        reject()
+    try:
+        duplicate_fd = libc.syscall(
+            ctypes.c_long(SYS_PIDFD_GETFD), ctypes.c_long(pidfd), ctypes.c_long(target_fd), ctypes.c_long(0)
+        )
+        if duplicate_fd < 0:
+            reject()
+        duplicate = os.fstat(duplicate_fd)
+        if not stat.S_ISCHR(duplicate.st_mode) or duplicate.st_rdev != expected_rdev:
+            reject()
+        duplicate_flags = fcntl.fcntl(duplicate_fd, fcntl.F_GETFL)
+        if (duplicate_flags & os.O_ACCMODE) not in (os.O_WRONLY, os.O_RDWR):
+            reject()
+        timeout_buffer = array.array("i", [0])
+        if timeout_buffer.itemsize != 4:
+            reject()
+        fcntl.ioctl(duplicate_fd, WDIOC_GETTIMEOUT, timeout_buffer, True)
+        timeout_value = int(timeout_buffer[0])
+        if timeout_value <= 0 or timeout_value > INT_MAX:
+            reject()
+        require_pidfd_live(poller)
+        if require_original(pid, target_fd, starttime, expected_comm, expected_rdev) != initial_snapshot:
+            reject()
+    finally:
+        if duplicate_fd >= 0:
+            os.close(duplicate_fd)
+            duplicate_fd = -1
+    require_pidfd_live(poller)
+    if require_original(pid, target_fd, starttime, expected_comm, expected_rdev) != initial_snapshot:
+        reject()
+finally:
+    if duplicate_fd >= 0:
+        os.close(duplicate_fd)
+    if pidfd >= 0:
+        os.close(pidfd)
+
+print(timeout_value)
+APO_WATCHDOG_PIDFD_PY
+}
+
+watchdog_runtime_timeout_effective() {
+    local device_path=$1 owner=${2-} sys_root=${3:-/sys}
+    local timeout_value runtime_status parsed_owner owner_pid owner_fd owner_comm owner_after
+    if timeout_value=$(watchdog_runtime_timeout "$device_path" "$sys_root"); then
+        printf '%s' "$timeout_value"
+        return 0
+    else
+        runtime_status=$?
+    fi
+    (( runtime_status == 2 )) || return 1
+    parsed_owner=$(watchdog_owner_pid_fd "$owner") || return 1
+    IFS=$'\t' read -r owner_pid owner_fd owner_comm <<< "$parsed_owner"
+    timeout_value=$(watchdog_runtime_timeout_pidfd "$device_path" "$owner_pid" "$owner_fd" "$owner_comm") || return 1
+    [[ $timeout_value =~ ^[1-9][0-9]*$ ]] || return 1
+    owner_after=$(watchdog_userspace_owner "$device_path") || return 1
+    [[ $owner_after == "$owner" ]] || return 1
     printf '%s' "$timeout_value"
 }
 
@@ -540,14 +748,14 @@ watchdog_health_ready() {
         WATCHDOG_LAST_REASON='No watchdog character device is present.'
         return 1
     }
-    WATCHDOG_LAST_RUNTIME_TIMEOUT=$(watchdog_runtime_timeout "$WATCHDOG_LAST_DEVICE" || true)
-    [[ $WATCHDOG_LAST_RUNTIME_TIMEOUT =~ ^[0-9]+$ ]] && (( WATCHDOG_LAST_RUNTIME_TIMEOUT > 0 )) || {
-        WATCHDOG_LAST_REASON="The active watchdog device has no positive runtime timeout (${WATCHDOG_LAST_RUNTIME_TIMEOUT:-missing})."
-        return 1
-    }
     WATCHDOG_LAST_OWNER=$(watchdog_userspace_owner "$WATCHDOG_LAST_DEVICE" || true)
     [[ -n $WATCHDOG_LAST_OWNER ]] || {
         WATCHDOG_LAST_REASON="No userspace process owns $WATCHDOG_LAST_DEVICE."
+        return 1
+    }
+    WATCHDOG_LAST_RUNTIME_TIMEOUT=$(watchdog_runtime_timeout_effective "$WATCHDOG_LAST_DEVICE" "$WATCHDOG_LAST_OWNER" || true)
+    [[ $WATCHDOG_LAST_RUNTIME_TIMEOUT =~ ^[0-9]+$ ]] && (( WATCHDOG_LAST_RUNTIME_TIMEOUT > 0 )) || {
+        WATCHDOG_LAST_REASON="The active watchdog device has no positive runtime timeout (${WATCHDOG_LAST_RUNTIME_TIMEOUT:-missing})."
         return 1
     }
 }
@@ -580,8 +788,8 @@ cmd_discover() {
     boot_watchdog=$(watchdog_boot_timeout || true)
     kernel_watchdog=$(watchdog_kernel_open_timeout || true)
     watchdog_device=$(watchdog_device_path || true)
-    watchdog_runtime_timeout_value=$([[ -n $watchdog_device ]] && watchdog_runtime_timeout "$watchdog_device" || true)
     watchdog_owner=$([[ -n $watchdog_device ]] && watchdog_userspace_owner "$watchdog_device" || true)
+    watchdog_runtime_timeout_value=$([[ -n $watchdog_device && -n $watchdog_owner ]] && watchdog_runtime_timeout_effective "$watchdog_device" "$watchdog_owner" || true)
     root_device=$(root_source)
     boot_source=$(findmnt -n -o SOURCE /boot 2>/dev/null || mount | awk '$3=="/boot"{print $1; exit}')
     baseline=$(graphical_baseline || true)

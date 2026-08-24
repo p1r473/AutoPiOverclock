@@ -26,8 +26,10 @@ The recovery gate does not infer readiness from an arbitrary `config.txt` line. 
 
 1. a positive EEPROM `BOOT_WATCHDOG_TIMEOUT`;
 2. a positive `watchdog.open_timeout` handed to the active kernel command line;
-3. a watchdog character device whose live sysfs timeout is positive; and
+3. a watchdog character device whose live runtime timeout is positive; and
 4. a userspace process with an open file descriptor for that device.
+
+The runtime timeout normally comes from the watchdog's sysfs `timeout` attribute. If that attribute exists in any form but is unreadable, malformed, nonpositive, or not a regular file, the proof fails closed. When the attribute is genuinely absent on ARM64 Batocera, the worker may instead bind the discovered owner PID, process start time, command name, file descriptor, and watchdog device identity; duplicate that already-open descriptor with `pidfd_getfd`; and issue only `WDIOC_GETTIMEOUT`. The probe never opens the device by path and issues no write, keepalive, stop, or configuration ioctl. The duplicate is short-lived but adds a bounded reference-count side effect: if the owner closes concurrently, it can briefly defer the driver's final release, and closing the duplicate can then execute the driver's ordinary close behavior. Any identity change, owner exit, permission denial, unsupported syscall, ioctl failure, or race rejects the proof.
 
 Debian additionally requires an active, nonzero systemd runtime-watchdog setting during discovery and after any approved repair. Batocera replacement remains manual because watchdog ownership is installation-specific. Every candidate and normal-boot health gate rechecks the four live conditions above, including the device's current timeout and owner.
 
