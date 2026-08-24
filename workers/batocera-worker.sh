@@ -210,8 +210,17 @@ recent_throttle() { vcgencmd get_throttled 0x10000 2>/dev/null || true; }
 current_throttle() { recent_throttle; }
 clock_mhz() { vcgencmd measure_clock "$1" 2>/dev/null | awk -F= '{printf "%d", $2/1000000}'; }
 boot_mount_has_option() {
-    local wanted_option=$1
-    awk -v wanted="$wanted_option" '$2=="/boot" {count=split($4, options, ","); for(index=1; index<=count; index++) if(options[index]==wanted) found=1} END{exit !found}' /proc/mounts
+    local wanted_option=$1 mounts_file=${2:-/proc/mounts}
+    local mount_source mount_point filesystem mount_options dump_frequency pass_number
+    [[ $wanted_option == ro || $wanted_option == rw ]] || return 1
+    [[ -r $mounts_file ]] || return 1
+    while read -r mount_source mount_point filesystem mount_options dump_frequency pass_number; do
+        [[ $mount_point == /boot ]] || continue
+        case ",$mount_options," in
+            *",$wanted_option,"*) return 0 ;;
+        esac
+    done < "$mounts_file"
+    return 1
 }
 remount_boot_rw() { mount -o remount,rw /boot && boot_mount_has_option rw; }
 remount_boot_ro() { mount -o remount,ro /boot && boot_mount_has_option ro; }

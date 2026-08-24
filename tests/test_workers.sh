@@ -205,6 +205,27 @@ set -e
 APO_WORKER_LIBRARY_ONLY=1 source "$ROOT/workers/batocera-worker.sh"
 throttle_clean_relative throttled=0x50000 throttled=0x50000
 if throttle_clean_relative throttled=0x50001 throttled=0x50000; then exit 1; fi
+
+# Exercise the production Batocera mount-option parser directly.  The target's
+# awk rejects builtin function names as assignment targets, so this helper must
+# not depend on the previously broken `for(index=...)` program.
+cat > "$TEMP_DIR/batocera-mounts-ro" <<'MOUNTS'
+overlay / overlay rw,relatime 0 0
+/dev/sda1 /boot vfat ro,relatime,fmask=0022,errors=remount-ro 0 0
+MOUNTS
+cat > "$TEMP_DIR/batocera-mounts-rw" <<'MOUNTS'
+overlay / overlay rw,relatime 0 0
+/dev/sda1 /boot vfat rw,relatime,fmask=0022,errors=remount-ro 0 0
+MOUNTS
+awk() { return 97; }
+boot_mount_has_option ro "$TEMP_DIR/batocera-mounts-ro"
+if boot_mount_has_option rw "$TEMP_DIR/batocera-mounts-ro"; then exit 1; fi
+boot_mount_has_option rw "$TEMP_DIR/batocera-mounts-rw"
+if boot_mount_has_option ro "$TEMP_DIR/batocera-mounts-rw"; then exit 1; fi
+if boot_mount_has_option invalid "$TEMP_DIR/batocera-mounts-rw"; then exit 1; fi
+if boot_mount_has_option rw "$TEMP_DIR/missing-mounts"; then exit 1; fi
+unset -f awk
+
 mkdir -p "$TEMP_DIR/fake-bin"
 printf '#!/bin/sh\nprintf '\''    node.name = "alsa_output.usb-fixture"\\n'\''\n' > "$TEMP_DIR/fake-bin/wpctl"
 chmod 755 "$TEMP_DIR/fake-bin/wpctl"
