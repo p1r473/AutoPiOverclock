@@ -48,6 +48,78 @@ apo_remote_upload_root "$UPLOAD_FIXTURE" /remote/bin/worker.sh
 [[ $REMOTE_UPLOAD_COMMAND == *'[[ $actual_hash == "$expected_hash" ]]'* ]]
 [[ $REMOTE_UPLOAD_COMMAND == *'mv -f -- "$temporary_file" "$remote_file"'* ]]
 
+# Restore the production stdin wrapper after the string-capture fixture above.
+source "$ROOT/lib/ssh.sh"
+
+UPLOAD_TEST_ROOT=$(mktemp -d)
+UPLOAD_SOURCE="$UPLOAD_TEST_ROOT/source worker.sh"
+UPLOAD_REMOTE_DIRECTORY="$UPLOAD_TEST_ROOT/remote.dir_name-1"
+UPLOAD_REMOTE_FILE="$UPLOAD_REMOTE_DIRECTORY/worker-name_1.0.sh"
+UPLOAD_EXECUTION_MODE=exact
+UPLOAD_WRAPPER=''
+trap 'rm -f "$UPLOAD_FIXTURE"; rm -rf "$UPLOAD_TEST_ROOT"' EXIT
+printf 'worker bytes with spaces\nand multiple lines\n' > "$UPLOAD_SOURCE"
+
+apo_ssh_exec_stdin() {
+    local wrapper=$1
+    UPLOAD_WRAPPER=$wrapper
+    if [[ $UPLOAD_EXECUTION_MODE == corrupt ]]; then
+        printf 'corrupted worker bytes\n' | bash -c "$wrapper"
+    else
+        bash -c "$wrapper"
+    fi
+}
+
+APO_REMOTE_IS_ROOT=1
+apo_remote_upload_root "$UPLOAD_SOURCE" "$UPLOAD_REMOTE_FILE"
+cmp "$UPLOAD_SOURCE" "$UPLOAD_REMOTE_FILE"
+[[ $(sha256sum "$UPLOAD_SOURCE" | awk 'NR == 1 {print $1}') == "$(sha256sum "$UPLOAD_REMOTE_FILE" | awk 'NR == 1 {print $1}')" ]]
+if [[ $(uname -s) != MINGW* && $(uname -s) != MSYS* ]]; then
+    [[ $(stat -c '%a' "$UPLOAD_REMOTE_FILE") == 700 ]]
+fi
+[[ $UPLOAD_WRAPPER == /bin/bash\ -c\ * ]]
+if compgen -G "$UPLOAD_REMOTE_FILE.upload.*" >/dev/null; then
+    echo 'temporary upload file remained after successful root upload' >&2
+    exit 1
+fi
+
+FAKE_BIN="$UPLOAD_TEST_ROOT/fake-bin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ ${1-} == -n ]]
+shift
+exec "$@"
+EOF
+chmod 700 "$FAKE_BIN/sudo"
+PATH="$FAKE_BIN:$PATH"
+APO_REMOTE_IS_ROOT=0
+rm -f -- "$UPLOAD_REMOTE_FILE"
+apo_remote_upload_root "$UPLOAD_SOURCE" "$UPLOAD_REMOTE_FILE"
+cmp "$UPLOAD_SOURCE" "$UPLOAD_REMOTE_FILE"
+if [[ $(uname -s) != MINGW* && $(uname -s) != MSYS* ]]; then
+    [[ $(stat -c '%a' "$UPLOAD_REMOTE_FILE") == 700 ]]
+fi
+[[ $UPLOAD_WRAPPER == sudo\ -n\ /bin/bash\ -c\ * ]]
+
+rm -f -- "$UPLOAD_REMOTE_FILE"
+UPLOAD_EXECUTION_MODE=corrupt
+if apo_remote_upload_root "$UPLOAD_SOURCE" "$UPLOAD_REMOTE_FILE" 2>"$UPLOAD_TEST_ROOT/corrupt.err"; then
+    echo 'corrupted upload stream was accepted' >&2
+    exit 1
+fi
+[[ ! -e $UPLOAD_REMOTE_FILE ]]
+if compgen -G "$UPLOAD_REMOTE_FILE.upload.*" >/dev/null; then
+    echo 'temporary upload file remained after failed hash verification' >&2
+    exit 1
+fi
+if grep -q 'unbound variable' "$UPLOAD_TEST_ROOT/corrupt.err"; then
+    echo 'upload wrapper still failed with an unbound variable' >&2
+    exit 1
+fi
+rm -rf -- "$UPLOAD_TEST_ROOT"
+
 if (apo_parse_target 'bad user@example-host' >/dev/null 2>&1); then
     echo 'unsafe username was accepted' >&2
     exit 1

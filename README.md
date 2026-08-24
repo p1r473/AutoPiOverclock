@@ -76,8 +76,8 @@ This repository is alpha software. Passing fixtures is not a substitute for Rasp
 | Bash syntax and fixture suite | Passing locally |
 | Clean tar/ZIP extraction and fixture rerun | Passing locally |
 | GitHub CI and ShellCheck | Pending first public CI run |
-| Debian/Raspberry Pi OS live recovery test | Pending alpha.4 hardware run |
-| Batocera V3D renderer smoke test | Pending alpha.4 hardware run |
+| Debian/Raspberry Pi OS live recovery test | Pending alpha.5 hardware run |
+| Batocera V3D renderer smoke test | Pending alpha.5 hardware run |
 | Eight-hour final validation | Not yet completed |
 
 No production clock recommendation should be taken from this table until the corresponding real-hardware run is complete.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.5 — 2026-08-23
+
+- Fixed the live worker-upload wrapper so nested root and passwordless-sudo execution preserves strict pre-install and post-install SHA-256 verification under `set -Eeuo pipefail`.
+- Added execution-level upload regression coverage for exact multiline bytes, mode 700 installation, safe path punctuation, temporary-file cleanup, and rejection of corrupted streams.
+
 ## 0.1.0-alpha.4 — 2026-08-23
 
 - Recorded project-owner approval of the public `KEY=VALUE` configuration schema.

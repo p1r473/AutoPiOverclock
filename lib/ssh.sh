@@ -59,7 +59,26 @@ apo_remote_upload_root() {
     remote_command+="remote_directory=$(apo_sh_quote "$remote_directory")"$'\n'
     remote_command+="remote_file=$(apo_sh_quote "$remote_file")"$'\n'
     remote_command+="expected_hash=$(apo_sh_quote "$expected_hash")"$'\n'
-    remote_command+=$'mkdir -p -- "$remote_directory"\ntemporary_file=$(mktemp "${remote_file}.upload.XXXXXX")\ntrap '\''rm -f -- "$temporary_file"'\'' EXIT\ntrap '\''exit 130'\'' INT\ntrap '\''exit 143'\'' TERM\ntrap '\''exit 129'\'' HUP\ncat > "$temporary_file"\nactual_hash=$(sha256sum "$temporary_file" | awk '\''NR == 1 {print $1}'\'')\n[[ $actual_hash == "$expected_hash" ]]\nchmod 700 "$temporary_file"\nsync\nmv -f -- "$temporary_file" "$remote_file"\nactual_hash=$(sha256sum "$remote_file" | awk '\''NR == 1 {print $1}'\'')\n[[ $actual_hash == "$expected_hash" ]]\nsync\ntrap - EXIT INT TERM HUP\n'
+    remote_command+=$(cat <<'APO_REMOTE_UPLOAD'
+mkdir -p -- "$remote_directory"
+temporary_file=$(mktemp "${remote_file}.upload.XXXXXX")
+trap 'rm -f -- "$temporary_file"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+cat > "$temporary_file"
+actual_hash=$(sha256sum "$temporary_file" | awk 'NR == 1 {print $1}')
+[[ $actual_hash == "$expected_hash" ]]
+chmod 700 "$temporary_file"
+sync
+mv -f -- "$temporary_file" "$remote_file"
+actual_hash=$(sha256sum "$remote_file" | awk 'NR == 1 {print $1}')
+[[ $actual_hash == "$expected_hash" ]]
+sync
+trap - EXIT INT TERM HUP
+APO_REMOTE_UPLOAD
+)
+    remote_command+=$'\n'
     apo_remote_root_stdin "$remote_command" < "$local_file"
 }
 
