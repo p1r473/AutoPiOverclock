@@ -8,6 +8,8 @@ A candidate fails immediately on any current-boot undervoltage/throttle flag, th
 
 A maximum observed pass is never called “rock solid.” The backed-off recommendation remains distinct from final clocks. Final clocks are recorded only after CPU-only validation, GPU-only validation whenever GPU load is required, combined endurance, filesystem activity, post-stress health, the configured `final_boots` additional candidate boots and normal recoveries, and a final permanent-config hash check. The approved floor is three final boot/recovery cycles.
 
+The 3200 MHz CPU and 1200 MHz GPU/V3D limits used by configuration-free auto mode are sweep ceilings, not safe recommendations or promises that a target can boot them. Generation starts strictly above the discovered permanent baseline, which may itself already contain an overclock, and `voltage_delta_uv=existing` preserves whatever value discovery found—including a nonzero delta. Tryboot recovery and every normal stability boundary remain mandatory.
+
 ## Tryboot file ownership and cleanup
 
 Read-only discovery records whether `tryboot.txt` already exists and, when present, its hash. A live `run` requires that file to be absent and refuses to overwrite any pre-existing file, regardless of its contents or apparent origin. The operator must inspect and resolve an existing file explicitly before starting a new run.

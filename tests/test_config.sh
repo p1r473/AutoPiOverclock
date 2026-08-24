@@ -4,8 +4,11 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/config.sh"
+source "$ROOT/lib/state.sh"
+source "$ROOT/lib/detect.sh"
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
+apo_summary_line() { printf '%s\n' "$*" >> "$APO_SUMMARY_FILE"; }
 
 cat > "$TEMP_DIR/valid.conf" <<'CONF'
 cpu_candidates_mhz=2700,2800,2900
@@ -56,6 +59,203 @@ for template in "$ROOT/examples/debian-headless.conf" "$ROOT/examples/batocera-g
     [[ ${APO_CFG[VOLTAGE_DELTA_UV]} == existing ]]
 done
 
+printf 'STDIN_MUST_REMAIN_UNREAD\n' > "$TEMP_DIR/auto-stdin"
+exec 9< "$TEMP_DIR/auto-stdin"
+APO_COMMAND=run
+APO_DRY_RUN=0
+APO_CONFIG_FILE=''
+APO_MODE_REQUESTED=auto
+apo_config_load_for_new_run <&9
+(( APO_AUTO_CANDIDATES_PENDING == 1 ))
+[[ -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]
+
+resolve_discovered_auto_plan() {
+    local profile=$1 normal_cpu=$2 normal_gpu=$3 normal_voltage=$4
+    APO_MODE_EFFECTIVE=headless
+    APO_PROFILE=$profile
+    APO_DISCOVERY=(
+        [BOOT_CONFIG]=/boot/config.txt
+        [TRYBOOT_CONFIG]=/boot/tryboot.txt
+        [TRYBOOT_EXISTS]=0
+        [TRYBOOT_TYPE]=absent
+        [TRYBOOT_HASH]=unavailable
+        [BOOT_MOUNT]=/boot
+        [GPU_KEY]=v3d_freq
+        [NORMAL_CPU]="$normal_cpu"
+        [NORMAL_GPU]="$normal_gpu"
+        [NORMAL_VOLTAGE]="$normal_voltage"
+        [PERMANENT_HASH]=$(printf 'b%.0s' {1..64})
+    )
+    apo_context_from_discovery
+}
+
+finalize_discovered_fixture() {
+    local fixture_name=$1
+    APO_STATE=()
+    APO_STATE_FILE="$TEMP_DIR/${fixture_name}.state"
+    APO_EFFECTIVE_CONFIG_FILE="$TEMP_DIR/${fixture_name}.conf"
+    APO_SUMMARY_FILE="$TEMP_DIR/${fixture_name}.summary"
+    : > "$APO_SUMMARY_FILE"
+    apo_state_set FORMAT_VERSION 1
+    apo_finalize_discovered_config
+}
+
+resolve_discovered_auto_plan debian 2400 960 0 <&9
+if ! IFS= read -r unread_auto_input <&9; then
+    echo 'auto candidate resolution consumed stdin' >&2
+    exit 1
+fi
+exec 9<&-
+[[ $unread_auto_input == STDIN_MUST_REMAIN_UNREAD ]]
+[[ ${APO_CFG[CPU_CANDIDATES]} == '2500,2600,2700,2800,2900,3000,3100,3200' ]]
+[[ ${APO_CFG[GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
+[[ ${APO_CPU_CANDIDATES[*]} == '2500 2600 2700 2800 2900 3000 3100 3200' ]]
+[[ ${APO_GPU_CANDIDATES[*]} == '1000 1050 1100 1150 1200' ]]
+DEBIAN_AUTO_PLAN="${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}"
+finalize_discovered_fixture debian-auto
+(( APO_NEED_GPU == 1 && APO_REQUIRE_GPU_STRESS == 1 ))
+grep -Fxq 'CPU candidates: 2500,2600,2700,2800,2900,3000,3100,3200' "$APO_SUMMARY_FILE"
+grep -Fxq 'GPU candidates: 1000,1050,1100,1150,1200' "$APO_SUMMARY_FILE"
+APO_STATE=()
+apo_state_load "$TEMP_DIR/debian-auto.state"
+[[ ${APO_STATE[CFG_CPU_CANDIDATES]} == '2500,2600,2700,2800,2900,3000,3100,3200' ]]
+[[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
+grep -Fxq 'cpu_candidates_mhz=2500,2600,2700,2800,2900,3000,3100,3200' "$TEMP_DIR/debian-auto.conf"
+grep -Fxq 'gpu_candidates_mhz=1000,1050,1100,1150,1200' "$TEMP_DIR/debian-auto.conf"
+APO_COMMAND=run
+APO_DRY_RUN=0
+APO_CONFIG_FILE=''
+APO_MODE_REQUESTED=auto
+apo_config_load_for_new_run
+resolve_discovered_auto_plan debian 2400 960 0
+[[ "${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}" == "$DEBIAN_AUTO_PLAN" ]]
+
+APO_COMMAND=run
+APO_DRY_RUN=0
+APO_CONFIG_FILE=''
+APO_MODE_REQUESTED=auto
+apo_config_load_for_new_run
+resolve_discovered_auto_plan batocera 3000 800 50000
+[[ ${APO_CFG[CPU_CANDIDATES]} == '3100,3200' ]]
+[[ ${APO_CFG[GPU_CANDIDATES]} == '850,900,950,1000,1050,1100,1150,1200' ]]
+[[ ${APO_CPU_CANDIDATES[*]} == '3100 3200' ]]
+[[ ${APO_GPU_CANDIDATES[*]} == '850 900 950 1000 1050 1100 1150 1200' ]]
+BATOCERA_AUTO_PLAN="${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}"
+finalize_discovered_fixture batocera-auto
+(( APO_NEED_GPU == 1 && APO_REQUIRE_GPU_STRESS == 1 ))
+APO_STATE=()
+apo_state_load "$TEMP_DIR/batocera-auto.state"
+[[ ${APO_STATE[CFG_CPU_CANDIDATES]} == '3100,3200' ]]
+[[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '850,900,950,1000,1050,1100,1150,1200' ]]
+grep -Fxq 'cpu_candidates_mhz=3100,3200' "$TEMP_DIR/batocera-auto.conf"
+grep -Fxq 'gpu_candidates_mhz=850,900,950,1000,1050,1100,1150,1200' "$TEMP_DIR/batocera-auto.conf"
+APO_COMMAND=run
+APO_DRY_RUN=0
+APO_CONFIG_FILE=''
+APO_MODE_REQUESTED=auto
+apo_config_load_for_new_run
+resolve_discovered_auto_plan batocera 3000 800 50000
+[[ "${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}" == "$BATOCERA_AUTO_PLAN" ]]
+
+apo_config_defaults
+APO_COMMAND=prepare
+APO_AUTO_CANDIDATES_PENDING=1
+apo_config_resolve_auto_candidates 3150 1190
+[[ ${APO_CFG[CPU_CANDIDATES]} == 3200 ]]
+[[ ${APO_CFG[GPU_CANDIDATES]} == 1200 ]]
+
+apo_config_defaults
+APO_COMMAND=prepare
+APO_AUTO_CANDIDATES_PENDING=1
+resolve_discovered_auto_plan debian 500 100 0
+[[ ${APO_CPU_CANDIDATES[0]} == 600 && ${APO_CPU_CANDIDATES[-1]} == 3200 ]]
+[[ ${APO_GPU_CANDIDATES[0]} == 200 && ${APO_GPU_CANDIDATES[-1]} == 1200 ]]
+
+apo_config_defaults
+APO_COMMAND=prepare
+APO_AUTO_CANDIDATES_PENDING=1
+resolve_discovered_auto_plan debian 5000 800 0
+[[ -z ${APO_CFG[CPU_CANDIDATES]} ]]
+[[ ${APO_CFG[GPU_CANDIDATES]} == '850,900,950,1000,1050,1100,1150,1200' ]]
+
+set +e
+timeout 5 env APO_ROOT="$ROOT" bash -c 'source "$APO_ROOT/lib/common.sh"; source "$APO_ROOT/lib/config.sh"; apo_config_auto_ladder 999999999999999999999999 100 3200' >"$TEMP_DIR/huge-ladder.out" 2>&1
+huge_ladder_status=$?
+set -e
+if (( huge_ladder_status != 1 )); then
+    echo "automatic ladder returned the wrong status for an oversized baseline (expected 1, got $huge_ladder_status)" >&2
+    cat "$TEMP_DIR/huge-ladder.out" >&2
+    exit 1
+fi
+
+set +e
+timeout 5 env APO_ROOT="$ROOT" bash -c '
+    source "$APO_ROOT/lib/common.sh"
+    source "$APO_ROOT/lib/config.sh"
+    source "$APO_ROOT/lib/detect.sh"
+    apo_config_defaults
+    APO_COMMAND=prepare
+    APO_DRY_RUN=0
+    APO_MODE_EFFECTIVE=headless
+    APO_DISCOVERY=(
+        [BOOT_CONFIG]=/boot/config.txt
+        [TRYBOOT_CONFIG]=/boot/tryboot.txt
+        [TRYBOOT_EXISTS]=0
+        [TRYBOOT_TYPE]=absent
+        [TRYBOOT_HASH]=unavailable
+        [BOOT_MOUNT]=/boot
+        [GPU_KEY]=v3d_freq
+        [NORMAL_CPU]=999999999999999999999999
+        [NORMAL_GPU]=800
+        [NORMAL_VOLTAGE]=0
+        [PERMANENT_HASH]=$(printf "b%.0s" {1..64})
+    )
+    apo_context_from_discovery
+' >"$TEMP_DIR/huge-context.out" 2>&1
+huge_context_status=$?
+set -e
+if (( huge_context_status != APO_EXIT_PREFLIGHT )); then
+    echo "discovery returned the wrong status for an oversized normal CPU clock (expected $APO_EXIT_PREFLIGHT, got $huge_context_status)" >&2
+    cat "$TEMP_DIR/huge-context.out" >&2
+    exit 1
+fi
+
+apo_config_defaults
+APO_COMMAND=prepare
+APO_AUTO_CANDIDATES_PENDING=1
+apo_config_resolve_auto_candidates 3200 1100
+[[ -z ${APO_CFG[CPU_CANDIDATES]} ]]
+[[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1200' ]]
+APO_MODE_EFFECTIVE=headless
+finalize_discovered_fixture gpu-only-auto
+(( APO_NEED_GPU == 1 && APO_REQUIRE_GPU_STRESS == 1 ))
+
+apo_config_defaults
+APO_COMMAND=run
+APO_DRY_RUN=1
+APO_AUTO_CANDIDATES_PENDING=1
+apo_config_resolve_auto_candidates 3200 1200
+[[ -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]
+
+if (
+    apo_config_defaults
+    APO_COMMAND=run
+    APO_DRY_RUN=0
+    APO_AUTO_CANDIDATES_PENDING=1
+    apo_config_resolve_auto_candidates 3200 1200
+) >/dev/null 2>&1; then
+    echo 'auto mode accepted baselines with no candidates below its ceilings' >&2
+    exit 1
+fi
+
+APO_COMMAND=run
+APO_MODE_REQUESTED=auto
+APO_CONFIG_FILE="$TEMP_DIR/valid.conf"
+apo_config_load_for_new_run
+resolve_discovered_auto_plan debian 500 100 0
+[[ ${APO_CFG[CPU_CANDIDATES]} == '2700,2800,2900' ]]
+[[ ${APO_CFG[GPU_CANDIDATES]} == '800,850,900' ]]
+
 MARKER="$TEMP_DIR/should-not-exist"
 cat > "$TEMP_DIR/data-only.conf" <<CONF
 audio_sink_pattern=\$(touch $MARKER)
@@ -97,6 +297,7 @@ fi
 if (
     APO_COMMAND=run
     APO_CONFIG_FILE=''
+    APO_MODE_REQUESTED=graphical
     apo_config_guided_candidates() {
         APO_CFG[CPU_CANDIDATES]=''
         APO_CFG[GPU_CANDIDATES]=''

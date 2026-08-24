@@ -14,6 +14,8 @@ The controller owns policy, state, logging, candidate order, recovery decisions,
 - `candidates.sh`: resumable candidate substages, edge handling, selection, and final-validation substages.
 - `apply.sh`: current-schema/eight-hour eligibility, exact diff, typed confirmation, persisted backup plan, normal-reboot health, and rollback.
 
+For `--mode auto` without an explicit configuration, `config.sh` defers candidate resolution until `detect.sh` has validated the permanent CPU and GPU baselines. It then creates bounded, strictly higher ladders, validates them through the normal configuration parser, and checkpoints the concrete lists into state and the effective configuration before dependency decisions or tuning confirmation. Explicit configuration files bypass generation and remain authoritative.
+
 ## Target profiles
 
 Debian uses `stress-ng`, systemd watchdog inspection, and normal writable boot configuration. Batocera uses OpenSSL for CPU load, a persistent portable glmark2 payload for GPU load, an OS-specific read-only `/boot` remount cycle, and a reboot syscall for tryboot.

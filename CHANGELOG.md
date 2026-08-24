@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.8 — 2026-08-24
+
+- Made `--mode auto` with no configuration file free of candidate-parameter prompts: it now discovers the permanent baseline first, then generates CPU candidates in 100 MHz steps through 3200 MHz and GPU/V3D candidates in 50 MHz steps through 1200 MHz while preserving the existing voltage.
+- Kept explicit configuration files authoritative and retained the separate ordinary tuning confirmation, while persisting generated candidates into state, effective configuration, summaries, and GPU dependency decisions.
+- Added regressions proving auto candidate resolution leaves stdin untouched, produces deterministic representative Debian and Batocera plans, persists the resolved configuration and GPU requirement, respects ceilings and explicit configs, rejects oversized discovered clocks without arithmetic overflow, and rejects a live run when both automatic domains are exhausted.
+
 ## 0.1.0-alpha.7 — 2026-08-24
 
 - Accepted current `wpctl inspect` output that prefixes the default sink's `node.name` property with `*`, while retaining the older unstarred format on both Debian and Batocera.
