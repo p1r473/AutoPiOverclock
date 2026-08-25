@@ -28,7 +28,7 @@ apo_run_stress() {
     [[ -n $expected_gpu ]] || expected_gpu=$APO_NORMAL_GPU
     apo_verify_permanent_hash "${label}-pre-stress" || return 1
     local stress_rc=0
-    apo_run_worker_capture "$label" stress "$stress_kind" "$duration" "${APO_CFG[MAX_TEMP_C]}" "$APO_MODE_EFFECTIVE" "$APO_DISPLAY_BASELINE" "$io_check" "$expected_cpu" "$expected_gpu" "$APO_THROTTLE_RUNTIME_BASELINE" "${APO_CFG[TELEMETRY_INTERVAL_S]}" || stress_rc=$?
+    apo_run_worker_capture "$label" stress "$stress_kind" "$duration" "${APO_CFG[MAX_TEMP_C]}" "$APO_MODE_EFFECTIVE" "$APO_DISPLAY_BASELINE" "$io_check" "$expected_cpu" "$expected_gpu" "$APO_THROTTLE_RUNTIME_BASELINE" "${APO_CFG[TELEMETRY_INTERVAL_S]}" "${APO_AUDIO_BASELINE:-}" || stress_rc=$?
     apo_verify_permanent_hash "${label}-post-stress" || return 1
     return "$stress_rc"
 }

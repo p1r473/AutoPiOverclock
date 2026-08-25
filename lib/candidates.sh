@@ -2,13 +2,16 @@
 # Candidate sweep, conservative selection, final endurance validation, and resume phases.
 
 apo_gpu_harness_smoke() {
-    local smoke_duration=20 failure_class failure_reason
+    local smoke_duration=20 failure_class failure_reason force_normal_reboot=0
     apo_state_phase GPU_SMOKE NORMAL_BASELINE RUNNING
     apo_event gpu-smoke INFO '' "Running a ${smoke_duration}s GPU harness smoke test at normal clocks before any GPU candidate or endurance run."
     if ! apo_run_stress gpu "$smoke_duration" gpu-harness-smoke 0; then
         failure_class=$APO_LAST_CLASS
         failure_reason=$APO_LAST_REASON
-        apo_record_failure_after_recovery gpu-smoke-recovery-health "$failure_class" "$failure_reason"
+        if [[ ${APO_PROFILE:-} == batocera && ${APO_MODE_EFFECTIVE:-} == graphical && $failure_class == RECOVERY_FAILURE ]]; then
+            force_normal_reboot=1
+        fi
+        apo_record_failure_after_recovery gpu-smoke-recovery-health "$failure_class" "$failure_reason" "$force_normal_reboot"
         return 1
     fi
     apo_health_check "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" gpu-smoke-post-health || { apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"; return 1; }

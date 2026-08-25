@@ -141,8 +141,18 @@ apo_boot_candidate() {
 }
 
 apo_return_normal() {
-    local context=${1:-normal-recovery} old_boot_id new_boot_id tryboot_flag current_boot_id
-    local expected_tryboot pending_boot_id reboot_attempts=0
+    local context=${1:-normal-recovery} force_normal_reboot=${2:-0} old_boot_id new_boot_id tryboot_flag current_boot_id
+    local expected_tryboot pending_boot_id reboot_attempts=0 forced_normal_reboot_done=0
+    [[ $force_normal_reboot == 0 || $force_normal_reboot == 1 ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The normal-recovery reboot request is malformed.'
+        return 1
+    }
+    if (( force_normal_reboot == 1 )) && [[ ${APO_PROFILE:-} != batocera || ${APO_MODE_EFFECTIVE:-} != graphical ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='A forced normal recovery reboot is permitted only for a Batocera graphical-session recovery failure.'
+        return 1
+    fi
     APO_RECOVERY_IN_PROGRESS=1
     expected_tryboot=$(apo_state_get TRYBOOT_EXPECTED 0)
     pending_boot_id=$(apo_state_get LAST_BOOT_ID '')
@@ -151,12 +161,33 @@ apo_return_normal() {
         current_boot_id=$(apo_remote_boot_id || true)
         if [[ -z $current_boot_id ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Could not read the boot ID during normal recovery.'; return 1; fi
         tryboot_flag=$(apo_remote_tryboot_flag || true)
+        if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )) && [[ $tryboot_flag != 00000000 ]]; then
+            APO_RECOVERY_IN_PROGRESS=0
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON="A forced normal recovery reboot requires a verified clear tryboot flag; found ${tryboot_flag:-missing}."
+            return 1
+        fi
         if [[ $tryboot_flag == 00000000 ]]; then
-            if [[ $expected_tryboot != 1 || ( -n $pending_boot_id && $current_boot_id != "$pending_boot_id" ) ]]; then
+            if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )); then
+                if [[ $expected_tryboot != 0 || $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) != 0 ||
+                      -n $(apo_state_get TRYBOOT_OWNED_HASH '') || -n $(apo_state_get TRYBOOT_RESERVATION_HASH '') ||
+                      -n $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') || -n $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]]; then
+                    APO_RECOVERY_IN_PROGRESS=0
+                    APO_LAST_CLASS=RECOVERY_FAILURE
+                    APO_LAST_REASON='A forced normal recovery reboot was refused because saved tryboot ownership state is not clear.'
+                    return 1
+                fi
+                if ! apo_verify_permanent_hash "${context}-pre-forced-reboot"; then
+                    APO_RECOVERY_IN_PROGRESS=0
+                    return 1
+                fi
+                apo_event "$context" WARN '' 'The Batocera graphical worker could not restore its saved session; forcing one verified normal-config reboot.'
+            elif [[ $expected_tryboot != 1 || ( -n $pending_boot_id && $current_boot_id != "$pending_boot_id" ) ]]; then
                 new_boot_id=$current_boot_id
                 break
+            else
+                apo_event "$context" WARN '' 'Tryboot was expected but the target is still on the pre-trigger boot; forcing a plain reboot to close the trigger/exit race.'
             fi
-            apo_event "$context" WARN '' 'Tryboot was expected but the target is still on the pre-trigger boot; forcing a plain reboot to close the trigger/exit race.'
         elif [[ $tryboot_flag == 00000001 ]]; then
             apo_event "$context" INFO '' 'Rebooting from tryboot to permanent normal config.'
         else
@@ -172,10 +203,28 @@ apo_return_normal() {
         pending_boot_id=$old_boot_id
         apo_state_set LAST_BOOT_ID "$old_boot_id"
         apo_state_save
-        apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
+        if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )); then
+            apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal "$APO_PERMANENT_CONFIG_HASH" >/dev/null 2>&1 || true
+        else
+            apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
+        fi
         new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
         if [[ -z $new_boot_id ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Normal recovery reboot did not return to SSH.'; return 1; fi
         sleep "$APO_BOOT_SETTLE_SECONDS"
+        if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )); then
+            forced_normal_reboot_done=1
+            tryboot_flag=$(apo_remote_tryboot_flag || true)
+            if [[ $tryboot_flag != 00000000 ]]; then
+                APO_RECOVERY_IN_PROGRESS=0
+                APO_LAST_CLASS=RECOVERY_FAILURE
+                APO_LAST_REASON="Forced normal recovery reboot returned with tryboot flag ${tryboot_flag:-missing}."
+                return 1
+            fi
+            if ! apo_verify_permanent_hash "${context}-post-forced-reboot"; then
+                APO_RECOVERY_IN_PROGRESS=0
+                return 1
+            fi
+        fi
         reboot_attempts=$((reboot_attempts + 1))
     done
     if [[ -z ${new_boot_id:-} ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Normal recovery did not produce a verified normal boot ID.'; return 1; fi
@@ -202,8 +251,8 @@ apo_return_normal() {
 apo_recover_normal() { apo_return_normal "${1:-explicit-recovery}"; }
 
 apo_recover_preserving_failure() {
-    local recovery_context=$1 original_class=$2 original_reason=$3 recovery_class recovery_reason
-    if apo_return_normal "$recovery_context"; then
+    local recovery_context=$1 original_class=$2 original_reason=$3 force_normal_reboot=${4:-0} recovery_class recovery_reason
+    if apo_return_normal "$recovery_context" "$force_normal_reboot"; then
         APO_LAST_CLASS=$original_class
         APO_LAST_REASON=$original_reason
         return 0
@@ -216,8 +265,8 @@ apo_recover_preserving_failure() {
 }
 
 apo_record_failure_after_recovery() {
-    local recovery_context=$1 original_class=$2 original_reason=$3
-    if apo_recover_preserving_failure "$recovery_context" "$original_class" "$original_reason"; then
+    local recovery_context=$1 original_class=$2 original_reason=$3 force_normal_reboot=${4:-0}
+    if apo_recover_preserving_failure "$recovery_context" "$original_class" "$original_reason" "$force_normal_reboot"; then
         apo_state_fail "$original_class" "$original_reason"
     else
         apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"

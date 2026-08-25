@@ -96,6 +96,163 @@ apo_return_normal already-normal-fixture
 # shellcheck disable=SC2031
 [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
 
+# A Batocera graphical recovery failure at already-normal clocks may request
+# exactly one plain reboot, but only after proving that no tryboot ownership is
+# active and the permanent config still has its saved hash.
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    APO_MODE_EFFECTIVE=graphical
+    CURRENT_BOOT_ID=forced-session-before
+    REBOOT_NORMAL_CALLS=0
+    HASH_CHECKS=''
+    HEALTH_CALLS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_verify_permanent_hash() { HASH_CHECKS+="$1 "; return 0; }
+    apo_remote_worker() {
+        [[ $2 == reboot-normal ]]
+        [[ ${3:-} == "$APO_PERMANENT_CONFIG_HASH" ]]
+        REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1))
+        CURRENT_BOOT_ID=forced-session-after
+    }
+    apo_wait_for_new_boot() {
+        [[ $1 == forced-session-before && $2 == 300 ]] || return 1
+        printf forced-session-after
+    }
+    apo_health_check() { HEALTH_CALLS=$((HEALTH_CALLS + 1)); return 0; }
+    apo_return_normal forced-session-recovery 1
+    [[ $REBOOT_NORMAL_CALLS == 1 ]]
+    [[ $HASH_CHECKS == 'forced-session-recovery-pre-forced-reboot forced-session-recovery-post-forced-reboot ' ]]
+    [[ $HEALTH_CALLS == 1 ]]
+    [[ $(apo_state_get NORMAL_BOOT_ID) == forced-session-after ]]
+    [[ $(apo_state_get TRYBOOT_EXPECTED) == 0 ]]
+)
+
+# The dangerous force flag is rejected again at the recovery API boundary, so
+# a future caller cannot accidentally send Batocera-only guard arguments to a
+# Debian worker or force a reboot in Batocera headless mode.
+for forced_profile_mode in debian:graphical batocera:headless; do
+    (
+        reset_recovery_fixture
+        APO_PROFILE=${forced_profile_mode%%:*}
+        APO_MODE_EFFECTIVE=${forced_profile_mode#*:}
+        WAIT_FOR_SSH_CALLS=0
+        REBOOT_NORMAL_CALLS=0
+        apo_wait_for_ssh() { WAIT_FOR_SSH_CALLS=$((WAIT_FOR_SSH_CALLS + 1)); }
+        apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
+        if apo_return_normal forced-profile-refused 1; then
+            echo "forced normal reboot was accepted for $forced_profile_mode" >&2
+            exit 1
+        fi
+        [[ $WAIT_FOR_SSH_CALLS == 0 && $REBOOT_NORMAL_CALLS == 0 ]]
+        [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+        [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
+    )
+done
+
+# Any uncertainty about the permanent config, saved tryboot ownership, or live
+# tryboot flag refuses that optional reboot before it can mutate target state.
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    APO_MODE_EFFECTIVE=graphical
+    REBOOT_NORMAL_CALLS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf forced-refused-before; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_verify_permanent_hash() {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='fixture permanent hash mismatch'
+        return 1
+    }
+    apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
+    if apo_return_normal forced-hash-refused 1; then
+        echo 'forced normal reboot ignored a permanent-config hash mismatch' >&2
+        exit 1
+    fi
+    [[ $REBOOT_NORMAL_CALLS == 0 ]]
+    [[ $APO_LAST_REASON == 'fixture permanent hash mismatch' ]]
+    [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
+)
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    APO_MODE_EFFECTIVE=graphical
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+    REBOOT_NORMAL_CALLS=0
+    HASH_CHECKS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf forced-owned-before; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_verify_permanent_hash() { HASH_CHECKS=$((HASH_CHECKS + 1)); return 0; }
+    apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
+    if apo_return_normal forced-owned-refused 1; then
+        echo 'forced normal reboot ignored saved tryboot ownership state' >&2
+        exit 1
+    fi
+    [[ $REBOOT_NORMAL_CALLS == 0 && $HASH_CHECKS == 0 ]]
+    [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
+)
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    APO_MODE_EFFECTIVE=graphical
+    REBOOT_NORMAL_CALLS=0
+    HASH_CHECKS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf forced-flag-before; }
+    apo_remote_tryboot_flag() { :; }
+    apo_verify_permanent_hash() { HASH_CHECKS=$((HASH_CHECKS + 1)); return 0; }
+    apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
+    if apo_return_normal forced-flag-refused 1; then
+        echo 'forced normal reboot ignored an unreadable live tryboot flag' >&2
+        exit 1
+    fi
+    [[ $REBOOT_NORMAL_CALLS == 0 && $HASH_CHECKS == 0 ]]
+    [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
+)
+
+# The permanent hash is checked again after the new boot and before normal
+# graphical health can be accepted.
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    APO_MODE_EFFECTIVE=graphical
+    CURRENT_BOOT_ID=forced-post-hash-before
+    REBOOT_NORMAL_CALLS=0
+    HASH_CHECKS=0
+    HEALTH_CALLS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_verify_permanent_hash() {
+        HASH_CHECKS=$((HASH_CHECKS + 1))
+        if (( HASH_CHECKS == 2 )); then
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON='fixture post-reboot permanent hash mismatch'
+            return 1
+        fi
+    }
+    apo_remote_worker() {
+        [[ $2 == reboot-normal ]]
+        REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1))
+        CURRENT_BOOT_ID=forced-post-hash-after
+    }
+    apo_wait_for_new_boot() { printf forced-post-hash-after; }
+    apo_health_check() { HEALTH_CALLS=$((HEALTH_CALLS + 1)); return 0; }
+    if apo_return_normal forced-post-hash-refused 1; then
+        echo 'forced normal reboot accepted a post-reboot permanent hash mismatch' >&2
+        exit 1
+    fi
+    [[ $REBOOT_NORMAL_CALLS == 1 && $HASH_CHECKS == 2 && $HEALTH_CALLS == 0 ]]
+    [[ $APO_LAST_REASON == 'fixture post-reboot permanent hash mismatch' ]]
+    [[ $(apo_state_get NORMAL_BOOT_ID '') == '' ]]
+    [[ $(apo_state_get TRYBOOT_EXPECTED) == 0 ]]
+    [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
+)
+
 # Once a separate normal boot and clear flag are proven, remove the exactly
 # owned latent file before the full health gate so a health failure cannot
 # strand a candidate for a later unrelated reboot.
@@ -218,8 +375,10 @@ fi
 [[ $(apo_state_get NORMAL_BOOT_ID) == '' ]]
 
 # Successful recovery restores the original candidate failure classification.
-apo_return_normal() { return 0; }
-apo_recover_preserving_failure recovery-ok STABILITY_FAILURE 'candidate became unstable'
+RECOVERY_FORCE_REBOOT=''
+apo_return_normal() { RECOVERY_FORCE_REBOOT=${2:-0}; return 0; }
+apo_recover_preserving_failure recovery-ok STABILITY_FAILURE 'candidate became unstable' 1
+[[ $RECOVERY_FORCE_REBOOT == 1 ]]
 [[ $APO_LAST_CLASS == STABILITY_FAILURE ]]
 [[ $APO_LAST_REASON == 'candidate became unstable' ]]
 
