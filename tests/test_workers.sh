@@ -455,6 +455,9 @@ for REENTRANT_STAGE in probe activate start wait; do
         stress_frontend_baseline=fixture-display
         stress_audio_baseline=fixture-audio
         stress_cpu_pid=
+        # This fixture intentionally initializes and consumes the PID state in
+        # the same subshell.
+        # shellcheck disable=SC2030
         stress_gpu_pid=
         stress_io_pid=
         stress_io_file=
@@ -762,6 +765,8 @@ printf 'tty-not-a-number\n' > "$TEMP_DIR/malformed-active-tty"
     : > "$OPENVT_CALLS"
     : > "$CHVT_CALLS"
     launch_gpu_test "$TEMP_DIR/openvt-launcher.sh" "$TEMP_DIR/openvt-gpu.log" graphical "$TEMP_DIR/active-tty"
+    # launch_gpu_test and wait intentionally share this subshell.
+    # shellcheck disable=SC2031
     wait "$stress_gpu_pid"
     grep -Fqx -- '-w' "$OPENVT_CALLS"
     grep -Fqx -- '-s' "$OPENVT_CALLS"
@@ -777,6 +782,7 @@ printf 'tty-not-a-number\n' > "$TEMP_DIR/malformed-active-tty"
     export GPU_FIXTURE_RC=23
     set +e
     launch_gpu_test "$TEMP_DIR/openvt-launcher.sh" "$TEMP_DIR/openvt-gpu-fail.log" graphical "$TEMP_DIR/active-tty"
+    # shellcheck disable=SC2031
     wait "$stress_gpu_pid"
     openvt_rc=$?
     set -e
@@ -788,6 +794,7 @@ printf 'tty-not-a-number\n' > "$TEMP_DIR/malformed-active-tty"
     : > "$OPENVT_CALLS"
     : > "$CHVT_CALLS"
     launch_gpu_test "$TEMP_DIR/openvt-launcher.sh" "$TEMP_DIR/direct-gpu.log" graphical "$TEMP_DIR/active-tty"
+    # shellcheck disable=SC2031
     wait "$stress_gpu_pid"
     [[ ! -s $OPENVT_CALLS ]]
     [[ $(<"$CHVT_CALLS") == 7 ]]
@@ -803,6 +810,7 @@ printf 'tty-not-a-number\n' > "$TEMP_DIR/malformed-active-tty"
         : > "$CHVT_CALLS"
         output_suffix=${active_fixture##*/}
         launch_gpu_test "$TEMP_DIR/openvt-launcher.sh" "$TEMP_DIR/unknown-${output_suffix}.log" graphical "$active_fixture"
+        # shellcheck disable=SC2031
         wait "$stress_gpu_pid"
         [[ ! -s $OPENVT_CALLS && ! -s $CHVT_CALLS ]]
         [[ $stress_gpu_uses_openvt == 0 && -z $stress_gpu_previous_vt ]]

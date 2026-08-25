@@ -148,6 +148,8 @@ for forced_profile_mode in debian:graphical batocera:headless; do
         fi
         [[ $WAIT_FOR_SSH_CALLS == 0 && $REBOOT_NORMAL_CALLS == 0 ]]
         [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+        # The recovery function and assertion intentionally share this subshell.
+        # shellcheck disable=SC2031
         [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
     )
 done
@@ -174,6 +176,7 @@ done
     fi
     [[ $REBOOT_NORMAL_CALLS == 0 ]]
     [[ $APO_LAST_REASON == 'fixture permanent hash mismatch' ]]
+    # shellcheck disable=SC2031
     [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
 )
 (
@@ -193,6 +196,7 @@ done
         exit 1
     fi
     [[ $REBOOT_NORMAL_CALLS == 0 && $HASH_CHECKS == 0 ]]
+    # shellcheck disable=SC2031
     [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
 )
 (
@@ -211,6 +215,7 @@ done
         exit 1
     fi
     [[ $REBOOT_NORMAL_CALLS == 0 && $HASH_CHECKS == 0 ]]
+    # shellcheck disable=SC2031
     [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
 )
 
@@ -250,6 +255,7 @@ done
     [[ $APO_LAST_REASON == 'fixture post-reboot permanent hash mismatch' ]]
     [[ $(apo_state_get NORMAL_BOOT_ID '') == '' ]]
     [[ $(apo_state_get TRYBOOT_EXPECTED) == 0 ]]
+    # shellcheck disable=SC2031
     [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
 )
 
