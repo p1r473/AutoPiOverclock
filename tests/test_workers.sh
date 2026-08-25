@@ -459,7 +459,7 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
 )
 (
     APO_ROOT=$ROOT
-    APO_RUN_ID=fixture-run
+    APO_RUN_ID='fixture-run'
     source "$ROOT/lib/common.sh"
     source "$ROOT/profiles/batocera.sh"
     # shellcheck disable=SC2030
@@ -492,7 +492,7 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
 # post-activation manifest check fails.
 (
     APO_ROOT=$ROOT
-    APO_RUN_ID=fixture-run
+    APO_RUN_ID='fixture-run'
     source "$ROOT/lib/common.sh"
     source "$ROOT/profiles/batocera.sh"
     BUNDLE_TEST_ROOT="$TEMP_DIR/bundle-install"
@@ -591,7 +591,7 @@ done
     declare -Ag APO_CFG=([MAX_TEMP_C]=75 [TELEMETRY_INTERVAL_S]=7)
     APO_MODE_EFFECTIVE=headless
     APO_DISPLAY_BASELINE=''
-    APO_AUDIO_BASELINE=fixture-audio
+    APO_AUDIO_BASELINE='fixture-audio'
     APO_THROTTLE_RUNTIME_BASELINE=throttled=0x0
     APO_NORMAL_CPU=2400
     APO_NORMAL_GPU=800
