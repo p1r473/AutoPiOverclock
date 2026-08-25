@@ -3,11 +3,12 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
+source "$ROOT/lib/config.sh"
 source "$ROOT/lib/state.sh"
 
-declare -Ag APO_CFG=(
+APO_CFG=(
     [CANDIDATE_DURATION_S]=60
-    [FINAL_DURATION_S]=480
+    [FINAL_DURATION_S]=28800
     [BACKOFF_STEPS]=1
     [CANDIDATE_BOOTS]=4
     [FINAL_BOOTS]=5
@@ -15,11 +16,18 @@ declare -Ag APO_CFG=(
 APO_NORMAL_CPU=2400
 APO_NORMAL_GPU=800
 APO_NORMAL_VOLTAGE=0
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=800
+APO_AUTO_BASELINE_VOLTAGE=0
+APO_AUTO_BASELINE_PROVENANCE=verified-default
+APO_AUTO_BASELINE_EVIDENCE=none
 APO_TEST_VOLTAGE=50000
 APO_GPU_KEY=v3d_freq
 APO_REQUIRE_GPU_STRESS=1
 APO_LAST_CLASS=''
 APO_LAST_REASON=''
+APO_AUTO_GENERATED_CANDIDATES=0
+APO_EDGE_CPU_24H=0
 APO_STATE=()
 ACTIONS=()
 SAVE_COUNT=0
@@ -46,8 +54,42 @@ apo_health_check() { ACTIONS+=("health:$4"); }
 apo_verify_permanent_hash() { ACTIONS+=("hash:$1"); }
 apo_recover_preserving_failure() { return 0; }
 apo_record_failure_after_recovery() { RECOVERY_FORCE_REBOOT=${4:-0}; apo_state_fail "$2" "$3"; }
+apo_class_is_edge_failure() { [[ $1 == BOOT_FAILURE || $1 == STABILITY_FAILURE ]]; }
 
 source "$ROOT/lib/candidates.sh"
+
+seed_valid_guarded_auto_floor_plan() {
+    APO_AUTO_GENERATED_CANDIDATES=1
+    APO_EDGE_CPU_24H=1
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=800
+    APO_NORMAL_VOLTAGE=0
+    APO_TEST_VOLTAGE=0
+    APO_CPU_CANDIDATES=(2500 2600 2700 2800 2900 3000 3100 3200)
+    APO_GPU_CANDIDATES=(850 900 950 1000 1050 1100 1150 1200)
+    APO_CFG[CPU_CANDIDATES]='2500,2600,2700,2800,2900,3000,3100,3200'
+    APO_CFG[GPU_CANDIDATES]='850,900,950,1000,1050,1100,1150,1200'
+    APO_CFG[BACKOFF_STEPS]=0
+    APO_CFG[VOLTAGE_DELTA_UV]=existing
+    apo_state_set CPU_INDEX 6
+    apo_state_set PASSED_CPUS 2500,2600,2700,2800,2900,3000,3025
+    apo_state_set CPU_FAILURE_BOUNDARY 3050
+    apo_state_set CPU_REFINE_CANDIDATES 3025
+    apo_state_set CPU_REFINE_INDEX 1
+    apo_state_set CPU_REFINE_COMPLETE 1
+    apo_state_set CPU_GUARD_TARGET 3000
+    apo_state_set CPU_GUARD_VERIFIED 1
+    apo_state_set SAFE_CPU 3000
+    apo_state_set GPU_INDEX 2
+    apo_state_set PASSED_GPUS 850,900
+    apo_state_set GPU_FAILURE_BOUNDARY 925
+    apo_state_set GPU_REFINE_CANDIDATES ''
+    apo_state_set GPU_REFINE_INDEX 0
+    apo_state_set GPU_REFINE_COMPLETE 1
+    apo_state_set GPU_GUARD_TARGET 900
+    apo_state_set GPU_GUARD_VERIFIED 1
+    apo_state_set SAFE_GPU 900
+}
 
 # Only a Batocera graphical smoke failure that explicitly reports failed
 # session recovery requests the guarded normal-config reboot path.
@@ -142,9 +184,236 @@ fi
 # state checkpoint rather than two crash-separable writes.
 APO_STATE=()
 SAVE_COUNT=0
-apo_state_complete 2900 850
+apo_state_complete 2900 850 28800
 [[ $SAVE_COUNT == 1 ]]
 [[ $(apo_state_get FINAL_CPU) == 2900 && $(apo_state_get FINAL_GPU) == 850 ]]
 [[ $(apo_state_get VALIDATED) == 1 && $(apo_state_get STATUS) == PASS ]]
+
+# Optional edge mode first checkpoints the completed production floor, then
+# validates the next 25 MHz CPU step with a fixed 24-hour endurance segment.
+APO_STATE=()
+ACTIONS=()
+STRESS_DURATIONS=()
+seed_valid_guarded_auto_floor_plan
+apo_boot_candidate() {
+    ACTIONS+=("boot:$3")
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$1"
+    apo_state_set CURRENT_GPU "$2"
+}
+apo_run_stress() { ACTIONS+=("stress:$1:$3"); STRESS_DURATIONS+=("$2"); }
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE VERIFY
+apo_state_set VALIDATION_DURATION_S 28800
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+apo_state_set VALIDATED 0
+apo_final_validation
+[[ $(apo_state_get FLOOR_CPU) == 3000 && $(apo_state_get FLOOR_GPU) == 900 ]]
+[[ $(apo_state_get FLOOR_VALIDATED) == 1 ]]
+[[ $(apo_state_get EDGE_CPU_TARGET) == 3025 ]]
+[[ $(apo_state_get EDGE_CPU_STATUS) == PASS ]]
+[[ $(apo_state_get FINAL_CPU) == 3025 && $(apo_state_get FINAL_GPU) == 900 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == 86400 ]]
+[[ " ${STRESS_DURATIONS[*]} " == *' 86400 '* ]]
+apo_state_set FINAL_CPU 3200
+if apo_validate_auto_resume_state; then
+    echo 'edge completion with final clocks outside its validated target was accepted' >&2
+    exit 1
+fi
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+
+# A genuine edge stability failure retains the already validated floor. A
+# failed experiment must not erase the safe eight-hour result.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE VERIFY
+apo_state_set VALIDATION_DURATION_S 28800
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+apo_state_set VALIDATED 0
+apo_boot_candidate() {
+    if (( $1 == 3025 )); then
+        APO_LAST_CLASS=STABILITY_FAILURE
+        APO_LAST_REASON='edge fixture failed'
+        return 1
+    fi
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$1"
+    apo_state_set CURRENT_GPU "$2"
+}
+apo_final_validation
+[[ $(apo_state_get STATUS) == PASS && $(apo_state_get PHASE) == COMPLETE ]]
+[[ $(apo_state_get EDGE_CPU_STATUS) == REJECTED ]]
+[[ $(apo_state_get EDGE_CPU_FAILURE_CLASS) == STABILITY_FAILURE ]]
+[[ $(apo_state_get FINAL_CPU) == 3000 && $(apo_state_get FINAL_GPU) == 900 ]]
+[[ $(apo_state_get FINAL_TARGET_CPU) == 3000 && $(apo_state_get FINAL_TARGET_GPU) == 900 ]]
+[[ $(apo_state_get VALIDATED) == 1 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == 28800 ]]
+
+# A valid mid-refinement checkpoint is resumable, but malformed clock-bearing
+# state is rejected before any candidate action or arithmetic can occur.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3100
+apo_state_set CPU_REFINE_CANDIDATES 3025,3050,3075
+apo_state_set CPU_REFINE_INDEX 1
+apo_state_set CPU_REFINE_COMPLETE 0
+apo_state_set CPU_GUARD_TARGET ''
+apo_state_set CPU_GUARD_VERIFIED 0
+apo_state_set SAFE_CPU ''
+apo_validate_auto_resume_state
+[[ ${#ACTIONS[@]} == 0 ]]
+
+apo_state_set CPU_FAILURE_BOUNDARY 3050
+if apo_validate_auto_resume_state; then
+    echo 'refinement plan at or above its saved failure boundary was accepted' >&2
+    exit 1
+fi
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+apo_state_set CPU_FAILURE_BOUNDARY malformed
+if apo_validate_auto_resume_state; then
+    echo 'malformed automatic boundary was accepted' >&2
+    exit 1
+fi
+[[ $(apo_state_get STATUS) == FAILED ]]
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+[[ ${#ACTIONS[@]} == 0 ]]
+
+# A running edge checkpoint cannot jump to VERIFY without a completed 24-hour
+# endurance checkpoint.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+apo_state_set FLOOR_CPU 3000
+apo_state_set FLOOR_GPU 900
+apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+apo_state_set FLOOR_VALIDATED 1
+apo_state_set EDGE_CPU_TARGET 3025
+apo_state_set EDGE_CPU_STATUS RUNNING
+apo_state_set RECOMMENDED_CPU 3025
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3025
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE VERIFY
+if apo_validate_auto_resume_state; then
+    echo 'edge VERIFY checkpoint without 24-hour duration evidence was accepted' >&2
+    exit 1
+fi
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+
+# Stale or incomplete floor evidence cannot be converted into an applyable
+# PASS after an edge stability failure.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+apo_state_set FLOOR_CPU 3000
+apo_state_set FLOOR_GPU 900
+apo_state_set FLOOR_DURATION_S 60
+apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+apo_state_set FLOOR_VALIDATED 1
+apo_state_set EDGE_CPU_TARGET 3025
+apo_state_set EDGE_CPU_STATUS RUNNING
+apo_state_set RECOMMENDED_CPU 3025
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3025
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set VALIDATED 0
+if apo_final_record_failure stale-floor-recovery STABILITY_FAILURE 'edge fixture failed'; then
+    echo 'stale production-floor evidence was retained' >&2
+    exit 1
+fi
+[[ $(apo_state_get STATUS) == FAILED ]]
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+[[ $(apo_state_get VALIDATED) == 0 ]]
+
+# Harness failures do not define a silicon edge and therefore never retain the
+# floor as a successful run, even when normal recovery itself succeeds.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+apo_state_set FLOOR_CPU 3000
+apo_state_set FLOOR_GPU 900
+apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+apo_state_set FLOOR_VALIDATED 1
+apo_state_set EDGE_CPU_TARGET 3025
+apo_state_set EDGE_CPU_STATUS RUNNING
+apo_state_set RECOMMENDED_CPU 3025
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3025
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set VALIDATED 0
+if apo_final_record_failure edge-harness-recovery HARNESS_FAILURE 'edge harness failed'; then
+    echo 'edge harness failure incorrectly retained the floor as PASS' >&2
+    exit 1
+fi
+[[ $(apo_state_get STATUS) == FAILED ]]
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+[[ $(apo_state_get VALIDATED) == 0 ]]
+
+# Applying a validated auto result changes the live/permanent normal clocks,
+# but the immutable stock baseline must still make the completed state safe to
+# reload. The same clock rewrite on an unapplied run is inconsistent.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_CPU_24H=0
+apo_state_set FLOOR_VALIDATED 0
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+apo_state_set SAFE_CPU 3000
+apo_state_set SAFE_GPU 900
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_CPU 3000
+apo_state_set FINAL_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set VALIDATED 1
+apo_state_set VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+apo_state_set VALIDATION_DURATION_S 28800
+apo_state_set STATUS PASS
+apo_state_set PHASE COMPLETE
+apo_state_set FINAL_STAGE COMPLETE
+APO_NORMAL_CPU=3000
+APO_NORMAL_GPU=900
+APO_NORMAL_VOLTAGE=0
+apo_state_set APPLY_STATUS APPLIED
+apo_validate_auto_resume_state
+
+apo_state_set APPLY_STATUS NOT_APPLIED
+if apo_validate_auto_resume_state; then
+    echo 'unapplied auto state accepted applied normal clocks' >&2
+    exit 1
+fi
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+
+# Old automatic states without immutable provenance fail closed; explicit-plan
+# states do not inherit the configuration-free stock gate.
+APO_STATE=()
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=800
+APO_NORMAL_VOLTAGE=0
+seed_valid_guarded_auto_floor_plan
+APO_AUTO_BASELINE_PROVENANCE=missing
+if apo_validate_auto_resume_state; then
+    echo 'automatic state without immutable provenance was accepted' >&2
+    exit 1
+fi
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+
+APO_STATE=()
+APO_AUTO_GENERATED_CANDIDATES=0
+APO_EDGE_CPU_24H=0
+APO_AUTO_BASELINE_PROVENANCE=missing
+apo_validate_auto_resume_state
 
 printf 'test_resume_progress: PASS\n'

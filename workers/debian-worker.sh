@@ -201,6 +201,84 @@ discovered_config_value() {
     active_config_value "$1"
 }
 
+permanent_config_snapshot_hash() {
+    local config_file=$1 snapshot_hash
+    snapshot_hash=$(sha256sum "$config_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $snapshot_hash =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s' "$snapshot_hash"
+}
+
+permanent_tuning_key() {
+    case $1 in
+        arm_boost|force_turbo|initial_turbo|core_freq_fixed|*_freq|*_freq_min|over_voltage*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+permanent_tuning_override_evidence() {
+    local root_config=$1 root_dir canonical_file line trimmed key evidence=''
+    root_dir=$(readlink -f -- "$(dirname "$root_config")" 2>/dev/null || true)
+    [[ -n $root_dir && -d $root_dir ]] || { printf 'unresolvable-boot-root'; return 2; }
+    [[ -e $root_config ]] || { printf 'unreadable-config'; return 2; }
+    canonical_file=$(readlink -f -- "$root_config" 2>/dev/null || true)
+    [[ -n $canonical_file ]] || { printf 'unresolvable-config-path'; return 2; }
+    [[ $canonical_file == "$root_dir"/* && -f $canonical_file && -r $canonical_file ]] || { printf 'unreadable-config'; return 2; }
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}
+        if [[ $line =~ ^[[:space:]]*([[:alnum:]_]+)[[:space:]]*= ]]; then
+            key=${BASH_REMATCH[1],,}
+            if permanent_tuning_key "$key"; then
+                [[ ",$evidence," == *",$key,"* ]] || evidence=${evidence:+$evidence,}$key
+                continue
+            fi
+        fi
+        trimmed=${line#"${line%%[![:space:]]*}"}
+        [[ -n $trimmed && $trimmed != \#* ]] || continue
+        if [[ $trimmed =~ ^include([[:space:]]|$) ]]; then
+            printf 'include-not-bound-to-permanent-hash%s' "${evidence:+:$evidence}"
+            return 2
+        fi
+    done < "$canonical_file"
+    printf '%s' "$evidence"
+}
+
+audit_permanent_tuning_config() {
+    local config_file=$1 scan_output audit_rc hash_before hash_after
+    PERMANENT_TUNING_PROVENANCE=ambiguous
+    PERMANENT_TUNING_EVIDENCE='audit-failed'
+    PERMANENT_TUNING_CONFIG_HASH=''
+    hash_before=$(permanent_config_snapshot_hash "$config_file" || true)
+    if [[ ! $hash_before =~ ^[0-9a-f]{64}$ ]]; then
+        PERMANENT_TUNING_EVIDENCE='unreadable-config-snapshot'
+        return 0
+    fi
+    if scan_output=$(permanent_tuning_override_evidence "$config_file"); then
+        audit_rc=0
+    else
+        audit_rc=$?
+    fi
+    hash_after=$(permanent_config_snapshot_hash "$config_file" || true)
+    if [[ ! $hash_after =~ ^[0-9a-f]{64}$ ]]; then
+        PERMANENT_TUNING_EVIDENCE='unreadable-config-snapshot'
+        return 0
+    fi
+    if [[ $hash_before != "$hash_after" ]]; then
+        PERMANENT_TUNING_EVIDENCE='permanent-config-changed-during-audit'
+        return 0
+    fi
+    PERMANENT_TUNING_CONFIG_HASH=$hash_after
+    if (( audit_rc != 0 )); then
+        PERMANENT_TUNING_PROVENANCE=ambiguous
+        PERMANENT_TUNING_EVIDENCE=${scan_output:-audit-failed-rc-$audit_rc}
+    elif [[ -n $scan_output ]]; then
+        PERMANENT_TUNING_PROVENANCE=explicit-override
+        PERMANENT_TUNING_EVIDENCE=$scan_output
+    else
+        PERMANENT_TUNING_PROVENANCE=verified-default
+        PERMANENT_TUNING_EVIDENCE=none
+    fi
+}
+
 kernel_log() {
     if command -v journalctl >/dev/null 2>&1; then journalctl -k -b --no-pager 2>/dev/null || dmesg 2>/dev/null;
     else dmesg 2>/dev/null; fi
@@ -488,6 +566,7 @@ cmd_discover() {
     local boot_watchdog kernel_watchdog runtime_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source display_baseline display_present audio_baseline permanent_hash
     local stress_ng_binary stress_ng_gpu_available render_node tryboot_exists tryboot_type tryboot_hash
     boot_config=$(find_boot_config) || { emit_result PREFLIGHT_FAILURE 'Raspberry Pi boot config was not found.'; return 1; }
+    audit_permanent_tuning_config "$boot_config"
     tryboot_config="$(dirname "$boot_config")/tryboot.txt"
     boot_mount=$(dirname "$boot_config")
     inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
@@ -522,7 +601,11 @@ cmd_discover() {
     display_baseline=$(connected_display_baseline || true)
     display_present=$(display_hardware_present && printf 1 || printf 0)
     audio_baseline=$(audio_identity || true)
-    permanent_hash=$(sha256sum "$boot_config" | awk '{print $1}')
+    permanent_hash=$(permanent_config_snapshot_hash "$boot_config" || true)
+    if [[ -n $PERMANENT_TUNING_CONFIG_HASH && $permanent_hash != "$PERMANENT_TUNING_CONFIG_HASH" ]]; then
+        PERMANENT_TUNING_PROVENANCE=ambiguous
+        PERMANENT_TUNING_EVIDENCE='permanent-config-changed-after-audit'
+    fi
     stress_ng_binary=$(command -v stress-ng 2>/dev/null || true)
     stress_ng_gpu_available=$([[ -n $stress_ng_binary ]] && stress_ng_has_gpu && printf 1 || printf 0)
     render_node=$([[ -e /dev/dri/renderD128 ]] && printf /dev/dri/renderD128 || true)
@@ -544,6 +627,8 @@ cmd_discover() {
     emit_data NORMAL_GPU "$normal_gpu"
     emit_data NORMAL_VOLTAGE "$normal_voltage"
     emit_data NORMAL_VOLTAGE_SOURCE "$normal_voltage_source"
+    emit_data PERMANENT_TUNING_PROVENANCE "$PERMANENT_TUNING_PROVENANCE"
+    emit_data PERMANENT_TUNING_EVIDENCE "$PERMANENT_TUNING_EVIDENCE"
     emit_data THROTTLED "$(permanent_throttle)"
     emit_data RECENT_THROTTLED "$(recent_throttle)"
     emit_data THROTTLE_RECENT_SUPPORTED "$(throttle_word "$(recent_throttle)" >/dev/null 2>&1 && printf 1 || printf 0)"

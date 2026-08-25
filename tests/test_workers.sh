@@ -82,6 +82,77 @@ for worker_name in debian batocera; do
     fi
 done
 
+# Configuration-free auto mode may accept 800/960 MHz V3D only when the
+# permanent config proves that those values came from firmware defaults. Both
+# workers must report every explicit clock/voltage directive in the protected
+# root config instead of inferring provenance from the active numeric value
+# alone. Includes fail closed until every included file is bound to the
+# permanent-config integrity checks.
+mkdir -p "$TEMP_DIR/tuning-audit/nested"
+for worker_name in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" AUDIT_DIR="$TEMP_DIR/tuning-audit" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        cat > "$AUDIT_DIR/config.txt" <<"CONF"
+# arm_freq=3100
+[all]
+dtparam=audio=on
+CONF
+        audit_permanent_tuning_config "$AUDIT_DIR/config.txt"
+        [[ $PERMANENT_TUNING_PROVENANCE == verified-default ]]
+        [[ $PERMANENT_TUNING_EVIDENCE == none ]]
+        [[ $PERMANENT_TUNING_CONFIG_HASH == "$(sha256sum "$AUDIT_DIR/config.txt" | awk "NR == 1 {print \$1}")" ]]
+
+        for tuning_key in \
+            arm_boost force_turbo initial_turbo core_freq_fixed \
+            arm_freq cpu_freq gpu_freq core_freq h264_freq isp_freq v3d_freq hevc_freq sdram_freq \
+            arm_freq_min cpu_freq_min gpu_freq_min core_freq_min h264_freq_min isp_freq_min v3d_freq_min hevc_freq_min sdram_freq_min \
+            over_voltage over_voltage_min over_voltage_delta over_voltage_sdram over_voltage_sdram_c over_voltage_sdram_i over_voltage_sdram_p \
+            future_domain_freq future_domain_freq_min over_voltage_future; do
+            printf "[all]\n%s=0\n" "$tuning_key" > "$AUDIT_DIR/config.txt"
+            audit_permanent_tuning_config "$AUDIT_DIR/config.txt"
+            [[ $PERMANENT_TUNING_PROVENANCE == explicit-override ]]
+            [[ $PERMANENT_TUNING_EVIDENCE == "$tuning_key" ]]
+        done
+
+        printf "[all]\nARM_FREQ=2400\n" > "$AUDIT_DIR/config.txt"
+        audit_permanent_tuning_config "$AUDIT_DIR/config.txt"
+        [[ $PERMANENT_TUNING_PROVENANCE == explicit-override ]]
+        [[ $PERMANENT_TUNING_EVIDENCE == arm_freq ]]
+
+        printf "[all]\ngpu_freq=950\n" > "$AUDIT_DIR/nested/extra.txt"
+        printf "include nested/extra.txt\n" > "$AUDIT_DIR/config.txt"
+        audit_permanent_tuning_config "$AUDIT_DIR/config.txt"
+        [[ $PERMANENT_TUNING_PROVENANCE == ambiguous ]]
+        [[ $PERMANENT_TUNING_EVIDENCE == include-not-bound-to-permanent-hash ]]
+
+        printf "include missing.txt\n" > "$AUDIT_DIR/config.txt"
+        audit_permanent_tuning_config "$AUDIT_DIR/config.txt"
+        [[ $PERMANENT_TUNING_PROVENANCE == ambiguous ]]
+        [[ $PERMANENT_TUNING_EVIDENCE == include-not-bound-to-permanent-hash ]]
+
+        # The provenance result and protected hash must describe one stable
+        # root-config snapshot. Deterministic hash changes avoid a racy test.
+        printf "[all]\ndtparam=audio=on\n" > "$AUDIT_DIR/config.txt"
+        printf "0\n" > "$AUDIT_DIR/hash-call-count"
+        permanent_config_snapshot_hash() {
+            local call_count
+            call_count=$(cat "$AUDIT_DIR/hash-call-count")
+            call_count=$((call_count + 1))
+            printf "%s\n" "$call_count" > "$AUDIT_DIR/hash-call-count"
+            if (( call_count == 1 )); then
+                printf "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            else
+                printf "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            fi
+        }
+        audit_permanent_tuning_config "$AUDIT_DIR/config.txt"
+        [[ $PERMANENT_TUNING_PROVENANCE == ambiguous ]]
+        [[ $PERMANENT_TUNING_EVIDENCE == permanent-config-changed-during-audit ]]
+        [[ -z $PERMANENT_TUNING_CONFIG_HASH ]]
+    '
+done
+
 cat > "$TEMP_DIR/config.txt" <<'CONF'
 # Preserve this comment
 [all]

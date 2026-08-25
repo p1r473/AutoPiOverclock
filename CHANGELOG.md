@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-alpha.13 — 2026-08-25
+
+- Made configuration-free auto mode fail closed unless the active Raspberry Pi 5 baseline is stock: 2400 MHz CPU, a recognized 800/960 MHz firmware-stock V3D clock, zero voltage delta, and no explicit boost, turbo, fixed-clock, `*_freq`/`*_freq_min`, or `over_voltage*` control in one stable before/after-hashed root-config snapshot. Any snapshot change or `include` directive is ambiguous until all content is bound to the protected permanent-config hash. Existing overclocks are reported rather than reinterpreted as the baseline or rewritten automatically.
+- Kept stock as the dedicated recovery control, then retained 100 MHz CPU and 50 MHz V3D coarse ascent while adding resumable 25 MHz refinement inside the first genuine passing-to-failing gap.
+- Replaced automatic list-position backoff with candidate-tested MHz guards: 50 MHz below the refined CPU boundary and 25 MHz below the V3D boundary, including explicit guard candidates when the desired clock was not part of the coarse list.
+- Added optional `--edge-cpu-24h`: first validate the ordinary production floor for eight hours, then try CPU 25 MHz higher through a fresh 24-hour complete validation. A safely recovered boot/stability rejection retains the validated floor; harness and recovery failures remain fatal.
+- Bound automatic resume/apply to immutable stock provenance, the exact deterministic candidate/refinement topology, guarded final-clock identity, and persisted 8-hour/24-hour endurance evidence so edited or stale checkpoints fail closed.
+- Raised run and validation schemas to 7 and added immutable stock provenance, resumable boundary/refinement/guard state, exact endurance-duration evidence, production-floor identity, edge-target disposition, and edge-failure evidence to status/report artifacts.
+- Added regressions for stock tuple acceptance/rejection, deterministic coarse plans, 25 MHz CPU/GPU refinement, tested guard selection, ceiling guards, 24-hour edge success, and validated-floor retention after an edge stability failure.
+
 ## 0.1.0-alpha.12 — 2026-08-24
 
 - Moved Batocera graphical GPU stress from direct DRM/VT ownership to an off-screen Wayland workload on the live EmulationStation compositor, leaving the frontend running and eliminating the KMS teardown and VT-switch recovery boundary.

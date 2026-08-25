@@ -56,14 +56,18 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
     exit 1
 fi
 approved_options=$(printf '%s\n' \
-    --config --dry-run --help --identity-file --install-missing --mode --output-dir \
+    --config --dry-run --edge-cpu-24h --help --identity-file --install-missing --mode --output-dir \
     --redact --repair-watchdogs --run-id --ssh-port --version --yes | LC_ALL=C sort)
 documented_options=$(awk '/^Options:/{capture=1; next} /^USAGE$/{capture=0} capture' "$ROOT/autopioverclock" |
-    grep -oE -- '--[a-z][a-z-]*' | LC_ALL=C sort -u)
+    grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
     printf 'documented CLI options differ from the approved whitelist\nexpected:\n%s\nactual:\n%s\n' "$approved_options" "$documented_options" >&2
     exit 1
 }
+if "$ROOT/autopioverclock" prepare example-host --edge-cpu-24h --config fixture.conf >/dev/null 2>&1; then
+    echo '--edge-cpu-24h accepted an explicit configuration' >&2
+    exit 1
+fi
 
 while IFS= read -r script_file; do bash -n "$script_file"; done < <(find "$ROOT" -type f \( -name '*.sh' -o -name autopioverclock \) -not -path '*/.git/*' | LC_ALL=C sort)
 for required in README.md LICENSE SECURITY.md CONTRIBUTING.md CHANGELOG.md .github/workflows/ci.yml tools/build-batocera-bundle.sh; do [[ -f "$ROOT/$required" ]]; done

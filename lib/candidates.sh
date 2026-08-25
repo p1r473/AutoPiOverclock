@@ -145,12 +145,606 @@ apo_test_candidate() {
     done
 }
 
+apo_csv_contains_clock() {
+    local csv_value=$1 clock_mhz=$2
+    [[ ",$csv_value," == *",$clock_mhz,"* ]]
+}
+
+APO_AUTO_VALIDATION_REASON=''
+
+apo_auto_state_invalid() {
+    local reason=$1
+    APO_LAST_CLASS=HARNESS_FAILURE
+    APO_LAST_REASON=$reason
+    apo_state_clear_final_validation
+    apo_state_fail HARNESS_FAILURE "$reason"
+    return 1
+}
+
+apo_auto_uint_in_range() {
+    local value=$1 minimum=$2 maximum=$3
+    [[ $value =~ ^[0-9]{1,7}$ ]] && (( value >= minimum && value <= maximum ))
+}
+
+apo_auto_validate_boolean() {
+    local label=$1 value=$2
+    [[ $value == 0 || $value == 1 ]] || {
+        APO_AUTO_VALIDATION_REASON="Saved $label marker is malformed: ${value:-missing}"
+        return 1
+    }
+}
+
+apo_auto_parse_clock_csv() {
+    local label=$1 csv_value=$2 minimum=$3 maximum=$4 output_name=$5 item previous=-1
+    local -n output_values=$output_name
+    output_values=()
+    [[ -n $csv_value ]] || return 0
+    [[ $csv_value =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+        APO_AUTO_VALIDATION_REASON="Saved $label list is malformed: $csv_value"
+        return 1
+    }
+    IFS=',' read -r -a output_values <<< "$csv_value"
+    for item in "${output_values[@]}"; do
+        apo_auto_uint_in_range "$item" "$minimum" "$maximum" || {
+            APO_AUTO_VALIDATION_REASON="Saved $label clock is outside $minimum-$maximum MHz: $item"
+            return 1
+        }
+        (( item > previous )) || {
+            APO_AUTO_VALIDATION_REASON="Saved $label clocks are not strictly increasing: $csv_value"
+            return 1
+        }
+        previous=$item
+    done
+}
+
+apo_auto_validate_domain_state() {
+    local domain=$1 normal_clock minimum maximum guard_mhz passed_key boundary_key candidates_key
+    local index_key complete_key target_key verified_key safe_key coarse_index refine_index complete verified
+    local passed_csv boundary refinement_csv target safe coarse_name refine_pass_count i expected coarse_last coarse_boundary expected_refinement
+    local -a passed_values=() refinement_values=()
+    case $domain in
+        CPU)
+            coarse_name=APO_CPU_CANDIDATES
+            normal_clock=$APO_AUTO_BASELINE_CPU; minimum=$APO_AUTO_BASELINE_CPU; maximum=$APO_AUTO_CPU_MAX_MHZ
+            guard_mhz=$APO_AUTO_CPU_GUARD_MHZ; passed_key=PASSED_CPUS; boundary_key=CPU_FAILURE_BOUNDARY
+            candidates_key=CPU_REFINE_CANDIDATES; index_key=CPU_REFINE_INDEX; complete_key=CPU_REFINE_COMPLETE
+            target_key=CPU_GUARD_TARGET; verified_key=CPU_GUARD_VERIFIED; safe_key=SAFE_CPU
+            coarse_index=$(apo_state_get CPU_INDEX 0)
+            ;;
+        GPU)
+            coarse_name=APO_GPU_CANDIDATES
+            normal_clock=$APO_AUTO_BASELINE_GPU; minimum=$APO_AUTO_BASELINE_GPU; maximum=$APO_AUTO_GPU_MAX_MHZ
+            guard_mhz=$APO_AUTO_GPU_GUARD_MHZ; passed_key=PASSED_GPUS; boundary_key=GPU_FAILURE_BOUNDARY
+            candidates_key=GPU_REFINE_CANDIDATES; index_key=GPU_REFINE_INDEX; complete_key=GPU_REFINE_COMPLETE
+            target_key=GPU_GUARD_TARGET; verified_key=GPU_GUARD_VERIFIED; safe_key=SAFE_GPU
+            coarse_index=$(apo_state_get GPU_INDEX 0)
+            ;;
+        *) APO_AUTO_VALIDATION_REASON="Unknown automatic state domain: $domain"; return 1 ;;
+    esac
+    local -n coarse_candidates=$coarse_name
+    apo_auto_uint_in_range "$coarse_index" 0 "${#coarse_candidates[@]}" || {
+        APO_AUTO_VALIDATION_REASON="Saved $domain coarse index is malformed: ${coarse_index:-missing}"
+        return 1
+    }
+    passed_csv=$(apo_state_get "$passed_key" '')
+    boundary=$(apo_state_get "$boundary_key" '')
+    refinement_csv=$(apo_state_get "$candidates_key" '')
+    refine_index=$(apo_state_get "$index_key" 0)
+    complete=$(apo_state_get "$complete_key" 0)
+    target=$(apo_state_get "$target_key" '')
+    verified=$(apo_state_get "$verified_key" 0)
+    safe=$(apo_state_get "$safe_key" '')
+    apo_auto_validate_boolean "$domain refinement-complete" "$complete" || return 1
+    apo_auto_validate_boolean "$domain guard-verified" "$verified" || return 1
+    apo_auto_parse_clock_csv "$domain passed" "$passed_csv" "$((minimum + 1))" "$maximum" passed_values || return 1
+    apo_auto_parse_clock_csv "$domain refinement" "$refinement_csv" "$((minimum + 1))" "$maximum" refinement_values || return 1
+    apo_auto_uint_in_range "$refine_index" 0 "${#refinement_values[@]}" || {
+        APO_AUTO_VALIDATION_REASON="Saved $domain refinement index is malformed: ${refine_index:-missing}"
+        return 1
+    }
+    if [[ -n $boundary ]]; then
+        apo_auto_uint_in_range "$boundary" "$((minimum + 1))" "$maximum" || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain failure boundary is malformed: $boundary"
+            return 1
+        }
+    fi
+    (( ${#passed_values[@]} >= coarse_index )) || {
+        APO_AUTO_VALIDATION_REASON="Saved $domain passed clocks do not cover coarse index $coarse_index"
+        return 1
+    }
+    for ((i = 0; i < coarse_index; i++)); do
+        [[ ${passed_values[$i]} == "${coarse_candidates[$i]}" ]] || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain coarse pass prefix disagrees with the recorded plan at index $i"
+            return 1
+        }
+    done
+    refine_pass_count=$((${#passed_values[@]} - coarse_index))
+    (( refine_pass_count <= ${#refinement_values[@]} )) || {
+        APO_AUTO_VALIDATION_REASON="Saved $domain passed clocks exceed its refinement plan"
+        return 1
+    }
+    for ((i = 0; i < refine_pass_count; i++)); do
+        [[ ${passed_values[$((coarse_index + i))]} == "${refinement_values[$i]}" ]] || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain refinement passes are not a prefix of its plan"
+            return 1
+        }
+    done
+    coarse_last=$normal_clock
+    (( coarse_index > 0 )) && coarse_last=${coarse_candidates[$((coarse_index - 1))]}
+    if (( ${#refinement_values[@]} > 0 )); then
+        [[ -n $boundary ]] || { APO_AUTO_VALIDATION_REASON="Saved $domain refinement plan has no failure boundary"; return 1; }
+        expected=$((coarse_last + APO_AUTO_REFINE_STEP_MHZ))
+        for i in "${refinement_values[@]}"; do
+            (( i == expected )) || {
+                APO_AUTO_VALIDATION_REASON="Saved $domain refinement plan is not a canonical ${APO_AUTO_REFINE_STEP_MHZ} MHz ladder"
+                return 1
+            }
+            expected=$((expected + APO_AUTO_REFINE_STEP_MHZ))
+        done
+    fi
+    if [[ -z $boundary ]]; then
+        (( ${#refinement_values[@]} == 0 && refine_pass_count == 0 && refine_index == 0 )) || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain refinement evidence exists without a failure boundary"
+            return 1
+        }
+        if (( complete == 1 && coarse_index != ${#coarse_candidates[@]} )); then
+            APO_AUTO_VALIDATION_REASON="Saved $domain refinement is complete before the coarse plan reached a boundary or ceiling"
+            return 1
+        fi
+    elif (( coarse_index < ${#coarse_candidates[@]} )); then
+        coarse_boundary=${coarse_candidates[$coarse_index]}
+        (( boundary > coarse_last && boundary <= coarse_boundary )) || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain failure boundary is outside its coarse passing-to-failing gap"
+            return 1
+        }
+        expected_refinement=$(apo_auto_refinement_ladder "$coarse_last" "$boundary")
+        if (( complete == 0 )); then
+            (( boundary == coarse_boundary )) || {
+                APO_AUTO_VALIDATION_REASON="Saved in-progress $domain refinement boundary no longer matches the failed coarse candidate"
+                return 1
+            }
+            if [[ -n $refinement_csv && $refinement_csv != "$expected_refinement" ]]; then
+                APO_AUTO_VALIDATION_REASON="Saved in-progress $domain refinement plan reaches or crosses its failure boundary"
+                return 1
+            fi
+        else
+            [[ $refinement_csv == "$expected_refinement" ]] || {
+                APO_AUTO_VALIDATION_REASON="Saved completed $domain refinement plan is not the exact passed prefix below its failure boundary"
+                return 1
+            }
+            (( refine_pass_count == ${#refinement_values[@]} )) || {
+                APO_AUTO_VALIDATION_REASON="Saved completed $domain refinement plan contains an unpassed candidate"
+                return 1
+            }
+        fi
+    elif [[ -z $target ]]; then
+        APO_AUTO_VALIDATION_REASON="Saved $domain failure boundary has no remaining coarse candidate"
+        return 1
+    elif (( ${#refinement_values[@]} != 0 || refine_pass_count != 0 || refine_index != 0 || complete != 1 )); then
+        APO_AUTO_VALIDATION_REASON="Saved ceiling-derived $domain guard boundary contains impossible refinement evidence"
+        return 1
+    fi
+    if (( complete == 0 )); then
+        (( refine_index == refine_pass_count )) || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain mid-refinement index does not match its passed prefix"
+            return 1
+        }
+    else
+        (( refine_index == ${#refinement_values[@]} )) || {
+            APO_AUTO_VALIDATION_REASON="Saved completed $domain refinement index is not at the end of its plan"
+            return 1
+        }
+    fi
+    if [[ -n $target ]]; then
+        apo_auto_uint_in_range "$target" "$minimum" "$maximum" || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain guard target is malformed: $target"
+            return 1
+        }
+        if [[ -n $boundary ]]; then expected=$((boundary - guard_mhz)); else expected=$(apo_last_passed_clock "$passed_csv" "$normal_clock"); expected=$((expected - guard_mhz)); fi
+        (( expected < normal_clock )) && expected=$normal_clock
+        (( target == expected )) || {
+            APO_AUTO_VALIDATION_REASON="Saved $domain guard target $target does not match the ${guard_mhz} MHz guard from ${boundary:-the highest pass}"
+            return 1
+        }
+    elif (( verified == 1 )); then
+        APO_AUTO_VALIDATION_REASON="Saved $domain guard is marked verified without a target"
+        return 1
+    fi
+    if (( verified == 1 )); then
+        [[ $safe == "$target" ]] || {
+            APO_AUTO_VALIDATION_REASON="Saved safe $domain clock does not match its verified guard target"
+            return 1
+        }
+    elif [[ -n $safe ]]; then
+        APO_AUTO_VALIDATION_REASON="Saved safe $domain clock exists before its guard was verified"
+        return 1
+    fi
+}
+
+apo_auto_validate_edge_state() {
+    local floor_validated edge_status floor_cpu floor_gpu floor_duration floor_schema edge_target
+    local recommended_cpu recommended_gpu final_target_cpu final_target_gpu
+    floor_validated=$(apo_state_get FLOOR_VALIDATED 0)
+    edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
+    apo_auto_validate_boolean 'production-floor validated' "$floor_validated" || return 1
+    case $edge_status in NOT_REQUESTED|RUNNING|PASS|REJECTED|SKIPPED_KNOWN_BOUNDARY) ;; *) APO_AUTO_VALIDATION_REASON="Saved edge CPU status is malformed: ${edge_status:-missing}"; return 1 ;; esac
+    floor_cpu=$(apo_state_get FLOOR_CPU '')
+    floor_gpu=$(apo_state_get FLOOR_GPU '')
+    floor_duration=$(apo_state_get FLOOR_DURATION_S '')
+    floor_schema=$(apo_state_get FLOOR_VALIDATION_SCHEMA '')
+    edge_target=$(apo_state_get EDGE_CPU_TARGET '')
+    if (( floor_validated == 0 )); then
+        [[ $edge_status == NOT_REQUESTED && -z $floor_cpu && -z $floor_gpu && -z $floor_duration && -z $floor_schema && -z $edge_target ]] || {
+            APO_AUTO_VALIDATION_REASON='Saved edge CPU state contains floor/target evidence that is not validated'
+            return 1
+        }
+        return 0
+    fi
+    [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_EDGE_CPU_24H:-0} == 1 ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved production-floor evidence is attached to a non-auto or non-edge run'
+        return 1
+    }
+    apo_auto_uint_in_range "$floor_cpu" "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_CPU_MAX_MHZ" || { APO_AUTO_VALIDATION_REASON="Saved production-floor CPU is malformed: ${floor_cpu:-missing}"; return 1; }
+    apo_auto_uint_in_range "$floor_gpu" "$APO_AUTO_BASELINE_GPU" "$APO_AUTO_GPU_MAX_MHZ" || { APO_AUTO_VALIDATION_REASON="Saved production-floor GPU is malformed: ${floor_gpu:-missing}"; return 1; }
+    [[ $floor_duration == 28800 && ${APO_CFG[FINAL_DURATION_S]} == 28800 && $floor_schema == "$APO_CURRENT_VALIDATION_SCHEMA" ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved production-floor duration/schema does not match the recorded final plan'
+        return 1
+    }
+    [[ $floor_cpu == "$(apo_state_get SAFE_CPU '')" && $floor_gpu == "$(apo_state_get SAFE_GPU '')" ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved production-floor clocks do not match the guarded final plan'
+        return 1
+    }
+    apo_auto_uint_in_range "$edge_target" "$((APO_AUTO_BASELINE_CPU + APO_AUTO_REFINE_STEP_MHZ))" "$((APO_AUTO_CPU_MAX_MHZ + APO_AUTO_REFINE_STEP_MHZ))" || { APO_AUTO_VALIDATION_REASON="Saved edge CPU target is malformed: ${edge_target:-missing}"; return 1; }
+    (( edge_target == floor_cpu + APO_AUTO_REFINE_STEP_MHZ )) || { APO_AUTO_VALIDATION_REASON='Saved edge CPU target is not exactly 25 MHz above its production floor'; return 1; }
+    recommended_cpu=$(apo_state_get RECOMMENDED_CPU '')
+    recommended_gpu=$(apo_state_get RECOMMENDED_GPU '')
+    final_target_cpu=$(apo_state_get FINAL_TARGET_CPU '')
+    final_target_gpu=$(apo_state_get FINAL_TARGET_GPU '')
+    [[ $recommended_gpu == "$floor_gpu" && $final_target_gpu == "$floor_gpu" ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved edge/floor GPU identities disagree'
+        return 1
+    }
+    case $edge_status in
+        RUNNING)
+            [[ $recommended_cpu == "$edge_target" && $final_target_cpu == "$edge_target" && $(apo_state_get VALIDATED 0) == 0 ]] || {
+                APO_AUTO_VALIDATION_REASON='Running edge CPU state does not target the recorded edge clock or still claims final validation'
+                return 1
+            }
+            ;;
+        PASS)
+            [[ $recommended_cpu == "$edge_target" && $final_target_cpu == "$edge_target" ]] || { APO_AUTO_VALIDATION_REASON='Passed edge CPU identities disagree'; return 1; }
+            ;;
+        REJECTED|SKIPPED_KNOWN_BOUNDARY)
+            [[ $recommended_cpu == "$floor_cpu" && $final_target_cpu == "$floor_cpu" ]] || { APO_AUTO_VALIDATION_REASON='Retained production-floor identities disagree'; return 1; }
+            ;;
+        NOT_REQUESTED)
+            APO_AUTO_VALIDATION_REASON='Validated production-floor evidence has no edge disposition'
+            return 1
+            ;;
+    esac
+}
+
+apo_auto_validate_final_state() {
+    local edge_status stage duration validated validation_schema status phase expected_cpu expected_gpu expected_duration
+    local final_cpu final_gpu recommended_cpu recommended_gpu target_cpu target_gpu completion_claimed=0
+    edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
+    stage=$(apo_state_get FINAL_STAGE '')
+    duration=$(apo_state_get VALIDATION_DURATION_S '')
+    validated=$(apo_state_get VALIDATED 0)
+    validation_schema=$(apo_state_get VALIDATION_SCHEMA '')
+    status=$(apo_state_get STATUS '')
+    phase=$(apo_state_get PHASE '')
+    final_cpu=$(apo_state_get FINAL_CPU '')
+    final_gpu=$(apo_state_get FINAL_GPU '')
+    recommended_cpu=$(apo_state_get RECOMMENDED_CPU '')
+    recommended_gpu=$(apo_state_get RECOMMENDED_GPU '')
+    target_cpu=$(apo_state_get FINAL_TARGET_CPU '')
+    target_gpu=$(apo_state_get FINAL_TARGET_GPU '')
+    expected_cpu=$(apo_state_get SAFE_CPU '')
+    expected_gpu=$(apo_state_get SAFE_GPU '')
+    expected_duration=28800
+    case $edge_status in
+        RUNNING|PASS)
+            expected_cpu=$(apo_state_get EDGE_CPU_TARGET '')
+            expected_gpu=$(apo_state_get FLOOR_GPU '')
+            expected_duration=86400
+            ;;
+        REJECTED|SKIPPED_KNOWN_BOUNDARY)
+            expected_cpu=$(apo_state_get FLOOR_CPU '')
+            expected_gpu=$(apo_state_get FLOOR_GPU '')
+            ;;
+    esac
+    if [[ $edge_status == NOT_REQUESTED ]]; then
+        if [[ -n $recommended_cpu || -n $recommended_gpu ]]; then
+            [[ -n $expected_cpu && -n $expected_gpu && $recommended_cpu == "$expected_cpu" && $recommended_gpu == "$expected_gpu" ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved automatic recommendation does not match its verified production guards'
+                return 1
+            }
+        fi
+        if [[ -n $stage ]]; then
+            [[ $target_cpu == "$expected_cpu" && $target_gpu == "$expected_gpu" ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved automatic final-validation target does not match its verified production guards'
+                return 1
+            }
+        fi
+    fi
+    case $stage in
+        '') [[ -z $duration ]] || { APO_AUTO_VALIDATION_REASON='Saved final duration exists before final validation starts'; return 1; } ;;
+        PRE_STRESS_BOOT|CPU_STRESS|GPU_STRESS|ENDURANCE)
+            [[ -z $duration ]] || { APO_AUTO_VALIDATION_REASON="Saved final duration exists before endurance completed at stage $stage"; return 1; }
+            ;;
+        RETURN_NORMAL|BOOT_[1-9][0-9]*|NORMAL_[1-9][0-9]*|VERIFY|COMPLETE)
+            [[ $duration == "$expected_duration" ]] || { APO_AUTO_VALIDATION_REASON="Saved final stage $stage lacks its required ${expected_duration}s endurance evidence"; return 1; }
+            ;;
+        *) APO_AUTO_VALIDATION_REASON="Saved final stage is malformed: $stage"; return 1 ;;
+    esac
+    if [[ $edge_status == RUNNING && $stage == COMPLETE ]]; then
+        APO_AUTO_VALIDATION_REASON='Running edge CPU state cannot already be complete'
+        return 1
+    fi
+    if [[ $validated == 1 || -n $final_cpu || -n $final_gpu || -n $validation_schema || $stage == COMPLETE ||
+          $edge_status == PASS || $edge_status == REJECTED || $edge_status == SKIPPED_KNOWN_BOUNDARY ]]; then
+        completion_claimed=1
+    fi
+    if (( completion_claimed == 1 )); then
+        [[ $validated == 1 && $validation_schema == "$APO_CURRENT_VALIDATION_SCHEMA" && $status == PASS && $phase == COMPLETE && $stage == COMPLETE &&
+           -n $expected_cpu && -n $expected_gpu && $recommended_cpu == "$expected_cpu" && $recommended_gpu == "$expected_gpu" &&
+           $target_cpu == "$expected_cpu" && $target_gpu == "$expected_gpu" && $final_cpu == "$expected_cpu" && $final_gpu == "$expected_gpu" ]] || {
+            APO_AUTO_VALIDATION_REASON='Saved automatic completion is not bound to its guarded final clocks and current validation evidence'
+            return 1
+        }
+    elif [[ -n $final_cpu || -n $final_gpu || -n $validation_schema || $validated != 0 ]]; then
+        APO_AUTO_VALIDATION_REASON='Saved automatic run contains partial final-validation evidence'
+        return 1
+    fi
+}
+
+apo_validate_auto_resume_state() {
+    local auto_marker=${APO_AUTO_GENERATED_CANDIDATES:-0} edge_marker=${APO_EDGE_CPU_24H:-0}
+    local expected_cpu_csv expected_gpu_csv apply_status final_cpu final_gpu
+    APO_AUTO_VALIDATION_REASON=''
+    apo_auto_validate_boolean 'automatic-candidate' "$auto_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    apo_auto_validate_boolean 'edge CPU option' "$edge_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    if (( auto_marker == 1 )); then
+        if [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} != verified-default || ${APO_AUTO_BASELINE_EVIDENCE:-missing} != none ||
+              ${APO_AUTO_BASELINE_CPU:-missing} != "$APO_PI5_STOCK_CPU_MHZ" ||
+              ( ${APO_AUTO_BASELINE_GPU:-missing} != 800 && ${APO_AUTO_BASELINE_GPU:-missing} != 960 ) ||
+              ${APO_AUTO_BASELINE_VOLTAGE:-missing} != "$APO_PI5_STOCK_VOLTAGE_UV" ]]; then
+            apo_auto_state_invalid "Saved automatic stock-baseline evidence is missing or inconsistent: CPU=${APO_AUTO_BASELINE_CPU:-missing}, GPU=${APO_AUTO_BASELINE_GPU:-missing}, voltage=${APO_AUTO_BASELINE_VOLTAGE:-missing}, audit=${APO_AUTO_BASELINE_PROVENANCE:-missing}, evidence=${APO_AUTO_BASELINE_EVIDENCE:-missing}."
+            return 1
+        fi
+        expected_cpu_csv=$(apo_config_auto_ladder "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") || {
+            apo_auto_state_invalid 'Saved automatic CPU plan could not be reconstructed from its stock baseline.'
+            return 1
+        }
+        expected_gpu_csv=$(apo_config_auto_ladder "$APO_AUTO_BASELINE_GPU" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") || {
+            apo_auto_state_invalid 'Saved automatic GPU plan could not be reconstructed from its stock baseline.'
+            return 1
+        }
+        if [[ ${APO_CFG[CPU_CANDIDATES]:-} != "$expected_cpu_csv" || ${APO_CFG[GPU_CANDIDATES]:-} != "$expected_gpu_csv" ||
+              ${APO_CFG[BACKOFF_STEPS]:-missing} != 0 || ${APO_CFG[VOLTAGE_DELTA_UV]:-missing} != existing ||
+              ${APO_CFG[FINAL_DURATION_S]:-missing} != 28800 ||
+              ${APO_TEST_VOLTAGE:-missing} != "$APO_PI5_STOCK_VOLTAGE_UV" ]]; then
+            apo_auto_state_invalid 'Saved automatic candidate or voltage plan no longer matches the deterministic stock-derived plan.'
+            return 1
+        fi
+        apply_status=$(apo_state_get APPLY_STATUS NOT_APPLIED)
+        if [[ $apply_status == APPLIED ]]; then
+            final_cpu=$(apo_state_get FINAL_CPU '')
+            final_gpu=$(apo_state_get FINAL_GPU '')
+            if [[ -z $final_cpu || -z $final_gpu || $APO_NORMAL_CPU != "$final_cpu" || $APO_NORMAL_GPU != "$final_gpu" ||
+                  $APO_NORMAL_VOLTAGE != "$APO_TEST_VOLTAGE" ]]; then
+                apo_auto_state_invalid 'Applied automatic state does not bind its current normal clocks to the validated final clocks.'
+                return 1
+            fi
+        elif [[ $APO_NORMAL_CPU != "$APO_AUTO_BASELINE_CPU" || $APO_NORMAL_GPU != "$APO_AUTO_BASELINE_GPU" ||
+                $APO_NORMAL_VOLTAGE != "$APO_AUTO_BASELINE_VOLTAGE" ]]; then
+            apo_auto_state_invalid 'Unapplied automatic state no longer matches its immutable stock baseline.'
+            return 1
+        fi
+        apo_auto_validate_domain_state CPU || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+        apo_auto_validate_domain_state GPU || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    elif (( edge_marker == 1 )); then
+        apo_auto_state_invalid 'Edge CPU validation is saved on a non-auto run.'
+        return 1
+    fi
+    apo_auto_validate_edge_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    if (( auto_marker == 1 )); then
+        apo_auto_validate_final_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    fi
+}
+
+apo_last_passed_clock() {
+    local csv_value=$1 fallback=$2
+    local -a values=()
+    apo_csv_to_array "$csv_value" values
+    if (( ${#values[@]} > 0 )); then printf '%s' "${values[-1]}"; else printf '%s' "$fallback"; fi
+}
+
+apo_auto_refinement_ladder() {
+    local last_pass=$1 failure_boundary=$2 candidate ladder=''
+    candidate=$((last_pass + APO_AUTO_REFINE_STEP_MHZ))
+    while (( candidate < failure_boundary )); do
+        ladder=$(apo_append_csv "$ladder" "$candidate")
+        candidate=$((candidate + APO_AUTO_REFINE_STEP_MHZ))
+    done
+    printf '%s' "$ladder"
+}
+
+apo_auto_refine_domain() {
+    local domain=$1 normal_clock=$2 fixed_clock=$3 stress_kind=$4
+    local passed_key boundary_key candidates_key index_key complete_key candidate label passed_csv boundary refinement_csv index truncated_index truncated_csv
+    local -a refinement_candidates=()
+    case $domain in
+        CPU)
+            passed_key=PASSED_CPUS; boundary_key=CPU_FAILURE_BOUNDARY; candidates_key=CPU_REFINE_CANDIDATES
+            index_key=CPU_REFINE_INDEX; complete_key=CPU_REFINE_COMPLETE
+            ;;
+        GPU)
+            passed_key=PASSED_GPUS; boundary_key=GPU_FAILURE_BOUNDARY; candidates_key=GPU_REFINE_CANDIDATES
+            index_key=GPU_REFINE_INDEX; complete_key=GPU_REFINE_COMPLETE
+            ;;
+        *) apo_state_fail HARNESS_FAILURE "Unknown automatic refinement domain: $domain"; return 1 ;;
+    esac
+    apo_validate_auto_resume_state || return 1
+    [[ $(apo_state_get "$complete_key" 0) == 1 ]] && return 0
+    boundary=$(apo_state_get "$boundary_key" '')
+    if [[ -z $boundary ]]; then
+        apo_state_set "$complete_key" 1
+        apo_state_save
+        return 0
+    fi
+    refinement_csv=$(apo_state_get "$candidates_key" '')
+    if [[ -z $refinement_csv ]]; then
+        passed_csv=$(apo_state_get "$passed_key" '')
+        refinement_csv=$(apo_auto_refinement_ladder "$(apo_last_passed_clock "$passed_csv" "$normal_clock")" "$boundary")
+        apo_state_set "$candidates_key" "$refinement_csv"
+        apo_state_set "$index_key" 0
+        apo_state_save
+        apo_validate_auto_resume_state || return 1
+    fi
+    apo_csv_to_array "$refinement_csv" refinement_candidates
+    index=$(apo_state_get "$index_key" 0)
+    [[ $index =~ ^[0-9]+$ ]] && (( index <= ${#refinement_candidates[@]} )) || {
+        apo_state_fail HARNESS_FAILURE "Saved $domain refinement index is malformed: $index"
+        return 1
+    }
+    for (( ; index < ${#refinement_candidates[@]}; index++ )); do
+        candidate=${refinement_candidates[$index]}
+        if [[ $domain == CPU ]]; then
+            label="cpu-refine-${candidate}_gpu-${fixed_clock}"
+            if apo_test_candidate "$candidate" "$fixed_clock" "$label" "$stress_kind"; then
+                :
+            else
+                apo_summary_line "BOUNDARY CPU refinement $candidate MHz: $APO_LAST_CLASS — $APO_LAST_REASON"
+                if apo_class_is_edge_failure "$APO_LAST_CLASS"; then
+                    truncated_csv=''
+                    for ((truncated_index = 0; truncated_index < index; truncated_index++)); do
+                        truncated_csv=$(apo_append_csv "$truncated_csv" "${refinement_candidates[$truncated_index]}")
+                    done
+                    apo_state_set "$boundary_key" "$candidate"
+                    apo_state_set "$candidates_key" "$truncated_csv"
+                    apo_state_set "$index_key" "$index"
+                    apo_state_set "$complete_key" 1
+                    apo_state_save
+                    return 0
+                fi
+                apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"
+                return 1
+            fi
+        else
+            label="cpu-${fixed_clock}_gpu-refine-${candidate}"
+            if apo_test_candidate "$fixed_clock" "$candidate" "$label" "$stress_kind"; then
+                :
+            else
+                apo_summary_line "BOUNDARY GPU refinement $candidate MHz: $APO_LAST_CLASS — $APO_LAST_REASON"
+                if apo_class_is_edge_failure "$APO_LAST_CLASS"; then
+                    truncated_csv=''
+                    for ((truncated_index = 0; truncated_index < index; truncated_index++)); do
+                        truncated_csv=$(apo_append_csv "$truncated_csv" "${refinement_candidates[$truncated_index]}")
+                    done
+                    apo_state_set "$boundary_key" "$candidate"
+                    apo_state_set "$candidates_key" "$truncated_csv"
+                    apo_state_set "$index_key" "$index"
+                    apo_state_set "$complete_key" 1
+                    apo_state_save
+                    return 0
+                fi
+                apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"
+                return 1
+            fi
+        fi
+        passed_csv=$(apo_state_get "$passed_key" '')
+        passed_csv=$(apo_append_csv "$passed_csv" "$candidate")
+        apo_state_set "$passed_key" "$passed_csv"
+        apo_state_set "$index_key" "$((index + 1))"
+        apo_state_save
+        apo_summary_line "PASS $domain refinement $candidate MHz"
+    done
+    apo_state_set "$complete_key" 1
+    apo_state_save
+}
+
+apo_auto_verify_guard() {
+    local domain=$1 normal_clock=$2 fixed_clock=$3 stress_kind=$4 guard_mhz=$5
+    local passed_key boundary_key target_key verified_key safe_key passed_csv boundary highest target label
+    case $domain in
+        CPU)
+            passed_key=PASSED_CPUS; boundary_key=CPU_FAILURE_BOUNDARY; target_key=CPU_GUARD_TARGET
+            verified_key=CPU_GUARD_VERIFIED; safe_key=SAFE_CPU
+            ;;
+        GPU)
+            passed_key=PASSED_GPUS; boundary_key=GPU_FAILURE_BOUNDARY; target_key=GPU_GUARD_TARGET
+            verified_key=GPU_GUARD_VERIFIED; safe_key=SAFE_GPU
+            ;;
+        *) apo_state_fail HARNESS_FAILURE "Unknown automatic guard domain: $domain"; return 1 ;;
+    esac
+    apo_validate_auto_resume_state || return 1
+    [[ $(apo_state_get "$verified_key" 0) == 1 ]] && return 0
+    passed_csv=$(apo_state_get "$passed_key" '')
+    boundary=$(apo_state_get "$boundary_key" '')
+    highest=$(apo_last_passed_clock "$passed_csv" "$normal_clock")
+    target=$(apo_state_get "$target_key" '')
+    if [[ -z $target ]]; then
+        if [[ -n $boundary ]]; then target=$((boundary - guard_mhz)); else target=$((highest - guard_mhz)); fi
+        (( target < normal_clock )) && target=$normal_clock
+        apo_state_set "$target_key" "$target"
+        apo_state_save
+        apo_validate_auto_resume_state || return 1
+    fi
+    while :; do
+        if (( target == normal_clock )) || apo_csv_contains_clock "$passed_csv" "$target"; then
+            apo_state_set "$safe_key" "$target"
+            apo_state_set "$verified_key" 1
+            apo_state_save
+            apo_summary_line "AUTO GUARD $domain: selected tested $target MHz (${guard_mhz} MHz below ${boundary:+failure boundary }${boundary:-highest ceiling pass})"
+            return 0
+        fi
+        if [[ $domain == CPU ]]; then
+            label="cpu-guard-${target}_gpu-${fixed_clock}"
+            if apo_test_candidate "$target" "$fixed_clock" "$label" "$stress_kind"; then
+                :
+            else
+                apo_summary_line "BOUNDARY CPU guard candidate $target MHz: $APO_LAST_CLASS — $APO_LAST_REASON"
+                if ! apo_class_is_edge_failure "$APO_LAST_CLASS"; then apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"; return 1; fi
+                apo_state_set "$boundary_key" "$target"
+                target=$((target - guard_mhz))
+                (( target < normal_clock )) && target=$normal_clock
+                apo_state_set "$target_key" "$target"
+                apo_state_save
+                continue
+            fi
+        else
+            label="cpu-${fixed_clock}_gpu-guard-${target}"
+            if apo_test_candidate "$fixed_clock" "$target" "$label" "$stress_kind"; then
+                :
+            else
+                apo_summary_line "BOUNDARY GPU guard candidate $target MHz: $APO_LAST_CLASS — $APO_LAST_REASON"
+                if ! apo_class_is_edge_failure "$APO_LAST_CLASS"; then apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"; return 1; fi
+                apo_state_set "$boundary_key" "$target"
+                target=$((target - guard_mhz))
+                (( target < normal_clock )) && target=$normal_clock
+                apo_state_set "$target_key" "$target"
+                apo_state_save
+                continue
+            fi
+        fi
+        apo_state_set "$safe_key" "$target"
+        apo_state_set "$verified_key" 1
+        apo_state_save
+        apo_summary_line "PASS $domain production guard candidate $target MHz"
+        return 0
+    done
+}
+
 apo_sweep_cpu() {
-    local index candidate passed_csv stress_kind
+    local index candidate passed_csv stress_kind boundary cpu_guard
+    apo_validate_auto_resume_state || return 1
     index=$(apo_state_get CPU_INDEX 0)
     passed_csv=$(apo_state_get PASSED_CPUS '')
     stress_kind=$([[ $APO_REQUIRE_GPU_STRESS == 1 ]] && printf combined || printf cpu)
-    for (( ; index < ${#APO_CPU_CANDIDATES[@]}; index++ )); do
+    boundary=$(apo_state_get CPU_FAILURE_BOUNDARY '')
+    for (( ; index < ${#APO_CPU_CANDIDATES[@]} && ${#boundary} == 0; index++ )); do
         candidate=${APO_CPU_CANDIDATES[$index]}
         apo_state_set CPU_INDEX "$index"
         apo_state_save
@@ -162,23 +756,34 @@ apo_sweep_cpu() {
             apo_summary_line "PASS CPU $candidate MHz at GPU $APO_NORMAL_GPU MHz"
         else
             apo_summary_line "BOUNDARY CPU $candidate MHz: $APO_LAST_CLASS — $APO_LAST_REASON"
-            if apo_class_is_edge_failure "$APO_LAST_CLASS"; then break; fi
+            if apo_class_is_edge_failure "$APO_LAST_CLASS"; then
+                boundary=$candidate
+                apo_state_set CPU_FAILURE_BOUNDARY "$boundary"
+                apo_state_save
+                break
+            fi
             apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"
             return 1
         fi
     done
-    if (( ${#APO_CPU_CANDIDATES[@]} > 0 )) && [[ -z $passed_csv ]]; then
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+        apo_auto_refine_domain CPU "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$stress_kind" || return 1
+        cpu_guard=$APO_AUTO_CPU_GUARD_MHZ
+        apo_auto_verify_guard CPU "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$stress_kind" "$cpu_guard" || return 1
+    elif (( ${#APO_CPU_CANDIDATES[@]} > 0 )) && [[ -z $passed_csv ]]; then
         apo_state_fail STABILITY_FAILURE 'No CPU candidate passed the complete candidate gate.'
         return 1
     fi
 }
 
 apo_sweep_gpu() {
-    local index candidate passed_csv safe_cpu
+    local index candidate passed_csv safe_cpu boundary
+    apo_validate_auto_resume_state || return 1
     index=$(apo_state_get GPU_INDEX 0)
     passed_csv=$(apo_state_get PASSED_GPUS '')
     safe_cpu=$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")
-    for (( ; index < ${#APO_GPU_CANDIDATES[@]}; index++ )); do
+    boundary=$(apo_state_get GPU_FAILURE_BOUNDARY '')
+    for (( ; index < ${#APO_GPU_CANDIDATES[@]} && ${#boundary} == 0; index++ )); do
         candidate=${APO_GPU_CANDIDATES[$index]}
         apo_state_set GPU_INDEX "$index"
         apo_state_save
@@ -190,12 +795,20 @@ apo_sweep_gpu() {
             apo_summary_line "PASS GPU $candidate MHz at CPU $safe_cpu MHz"
         else
             apo_summary_line "BOUNDARY GPU $candidate MHz: $APO_LAST_CLASS — $APO_LAST_REASON"
-            if apo_class_is_edge_failure "$APO_LAST_CLASS"; then break; fi
+            if apo_class_is_edge_failure "$APO_LAST_CLASS"; then
+                boundary=$candidate
+                apo_state_set GPU_FAILURE_BOUNDARY "$boundary"
+                apo_state_save
+                break
+            fi
             apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"
             return 1
         fi
     done
-    if (( ${#APO_GPU_CANDIDATES[@]} > 0 )) && [[ -z $passed_csv ]]; then
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+        apo_auto_refine_domain GPU "$APO_NORMAL_GPU" "$safe_cpu" combined || return 1
+        apo_auto_verify_guard GPU "$APO_NORMAL_GPU" "$safe_cpu" combined "$APO_AUTO_GPU_GUARD_MHZ" || return 1
+    elif (( ${#APO_GPU_CANDIDATES[@]} > 0 )) && [[ -z $passed_csv ]]; then
         apo_state_fail STABILITY_FAILURE 'No GPU candidate passed the complete candidate gate.'
         return 1
     fi
@@ -203,10 +816,20 @@ apo_sweep_gpu() {
 
 apo_select_conservative_clocks() {
     local passed_cpu passed_gpu recommended_cpu recommended_gpu
+    apo_validate_auto_resume_state || return 1
     passed_cpu=$(apo_state_get PASSED_CPUS '')
     passed_gpu=$(apo_state_get PASSED_GPUS '')
-    if [[ -n $passed_cpu ]]; then recommended_cpu=$(apo_select_with_backoff "$passed_cpu" "${APO_CFG[BACKOFF_STEPS]}" "$APO_NORMAL_CPU"); else recommended_cpu=$APO_NORMAL_CPU; fi
-    if [[ -n $passed_gpu ]]; then recommended_gpu=$(apo_select_with_backoff "$passed_gpu" "${APO_CFG[BACKOFF_STEPS]}" "$APO_NORMAL_GPU"); else recommended_gpu=$APO_NORMAL_GPU; fi
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+        recommended_cpu=$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")
+        recommended_gpu=$(apo_state_get SAFE_GPU "$APO_NORMAL_GPU")
+    else
+        if [[ -n $passed_cpu ]]; then recommended_cpu=$(apo_select_with_backoff "$passed_cpu" "${APO_CFG[BACKOFF_STEPS]}" "$APO_NORMAL_CPU"); else recommended_cpu=$APO_NORMAL_CPU; fi
+        if [[ -n $passed_gpu ]]; then recommended_gpu=$(apo_select_with_backoff "$passed_gpu" "${APO_CFG[BACKOFF_STEPS]}" "$APO_NORMAL_GPU"); else recommended_gpu=$APO_NORMAL_GPU; fi
+    fi
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )) && (( recommended_cpu == APO_NORMAL_CPU && recommended_gpu == APO_NORMAL_GPU )); then
+        apo_state_fail STABILITY_FAILURE 'Automatic refinement found no buffered overclock above the verified stock baseline.'
+        return 1
+    fi
     apo_state_set SAFE_CPU "$recommended_cpu"
     apo_state_set SAFE_GPU "$recommended_gpu"
     apo_state_set RECOMMENDED_CPU "$recommended_cpu"
@@ -219,8 +842,13 @@ apo_select_conservative_clocks() {
     apo_summary_line ''
     apo_summary_line "Maximum observed CPU passes: ${passed_cpu:-none}"
     apo_summary_line "Maximum observed GPU passes: ${passed_gpu:-none}"
-    apo_summary_line "Conservative recommendation after ${APO_CFG[BACKOFF_STEPS]} backoff step(s): CPU $recommended_cpu MHz / GPU $recommended_gpu MHz"
-    apo_event selection PASS '' "Selected conservative recommendation CPU=$recommended_cpu GPU=$recommended_gpu; final clocks remain pending validation"
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+        apo_summary_line "Buffered automatic recommendation: CPU $recommended_cpu MHz / GPU $recommended_gpu MHz"
+        apo_event selection PASS '' "Selected refined and guarded automatic recommendation CPU=$recommended_cpu GPU=$recommended_gpu; final clocks remain pending validation"
+    else
+        apo_summary_line "Conservative recommendation after ${APO_CFG[BACKOFF_STEPS]} backoff step(s): CPU $recommended_cpu MHz / GPU $recommended_gpu MHz"
+        apo_event selection PASS '' "Selected conservative recommendation CPU=$recommended_cpu GPU=$recommended_gpu; final clocks remain pending validation"
+    fi
 }
 
 apo_final_checkpoint() {
@@ -239,9 +867,43 @@ apo_final_identity_matches() {
 }
 
 apo_final_record_failure() {
-    local recovery_context=$1 failure_class=$2 failure_reason=$3
+    local recovery_context=$1 failure_class=$2 failure_reason=$3 floor_cpu floor_gpu
+    if ! apo_recover_preserving_failure "$recovery_context" "$failure_class" "$failure_reason"; then
+        apo_state_clear_final_validation
+        apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+        return 1
+    fi
+    if [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == RUNNING ]] &&
+       apo_class_is_edge_failure "$failure_class" &&
+       [[ $(apo_state_get FLOOR_VALIDATED 0) == 1 &&
+          $(apo_state_get FLOOR_VALIDATION_SCHEMA '') == "$APO_CURRENT_VALIDATION_SCHEMA" ]]; then
+        APO_AUTO_VALIDATION_REASON=''
+        apo_auto_validate_edge_state || {
+            apo_auto_state_invalid "${APO_AUTO_VALIDATION_REASON:-Saved optional edge evidence is invalid.}"
+            return 1
+        }
+        floor_cpu=$(apo_state_get FLOOR_CPU '')
+        floor_gpu=$(apo_state_get FLOOR_GPU '')
+        [[ -n $floor_cpu && -n $floor_gpu ]] || {
+            apo_state_clear_final_validation
+            apo_state_fail HARNESS_FAILURE 'The optional edge test failed but its validated production-floor clocks are missing.'
+            return 1
+        }
+        apo_state_set EDGE_CPU_STATUS REJECTED
+        apo_state_set EDGE_CPU_FAILURE_CLASS "$failure_class"
+        apo_state_set EDGE_CPU_FAILURE_REASON "$failure_reason"
+        apo_state_set RECOMMENDED_CPU "$floor_cpu"
+        apo_state_set RECOMMENDED_GPU "$floor_gpu"
+        apo_state_set FINAL_TARGET_CPU "$floor_cpu"
+        apo_state_set FINAL_TARGET_GPU "$floor_gpu"
+        apo_state_complete "$floor_cpu" "$floor_gpu" 28800
+        apo_summary_line "OPTIONAL EDGE CPU: REJECTED — retained validated production floor CPU $floor_cpu MHz / GPU $floor_gpu MHz"
+        apo_event edge-cpu-24h WARN "$failure_class" "Optional edge CPU clock was rejected: $failure_reason; retained validated production floor CPU=$floor_cpu GPU=$floor_gpu"
+        return 0
+    fi
     apo_state_clear_final_validation
-    apo_record_failure_after_recovery "$recovery_context" "$failure_class" "$failure_reason"
+    apo_state_fail "$failure_class" "$failure_reason"
+    return 1
 }
 
 apo_final_recovery_failure() {
@@ -251,12 +913,15 @@ apo_final_recovery_failure() {
 }
 
 apo_final_validation() {
-    local recommended_cpu recommended_gpu final_kind failure_class failure_reason stage boot_number normal_number
+    local recommended_cpu recommended_gpu final_kind failure_class failure_reason stage boot_number normal_number endurance_duration edge_target cpu_boundary
     local final_boots=${APO_CFG[FINAL_BOOTS]}
+    apo_validate_auto_resume_state || return 1
     recommended_cpu=$(apo_state_get RECOMMENDED_CPU "$(apo_state_get SAFE_CPU '')")
     recommended_gpu=$(apo_state_get RECOMMENDED_GPU "$(apo_state_get SAFE_GPU '')")
     [[ -n $recommended_cpu && -n $recommended_gpu ]] || { apo_state_clear_final_validation; apo_state_fail HARNESS_FAILURE 'Final validation has no saved conservative recommendation.'; return 1; }
     final_kind=$([[ $APO_REQUIRE_GPU_STRESS == 1 ]] && printf combined || printf cpu)
+    endurance_duration=${APO_CFG[FINAL_DURATION_S]}
+    [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == RUNNING ]] && endurance_duration=86400
     if ! apo_final_identity_matches "$recommended_cpu" "$recommended_gpu" || [[ -z $(apo_state_get FINAL_STAGE '') ]]; then
         apo_state_clear_final_validation
         apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" PRE_STRESS_BOOT
@@ -267,7 +932,7 @@ apo_final_validation() {
             PRE_STRESS_BOOT)
                 if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-pre-stress-boot; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    apo_final_record_failure final-pre-stress-recovery "$failure_class" "$failure_reason"
+                    if apo_final_record_failure final-pre-stress-recovery "$failure_class" "$failure_reason"; then return 0; fi
                     return 1
                 fi
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" CPU_STRESS
@@ -276,13 +941,13 @@ apo_final_validation() {
                 if ! apo_candidate_tryboot_active_in_state "$recommended_cpu" "$recommended_gpu"; then
                     if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-cpu-resume-boot; then
                         failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                        apo_final_record_failure final-cpu-resume-recovery "$failure_class" "$failure_reason"
+                        if apo_final_record_failure final-cpu-resume-recovery "$failure_class" "$failure_reason"; then return 0; fi
                         return 1
                     fi
                 fi
                 if ! apo_run_stress cpu "${APO_CFG[CANDIDATE_DURATION_S]}" final-cpu-only 0; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    apo_final_record_failure final-cpu-recovery "$failure_class" "$failure_reason"
+                    if apo_final_record_failure final-cpu-recovery "$failure_class" "$failure_reason"; then return 0; fi
                     return 1
                 fi
                 if (( APO_REQUIRE_GPU_STRESS == 1 )); then
@@ -295,13 +960,13 @@ apo_final_validation() {
                 if ! apo_candidate_tryboot_active_in_state "$recommended_cpu" "$recommended_gpu"; then
                     if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-gpu-resume-boot; then
                         failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                        apo_final_record_failure final-gpu-resume-recovery "$failure_class" "$failure_reason"
+                        if apo_final_record_failure final-gpu-resume-recovery "$failure_class" "$failure_reason"; then return 0; fi
                         return 1
                     fi
                 fi
                 if ! apo_run_stress gpu "${APO_CFG[CANDIDATE_DURATION_S]}" final-gpu-only 0; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    apo_final_record_failure final-gpu-recovery "$failure_class" "$failure_reason"
+                    if apo_final_record_failure final-gpu-recovery "$failure_class" "$failure_reason"; then return 0; fi
                     return 1
                 fi
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" ENDURANCE
@@ -310,20 +975,21 @@ apo_final_validation() {
                 if ! apo_candidate_tryboot_active_in_state "$recommended_cpu" "$recommended_gpu"; then
                     if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-endurance-resume-boot; then
                         failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                        apo_final_record_failure final-endurance-resume-recovery "$failure_class" "$failure_reason"
+                        if apo_final_record_failure final-endurance-resume-recovery "$failure_class" "$failure_reason"; then return 0; fi
                         return 1
                     fi
                 fi
-                if ! apo_run_stress "$final_kind" "${APO_CFG[FINAL_DURATION_S]}" final-endurance 1; then
+                if ! apo_run_stress "$final_kind" "$endurance_duration" final-endurance 1; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason"
+                    if apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason"; then return 0; fi
                     return 1
                 fi
                 if ! apo_health_check "$recommended_cpu" "$recommended_gpu" "$APO_TEST_VOLTAGE" final-post-endurance-health; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    apo_final_record_failure final-health-recovery "$failure_class" "$failure_reason"
+                    if apo_final_record_failure final-health-recovery "$failure_class" "$failure_reason"; then return 0; fi
                     return 1
                 fi
+                apo_state_set VALIDATION_DURATION_S "$endurance_duration"
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" RETURN_NORMAL
                 ;;
             RETURN_NORMAL)
@@ -344,7 +1010,7 @@ apo_final_validation() {
                 fi
                 if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" "final-post-stress-boot-${boot_number}"; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    apo_final_record_failure "final-post-stress-recovery-${boot_number}" "$failure_class" "$failure_reason"
+                    if apo_final_record_failure "final-post-stress-recovery-${boot_number}" "$failure_class" "$failure_reason"; then return 0; fi
                     return 1
                 fi
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" "NORMAL_${boot_number}"
@@ -370,12 +1036,51 @@ apo_final_validation() {
                 ;;
             VERIFY)
                 if ! apo_verify_permanent_hash final-completion; then apo_final_recovery_failure "$APO_LAST_REASON"; return 1; fi
-                apo_state_complete "$recommended_cpu" "$recommended_gpu"
+                if (( ${APO_EDGE_CPU_24H:-0} == 1 )) &&
+                   [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED ]]; then
+                    apo_state_set FLOOR_CPU "$recommended_cpu"
+                    apo_state_set FLOOR_GPU "$recommended_gpu"
+                    apo_state_set FLOOR_DURATION_S "${APO_CFG[FINAL_DURATION_S]}"
+                    apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+                    apo_state_set FLOOR_VALIDATED 1
+                    edge_target=$((recommended_cpu + APO_AUTO_REFINE_STEP_MHZ))
+                    cpu_boundary=$(apo_state_get CPU_FAILURE_BOUNDARY '')
+                    if (( edge_target > APO_AUTO_CPU_MAX_MHZ )) ||
+                       { [[ -n $cpu_boundary ]] && (( edge_target >= cpu_boundary )); }; then
+                        apo_state_set EDGE_CPU_TARGET "$edge_target"
+                        apo_state_set EDGE_CPU_STATUS SKIPPED_KNOWN_BOUNDARY
+                        apo_state_complete "$recommended_cpu" "$recommended_gpu" 28800
+                        apo_summary_line "OPTIONAL EDGE CPU: SKIPPED — ${edge_target} MHz meets or exceeds the known failure/ceiling boundary; retained validated production floor."
+                        apo_event edge-cpu-24h WARN STABILITY_FAILURE "Skipped known unsafe edge CPU target $edge_target MHz; retained validated production floor CPU=$recommended_cpu GPU=$recommended_gpu"
+                        return 0
+                    fi
+                    apo_state_set EDGE_CPU_TARGET "$edge_target"
+                    apo_state_set EDGE_CPU_STATUS RUNNING
+                    apo_state_clear_final_validation
+                    apo_state_set RECOMMENDED_CPU "$edge_target"
+                    apo_state_set RECOMMENDED_GPU "$recommended_gpu"
+                    apo_state_set FINAL_TARGET_CPU "$edge_target"
+                    apo_state_set FINAL_TARGET_GPU "$recommended_gpu"
+                    apo_state_set FINAL_STAGE PRE_STRESS_BOOT
+                    apo_state_set PHASE FINAL_VALIDATION
+                    apo_state_set SUBPHASE EDGE_CPU_24H_PRE_STRESS_BOOT
+                    apo_state_set STATUS RUNNING
+                    apo_state_save
+                    apo_summary_line "PRODUCTION FLOOR: PASS — CPU $recommended_cpu MHz / GPU $recommended_gpu MHz; beginning optional 24-hour CPU edge validation at $edge_target MHz."
+                    apo_event production-floor PASS '' "Eight-hour production floor validated at CPU=$recommended_cpu GPU=$recommended_gpu; beginning optional 24-hour CPU edge validation at $edge_target MHz"
+                    recommended_cpu=$edge_target
+                    endurance_duration=86400
+                    continue
+                fi
+                if [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == RUNNING ]]; then
+                    apo_state_set EDGE_CPU_STATUS PASS
+                fi
+                apo_state_complete "$recommended_cpu" "$recommended_gpu" "$endurance_duration"
                 apo_summary_line ''
                 apo_summary_line 'FINAL VALIDATION: PASS'
                 apo_summary_line "Final validated clocks: over_voltage_delta=$APO_TEST_VOLTAGE, arm_freq=$recommended_cpu, $APO_GPU_KEY=$recommended_gpu"
                 apo_summary_line 'Permanent config was not modified. Use apply with the validated run for an exact diff and separate confirmation.'
-                apo_event final-validation PASS '' "Endurance, post-stress health, ${final_boots} configured candidate boots, normal recovery, and permanent-config hash all passed."
+                apo_event final-validation PASS '' "${endurance_duration}s endurance, post-stress health, ${final_boots} configured candidate boots, normal recovery, and permanent-config hash all passed."
                 return 0
                 ;;
             COMPLETE)
@@ -416,11 +1121,22 @@ apo_run_tuning() {
                 if [[ $(apo_state_get SUBPHASE) == CPU ]]; then
                     local passed_cpu safe_cpu
                     passed_cpu=$(apo_state_get PASSED_CPUS '')
-                    if [[ -n $passed_cpu ]]; then safe_cpu=$(apo_select_with_backoff "$passed_cpu" "${APO_CFG[BACKOFF_STEPS]}" "$APO_NORMAL_CPU"); else safe_cpu=$APO_NORMAL_CPU; fi
+                    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+                        safe_cpu=$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")
+                    elif [[ -n $passed_cpu ]]; then
+                        safe_cpu=$(apo_select_with_backoff "$passed_cpu" "${APO_CFG[BACKOFF_STEPS]}" "$APO_NORMAL_CPU")
+                    else
+                        safe_cpu=$APO_NORMAL_CPU
+                    fi
                     apo_state_set SAFE_CPU "$safe_cpu"; apo_state_save
-                    if (( APO_NEED_GPU == 1 )); then apo_state_phase GPU_SWEEP READY RUNNING; else apo_select_conservative_clocks; apo_state_phase FINAL_VALIDATION READY RUNNING; fi
+                    if (( APO_NEED_GPU == 1 )); then
+                        apo_state_phase GPU_SWEEP READY RUNNING
+                    else
+                        apo_select_conservative_clocks || return 1
+                        apo_state_phase FINAL_VALIDATION READY RUNNING
+                    fi
                 else
-                    apo_select_conservative_clocks
+                    apo_select_conservative_clocks || return 1
                     apo_state_phase FINAL_VALIDATION READY RUNNING
                 fi
                 ;;

@@ -92,6 +92,7 @@ assert_fresh_apply_refused() {
     apo_state_set STATUS PASS
     apo_state_set PHASE COMPLETE
     apo_state_set CFG_FINAL_DURATION_S "$APO_MIN_FINAL_DURATION_S"
+    apo_state_set VALIDATION_DURATION_S "$APO_MIN_FINAL_DURATION_S"
     set +e
     output=$(apo_apply_recommendation 2>&1)
     status=$?
@@ -364,6 +365,23 @@ apo_reconcile_interrupted_apply
 [[ $ROUTE == OLD:INTERRUPTED_NO_CHANGE ]]
 [[ $(apo_state_get APPLY_STATUS) == INTERRUPTED_NO_CHANGE ]]
 
+# A successful apply updates the live normal clocks without destroying the
+# immutable stock evidence used to validate a completed automatic run later.
+reset_apply_fixture
+apo_state_set AUTO_BASELINE_CPU 2400
+apo_state_set AUTO_BASELINE_GPU 800
+apo_state_set AUTO_BASELINE_VOLTAGE 0
+apo_state_set AUTO_BASELINE_PROVENANCE verified-default
+apo_state_set AUTO_BASELINE_EVIDENCE none
+apo_apply_mark_applied "$NEW_HASH" 3000 900 0 /tmp/fixture-backup
+[[ $(apo_state_get NORMAL_CPU) == 3000 ]]
+[[ $(apo_state_get NORMAL_GPU) == 900 ]]
+[[ $(apo_state_get AUTO_BASELINE_CPU) == 2400 ]]
+[[ $(apo_state_get AUTO_BASELINE_GPU) == 800 ]]
+[[ $(apo_state_get AUTO_BASELINE_VOLTAGE) == 0 ]]
+[[ $(apo_state_get AUTO_BASELINE_PROVENANCE) == verified-default ]]
+[[ $(apo_state_get AUTO_BASELINE_EVIDENCE) == none ]]
+
 reset_apply_fixture
 CURRENT_HASH=$NEW_HASH
 apo_reconcile_interrupted_apply
@@ -405,7 +423,7 @@ fi
 [[ $(apo_state_get APPLY_FAILURE_REASON) == *'SSH did not become reachable'* ]]
 
 # Both a fresh apply and an interrupted-apply reconciliation must pass the
-# same schema-5 tryboot-clear gate before inspecting or mutating permanent
+# same current-schema tryboot-clear gate before inspecting or mutating permanent
 # config. Every persisted ownership signal independently keeps that gate shut.
 while IFS='|' read -r state_key state_value; do
     [[ -n $state_key ]] || continue
@@ -566,6 +584,7 @@ apo_state_set VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
 apo_state_set STATUS PASS
 apo_state_set PHASE COMPLETE
 apo_state_set CFG_FINAL_DURATION_S "$APO_MIN_FINAL_DURATION_S"
+apo_state_set VALIDATION_DURATION_S "$APO_MIN_FINAL_DURATION_S"
 APO_BOOT_CONFIG=/boot/config.txt
 APO_GPU_KEY=gpu_freq
 APO_TEST_VOLTAGE=0
@@ -655,6 +674,7 @@ short_output=$(
     apo_state_set PHASE COMPLETE
     apo_state_set VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
     apo_state_set CFG_FINAL_DURATION_S 60
+    apo_state_set VALIDATION_DURATION_S 60
     apo_apply_recommendation
 ) 2>&1
 )
@@ -664,7 +684,7 @@ if (( short_status != APO_EXIT_APPLY )); then
     echo 'sub-eight-hour validation was incorrectly accepted for apply' >&2
     exit 1
 fi
-[[ $short_output == *'Permanent apply requires a saved final endurance duration of at least eight hours.'* ]]
+[[ $short_output == *'Permanent apply requires completed final-endurance evidence of at least eight hours.'* ]]
 grep -q 'apo_apply_force_normal_boot_and_health.*apply-existing-config-health' "$ROOT/lib/apply.sh"
 
 printf 'test_apply_resume: PASS\n'

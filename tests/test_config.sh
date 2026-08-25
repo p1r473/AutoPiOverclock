@@ -67,10 +67,11 @@ APO_CONFIG_FILE=''
 APO_MODE_REQUESTED=auto
 apo_config_load_for_new_run <&9
 (( APO_AUTO_CANDIDATES_PENDING == 1 ))
+(( APO_AUTO_GENERATED_CANDIDATES == 1 ))
 [[ -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]
 
 resolve_discovered_auto_plan() {
-    local profile=$1 normal_cpu=$2 normal_gpu=$3 normal_voltage=$4
+    local profile=$1 normal_cpu=$2 normal_gpu=$3 normal_voltage=$4 provenance=${5:-verified-default} evidence=${6:-none}
     APO_MODE_EFFECTIVE=headless
     APO_PROFILE=$profile
     APO_DISCOVERY=(
@@ -84,6 +85,8 @@ resolve_discovered_auto_plan() {
         [NORMAL_CPU]="$normal_cpu"
         [NORMAL_GPU]="$normal_gpu"
         [NORMAL_VOLTAGE]="$normal_voltage"
+        [PERMANENT_TUNING_PROVENANCE]="$provenance"
+        [PERMANENT_TUNING_EVIDENCE]="$evidence"
         [PERMANENT_HASH]=$(printf 'b%.0s' {1..64})
     )
     apo_context_from_discovery
@@ -111,6 +114,7 @@ exec 9<&-
 [[ ${APO_CFG[GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
 [[ ${APO_CPU_CANDIDATES[*]} == '2500 2600 2700 2800 2900 3000 3100 3200' ]]
 [[ ${APO_GPU_CANDIDATES[*]} == '1000 1050 1100 1150 1200' ]]
+[[ ${APO_CFG[BACKOFF_STEPS]} == 0 ]]
 DEBIAN_AUTO_PLAN="${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}"
 finalize_discovered_fixture debian-auto
 (( APO_NEED_GPU == 1 && APO_REQUIRE_GPU_STRESS == 1 ))
@@ -120,6 +124,8 @@ APO_STATE=()
 apo_state_load "$TEMP_DIR/debian-auto.state"
 [[ ${APO_STATE[CFG_CPU_CANDIDATES]} == '2500,2600,2700,2800,2900,3000,3100,3200' ]]
 [[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
+[[ ${APO_STATE[CFG_AUTO_GENERATED_CANDIDATES]} == 1 ]]
+[[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 0 ]]
 grep -Fxq 'cpu_candidates_mhz=2500,2600,2700,2800,2900,3000,3100,3200' "$TEMP_DIR/debian-auto.conf"
 grep -Fxq 'gpu_candidates_mhz=1000,1050,1100,1150,1200' "$TEMP_DIR/debian-auto.conf"
 APO_COMMAND=run
@@ -130,53 +136,89 @@ apo_config_load_for_new_run
 resolve_discovered_auto_plan debian 2400 960 0
 [[ "${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}" == "$DEBIAN_AUTO_PLAN" ]]
 
+(
+    APO_COMMAND=prepare
+    APO_DRY_RUN=0
+    APO_CONFIG_FILE=''
+    APO_MODE_REQUESTED=auto
+    APO_EDGE_CPU_24H=1
+    apo_config_load_for_new_run
+    resolve_discovered_auto_plan debian 2400 960 0
+    [[ ${APO_CFG[FINAL_DURATION_S]} == 28800 ]]
+    finalize_discovered_fixture debian-edge-auto
+    APO_STATE=()
+    apo_state_load "$TEMP_DIR/debian-edge-auto.state"
+    [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 1 ]]
+)
+
 APO_COMMAND=run
 APO_DRY_RUN=0
 APO_CONFIG_FILE=''
 APO_MODE_REQUESTED=auto
 apo_config_load_for_new_run
-resolve_discovered_auto_plan batocera 3000 800 50000
-[[ ${APO_CFG[CPU_CANDIDATES]} == '3100,3200' ]]
+resolve_discovered_auto_plan batocera 2400 800 0
+[[ ${APO_CFG[CPU_CANDIDATES]} == '2500,2600,2700,2800,2900,3000,3100,3200' ]]
 [[ ${APO_CFG[GPU_CANDIDATES]} == '850,900,950,1000,1050,1100,1150,1200' ]]
-[[ ${APO_CPU_CANDIDATES[*]} == '3100 3200' ]]
+[[ ${APO_CPU_CANDIDATES[*]} == '2500 2600 2700 2800 2900 3000 3100 3200' ]]
 [[ ${APO_GPU_CANDIDATES[*]} == '850 900 950 1000 1050 1100 1150 1200' ]]
 BATOCERA_AUTO_PLAN="${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}"
 finalize_discovered_fixture batocera-auto
 (( APO_NEED_GPU == 1 && APO_REQUIRE_GPU_STRESS == 1 ))
 APO_STATE=()
 apo_state_load "$TEMP_DIR/batocera-auto.state"
-[[ ${APO_STATE[CFG_CPU_CANDIDATES]} == '3100,3200' ]]
+[[ ${APO_STATE[CFG_CPU_CANDIDATES]} == '2500,2600,2700,2800,2900,3000,3100,3200' ]]
 [[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '850,900,950,1000,1050,1100,1150,1200' ]]
-grep -Fxq 'cpu_candidates_mhz=3100,3200' "$TEMP_DIR/batocera-auto.conf"
+grep -Fxq 'cpu_candidates_mhz=2500,2600,2700,2800,2900,3000,3100,3200' "$TEMP_DIR/batocera-auto.conf"
 grep -Fxq 'gpu_candidates_mhz=850,900,950,1000,1050,1100,1150,1200' "$TEMP_DIR/batocera-auto.conf"
 APO_COMMAND=run
 APO_DRY_RUN=0
 APO_CONFIG_FILE=''
 APO_MODE_REQUESTED=auto
 apo_config_load_for_new_run
-resolve_discovered_auto_plan batocera 3000 800 50000
+resolve_discovered_auto_plan batocera 2400 800 0
 [[ "${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}" == "$BATOCERA_AUTO_PLAN" ]]
 
-apo_config_defaults
-APO_COMMAND=prepare
-APO_AUTO_CANDIDATES_PENDING=1
-apo_config_resolve_auto_candidates 3150 1190
-[[ ${APO_CFG[CPU_CANDIDATES]} == 3200 ]]
-[[ ${APO_CFG[GPU_CANDIDATES]} == 1200 ]]
+expect_auto_stock_rejection() {
+    local fixture_name=$1 cpu_mhz=$2 gpu_mhz=$3 voltage_uv=$4 provenance=${5:-verified-default} evidence=${6:-none}
+    local output_file="$TEMP_DIR/reject-${fixture_name}.out" status
+    set +e
+    (
+        APO_COMMAND=prepare
+        APO_DRY_RUN=0
+        APO_CONFIG_FILE=''
+        APO_MODE_REQUESTED=auto
+        apo_config_load_for_new_run
+        resolve_discovered_auto_plan debian "$cpu_mhz" "$gpu_mhz" "$voltage_uv" "$provenance" "$evidence"
+    ) >"$output_file" 2>&1
+    status=$?
+    set -e
+    if (( status != APO_EXIT_PREFLIGHT )); then
+        echo "automatic stock rejection returned $status for $fixture_name, expected $APO_EXIT_PREFLIGHT" >&2
+        cat "$output_file" >&2
+        exit 1
+    fi
+    grep -Fq "discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV" "$output_file"
+    grep -Fq 'AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline.' "$output_file"
+    ! grep -q '3100,3200' "$output_file"
+}
+expect_auto_stock_rejection existing-overclock 3000 800 50000
+expect_auto_stock_rejection cpu-overclock 3000 800 0
+expect_auto_stock_rejection gpu-overclock 2400 950 0
+expect_auto_stock_rejection voltage-overclock 2400 800 50000
+expect_auto_stock_rejection underclock 2300 800 0
+expect_auto_stock_rejection explicit-stock-values 2400 960 0 explicit-override arm_freq,v3d_freq
+expect_auto_stock_rejection ambiguous-provenance 2400 800 0 ambiguous unreadable-config-or-include
+expect_auto_stock_rejection missing-provenance 2400 800 0 missing missing
+expect_auto_stock_rejection inconsistent-provenance 2400 800 0 verified-default arm_freq
 
-apo_config_defaults
-APO_COMMAND=prepare
-APO_AUTO_CANDIDATES_PENDING=1
-resolve_discovered_auto_plan debian 500 100 0
-[[ ${APO_CPU_CANDIDATES[0]} == 600 && ${APO_CPU_CANDIDATES[-1]} == 3200 ]]
-[[ ${APO_GPU_CANDIDATES[0]} == 200 && ${APO_GPU_CANDIDATES[-1]} == 1200 ]]
+[[ $(apo_config_auto_ladder 3150 100 3200 600) == 3200 ]]
+[[ $(apo_config_auto_ladder 1190 50 1200 200) == 1200 ]]
 
-apo_config_defaults
-APO_COMMAND=prepare
-APO_AUTO_CANDIDATES_PENDING=1
-resolve_discovered_auto_plan debian 5000 800 0
-[[ -z ${APO_CFG[CPU_CANDIDATES]} ]]
-[[ ${APO_CFG[GPU_CANDIDATES]} == '850,900,950,1000,1050,1100,1150,1200' ]]
+[[ $(apo_config_auto_ladder 500 100 3200 600) == 600,*3200 ]]
+[[ $(apo_config_auto_ladder 100 50 1200 200) == 200,*1200 ]]
+
+[[ -z $(apo_config_auto_ladder 5000 100 3200 600) ]]
+[[ $(apo_config_auto_ladder 800 50 1200 200) == '850,900,950,1000,1050,1100,1150,1200' ]]
 
 set +e
 timeout 5 env APO_ROOT="$ROOT" bash -c 'source "$APO_ROOT/lib/common.sh"; source "$APO_ROOT/lib/config.sh"; apo_config_auto_ladder 999999999999999999999999 100 3200' >"$TEMP_DIR/huge-ladder.out" 2>&1
@@ -220,39 +262,15 @@ if (( huge_context_status != APO_EXIT_PREFLIGHT )); then
     exit 1
 fi
 
-apo_config_defaults
-APO_COMMAND=prepare
-APO_AUTO_CANDIDATES_PENDING=1
-apo_config_resolve_auto_candidates 3200 1100
-[[ -z ${APO_CFG[CPU_CANDIDATES]} ]]
-[[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1200' ]]
-APO_MODE_EFFECTIVE=headless
-finalize_discovered_fixture gpu-only-auto
-(( APO_NEED_GPU == 1 && APO_REQUIRE_GPU_STRESS == 1 ))
-
-apo_config_defaults
-APO_COMMAND=run
-APO_DRY_RUN=1
-APO_AUTO_CANDIDATES_PENDING=1
-apo_config_resolve_auto_candidates 3200 1200
-[[ -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]
-
-if (
-    apo_config_defaults
-    APO_COMMAND=run
-    APO_DRY_RUN=0
-    APO_AUTO_CANDIDATES_PENDING=1
-    apo_config_resolve_auto_candidates 3200 1200
-) >/dev/null 2>&1; then
-    echo 'auto mode accepted baselines with no candidates below its ceilings' >&2
-    exit 1
-fi
+[[ -z $(apo_config_auto_ladder 3200 100 3200 600) ]]
+[[ $(apo_config_auto_ladder 1100 50 1200 200) == '1150,1200' ]]
+[[ -z $(apo_config_auto_ladder 1200 50 1200 200) ]]
 
 APO_COMMAND=run
 APO_MODE_REQUESTED=auto
 APO_CONFIG_FILE="$TEMP_DIR/valid.conf"
 apo_config_load_for_new_run
-resolve_discovered_auto_plan debian 500 100 0
+resolve_discovered_auto_plan debian 500 100 0 explicit-override arm_freq,gpu_freq
 [[ ${APO_CFG[CPU_CANDIDATES]} == '2700,2800,2900' ]]
 [[ ${APO_CFG[GPU_CANDIDATES]} == '800,850,900' ]]
 

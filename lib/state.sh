@@ -3,8 +3,8 @@
 
 declare -Ag APO_STATE=()
 
-readonly APO_CURRENT_RUN_SCHEMA=5
-readonly APO_CURRENT_VALIDATION_SCHEMA=5
+readonly APO_CURRENT_RUN_SCHEMA=7
+readonly APO_CURRENT_VALIDATION_SCHEMA=7
 
 apo_state_valid_key() { [[ ${1-} =~ ^[A-Z][A-Z0-9_]*$ ]]; }
 apo_state_encode() { printf '%s' "${1-}" | base64 | tr -d '\n'; }
@@ -79,8 +79,34 @@ apo_state_initialize() {
     apo_state_set MODE_EFFECTIVE ''
     apo_state_set CURRENT_CPU ''
     apo_state_set CURRENT_GPU ''
+    apo_state_set AUTO_BASELINE_CPU ''
+    apo_state_set AUTO_BASELINE_GPU ''
+    apo_state_set AUTO_BASELINE_VOLTAGE ''
+    apo_state_set AUTO_BASELINE_PROVENANCE ''
+    apo_state_set AUTO_BASELINE_EVIDENCE ''
     apo_state_set CPU_INDEX 0
     apo_state_set GPU_INDEX 0
+    apo_state_set CPU_FAILURE_BOUNDARY ''
+    apo_state_set GPU_FAILURE_BOUNDARY ''
+    apo_state_set CPU_REFINE_CANDIDATES ''
+    apo_state_set GPU_REFINE_CANDIDATES ''
+    apo_state_set CPU_REFINE_INDEX 0
+    apo_state_set GPU_REFINE_INDEX 0
+    apo_state_set CPU_REFINE_COMPLETE 0
+    apo_state_set GPU_REFINE_COMPLETE 0
+    apo_state_set CPU_GUARD_TARGET ''
+    apo_state_set GPU_GUARD_TARGET ''
+    apo_state_set CPU_GUARD_VERIFIED 0
+    apo_state_set GPU_GUARD_VERIFIED 0
+    apo_state_set FLOOR_CPU ''
+    apo_state_set FLOOR_GPU ''
+    apo_state_set FLOOR_DURATION_S ''
+    apo_state_set FLOOR_VALIDATION_SCHEMA ''
+    apo_state_set FLOOR_VALIDATED 0
+    apo_state_set EDGE_CPU_TARGET ''
+    apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+    apo_state_set EDGE_CPU_FAILURE_CLASS ''
+    apo_state_set EDGE_CPU_FAILURE_REASON ''
     apo_state_set PASSED_CPUS ''
     apo_state_set PASSED_GPUS ''
     apo_state_set RECOMMENDED_CPU ''
@@ -88,6 +114,7 @@ apo_state_initialize() {
     apo_state_set FINAL_CPU ''
     apo_state_set FINAL_GPU ''
     apo_state_set VALIDATION_SCHEMA ''
+    apo_state_set VALIDATION_DURATION_S ''
     apo_state_set VALIDATED 0
     apo_state_set CANDIDATE_LABEL ''
     apo_state_set CANDIDATE_CPU ''
@@ -156,15 +183,18 @@ apo_state_clear_final_validation() {
     apo_state_set FINAL_CPU ''
     apo_state_set FINAL_GPU ''
     apo_state_set VALIDATION_SCHEMA ''
+    apo_state_set VALIDATION_DURATION_S ''
     apo_state_set VALIDATED 0
 }
 
 apo_state_complete() {
-    local final_cpu=$1 final_gpu=$2
-    [[ -n $final_cpu && -n $final_gpu ]] || apo_die 'Internal error: final validation completion lacks clock values.' "$APO_EXIT_INTERNAL"
+    local final_cpu=$1 final_gpu=$2 validation_duration=$3
+    [[ -n $final_cpu && -n $final_gpu && $validation_duration =~ ^[1-9][0-9]{0,6}$ ]] ||
+        apo_die 'Internal error: final validation completion lacks clock or endurance-duration evidence.' "$APO_EXIT_INTERNAL"
     apo_state_set FINAL_CPU "$final_cpu"
     apo_state_set FINAL_GPU "$final_gpu"
     apo_state_set VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+    apo_state_set VALIDATION_DURATION_S "$validation_duration"
     apo_state_set STATUS PASS
     apo_state_set PHASE COMPLETE
     apo_state_set SUBPHASE DONE

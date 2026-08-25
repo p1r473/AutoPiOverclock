@@ -14,7 +14,7 @@ The controller owns policy, state, logging, candidate order, recovery decisions,
 - `candidates.sh`: resumable candidate substages, edge handling, selection, and final-validation substages.
 - `apply.sh`: current-schema/eight-hour eligibility, exact diff, typed confirmation, persisted backup plan, normal-reboot health, and rollback.
 
-For `--mode auto` without an explicit configuration, `config.sh` defers candidate resolution until `detect.sh` has validated the permanent CPU and GPU baselines. It then creates bounded, strictly higher ladders, validates them through the normal configuration parser, and checkpoints the concrete lists into state and the effective configuration before dependency decisions or tuning confirmation. Explicit configuration files bypass generation and remain authoritative.
+For `--mode auto` without an explicit configuration, each worker hashes the permanent root config before and after auditing all documented clock/voltage control families. Snapshot changes and explicit tuning controls are reported, and any `include` directive fails closed because the existing protected permanent hash covers only the root config. `config.sh` defers candidate resolution until `detect.sh` has verified both that provenance evidence and the active stock tuple (2400 MHz CPU, supported 800/960 MHz firmware-stock V3D, zero voltage delta). It then creates bounded coarse ladders and checkpoints them before tuning confirmation. `candidates.sh` checkpoints a 25 MHz refinement gap, observed failure boundaries, tested 50/25 MHz CPU/GPU guard targets, and optional post-floor edge-validation evidence. Explicit configuration files bypass stock-gated generation and remain authoritative.
 
 ## Target profiles
 
@@ -27,11 +27,11 @@ Every candidate attempt also receives a fresh 256-bit ownership token. The contr
 ## State phases
 
 ```text
-PREPARE → TRYBOOT_PROOF → GPU_SMOKE → CPU_SWEEP → GPU_SWEEP
-        → SELECTION → FINAL_VALIDATION → COMPLETE
+PREPARE → TRYBOOT_PROOF → GPU_SMOKE → CPU_SWEEP/refinement → GPU_SWEEP/refinement
+        → SELECTION → FINAL_VALIDATION → optional CPU_EDGE_24H → COMPLETE
 ```
 
-Skipped domains are bypassed. Within each candidate, state records the candidate identity and a generic `BOOT_n`/`NORMAL_n` substage across the configured `candidate_boots` cycles, followed by the stress boot, stress, post-stress health, and final normal recovery. Final validation separately checkpoints CPU stress, optional GPU stress, endurance, return to normal, the configured `final_boots` post-stress `BOOT_n`/`NORMAL_n` cycles, and final hash verification. The saved effective configuration makes both loop bounds immutable during resume.
+Skipped domains are bypassed. Within each candidate, state records the candidate identity and a generic `BOOT_n`/`NORMAL_n` substage across the configured `candidate_boots` cycles, followed by the stress boot, stress, post-stress health, and final normal recovery. Automatic refinement indices, failure boundaries, and guard verification are also resumable. Final validation separately checkpoints CPU stress, optional GPU stress, endurance, return to normal, the configured `final_boots` post-stress `BOOT_n`/`NORMAL_n` cycles, and final hash verification. Optional edge mode records the completed production floor before starting the second validation so a safely recovered edge failure cannot erase that result.
 
 Resume first returns an interrupted tryboot to normal. If a saved substage depended on evidence from that exact candidate boot, the controller safely repeats the required boot or stress rather than claiming that gate passed. Completed substages are not restarted merely because the controller process stopped.
 

@@ -295,9 +295,9 @@ apo_apply_recommendation() {
     [[ $validated == 1 && $validation_schema == "$APO_CURRENT_VALIDATION_SCHEMA" &&
        $(apo_state_get STATUS '') == PASS && $(apo_state_get PHASE '') == COMPLETE ]] ||
         apo_die 'Only a fully validated run produced by the current safety gates can be applied.' "$APO_EXIT_APPLY"
-    final_duration=$(apo_state_get CFG_FINAL_DURATION_S 0)
+    final_duration=$(apo_state_get VALIDATION_DURATION_S 0)
     apo_validate_uint_range "$final_duration" "$APO_MIN_FINAL_DURATION_S" 604800 ||
-        apo_die 'Permanent apply requires a saved final endurance duration of at least eight hours.' "$APO_EXIT_APPLY"
+        apo_die 'Permanent apply requires completed final-endurance evidence of at least eight hours.' "$APO_EXIT_APPLY"
     case $(apo_state_get APPLY_STATUS NOT_APPLIED) in
         APPLIED) apo_info 'This run is already applied.'; return 0 ;;
         APPLYING)

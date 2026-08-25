@@ -41,6 +41,7 @@ APO_INSTALL_MISSING=0
 APO_REPAIR_WATCHDOGS=0
 APO_DRY_RUN=0
 APO_ASSUME_YES=0
+APO_EDGE_CPU_24H=0
 APO_REDACT=0
 APO_HAVE_REMOTE_CONTEXT=0
 APO_MUTATING_COMMAND=0
@@ -77,6 +78,7 @@ Options:
   --install-missing        Permit dependency installation/staging
   --repair-watchdogs       Permit the separately confirmed watchdog remediation path
   --dry-run                Read-only detection and plan rendering
+  --edge-cpu-24h           Try the final 25 MHz CPU margin with 24-hour validation
   --yes                    Accept ordinary prompts; never EEPROM repair or permanent apply
   --redact                 Redact private target data from report output
   --help                   Show help
@@ -112,6 +114,7 @@ apo_parse_cli() {
             --install-missing) APO_INSTALL_MISSING=1; index=$((index + 1)) ;;
             --repair-watchdogs) APO_REPAIR_WATCHDOGS=1; index=$((index + 1)) ;;
             --dry-run) APO_DRY_RUN=1; index=$((index + 1)) ;;
+            --edge-cpu-24h) APO_EDGE_CPU_24H=1; index=$((index + 1)) ;;
             --yes) APO_ASSUME_YES=1; index=$((index + 1)) ;;
             --redact) APO_REDACT=1; index=$((index + 1)) ;;
             --help) usage; exit 0 ;;
@@ -133,8 +136,13 @@ apo_parse_cli() {
             [[ $APO_MODE_REQUESTED == auto ]] || apo_die '--mode is valid only with run or prepare; saved runs use their recorded mode.' "$APO_EXIT_USAGE"
             (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is valid only with run or prepare.' "$APO_EXIT_USAGE"
             (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is valid only with run or prepare.' "$APO_EXIT_USAGE"
+            (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is valid only with run or prepare.' "$APO_EXIT_USAGE"
             ;;
     esac
+    if (( APO_EDGE_CPU_24H == 1 )); then
+        [[ $APO_MODE_REQUESTED == auto && -z $APO_CONFIG_FILE ]] ||
+            apo_die '--edge-cpu-24h requires configuration-free --mode auto.' "$APO_EXIT_USAGE"
+    fi
     case $APO_COMMAND in report|status) ;; *) (( APO_REDACT == 0 )) || apo_die '--redact is valid only with report or status.' "$APO_EXIT_USAGE" ;; esac
     apo_parse_target "$target"
     apo_ssh_init
@@ -176,6 +184,11 @@ apo_start_new_run() {
     apo_summary_line "Candidate boot cycles: ${APO_CFG[CANDIDATE_BOOTS]}"
     apo_summary_line "Final post-stress boot cycles: ${APO_CFG[FINAL_BOOTS]}"
     apo_summary_line "Backoff steps: ${APO_CFG[BACKOFF_STEPS]}"
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+        apo_summary_line "Automatic refinement: ${APO_AUTO_REFINE_STEP_MHZ}MHz"
+        apo_summary_line "Automatic production guard: CPU ${APO_AUTO_CPU_GUARD_MHZ}MHz / GPU ${APO_AUTO_GPU_GUARD_MHZ}MHz"
+        apo_summary_line "Optional post-floor CPU +25MHz/24-hour validation: $([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled)"
+    fi
     apo_summary_line ''
     apo_event run-start INFO '' "command=$APO_COMMAND version=$APO_VERSION"
 
@@ -304,6 +317,7 @@ main() {
             apo_load_selected_run
             [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]] ||
                 apo_die 'This interrupted state predates the current safety/resume schema and cannot be resumed without bypassing required gates. Start a new run; status and report remain available.' "$APO_EXIT_USAGE"
+            apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
             if [[ $(apo_state_get ORIGIN_COMMAND '') == prepare || $(apo_state_get READ_ONLY_RUN 0) == 1 ]]; then
                 apo_die 'A read-only prepare/dry-run state cannot be resumed into a mutating tuning run. Start a new run with an approved tuning plan.' "$APO_EXIT_USAGE"
             fi
@@ -349,6 +363,7 @@ main() {
         apply)
             APO_MUTATING_COMMAND=1
             apo_load_selected_run
+            apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
             if [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) == APPLYING ]] && ! apo_wait_for_ssh "$APO_BOOT_TIMEOUT"; then
                 apo_apply_pause 'Interrupted apply remains pending because SSH did not become reachable.' || true
                 return "$APO_EXIT_APPLY"

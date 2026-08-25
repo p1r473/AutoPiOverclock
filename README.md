@@ -27,7 +27,7 @@ The tool deliberately records three different results:
 | Result | Meaning |
 | --- | --- |
 | Maximum observed pass | Highest candidate that completed its candidate gates. |
-| Recommended clock | Conservative selection after the configured backoff. |
+| Recommended clock | Explicit-plan backoff, or the tested automatic production guard. |
 | Final validated clock | Recommendation that completed the full final-validation sequence. |
 
 ## Safety invariants
@@ -128,7 +128,7 @@ Start as a new user would: do not import remembered clocks or assumptions from a
 
 Review the detected platform, graphical/headless mode, permanent normal clocks, voltage and its evidence source, power history, boot paths, permanent hash, exact dependency evidence, watchdog chain, and `tryboot.txt` status in the generated discovery and summary artifacts under `$HOME/overclock-results` (or the selected `--output-dir`). A live run requires the discovered tryboot file status to be `ABSENT`.
 
-`prepare` reports the current permanent baseline; it cannot certify from clock readings alone that the target is factory-stock. If a from-scratch test requires factory defaults, independently inspect the permanent boot configuration and stop if it contains an existing overclock or if stock status cannot be established. Backing up and restoring factory configuration is a separate, explicitly reviewed permanent operation outside a tuning run.
+Configuration-free auto mode accepts only the verified active Raspberry Pi 5 stock tuple: CPU 2400 MHz, V3D 800 or 960 MHz according to the active firmware generation, and zero voltage delta. The worker hashes the permanent root boot config before and after auditing it; any snapshot change or read ambiguity fails closed. It rejects explicit `arm_boost`, `force_turbo`, `initial_turbo`, `core_freq_fixed`, any `*_freq` or `*_freq_min` assignment, and any `over_voltage*` assignment. An `include` directive also fails closed because included files are not yet bound to the protected permanent-config hash. This distinguishes a firmware-default 960 MHz V3D clock from a user-written 960 MHz override. Restoring factory configuration is a separate, explicitly reviewed permanent operation; AutoPiOverclock never edits permanent clocks to manufacture a baseline.
 
 Resolve preflight findings before tuning:
 
@@ -136,13 +136,15 @@ Resolve preflight findings before tuning:
 - `Watchdogs: NOT READY` means no tryboot testing may begin. Debian-family targets can enter the separately confirmed `--repair-watchdogs` path. Batocera watchdog ownership is installation-specific, so automatic repair is refused; configure and verify that chain outside AutoPiOverclock, then repeat `prepare`.
 - Any active power/throttle condition, present or unknown tryboot file, missing telemetry, unhealthy graphical baseline, or unexpected permanent clock is a stop condition rather than a candidate result. Inspect and resolve an existing tryboot file explicitly; AutoPiOverclock will not replace it.
 
-With `--mode auto` and no configuration file, AutoPiOverclock performs discovery before resolving a bounded candidate ladder; it does not ask for CPU or GPU parameters. CPU candidates start at the next 100 MHz boundary above the discovered permanent baseline and stop at 3200 MHz. GPU/V3D candidates start at the next 50 MHz boundary and stop at 1200 MHz. A domain already at or above its automatic ceiling is skipped, and a live run refuses to start if neither domain has an automatic candidate. Voltage remains `existing`, so auto mode never silently raises it. The result can only be the best value among the candidates actually tested.
+With `--mode auto` and no configuration file, AutoPiOverclock proves the stock baseline first and never asks for clock parameters. CPU candidates climb from 2500 MHz in 100 MHz steps through 3200 MHz. GPU/V3D climbs from the verified stock value in 50 MHz steps through 1200 MHz. After the first genuine boot/stability boundary, the last passing-to-failing gap is retested in 25 MHz steps. The production target is itself candidate-tested and kept 50 MHz below the CPU boundary and 25 MHz below the GPU boundary. If a ceiling passes without a failure, the same guards are applied below the highest ceiling pass. Voltage remains zero in configuration-free auto mode.
 
 ```bash
 ./autopioverclock run target-host --mode auto
 ```
 
 The generated run persists its complete effective configuration for repeatability. `prepare --mode auto` previews the same baseline-relative ladder without changing the target. Before a live run's ordinary confirmation, the controller prints the freshly rediscovered baseline, generated candidates, test voltage, and permanent hash; answer no if they differ from the reviewed `prepare`. `--mode auto` removes parameter-entry prompts, but it does not bypass this safety confirmation; use the separate `--yes` option only when unattended confirmation is intended.
+
+`--edge-cpu-24h` is an optional configuration-free auto extension. It first completes the ordinary eight-hour validation at the 50 MHz-buffered CPU production floor. Only then does it try CPU 25 MHz higher, with GPU unchanged, through a fresh 24-hour complete validation. A genuine edge boot/stability failure that recovers normally retains the already-validated production floor; harness or recovery failures still stop the run.
 
 For a custom plan, copy the matching template, fill its deliberately empty lists after discovery, and review it with `prepare` before `run`. An explicit configuration file remains authoritative and is never auto-filled:
 
@@ -204,7 +206,7 @@ frontend_process=
 audio_sink_pattern=
 ```
 
-This discovery-first template is valid for `prepare`. When an explicit configuration file is supplied, fill at least one candidate list before `run`; the controller will not replace blank configured domains with automatic values. Candidate lists must be strictly increasing, an empty list skips that tuning domain, and a configured `run` must contain at least one CPU or GPU candidate. Without `--config`, `--mode auto` generates and persists the bounded baseline-relative lists described above.
+This discovery-first template is valid for `prepare`. When an explicit configuration file is supplied, fill at least one candidate list before `run`; the controller will not replace blank configured domains with automatic values. Candidate lists must be strictly increasing, an empty list skips that tuning domain, and a configured `run` must contain at least one CPU or GPU candidate. Without `--config`, `--mode auto` requires the stock tuple and generates and persists the bounded coarse lists described above; refinement and MHz guards are checkpointed separately in run state.
 
 `voltage_delta_uv=existing` preserves the target's existing value; AutoPiOverclock never silently raises voltage. `final_duration_seconds` cannot be shorter than 28,800 seconds, candidate boots cannot be lower than two, and final boot/recovery cycles cannot be lower than three.
 
@@ -217,7 +219,7 @@ This discovery-first template is valid for `prepare`. When an explicit configura
 | `final_duration_seconds` | Combined endurance duration; 28800–604800 seconds. |
 | `max_temp_c` | Exclusive temperature ceiling; 40–95 °C. Reaching the ceiling fails the candidate. |
 | `telemetry_interval_seconds` | Temperature, clocks, throttle, and kernel-error sampling cadence; 1–60 seconds. Workload supervision still runs every second. |
-| `conservative_backoff_steps` | Positions to step down from the maximum observed pass; 0–10. |
+| `conservative_backoff_steps` | Explicit-plan positions to step down from the maximum observed pass; 0–10. Configuration-free auto uses its fixed MHz guards instead. |
 | `candidate_boots` | Candidate/normal recovery cycles before candidate stress; 2–10. |
 | `final_boots` | Post-endurance candidate/normal recovery cycles; 3–10. |
 | `required_services` | Optional comma-separated service names that must remain active. |

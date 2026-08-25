@@ -12,7 +12,13 @@ readonly APO_AUTO_CPU_STEP_MHZ=100
 readonly APO_AUTO_CPU_MAX_MHZ=3200
 readonly APO_AUTO_GPU_STEP_MHZ=50
 readonly APO_AUTO_GPU_MAX_MHZ=1200
+readonly APO_AUTO_REFINE_STEP_MHZ=25
+readonly APO_AUTO_CPU_GUARD_MHZ=50
+readonly APO_AUTO_GPU_GUARD_MHZ=25
+readonly APO_PI5_STOCK_CPU_MHZ=2400
+readonly APO_PI5_STOCK_VOLTAGE_UV=0
 APO_AUTO_CANDIDATES_PENDING=0
+APO_AUTO_GENERATED_CANDIDATES=0
 readonly -a APO_ALLOWED_CONFIG_KEYS=(
     cpu_candidates_mhz gpu_candidates_mhz voltage_delta_uv
     candidate_duration_seconds final_duration_seconds max_temp_c telemetry_interval_seconds
@@ -42,6 +48,7 @@ apo_config_internal_key() {
 apo_config_defaults() {
     APO_CFG=()
     APO_AUTO_CANDIDATES_PENDING=0
+    APO_AUTO_GENERATED_CANDIDATES=0
     APO_CFG[CPU_CANDIDATES]=''
     APO_CFG[GPU_CANDIDATES]=''
     APO_CFG[VOLTAGE_DELTA_UV]='existing'
@@ -58,6 +65,17 @@ apo_config_defaults() {
     # Internal compatibility values, not accepted public configuration keys.
     APO_CFG[EXTRA_PING_TARGET]=''
     APO_CFG[HEALTH_HOOK]=''
+}
+
+apo_config_require_stock_auto_baseline() {
+    local cpu_mhz=$1 gpu_mhz=$2 voltage_uv=$3 provenance=${4:-missing} evidence=${5:-missing}
+    if [[ $provenance != verified-default || $evidence != none ]]; then
+        apo_die "Configuration-free auto mode requires proof that one protected permanent root-config snapshot contains no explicit clock or voltage control and no unbound include directive: audit=${provenance:-missing}, evidence=${evidence:-missing}; discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV. Remove or separately preserve and review arm_boost, force_turbo, initial_turbo, core_freq_fixed, every *_freq or *_freq_min assignment, every over_voltage* assignment, and any include directive, then reboot normally and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
+    fi
+    [[ $cpu_mhz == "$APO_PI5_STOCK_CPU_MHZ" &&
+       ( $gpu_mhz == 800 || $gpu_mhz == 960 ) &&
+       $voltage_uv == "$APO_PI5_STOCK_VOLTAGE_UV" ]] && return 0
+    apo_die "Configuration-free auto mode requires a verified stock Raspberry Pi 5 baseline before testing any overclock: discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV; expected CPU=${APO_PI5_STOCK_CPU_MHZ}MHz, V3D=800MHz or 960MHz according to the active firmware generation, and voltage-delta=${APO_PI5_STOCK_VOLTAGE_UV}uV. Restore and review the permanent boot configuration, reboot normally, and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
 }
 
 apo_config_auto_ladder() {
@@ -79,12 +97,17 @@ apo_config_auto_ladder() {
 }
 
 apo_config_resolve_auto_candidates() {
-    local normal_cpu=$1 normal_gpu=$2
+    local normal_cpu=$1 normal_gpu=$2 normal_voltage=$3 provenance=${4:-missing} evidence=${5:-missing}
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+        apo_config_require_stock_auto_baseline "$normal_cpu" "$normal_gpu" "$normal_voltage" "$provenance" "$evidence"
+    fi
     (( APO_AUTO_CANDIDATES_PENDING == 1 )) || return 0
     APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_cpu" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") ||
         apo_die 'Could not derive automatic CPU candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
     APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_gpu" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") ||
         apo_die 'Could not derive automatic GPU/V3D candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
+    # Automatic refinement and its explicit MHz guard replace list-index backoff.
+    APO_CFG[BACKOFF_STEPS]=0
     APO_AUTO_CANDIDATES_PENDING=0
     apo_config_validate
     if [[ ${APO_COMMAND:-prepare} == run && ${APO_DRY_RUN:-0} == 0 && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
@@ -186,6 +209,11 @@ apo_config_load_for_new_run() {
     [[ -z ${APO_CONFIG_FILE:-} ]] || apo_config_read_file "$APO_CONFIG_FILE"
     if [[ -z ${APO_CONFIG_FILE:-} && ${APO_MODE_REQUESTED:-auto} == auto && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
         APO_AUTO_CANDIDATES_PENDING=1
+        APO_AUTO_GENERATED_CANDIDATES=1
+    fi
+    if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
+        (( APO_AUTO_GENERATED_CANDIDATES == 1 )) ||
+            apo_die '--edge-cpu-24h requires configuration-free automatic candidates.' "$APO_EXIT_USAGE"
     fi
     if [[ ${APO_COMMAND:-prepare} == run && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
         if (( APO_AUTO_CANDIDATES_PENDING == 1 )); then
@@ -207,6 +235,8 @@ apo_config_store_in_state() {
         internal_key=$(apo_config_internal_key "$config_key")
         apo_state_set "CFG_${internal_key}" "${APO_CFG[$internal_key]}"
     done
+    apo_state_set CFG_AUTO_GENERATED_CANDIDATES "$APO_AUTO_GENERATED_CANDIDATES"
+    apo_state_set CFG_EDGE_CPU_24H "${APO_EDGE_CPU_24H:-0}"
 }
 
 apo_config_restore_from_state() {
@@ -216,6 +246,12 @@ apo_config_restore_from_state() {
         internal_key=$(apo_config_internal_key "$config_key")
         APO_CFG[$internal_key]=$(apo_state_get "CFG_${internal_key}" "${APO_CFG[$internal_key]}")
     done
+    APO_AUTO_GENERATED_CANDIDATES=$(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0)
+    [[ $APO_AUTO_GENERATED_CANDIDATES == 0 || $APO_AUTO_GENERATED_CANDIDATES == 1 ]] ||
+        apo_die 'Saved automatic-candidate marker is malformed.' "$APO_EXIT_INTERNAL"
+    APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
+    [[ $APO_EDGE_CPU_24H == 0 || $APO_EDGE_CPU_24H == 1 ]] ||
+        apo_die 'Saved edge-CPU marker is malformed.' "$APO_EXIT_INTERNAL"
     apo_config_validate
 }
 
