@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.16 — 2026-08-25
+
+- Constrained Batocera's OpenSSL CPU load to one 16 KiB SHA-256 benchmark measured in elapsed time, so a requested stress duration is the total run time instead of being repeated once for every default buffer size.
+- Preserved the independent 60-second hard shutdown deadline and its failure classification; a genuinely stuck worker is still terminated and never reinterpreted as a successful timeout.
+- Made SSH and reboot wait limits account for time spent inside connection attempts, preventing a nominal five-minute recovery timeout from stretching to roughly eighteen minutes on an unreachable target.
+- Added regressions for the exact one-block OpenSSL invocation and wall-time-based SSH/reboot deadline accounting.
+
 ## 0.1.0-alpha.15 — 2026-08-25
 
 - Added the exact postfix `./autopioverclock TARGET reset` action as a standalone, noninteractive stock-reset workflow while preserving the historical interpretation of `run reset` and lone `reset` as a target hostname.

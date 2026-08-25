@@ -668,6 +668,30 @@ set -e
 DEBIAN_EARLY_CPU_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); print; exit}' <<< "$DEBIAN_EARLY_CPU_OUTPUT")
 [[ $(printf '%s' "$DEBIAN_EARLY_CPU_REASON_B64" | base64 --decode) == 'CPU stress exited early with rc=0.' ]]
 
+# OpenSSL speed applies -seconds independently to every default buffer size.
+# Batocera must select one 16 KiB block and elapsed-time accounting so a 600s
+# CPU/combined request actually ends after roughly 600 wall-clock seconds.
+BATOCERA_OPENSSL_ARGS="$TEMP_DIR/batocera-openssl-args"
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" OPENSSL_ARGS="$BATOCERA_OPENSSL_ARGS" bash -c '
+    set -u -o pipefail
+    source "$WORKER"
+    current_temp() { printf 50; }
+    current_throttle() { printf "throttled=0x0"; }
+    clock_mhz() { case $1 in arm) printf 2400 ;; *) printf 800 ;; esac; }
+    kernel_log() { :; }
+    kernel_error_lines() { :; }
+    nproc() { printf 4; }
+    openssl() {
+        printf "%s\n" "$@" > "$OPENSSL_ARGS"
+        command /bin/sleep 0.5
+        printf "openssl single-block output\n"
+    }
+    sleep() { command /bin/sleep 0.7; SECONDS=$((SECONDS + 600)); }
+    cmd_stress cpu 600 75 headless "" 0 2400 800 throttled=0x0 60
+' >/dev/null
+mapfile -t BATOCERA_OPENSSL_ARGV < "$BATOCERA_OPENSSL_ARGS"
+[[ ${BATOCERA_OPENSSL_ARGV[*]} == 'speed -elapsed -seconds 600 -bytes 16384 -multi 4 sha256' ]]
+
 # A poll that wakes after the hard deadline fails closed even when the child
 # died between polls; its completion time cannot be proven to precede the
 # deadline.  Exercise the same invariant in both workers.

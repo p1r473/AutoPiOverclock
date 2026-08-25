@@ -94,22 +94,26 @@ apo_remote_boot_id() { apo_ssh_exec 'cat /proc/sys/kernel/random/boot_id' 2>/dev
 apo_remote_tryboot_flag() { apo_ssh_exec 'od -An -tx1 /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d " \n"' 2>/dev/null; }
 
 apo_wait_for_ssh() {
-    local timeout_seconds=$1 elapsed=0
-    while (( elapsed < timeout_seconds )); do
+    local timeout_seconds=$1 deadline remaining
+    deadline=$((SECONDS + timeout_seconds))
+    while (( SECONDS < deadline )); do
         if apo_ssh_exec true >/dev/null 2>&1; then return 0; fi
-        sleep 3
-        elapsed=$((elapsed + 3))
+        remaining=$((deadline - SECONDS))
+        (( remaining > 0 )) || break
+        if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
     done
     return 1
 }
 
 apo_wait_for_new_boot() {
-    local old_boot_id=$1 timeout_seconds=$2 elapsed=0 current=''
-    while (( elapsed < timeout_seconds )); do
+    local old_boot_id=$1 timeout_seconds=$2 deadline remaining current=''
+    deadline=$((SECONDS + timeout_seconds))
+    while (( SECONDS < deadline )); do
         current=$(apo_remote_boot_id 2>/dev/null || true)
         if [[ -n $current && $current != "$old_boot_id" ]]; then printf '%s' "$current"; return 0; fi
-        sleep 3
-        elapsed=$((elapsed + 3))
+        remaining=$((deadline - SECONDS))
+        (( remaining > 0 )) || break
+        if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
     done
     return 1
 }

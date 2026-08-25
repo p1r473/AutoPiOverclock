@@ -120,6 +120,32 @@ if grep -q 'unbound variable' "$UPLOAD_TEST_ROOT/corrupt.err"; then
 fi
 rm -rf -- "$UPLOAD_TEST_ROOT"
 
+# SSH/reboot waits use elapsed wall time, including time spent inside a failed
+# connection attempt.  A nominal 10-second timeout must not become four
+# 8-second ConnectTimeout attempts plus sleeps.
+(
+    SECONDS=0
+    SSH_ATTEMPTS=0
+    apo_ssh_exec() { SSH_ATTEMPTS=$((SSH_ATTEMPTS + 1)); SECONDS=$((SECONDS + 8)); return 1; }
+    sleep() { SECONDS=$((SECONDS + $1)); }
+    if apo_wait_for_ssh 10; then
+        echo 'unreachable SSH fixture unexpectedly succeeded' >&2
+        exit 1
+    fi
+    [[ $SSH_ATTEMPTS == 1 ]]
+)
+(
+    BOOT_ID_ATTEMPT_FILE=$(mktemp)
+    trap 'rm -f "$BOOT_ID_ATTEMPT_FILE"' EXIT
+    SECONDS=0
+    apo_remote_boot_id() { printf x >> "$BOOT_ID_ATTEMPT_FILE"; command /bin/sleep 2; return 1; }
+    if apo_wait_for_new_boot old-boot 4; then
+        echo 'missing reboot fixture unexpectedly succeeded' >&2
+        exit 1
+    fi
+    [[ $(wc -c < "$BOOT_ID_ATTEMPT_FILE") == 1 ]]
+)
+
 if (apo_parse_target 'bad user@example-host' >/dev/null 2>&1); then
     echo 'unsafe username was accepted' >&2
     exit 1
