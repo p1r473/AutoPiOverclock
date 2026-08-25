@@ -485,4 +485,87 @@ fi
 grep -q 'Resume refuses to adopt any preflight config change as a new baseline' "$PARTIAL_DIR/repair-resume.out"
 grep -q 'expected hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$PARTIAL_DIR/repair-resume.out"
 
+# A failed SSH transport is not evidence that config.txt changed.  Keep hash
+# mismatch, unavailable, and malformed evidence distinct so stress recovery can
+# preserve its primary worker failure while re-verifying the hash after SSH
+# returns.
+(
+    source "$ROOT/lib/health.sh"
+    APO_BOOT_CONFIG=/boot/config.txt
+    APO_PERMANENT_CONFIG_HASH=$(printf 'a%.0s' {1..64})
+    REMOTE_HASH=$APO_PERMANENT_CONFIG_HASH
+    apo_remote_root() { printf '%s  /boot/config.txt\n' "$REMOTE_HASH"; }
+    apo_verify_permanent_hash hash-match
+
+    REMOTE_HASH=$(printf 'b%.0s' {1..64})
+    set +e
+    apo_verify_permanent_hash hash-mismatch
+    HASH_RC=$?
+    set -e
+    [[ $HASH_RC == 1 && $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+    [[ $APO_LAST_REASON == *"$APO_PERMANENT_CONFIG_HASH -> $REMOTE_HASH"* ]]
+
+    apo_remote_root() { return 255; }
+    set +e
+    apo_verify_permanent_hash hash-offline
+    HASH_RC=$?
+    set -e
+    [[ $HASH_RC == 2 && $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+    [[ $APO_LAST_REASON == *'is unavailable in hash-offline'* ]]
+    [[ $APO_LAST_REASON != *'hash changed'* ]]
+
+    apo_remote_root() { printf 'not-a-hash  /boot/config.txt\n'; }
+    set +e
+    apo_verify_permanent_hash hash-malformed
+    HASH_RC=$?
+    set -e
+    [[ $HASH_RC == 2 && $APO_LAST_REASON == *'malformed hash evidence'* ]]
+)
+
+run_stress_hash_fixture() (
+    local worker_class=$1 worker_reason=$2 worker_rc=$3 post_hash_rc=$4
+    declare -Ag APO_CFG=([MAX_TEMP_C]=75 [TELEMETRY_INTERVAL_S]=5)
+    APO_MODE_EFFECTIVE=graphical
+    APO_DISPLAY_BASELINE=fixture-display
+    APO_THROTTLE_RUNTIME_BASELINE=throttled=0x0
+    APO_AUDIO_BASELINE=fixture-audio
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=800
+    VERIFY_CALLS=0
+    apo_state_get() { printf '%s' "${2:-}"; }
+    apo_run_worker_capture() {
+        APO_LAST_CLASS=$worker_class
+        APO_LAST_REASON=$worker_reason
+        return "$worker_rc"
+    }
+    source "$ROOT/lib/health.sh"
+    apo_verify_permanent_hash() {
+        VERIFY_CALLS=$((VERIFY_CALLS + 1))
+        (( VERIFY_CALLS == 1 )) && return 0
+        case $post_hash_rc in
+            0) return 0 ;;
+            1) APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='verified fixture hash mismatch'; return 1 ;;
+            2) APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='fixture hash unavailable'; return 2 ;;
+        esac
+    }
+    set +e
+    apo_run_stress gpu 20 stress-hash-fixture 0
+    STRESS_RC=$?
+    set -e
+    printf '%s\t%s\t%s\t%s\n' "$STRESS_RC" "$APO_LAST_CLASS" "$APO_LAST_REASON" "$VERIFY_CALLS"
+)
+
+STRESS_HASH_RESULT=$(run_stress_hash_fixture HARNESS_FAILURE 'worker SSH transport failed' 1 2)
+[[ $STRESS_HASH_RESULT == $'1\tHARNESS_FAILURE\tworker SSH transport failed\t2' ]]
+STRESS_HASH_RESULT=$(run_stress_hash_fixture RECOVERY_FAILURE 'frontend restore failed' 1 2)
+[[ $STRESS_HASH_RESULT == $'1\tRECOVERY_FAILURE\tfrontend restore failed\t2' ]]
+STRESS_HASH_RESULT=$(run_stress_hash_fixture STABILITY_FAILURE 'worker found a kernel fault' 1 0)
+[[ $STRESS_HASH_RESULT == $'1\tSTABILITY_FAILURE\tworker found a kernel fault\t2' ]]
+STRESS_HASH_RESULT=$(run_stress_hash_fixture HARNESS_FAILURE 'worker SSH transport failed' 1 1)
+[[ $STRESS_HASH_RESULT == $'1\tRECOVERY_FAILURE\tverified fixture hash mismatch\t2' ]]
+STRESS_HASH_RESULT=$(run_stress_hash_fixture PASS 'worker passed' 0 2)
+[[ $STRESS_HASH_RESULT == $'1\tRECOVERY_FAILURE\tfixture hash unavailable\t2' ]]
+STRESS_HASH_RESULT=$(run_stress_hash_fixture PASS 'worker passed' 0 1)
+[[ $STRESS_HASH_RESULT == $'1\tRECOVERY_FAILURE\tverified fixture hash mismatch\t2' ]]
+
 printf 'test_interrupted_state: PASS\n'
