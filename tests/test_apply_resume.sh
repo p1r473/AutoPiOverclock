@@ -38,6 +38,7 @@ reset_apply_fixture() {
     APO_NORMAL_CPU=2400
     APO_NORMAL_GPU=800
     APO_NORMAL_VOLTAGE=0
+    APO_GPU_KEY=v3d_freq
     APO_BOOT_TIMEOUT=30
     APO_BOOT_SETTLE_SECONDS=0
     APO_REMOTE_WORKER=/tmp/fixture-worker
