@@ -471,6 +471,11 @@ ROOT="$ROOT" REPAIR_STATE="$REPAIR_STATE" PARTIAL_DIR="$PARTIAL_DIR" STORED_TARG
     apo_state_set PROFILE debian
     apo_state_set MODE_REQUESTED headless
     apo_state_set MODE_EFFECTIVE headless
+    apo_state_set AUTO_BASELINE_CPU ""
+    apo_state_set AUTO_BASELINE_GPU ""
+    apo_state_set AUTO_BASELINE_VOLTAGE ""
+    apo_state_set AUTO_BASELINE_PROVENANCE ""
+    apo_state_set AUTO_BASELINE_EVIDENCE ""
     apo_state_set STATUS PREPARING
     apo_state_set PHASE PREPARE
     apo_state_set SUBPHASE WATCHDOG_REPAIR_MUTATING
