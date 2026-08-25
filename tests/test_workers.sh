@@ -242,6 +242,7 @@ unset -f awk
     verified_normal_reboot_now() { VERIFIED_REBOOT_CALLS=$((VERIFIED_REBOOT_CALLS + 1)); return 1; }
     apply_tryboot_clear() { (( TRYBOOT_CLEAR == 1 )); }
     boot_mount_has_option() { [[ $1 == ro && $BOOT_RO == 1 ]]; }
+    # shellcheck disable=SC2032
     sha256sum() { printf '%s  /boot/config.txt\n' "$CURRENT_HASH"; }
 
     if cmd_reboot_normal "$EXPECTED_HASH" >/dev/null; then exit 1; fi
@@ -368,11 +369,14 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
     APO_RUN_ID=fixture-run
     source "$ROOT/lib/common.sh"
     source "$ROOT/profiles/batocera.sh"
+    # shellcheck disable=SC2030
     declare -Ag APO_DISCOVERY=(
         [CPU_STRESS_AVAILABLE]=1 [GLMARK_DATA]=/fixture/data
         [GLMARK_WAYLAND_BINARY]=/fixture/glmark2-es2-wayland [GLMARK_DRM_BINARY]=''
     )
+    # shellcheck disable=SC2030
     APO_REQUIRE_GPU_STRESS=1
+    # shellcheck disable=SC2030
     APO_MODE_EFFECTIVE=graphical
     apo_profile_dependencies_ready
     APO_MODE_EFFECTIVE=headless
@@ -417,6 +421,7 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
         printf 'fixture-data\n' > "$destination/usr/share/glmark2/fixture.dat"
         (
             cd "$destination"
+            # shellcheck disable=SC2033
             find . -type f ! -name MANIFEST.sha256 -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > MANIFEST.sha256
         )
     }
