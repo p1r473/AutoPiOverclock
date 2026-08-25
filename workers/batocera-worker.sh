@@ -434,7 +434,7 @@ gpu_output_has_positive_score() {
 
 gpu_output_has_harness_error() {
     local output_file=$1
-    grep -Eqi 'Could not initialize|glwindow has never been initialized|Failed to become DRM master|drmModeGetResources|GBM.*(fail|error)|EGL.*(fail|error)|MESA-LOADER.*(fail|error)|failed to open.*(DRM|render|card)|GLIBC_[0-9.]+.*not found|version [`'\''"]?[^ ]+[`'\''"]? not found|undefined symbol|symbol lookup error|error while loading shared libraries|No such file|Permission denied|unrecognized option|unknown option' "$output_file"
+    grep -Eqi 'Could not initialize|glwindow has never been initialized|Failed to become DRM master|drmModeGetResources|GBM.*(fail|error)|EGL.*(fail|error)|MESA-LOADER.*(fail|error)|failed to open.*(DRM|render|card)|GLIBC_[0-9.]+.*not found|version [`'\''"]?[^ ]+[`'\''"]? not found|undefined symbol|symbol lookup error|error while loading shared libraries|No such file|Permission denied|unrecognized option|unknown option|openvt:.*(deallocat|activat|Unable to open|ioctl)' "$output_file"
 }
 
 gpu_early_exit_class() {
@@ -1235,7 +1235,35 @@ cmd_trigger_tryboot() {
     cmd_verify_tryboot "$@" >/dev/null || return 1
     /usr/bin/python3 -c 'import ctypes,os; os.sync(); libc=ctypes.CDLL(None,use_errno=True); rc=libc.syscall(142,0xfee1dead,0x28121969,0xa1b2c3d4,ctypes.c_char_p(b"0 tryboot")); raise SystemExit(0 if rc == 0 else ctypes.get_errno())' >/dev/null 2>&1
 }
-cmd_reboot_normal() { vcgencmd get_throttled 0x0f >/dev/null 2>&1 || true; sync || return 1; reboot >/dev/null 2>&1; }
+
+verified_normal_reboot_now() {
+    # A successful reboot syscall never returns.  Any return is a failure, even
+    # if a platform reports rc=0 unexpectedly.
+    /usr/bin/python3 -c 'import ctypes,os; os.sync(); libc=ctypes.CDLL(None,use_errno=True); rc=libc.syscall(142,0xfee1dead,0x28121969,0x01234567,ctypes.c_void_p()); raise SystemExit(ctypes.get_errno() if rc != 0 else 1)' >/dev/null 2>&1
+}
+
+cmd_reboot_normal() {
+    local expected_hash=${1:-} current_hash
+    if [[ -n $expected_hash ]]; then
+        valid_sha256 "$expected_hash" || { emit_result RECOVERY_FAILURE 'Verified normal reboot received a malformed permanent-config hash.'; return 1; }
+        apply_tryboot_clear /boot/config.txt || { emit_result RECOVERY_FAILURE 'Verified normal reboot requires no live, staged, or quarantined tryboot evidence.'; return 1; }
+        boot_mount_has_option ro || { emit_result RECOVERY_FAILURE 'Verified normal reboot requires Batocera /boot to be read-only.'; return 1; }
+        current_hash=$(sha256sum /boot/config.txt 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        [[ $current_hash == "$expected_hash" ]] || { emit_result RECOVERY_FAILURE 'Permanent config changed at the verified normal-reboot mutation boundary.'; return 1; }
+        vcgencmd get_throttled 0x0f >/dev/null 2>&1 || true
+        sync || return 1
+        # Keep the target mutation lock present until /run is recreated by the
+        # new boot.  If the syscall fails and returns, run_with_mutation_lock
+        # still releases the lock explicitly on the ordinary return path.
+        trap - EXIT INT TERM HUP
+        verified_normal_reboot_now
+        emit_result RECOVERY_FAILURE 'The verified normal-reboot syscall returned without restarting the target.'
+        return 1
+    fi
+    vcgencmd get_throttled 0x0f >/dev/null 2>&1 || true
+    sync || return 1
+    reboot >/dev/null 2>&1
+}
 
 cmd_reset_throttle_history() {
     local before_reset after_reset
@@ -1265,8 +1293,20 @@ start_frontend() {
 
 wait_graphical_baseline() {
     local baseline=$1 elapsed=0
-    while (( elapsed < 180 )); do check_graphical "$baseline" && return 0; sleep 5; elapsed=$((elapsed + 5)); done
+    while (( elapsed < 180 )); do frontend_baseline_ready "$baseline" && return 0; sleep 5; elapsed=$((elapsed + 5)); done
     return 1
+}
+
+frontend_baseline_ready() {
+    local baseline=$1 current_audio active_tty=''
+    if [[ ${stress_gpu_previous_vt:-} =~ ^[0-9]+$ ]]; then
+        active_tty=$(cat /sys/class/tty/tty0/active 2>/dev/null || true)
+        [[ $active_tty == "tty${stress_gpu_previous_vt}" ]] || return 1
+    fi
+    check_graphical "$baseline" || return 1
+    [[ -n ${stress_audio_baseline:-} ]] || return 0
+    current_audio=$(audio_identity || true)
+    [[ $current_audio == "$stress_audio_baseline" ]]
 }
 
 write_glmark_launcher() {
@@ -1286,18 +1326,27 @@ write_glmark_launcher() {
 }
 
 launch_gpu_test() {
-    local launcher_file=$1 output_file=$2 mode=$3 active_tty='' active_vt=1
-    active_tty=$(cat /sys/class/tty/tty0/active 2>/dev/null || true)
-    [[ $active_tty =~ ^tty([0-9]+)$ ]] && active_vt=${BASH_REMATCH[1]}
-    if [[ $mode == graphical ]] && command -v openvt >/dev/null 2>&1 && openvt --help 2>&1 | grep -q -- '-w'; then
-        local -a openvt_args=(-c "$active_vt" -w)
-        openvt --help 2>&1 | grep -q -- '-s' && openvt_args+=(-s)
-        openvt --help 2>&1 | grep -q -- '-f' && openvt_args+=(-f)
-        printf 'GPU_VT=%s\n' "$active_vt" > "$output_file"
-        openvt "${openvt_args[@]}" /bin/bash "$launcher_file" >>"$output_file" 2>&1 &
+    local launcher_file=$1 output_file=$2 mode=$3 tty_active_file=${4:-/sys/class/tty/tty0/active}
+    local active_tty='' active_vt='' active_vt_label=unknown openvt_help=''
+    active_tty=$(cat "$tty_active_file" 2>/dev/null || true)
+    if [[ $active_tty =~ ^tty([0-9]+)$ ]]; then
+        active_vt=${BASH_REMATCH[1]}
+        active_vt_label=$active_vt
+    fi
+    stress_gpu_uses_openvt=0
+    stress_gpu_previous_vt=''
+    [[ $mode == graphical && -n $active_vt ]] && stress_gpu_previous_vt=$active_vt
+    if [[ $mode == graphical ]] && command -v openvt >/dev/null 2>&1; then
+        openvt_help=$(openvt --help 2>&1 || true)
+    fi
+    if [[ -n $active_vt && $openvt_help == *-w* && $openvt_help == *-s* ]]; then
+        stress_gpu_uses_openvt=1
+        printf 'GPU_VT=auto previous=%s\n' "$active_vt" > "$output_file"
+        openvt -w -s -- /bin/bash -c 'exec >>"$2" 2>&1; exec /bin/bash "$1"' \
+            autopi-glmark "$launcher_file" "$output_file" >>"$output_file" 2>&1 &
     else
-        if [[ $mode == graphical ]] && command -v chvt >/dev/null 2>&1; then chvt "$active_vt" >/dev/null 2>&1 || true; fi
-        printf 'GPU_VT=%s direct=1\n' "$active_vt" > "$output_file"
+        if [[ $mode == graphical && -n $active_vt ]] && command -v chvt >/dev/null 2>&1; then chvt "$active_vt" >/dev/null 2>&1 || true; fi
+        printf 'GPU_VT=%s direct=1\n' "$active_vt_label" > "$output_file"
         /bin/bash "$launcher_file" >>"$output_file" 2>&1 &
     fi
     stress_gpu_pid=$!
@@ -1331,6 +1380,68 @@ terminate_child() {
     wait "$child_pid" 2>/dev/null || true
 }
 
+activate_stress_previous_vt() {
+    local active_tty='' attempts=0
+    [[ ${stress_gpu_previous_vt:-} =~ ^[0-9]+$ ]] || return 0
+    active_tty=$(cat /sys/class/tty/tty0/active 2>/dev/null || true)
+    [[ $active_tty == "tty${stress_gpu_previous_vt}" ]] && return 0
+    command -v chvt >/dev/null 2>&1 || return 1
+    chvt "$stress_gpu_previous_vt" >/dev/null 2>&1 || return 1
+    while (( attempts < 10 )); do
+        active_tty=$(cat /sys/class/tty/tty0/active 2>/dev/null || true)
+        [[ $active_tty == "tty${stress_gpu_previous_vt}" ]] && return 0
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    return 1
+}
+
+process_is_running() {
+    local process_pid=$1 state_key state_value ignored
+    [[ $process_pid =~ ^[0-9]+$ && -r /proc/$process_pid/status ]] || return 1
+    while read -r state_key state_value ignored; do
+        if [[ $state_key == State: ]]; then
+            [[ $state_value != Z ]]
+            return
+        fi
+    done < "/proc/$process_pid/status"
+    return 1
+}
+
+terminate_gpu_child() {
+    local child_pid=$1 attempts=0 process_pid
+    local -a process_tree=() descendants=()
+    [[ -n $child_pid ]] || return 0
+    if (( ${stress_gpu_uses_openvt:-0} != 1 )); then
+        terminate_child "$child_pid"
+        return 0
+    fi
+    mapfile -t process_tree < <(process_tree_pids "$child_pid")
+    for process_pid in "${process_tree[@]}"; do
+        [[ $process_pid == "$child_pid" ]] || descendants+=("$process_pid")
+    done
+    (( ${#descendants[@]} == 0 )) || kill -TERM "${descendants[@]}" 2>/dev/null || true
+    while (( attempts < 10 )) && process_is_running "$child_pid"; do
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    if process_is_running "$child_pid"; then
+        (( ${#descendants[@]} == 0 )) || kill -KILL "${descendants[@]}" 2>/dev/null || true
+        attempts=0
+        while (( attempts < 3 )) && process_is_running "$child_pid"; do
+            sleep 1
+            attempts=$((attempts + 1))
+        done
+    fi
+    if process_is_running "$child_pid"; then
+        kill -TERM "$child_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$child_pid" 2>/dev/null || true
+    fi
+    wait "$child_pid" 2>/dev/null || true
+    activate_stress_previous_vt
+}
+
 start_io_activity() {
     local destination=$1
     (
@@ -1352,15 +1463,22 @@ stress_io_pid=''
 stress_work_dir=''
 stress_io_file=''
 stress_frontend_stopped=0
+stress_frontend_restore_attempted=0
 stress_frontend_baseline=''
+stress_audio_baseline=''
 
 restore_frontend_baseline() {
     local start_failed=0
     (( stress_frontend_stopped == 1 )) || return 0
-    if check_graphical "$stress_frontend_baseline"; then
+    # Mark the attempt before any probe, VT switch, service operation, or wait.
+    # A signal during restoration must not re-enter another long restoration
+    # from cleanup_stress; the controller will perform normal-boot recovery.
+    stress_frontend_restore_attempted=1
+    if frontend_baseline_ready "$stress_frontend_baseline"; then
         stress_frontend_stopped=0
         return 0
     fi
+    activate_stress_previous_vt || start_failed=1
     start_frontend || start_failed=1
     if ! wait_graphical_baseline "$stress_frontend_baseline"; then
         (( start_failed == 0 )) || cat /tmp/autopioverclock-es-start.log 2>/dev/null || true
@@ -1373,10 +1491,16 @@ cleanup_stress() {
     local cleanup_failed=0
     trap '' INT TERM HUP
     if [[ -n ${stress_cpu_pid:-} ]]; then terminate_child "$stress_cpu_pid"; stress_cpu_pid=''; fi
-    if [[ -n ${stress_gpu_pid:-} ]]; then terminate_child "$stress_gpu_pid"; stress_gpu_pid=''; fi
+    if [[ -n ${stress_gpu_pid:-} ]]; then terminate_gpu_child "$stress_gpu_pid" || cleanup_failed=1; stress_gpu_pid=''; fi
     if [[ -n ${stress_io_pid:-} ]]; then terminate_child "$stress_io_pid"; stress_io_pid=''; fi
     if [[ -n ${stress_io_file:-} ]]; then rm -f -- "$stress_io_file" "${stress_io_file}.new" 2>/dev/null || true; stress_io_file=''; fi
-    if (( stress_frontend_stopped == 1 )) && ! restore_frontend_baseline; then cleanup_failed=1; fi
+    if (( stress_frontend_stopped == 1 )); then
+        if (( stress_frontend_restore_attempted == 0 )); then
+            restore_frontend_baseline || cleanup_failed=1
+        else
+            cleanup_failed=1
+        fi
+    fi
     if [[ ${stress_work_dir:-} == /tmp/autopioverclock-stress.* ]]; then rm -rf -- "$stress_work_dir"; fi
     stress_work_dir=''
     (( cleanup_failed == 0 ))
@@ -1393,7 +1517,7 @@ stress_signal_cleanup() {
 }
 
 cmd_stress() {
-    local stress_kind=$1 duration=$2 max_temp=$3 mode=$4 baseline=$5 io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5}
+    local stress_kind=$1 duration=$2 max_temp=$3 mode=$4 baseline=$5 io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-}
     local cpu_output gpu_output launcher_file
     local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle kernel_lines new_errors
     local cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' glmark_binary glmark_data library_dirs gpu_stack
@@ -1401,8 +1525,9 @@ cmd_stress() {
     local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
-    stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_work_dir=''; stress_io_file=''; stress_frontend_stopped=0
+    stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_work_dir=''; stress_io_file=''; stress_frontend_stopped=0; stress_frontend_restore_attempted=0
     stress_frontend_baseline=$baseline
+    stress_audio_baseline=$audio_baseline
     stress_work_dir=$(mktemp -d /tmp/autopioverclock-stress.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create stress workspace.'; return 1; }
     cpu_output="$stress_work_dir/cpu.log"; gpu_output="$stress_work_dir/gpu.log"; launcher_file="$stress_work_dir/glmark.sh"; stress_io_file="$PERSISTENT_ROOT/.io-test-$$"
     trap cleanup_stress EXIT
@@ -1492,7 +1617,14 @@ cmd_stress() {
 
     if [[ -n $failure_class ]]; then
         if [[ -n $stress_cpu_pid ]] && kill -0 "$stress_cpu_pid" 2>/dev/null; then terminate_child "$stress_cpu_pid"; cpu_rc=124; stress_cpu_pid=''; fi
-        if [[ -n $stress_gpu_pid ]] && kill -0 "$stress_gpu_pid" 2>/dev/null; then terminate_child "$stress_gpu_pid"; gpu_rc=124; stress_gpu_pid=''; fi
+        if [[ -n $stress_gpu_pid ]] && kill -0 "$stress_gpu_pid" 2>/dev/null; then
+            if ! terminate_gpu_child "$stress_gpu_pid"; then
+                failure_reason="Original $failure_class: $failure_reason; the temporary GPU VT could not be restored."
+                failure_class=RECOVERY_FAILURE
+            fi
+            gpu_rc=124
+            stress_gpu_pid=''
+        fi
     fi
     if [[ -n $stress_cpu_pid ]]; then wait "$stress_cpu_pid" 2>/dev/null; cpu_rc=$?; stress_cpu_pid=''; fi
     if [[ -n $stress_gpu_pid ]]; then wait "$stress_gpu_pid" 2>/dev/null; gpu_rc=$?; stress_gpu_pid=''; fi

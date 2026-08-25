@@ -23,6 +23,7 @@ APO_LAST_REASON=''
 APO_STATE=()
 ACTIONS=()
 SAVE_COUNT=0
+RECOVERY_FORCE_REBOOT=''
 
 apo_state_save() { SAVE_COUNT=$((SAVE_COUNT + 1)); }
 apo_event() { :; }
@@ -44,9 +45,37 @@ apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
 apo_health_check() { ACTIONS+=("health:$4"); }
 apo_verify_permanent_hash() { ACTIONS+=("hash:$1"); }
 apo_recover_preserving_failure() { return 0; }
-apo_record_failure_after_recovery() { apo_state_fail "$2" "$3"; }
+apo_record_failure_after_recovery() { RECOVERY_FORCE_REBOOT=${4:-0}; apo_state_fail "$2" "$3"; }
 
 source "$ROOT/lib/candidates.sh"
+
+# Only a Batocera graphical smoke failure that explicitly reports failed
+# session recovery requests the guarded normal-config reboot path.
+apo_run_stress() { APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='frontend did not recover'; return 1; }
+APO_PROFILE=batocera
+APO_MODE_EFFECTIVE=graphical
+RECOVERY_FORCE_REBOOT=''
+if apo_gpu_harness_smoke; then exit 1; fi
+[[ $RECOVERY_FORCE_REBOOT == 1 ]]
+
+APO_STATE=()
+APO_PROFILE=debian
+APO_MODE_EFFECTIVE=graphical
+RECOVERY_FORCE_REBOOT=''
+if apo_gpu_harness_smoke; then exit 1; fi
+[[ $RECOVERY_FORCE_REBOOT == 0 ]]
+
+APO_STATE=()
+APO_PROFILE=batocera
+APO_MODE_EFFECTIVE=graphical
+apo_run_stress() { APO_LAST_CLASS=HARNESS_FAILURE; APO_LAST_REASON='launcher failed safely'; return 1; }
+RECOVERY_FORCE_REBOOT=''
+if apo_gpu_harness_smoke; then exit 1; fi
+[[ $RECOVERY_FORCE_REBOOT == 0 ]]
+
+# Restore the general success fixture used by the resume tests below.
+APO_STATE=()
+apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
 
 # Resume a candidate after its second of four configured boot cycles. Earlier
 # boot gates must not be replayed; only cycles 2-4 and later gates run.

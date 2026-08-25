@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.10 — 2026-08-24
+
+- Fixed Batocera graphical GPU stress to allocate a free temporary VT instead of force-reusing the active frontend VT, preventing `openvt` rc=8 from trying to deallocate `tty1`.
+- Reopened the retained GPU log from inside the VT child so hardware-renderer and score evidence is captured even though `openvt` redirects child stdio to the console.
+- Limited failed frontend restoration to one bounded attempt and added a fail-closed, hash-verified normal reboot that may run only after a Batocera graphical smoke recovery failure with completely clear tryboot ownership state.
+- Added regressions for safe `openvt` arguments, child-output and exit-code propagation, direct fallback, single-attempt frontend cleanup, and guarded pre/post-reboot recovery checks.
+
 ## 0.1.0-alpha.9 — 2026-08-24
 
 - Replaced Batocera `/boot` mount-option verification with a shell parser that does not assign to awk's reserved `index` builtin, fixing the false remount failure that occurred before the first candidate was written.

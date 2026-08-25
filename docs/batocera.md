@@ -8,12 +8,12 @@ Before any GPU sweep, the controller runs a 20-second smoke test at normal clock
 
 1. Captures the known-good connector/mode/frontend baseline.
 2. Stops EmulationStation and waits for compositor ownership to clear.
-3. activates the current VT with `openvt -s` when available;
-4. runs `glmark2-es2-drm` on a real fullscreen DRM surface;
+3. asks `openvt -s` for a free VT when available, without forcing the already-active frontend VT;
+4. runs `glmark2-es2-drm` on a real fullscreen DRM surface while retaining its renderer and score output in the run log;
 5. requires `GL_RENDERER` and `glmark2 Score` output;
-6. restarts the frontend and waits for the original baseline.
+6. switches back to the original VT, releases the temporary VT, restarts the frontend, and waits for the original baseline.
 
-Canvas initialization, missing runtime files, lost DRM master, or failed frontend restoration is a `HARNESS_FAILURE`, not evidence that the clock itself is unstable.
+Canvas initialization, missing runtime files, or lost DRM master is a `HARNESS_FAILURE`, not evidence that the clock itself is unstable. Failed frontend restoration is a `RECOVERY_FAILURE`; the controller may attempt one verified normal-config reboot only when the live and saved tryboot state is clear and the permanent config hash is unchanged.
 
 Graphical discovery also captures the current default audio-sink identity automatically. Every graphical candidate, recovery boot, and apply health gate requires that sink to remain available and unchanged; `audio_sink_pattern`, when configured, is an additional constraint rather than the baseline mechanism.
 
