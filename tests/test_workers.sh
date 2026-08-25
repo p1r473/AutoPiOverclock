@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-set -x
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 FIXTURES="$ROOT/tests/fixtures"
 TEMP_DIR=$(mktemp -d)
@@ -722,15 +721,17 @@ if [[ ${1-} == --help ]]; then
     fi
     exit 0
 fi
-printf '%s\n' "$@" > "$OPENVT_CALLS"
-for openvt_arg in "$@"; do
-    if [[ $openvt_arg == -c ]]; then
+: > "$OPENVT_CALLS"
+while (( $# > 0 )) && [[ $1 != -- ]]; do
+    printf '%s\n' "$1" >> "$OPENVT_CALLS"
+    if [[ $1 == -c ]]; then
         printf "openvt: Couldn't deallocate console 1\n" >&2
         exit 8
     fi
+    shift
 done
-while (( $# > 0 )) && [[ $1 != -- ]]; do shift; done
 (( $# > 0 )) || exit 64
+printf '%s\n' -- '--' >> "$OPENVT_CALLS"
 shift
 (( $# > 0 )) || exit 64
 # Simulate openvt attaching the command's inherited stdio to the VT.  The
