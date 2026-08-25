@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.15 — 2026-08-25
+
+- Added the exact postfix `./autopioverclock TARGET reset` action as a standalone, noninteractive stock-reset workflow while preserving the historical interpretation of `run reset` and lone `reset` as a target hostname.
+- Made reset create and verify persistent, no-clobber boot-config backups; retain standalone disabled clock/voltage directives as audit comments while removing the clock directives and markers from one structurally valid AutoPiOverclock managed block without losing its `[all]` section boundary; and fail closed on includes, symlinked or changing configs, malformed markers, and foreign or ambiguous tryboot paths.
+- Required a fresh permanent-config reboot, changed boot ID, exact post-reset hash, clear tryboot state, active Raspberry Pi 5 stock clocks, current throttle/power proof, and the active watchdog chain before `COMPLETE/STOCK_VERIFIED` success, without claiming tuning's broader health gates.
+- Kept reset independent of prompts, tuning/run-selection flags, terminal multiplexers, and process-wide signaling, while preserving all previous logs and saved runs and recording a separate reset audit.
+- Added postfix-parser compatibility, option-exclusivity, artifact/process preservation, controller dispatch, persistent-backup, and dual-worker reset contract regressions.
+
 ## 0.1.0-alpha.14 — 2026-08-25
 
 - Expanded current-boot kernel-journal failure detection on both Debian-family and Batocera workers to fail immediately on direct kernel panic, ARM internal-error and unable-to-handle-kernel reports, RCU stalls and starvation/timer failures, and hung-task warnings.

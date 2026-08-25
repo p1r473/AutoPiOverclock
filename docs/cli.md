@@ -5,9 +5,10 @@
 ```bash
 ./autopioverclock TARGET [OPTIONS]
 ./autopioverclock COMMAND TARGET [OPTIONS]
+./autopioverclock TARGET reset [OPTIONS]
 ```
 
-Omitting `COMMAND` selects `run`. `TARGET` can be a hostname, an IP address, or an explicit `username@host`. When `username@` is omitted, the controller's current username from `id -un` is used.
+Omitting `COMMAND` selects `run`. `TARGET` can be a hostname, an IP address, or an explicit `username@host`. When `username@` is omitted, the controller's current username from `id -un` is used. `reset` is recognized only as the second positional token after a target. Consequently, `run reset` and a lone `reset` still mean a tuning run against a host named `reset`; `reset TARGET` and `--reset` are not aliases.
 
 ## Commands
 
@@ -20,6 +21,20 @@ Omitting `COMMAND` selects `run`. `TARGET` can be a hostname, an IP address, or 
 | `recover` | Returns to permanent normal configuration and runs normal health. |
 | `apply` | Requires a current-schema `PASS`/`COMPLETE` validation with at least 28,800 saved endurance seconds, displays an exact diff, and requires typed confirmation. |
 | `report` | Writes a concise local report. `--redact` removes target/user/path values. |
+
+## Postfix reset action
+
+```bash
+./autopioverclock TARGET reset
+```
+
+This is a standalone, noninteractive operation that creates a new audit run. It backs up the permanent root boot config to the platform's persistent AutoPiOverclock backup directory, comments standalone clock/voltage controls with `# AUTOPIOVERCLOCK-STOCK-DISABLED`, removes the clock directives and markers from one structurally valid AutoPiOverclock managed block while retaining its `[all]` section boundary, reboots through the permanent configuration, and verifies a changed boot ID plus the Raspberry Pi 5 firmware-stock tuple (2400 MHz CPU, V3D 800 or 960 MHz, and zero voltage delta). Its final state is `STATUS=PASS`, `PHASE=COMPLETE`, and `SUBPHASE=STOCK_VERIFIED` only after the expected post-reset hash, cleared tryboot state, stock clocks, current throttle/power state, and watchdog chain all pass. It does not claim tuning's broader graphical, audio, service, or workload health gates.
+
+Reset fails closed without rewriting the root config when it finds an active `include`, a config symlink, malformed managed markers, a hash race, or a foreign/ambiguous tryboot or quarantine path. A project-owned tryboot artifact is backed up before removal. A pathless active tryboot flag is not treated as owned and nothing unknown is deleted; reset instead prepares the backed-up permanent stock config, forces a normal reboot, and requires that flag to clear before success. Debian backups live below `/var/lib/autopioverclock/backups/`; Batocera backups live below `/userdata/system/autopioverclock/backups/`, and Batocera must return `/boot` to verified read-only state.
+
+The literal postfix token is the reset authorization, so no prompt is issued and `--yes` is rejected. Reset also rejects `--run-id`, `--config`, explicit `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--edge-cpu-24h`, and `--redact`. Only `--output-dir`, `--ssh-port`, and `--identity-file` are accepted. It never manages tmux/Byobu sessions or kills another controller; a held per-target lock is an error.
+
+Every prior run artifact remains in place and byte-preserved; the target's `*-latest` links advance to the new reset audit. Reset adds its own state, log, summary, CSV, and JSON audit evidence and reports the verified remote backup path; it does not erase history to make the next tuning run “fresh.” The next `run` naturally receives a new collision-resistant run ID.
 
 ## Options
 

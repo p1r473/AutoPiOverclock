@@ -11,6 +11,7 @@ The controller owns policy, state, logging, candidate order, recovery decisions,
 - `ssh.sh`: `command ssh -F /dev/null` transport and root/sudo wrapper.
 - `detect.sh`: OS/profile discovery, dependency preflight, and active watchdog-chain proof.
 - `recovery.sh`: tryboot trigger, boot-ID tracking, and normal return.
+- `reset.sh`: standalone postfix stock-reset orchestration, persistent-backup evidence, permanent reboot, and verified-stock completion.
 - `candidates.sh`: resumable candidate substages, edge handling, selection, and final-validation substages.
 - `apply.sh`: current-schema/eight-hour eligibility, exact diff, typed confirmation, persisted backup plan, normal-reboot health, and rollback.
 
@@ -38,3 +39,5 @@ Resume first returns an interrupted tryboot to normal. If a saved substage depen
 Controller policy passes `telemetry_interval_seconds` to each target worker. Workers sample and log temperature, throttle state, active clocks, new kernel errors, and supervised stress processes at that bounded cadence while retaining an independent hard shutdown deadline.
 
 An interrupted `PREPARE` is different: dependency or watchdog remediation may have only partially changed the target. Its state remains available to `status` and `report`, but mutating resume is refused so the controller cannot silently adopt an unverified permanent configuration as its new baseline.
+
+The postfix `TARGET reset` path does not consume or erase a prior tuning run. It allocates a standalone audit run, acquires the same controller/target mutation locks, rejects foreign tryboot evidence and unbound includes, checkpoints the expected old/new hashes and no-clobber persistent backup, then performs an ordinary permanent-config reboot. Completion requires a changed boot ID, the exact new hash, no tryboot state, verified firmware-stock clocks, clear current throttle/power state, and the active watchdog chain. It does not claim tuning's broader health gates. Terminal multiplexers and unrelated controller processes are outside its authority.

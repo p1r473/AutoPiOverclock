@@ -128,7 +128,7 @@ Start as a new user would: do not import remembered clocks or assumptions from a
 
 Review the detected platform, graphical/headless mode, permanent normal clocks, voltage and its evidence source, power history, boot paths, permanent hash, exact dependency evidence, watchdog chain, and `tryboot.txt` status in the generated discovery and summary artifacts under `$HOME/overclock-results` (or the selected `--output-dir`). A live run requires the discovered tryboot file status to be `ABSENT`.
 
-Configuration-free auto mode accepts only the verified active Raspberry Pi 5 stock tuple: CPU 2400 MHz, V3D 800 or 960 MHz according to the active firmware generation, and zero voltage delta. The worker hashes the permanent root boot config before and after auditing it; any snapshot change or read ambiguity fails closed. It rejects explicit `arm_boost`, `force_turbo`, `initial_turbo`, `core_freq_fixed`, any `*_freq` or `*_freq_min` assignment, and any `over_voltage*` assignment. An `include` directive also fails closed because included files are not yet bound to the protected permanent-config hash. This distinguishes a firmware-default 960 MHz V3D clock from a user-written 960 MHz override. Restoring factory configuration is a separate, explicitly reviewed permanent operation; AutoPiOverclock never edits permanent clocks to manufacture a baseline.
+Configuration-free auto mode accepts only the verified active Raspberry Pi 5 stock tuple: CPU 2400 MHz, V3D 800 or 960 MHz according to the active firmware generation, and zero voltage delta. The worker hashes the permanent root boot config before and after auditing it; any snapshot change or read ambiguity fails closed. It rejects explicit `arm_boost`, `force_turbo`, `initial_turbo`, `core_freq_fixed`, any `*_freq` or `*_freq_min` assignment, and any `over_voltage*` assignment. An `include` directive also fails closed because included files are not yet bound to the protected permanent-config hash. This distinguishes a firmware-default 960 MHz V3D clock from a user-written 960 MHz override. `prepare` and `run` never rewrite permanent clocks to manufacture a baseline. Returning a target to firmware stock defaults is the separate, explicit postfix `TARGET reset` operation documented below.
 
 Resolve preflight findings before tuning:
 
@@ -183,6 +183,7 @@ Batocera may require a portable GPU payload. Review the read-only plan first; de
 | `recover` | Return the target to permanent normal configuration and verify health. |
 | `apply` | Apply only a fully validated result after an exact diff and typed confirmation. |
 | `report` | Generate a concise run report; supports redaction. |
+| `TARGET reset` | Back up the permanent boot config, disable explicit clock/voltage overrides, reboot normally, and verify firmware stock defaults. |
 
 The approved options and command-specific rules are documented in [`docs/cli.md`](docs/cli.md). No short aliases or hidden public switches are accepted.
 
@@ -253,6 +254,22 @@ Each candidate and final-validation substage is checkpointed atomically. The ran
 ```
 
 `resume` is only for a run interrupted after the ordinary tuning confirmation created resumable tuning state. A preflight failure or declined tuning confirmation remains available through `status` and `report`; resolve the finding and start a new `run` instead of resuming it. Evidence tied to an interrupted candidate boot is repeated when it cannot be preserved safely. A state file from an older safety schema cannot be resumed through newer gates.
+
+### Reset a target to verified stock defaults
+
+Reset is an explicit postfix target action. The order is exact:
+
+```bash
+./autopioverclock target-host reset
+```
+
+`run reset` and a lone `reset` retain their historical meaning: they run against a host literally named `reset`. There is no command-first `reset target-host` alias and no `--reset` option. The postfix action is noninteractive, so it neither needs nor accepts `--yes`. It also rejects `--run-id`, tuning/configuration flags, dependency/watchdog flags, dry-run, edge-validation, mode, and redaction flags; only `--output-dir`, `--ssh-port`, and `--identity-file` may accompany it.
+
+Before changing the permanent root boot config, reset requires a regular non-symlink config, a stable expected hash, no active `include` directive, and no foreign or ambiguous `tryboot.txt`/quarantine path. It writes a hash-verified, no-clobber backup under `/var/lib/autopioverclock/backups/` on Debian-family systems or `/userdata/system/autopioverclock/backups/` on Batocera. Standalone boost, fixed-clock, `*_freq`/`*_freq_min`, and `over_voltage*` lines are retained as comments prefixed with `# AUTOPIOVERCLOCK-STOCK-DISABLED`; the clock directives and markers in one structurally valid AutoPiOverclock managed block are removed while its `[all]` section boundary is retained, with the complete original bytes in the verified backup. An attributable AutoPiOverclock tryboot artifact is backed up before removal, while unknown paths are preserved and reset fails closed. If the running firmware reports a tryboot boot but no live or quarantined path exists, reset does not claim ownership of that boot; it safely prepares the backed-up permanent stock config, forces a normal reboot, and requires the post-reboot tryboot flag to be clear. Batocera must also restore and verify `/boot` read-only.
+
+Reset then forces a permanent-config reboot and accepts success only after a new boot ID, an exact expected config hash, an absent/cleared tryboot state, and active Raspberry Pi 5 stock clocks are all verified: CPU 2400 MHz, firmware-default V3D 800 or 960 MHz, and zero voltage delta. The same verification checks current throttle/power state and the active watchdog chain; reset does not claim the broader display, audio, service, or workload health gates used by tuning. A reset creates its own audit state/log and reports the remote backup path; it never deletes or truncates prior logs, state, summaries, candidate logs, or saved runs.
+
+Reset does not run `tmux`, Byobu, job-control, or process-wide kill commands. If another controller still owns the per-target lock, reset fails without signaling that process or its terminal session; stop that one foreground controller yourself and repeat the exact postfix command.
 
 ## Results
 

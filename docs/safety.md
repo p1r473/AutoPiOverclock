@@ -24,6 +24,16 @@ The controller treats the candidate as possibly live until a separate boot into 
 
 The baseline recovery proof uses the verified stock clocks before any fresh automatic overclock candidate. Stock is the control baseline, not an overclock pass. It must prove the complete tryboot boot, normal recovery, ownership-checked cleanup, and watchdog chain. A failure aborts the run rather than becoming evidence about clock stability.
 
+## Explicit stock reset
+
+`./autopioverclock TARGET reset` is the only stock-reset spelling. It is a standalone, noninteractive permanent-config operation, not an option on `run`, `resume`, or `recover`. It takes no tuning, saved-run-selection, confirmation, dependency, watchdog-repair, dry-run, edge, mode, or redaction flags. The postfix token itself is explicit intent; `--yes` is rejected.
+
+Reset hashes and audits the root boot config before mutation. A symlink, changing hash, malformed AutoPiOverclock marker block, active `include` directive, or foreign/ambiguous tryboot or quarantine path fails closed. Reset never guesses through included files and never overwrites unknown recovery evidence. Before an accepted replacement it writes and verifies a no-clobber persistent backup; any attributable project tryboot file is backed up before cleanup. Standalone clock/voltage controls remain visible as `# AUTOPIOVERCLOCK-STOCK-DISABLED` comments; the clock directives and markers in one structurally valid managed block are removed while its `[all]` section boundary is retained, and the verified backup keeps the complete original. If the active firmware tryboot flag is set but no live or quarantine path remains, reset claims no ownership and deletes nothing unknown; it prepares the backed-up permanent stock config, forces a normal reboot, and requires the flag to clear. A failed replacement restores the verified backup only while the destination still has a recognized reset hash; unknown concurrent content is preserved. Batocera must restore `/boot` read-only before reporting a result.
+
+Writing a stock-form config is not enough to pass. The controller forces a permanent-config reboot, requires a different boot ID, rechecks the exact expected permanent hash and absent tryboot state, verifies active CPU 2400 MHz, firmware-default V3D 800 or 960 MHz, and zero voltage delta, and checks current throttle/power state plus the active watchdog chain. Reset does not claim the broader display, audio, service, or workload health gates used during tuning. Only its bounded stock-boot sequence may checkpoint `COMPLETE/STOCK_VERIFIED` and emit a reset `PASS` event.
+
+The reset controller uses the existing local per-target and remote mutation locks. It does not stop another controller, issue process-wide kills, or interact with tmux/Byobu; a held lock fails safely. It creates a separate audit run and preserves all earlier local logs, states, summaries, reports, and candidate logs without deletion or truncation.
+
 ## Active watchdog proof
 
 The recovery gate does not infer readiness from an arbitrary `config.txt` line. It requires all of the following on the running target:

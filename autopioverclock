@@ -23,6 +23,8 @@ source "${APO_ROOT}/lib/health.sh"
 source "${APO_ROOT}/lib/detect.sh"
 # shellcheck source=lib/recovery.sh
 source "${APO_ROOT}/lib/recovery.sh"
+# shellcheck source=lib/reset.sh
+source "${APO_ROOT}/lib/reset.sh"
 # shellcheck source=lib/candidates.sh
 source "${APO_ROOT}/lib/candidates.sh"
 # shellcheck source=lib/apply.sh
@@ -32,11 +34,14 @@ source "${APO_ROOT}/lib/report.sh"
 
 APO_COMMAND=run
 APO_CONFIG_FILE=''
+APO_CONFIG_OPTION_SEEN=0
 APO_MODE_REQUESTED=auto
+APO_MODE_OPTION_SEEN=0
 APO_OUTPUT_DIR="${HOME}/overclock-results"
 APO_SSH_PORT=22
 APO_IDENTITY_FILE=''
 APO_SELECTED_RUN_ID=''
+APO_RUN_ID_OPTION_SEEN=0
 APO_INSTALL_MISSING=0
 APO_REPAIR_WATCHDOGS=0
 APO_DRY_RUN=0
@@ -54,6 +59,7 @@ AutoPiOverclock — recoverable Raspberry Pi 5 overclock validation
 Usage:
   ./autopioverclock TARGET [OPTIONS]
   ./autopioverclock COMMAND TARGET [OPTIONS]
+  ./autopioverclock TARGET reset [OPTIONS]
 
 Commands:
   run       Prepare, sweep, conservatively select, and validate (default)
@@ -63,6 +69,10 @@ Commands:
   recover   Return the target to its permanent normal config and verify health
   apply     Show an exact diff and apply only a fully validated result
   report    Generate a concise run report; supports --redact
+
+Postfix target action:
+  reset     Back up the permanent boot config, disable clock/voltage overrides,
+            reboot, and verify stock clocks; prior run artifacts are preserved
 
 Target:
   hostname | IP | username@hostname | username@IP
@@ -94,7 +104,15 @@ apo_parse_cli() {
         run|prepare|resume|status|recover|apply|report) APO_COMMAND=${arguments[0]}; index=1 ;;
         --help) usage; exit 0 ;;
         --version) printf '%s\n' "$APO_VERSION"; exit 0 ;;
-        *) APO_COMMAND=run ;;
+        *)
+            if (( ${#arguments[@]} >= 2 )) && [[ ${arguments[0]} != -* && ${arguments[1]} == reset ]]; then
+                APO_COMMAND=reset
+                target=${arguments[0]}
+                index=2
+            else
+                APO_COMMAND=run
+            fi
+            ;;
     esac
     while (( index < ${#arguments[@]} )); do
         token=${arguments[$index]}
@@ -102,12 +120,12 @@ apo_parse_cli() {
             --config|--mode|--output-dir|--ssh-port|--identity-file|--run-id)
                 (( index + 1 < ${#arguments[@]} )) || apo_die "$token requires a value." "$APO_EXIT_USAGE"
                 case $token in
-                    --config) APO_CONFIG_FILE=${arguments[$((index + 1))]} ;;
-                    --mode) APO_MODE_REQUESTED=${arguments[$((index + 1))]} ;;
+                    --config) APO_CONFIG_FILE=${arguments[$((index + 1))]}; APO_CONFIG_OPTION_SEEN=1 ;;
+                    --mode) APO_MODE_REQUESTED=${arguments[$((index + 1))]}; APO_MODE_OPTION_SEEN=1 ;;
                     --output-dir) APO_OUTPUT_DIR=${arguments[$((index + 1))]} ;;
                     --ssh-port) APO_SSH_PORT=${arguments[$((index + 1))]} ;;
                     --identity-file) APO_IDENTITY_FILE=${arguments[$((index + 1))]} ;;
-                    --run-id) APO_SELECTED_RUN_ID=${arguments[$((index + 1))]} ;;
+                    --run-id) APO_SELECTED_RUN_ID=${arguments[$((index + 1))]}; APO_RUN_ID_OPTION_SEEN=1 ;;
                 esac
                 index=$((index + 2))
                 ;;
@@ -128,6 +146,17 @@ apo_parse_cli() {
     apo_validate_uint_range "$APO_SSH_PORT" 1 65535 || apo_die '--ssh-port must be 1-65535.' "$APO_EXIT_USAGE"
     [[ -z $APO_SELECTED_RUN_ID ]] || apo_is_safe_run_id "$APO_SELECTED_RUN_ID" || apo_die 'Invalid --run-id.' "$APO_EXIT_USAGE"
     [[ -z $APO_IDENTITY_FILE || -r $APO_IDENTITY_FILE ]] || apo_die "Identity file is unreadable: $APO_IDENTITY_FILE" "$APO_EXIT_USAGE"
+    if [[ $APO_COMMAND == reset ]]; then
+        (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die '--config is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+        (( APO_MODE_OPTION_SEEN == 0 )) || apo_die '--mode is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+        (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with TARGET reset; reset records a new standalone operation.' "$APO_EXIT_USAGE"
+        (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+        (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+        (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+        (( APO_ASSUME_YES == 0 )) || apo_die '--yes is not valid with TARGET reset; reset does not prompt.' "$APO_EXIT_USAGE"
+        (( APO_REDACT == 0 )) || apo_die '--redact is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+    fi
     case $APO_COMMAND in
         run|prepare) ;;
         *)
@@ -222,6 +251,9 @@ apo_load_selected_run() {
     [[ $stored_target == "$APO_REMOTE_TARGET" ]] || apo_die "Selected state belongs to $stored_target, not $APO_REMOTE_TARGET." "$APO_EXIT_USAGE"
     apo_attach_artifacts_from_state
     case $APO_COMMAND in status|report) return 0 ;; esac
+    if [[ $(apo_state_get ORIGIN_COMMAND '') == reset ]]; then
+        apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/report, or use TARGET reset again.' "$APO_EXIT_USAGE"
+    fi
     stored_profile=$(apo_state_get PROFILE '')
     if [[ -z $stored_profile ]]; then
         case $APO_COMMAND in
@@ -294,7 +326,7 @@ main() {
     local status
     apo_parse_cli "$@"
     apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync
-    case $APO_COMMAND in run|prepare|resume|recover|apply) apo_acquire_lock ;; esac
+    case $APO_COMMAND in run|prepare|resume|recover|reset|apply) apo_acquire_lock ;; esac
     trap apo_cleanup_handler EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -303,6 +335,13 @@ main() {
         run|prepare)
             APO_MUTATING_COMMAND=$([[ $APO_COMMAND == run && $APO_DRY_RUN == 0 ]] && printf 1 || printf 0)
             apo_start_new_run
+            ;;
+        reset)
+            # Stock reset has its own idempotent worker/reboot protocol. The
+            # generic tuning exit trap must not interpret reset state as owned
+            # tryboot candidate state.
+            APO_MUTATING_COMMAND=0
+            apo_reset_stock
             ;;
         status)
             apo_load_selected_run

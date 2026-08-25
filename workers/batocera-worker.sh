@@ -1679,6 +1679,456 @@ cmd_stress() {
 
 cmd_render_permanent() { local cpu_mhz=$1 gpu_mhz=$2 gpu_key=$3 voltage_uv=$4 run_id=$5; render_clock_config /boot/config.txt /dev/stdout "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id"; }
 
+RESET_STOCK_LAST_REASON=''
+RESET_STOCK_TRYBOOT_PATH=''
+RESET_STOCK_TRYBOOT_HASH=''
+RESET_STOCK_TRYBOOT_KIND=''
+RESET_STOCK_TRYBOOT_RUN=''
+RESET_STOCK_TRYBOOT_TOKEN=''
+RESET_STOCK_BACKUP_DIR=/userdata/system/autopioverclock/backups
+
+reset_stock_safe_id() {
+    local value=${1-}
+    [[ $value =~ ^[A-Za-z0-9._-]+$ && $value != . && $value != .. && ${#value} -le 128 ]]
+}
+
+reset_stock_managed_block_valid() {
+    local run_line=${1-} section_line=${2-} voltage_line=${3-} cpu_line=${4-} gpu_line=${5-} managed_run
+    (( $# == 5 )) || return 1
+    [[ $run_line == '# Run: '* ]] || return 1
+    managed_run=${run_line#\# Run: }
+    reset_stock_safe_id "$managed_run" || return 1
+    [[ $section_line == '[all]' ]] || return 1
+    [[ $voltage_line =~ ^over_voltage_delta=-?[0-9]+$ ]] || return 1
+    [[ $cpu_line =~ ^arm_freq=[0-9]+$ ]] || return 1
+    [[ $gpu_line =~ ^(gpu_freq|v3d_freq)=[0-9]+$ ]]
+}
+
+reset_stock_validate_config() {
+    local config_file=$1 line semantic trimmed lower inside=0 marker_count=0
+    local -a managed_lines=()
+    RESET_STOCK_LAST_REASON=''
+    [[ -f $config_file && ! -L $config_file && -r $config_file ]] || {
+        RESET_STOCK_LAST_REASON='The permanent config is missing, unreadable, non-regular, or a symlink.'
+        return 1
+    }
+    while IFS= read -r line || [[ -n $line ]]; do
+        semantic=${line%$'\r'}
+        if [[ $semantic == "$CLOCK_MARKER_BEGIN" ]]; then
+            (( inside == 0 )) || { RESET_STOCK_LAST_REASON='The permanent config contains nested AutoPiOverclock clock markers.'; return 1; }
+            marker_count=$((marker_count + 1))
+            (( marker_count == 1 )) || { RESET_STOCK_LAST_REASON='The permanent config contains multiple AutoPiOverclock clock blocks.'; return 1; }
+            inside=1
+            managed_lines=()
+            continue
+        fi
+        if [[ $semantic == "$CLOCK_MARKER_END" ]]; then
+            (( inside == 1 )) || { RESET_STOCK_LAST_REASON='The permanent config contains an unmatched AutoPiOverclock clock end marker.'; return 1; }
+            reset_stock_managed_block_valid "${managed_lines[@]}" || {
+                RESET_STOCK_LAST_REASON='The permanent config contains a malformed AutoPiOverclock clock block; reset refuses to delete unknown content.'
+                return 1
+            }
+            inside=0
+            continue
+        fi
+        if [[ $semantic == *'AUTOPIOVERCLOCK MANAGED CLOCKS'* ]]; then
+            RESET_STOCK_LAST_REASON='The permanent config contains a malformed AutoPiOverclock clock marker.'
+            return 1
+        fi
+        if (( inside == 1 )); then
+            managed_lines+=("$semantic")
+            continue
+        fi
+        trimmed=${semantic#"${semantic%%[![:space:]]*}"}
+        [[ -n $trimmed && $trimmed != \#* ]] || continue
+        lower=${trimmed,,}
+        if [[ $lower =~ ^include([[:space:]]|$) ]]; then
+            RESET_STOCK_LAST_REASON='The permanent config contains an active include directive; reset cannot prove or safely rewrite the included configuration graph.'
+            return 1
+        fi
+    done < "$config_file"
+    (( inside == 0 )) || { RESET_STOCK_LAST_REASON='The permanent config contains an unmatched AutoPiOverclock clock begin marker.'; return 1; }
+}
+
+reset_stock_render_config() {
+    local source_file=$1 destination_file=$2
+    awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" '
+        function is_tuning_key(key) {
+            key=tolower(key)
+            return key=="arm_boost" || key=="force_turbo" || key=="initial_turbo" || key=="core_freq_fixed" ||
+                   key ~ /_freq$/ || key ~ /_freq_min$/ || key ~ /^over_voltage/
+        }
+        {
+            raw=$0
+            semantic=$0
+            sub(/\r$/, "", semantic)
+            if (semantic==begin) {inside=1; next}
+            if (semantic==end) {inside=0; print "[all]"; next}
+            if (inside) next
+            probe=semantic
+            sub(/^[[:space:]]*/, "", probe)
+            if (probe !~ /^#/ && probe ~ /^[[:alnum:]_]+[[:space:]]*=/) {
+                key=probe
+                sub(/[[:space:]]*=.*$/, "", key)
+                if (is_tuning_key(key)) {
+                    print "# AUTOPIOVERCLOCK-STOCK-DISABLED " raw
+                    next
+                }
+            }
+            print raw
+        }
+    ' "$source_file" > "$destination_file"
+}
+
+reset_stock_tryboot_kind() {
+    local tryboot_file=$1 required_suffix=${2-} marker run_line ownership_line run_id ownership_token
+    local begin_count end_count run_count complete_count complete_line actual_content expected_content
+    [[ -f $tryboot_file && ! -L $tryboot_file && -r $tryboot_file ]] || return 1
+    marker=$(sed -n '1{s/\r$//;p;q;}' "$tryboot_file" 2>/dev/null || true)
+    run_line=$(sed -n '2{s/\r$//;p;q;}' "$tryboot_file" 2>/dev/null || true)
+    ownership_line=$(sed -n '3{s/\r$//;p;q;}' "$tryboot_file" 2>/dev/null || true)
+    [[ $marker == "$TRYBOOT_RESERVATION_MARKER" && $run_line == '# Run: '* && $ownership_line == '# Ownership: '* ]] || return 1
+    run_id=${run_line#\# Run: }
+    ownership_token=${ownership_line#\# Ownership: }
+    reset_stock_safe_id "$run_id" || return 1
+    [[ $ownership_token =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ -z $required_suffix || $required_suffix == "$ownership_token" ]] || return 1
+    RESET_STOCK_TRYBOOT_RUN=$run_id
+    RESET_STOCK_TRYBOOT_TOKEN=$ownership_token
+    actual_content=$(<"$tryboot_file")
+    expected_content=$(render_tryboot_reservation "$run_id" "$ownership_token")
+    if [[ $actual_content == "$expected_content" ]]; then printf reservation; return 0; fi
+    begin_count=$(grep -Fxc -- "$CLOCK_MARKER_BEGIN" "$tryboot_file" 2>/dev/null || true)
+    end_count=$(grep -Fxc -- "$CLOCK_MARKER_END" "$tryboot_file" 2>/dev/null || true)
+    run_count=$(grep -Fxc -- "# Run: $run_id" "$tryboot_file" 2>/dev/null || true)
+    complete_line="# AUTOPIOVERCLOCK TRYBOOT COMPLETE: $ownership_token"
+    complete_count=$(grep -Fc -- '# AUTOPIOVERCLOCK TRYBOOT COMPLETE:' "$tryboot_file" 2>/dev/null || true)
+    [[ $begin_count == 1 && $end_count == 1 && $run_count == 2 ]] || return 1
+    awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" -v run_line="# Run: $run_id" '
+        {
+            line=$0; sub(/\r$/, "", line)
+            if (line==begin) {if (inside || seen) exit 1; inside=1; seen=1; next}
+            if (line==end) {if (!inside) exit 1; inside=0; ended=1; next}
+            if (inside) {block[++count]=line}
+        }
+        END {
+            if (!seen || inside || !ended || count!=5) exit 1
+            if (block[1]!=run_line || block[2]!="[all]") exit 1
+            if (block[3] !~ /^over_voltage_delta=-?[0-9]+$/) exit 1
+            if (block[4] !~ /^arm_freq=[0-9]+$/) exit 1
+            if (block[5] !~ /^(gpu_freq|v3d_freq)=[0-9]+$/) exit 1
+        }
+    ' "$tryboot_file" || return 1
+    if [[ $complete_count == 0 ]]; then
+        printf managed
+    elif [[ $complete_count == 1 ]] && grep -Fqx -- "$complete_line" "$tryboot_file"; then
+        printf complete
+    else
+        return 1
+    fi
+}
+
+reset_stock_scan_tryboot() {
+    local boot_config=$1 boot_dir tryboot_file candidate suffix count=0 kind hash candidate_name reset_owner reset_run
+    RESET_STOCK_LAST_REASON=''
+    RESET_STOCK_TRYBOOT_PATH=''
+    RESET_STOCK_TRYBOOT_HASH=''
+    RESET_STOCK_TRYBOOT_KIND=''
+    RESET_STOCK_TRYBOOT_RUN=''
+    RESET_STOCK_TRYBOOT_TOKEN=''
+    boot_dir=$(dirname "$boot_config")
+    tryboot_file="$boot_dir/tryboot.txt"
+    for candidate in "$tryboot_file" "$boot_dir"/.autopioverclock-remove-* "$boot_dir"/.autopioverclock-stock-reset-*; do
+        [[ -e $candidate || -L $candidate ]] || continue
+        count=$((count + 1))
+        (( count == 1 )) || { RESET_STOCK_LAST_REASON='Multiple tryboot or quarantine paths exist; refusing ambiguous cleanup.'; return 1; }
+        suffix=''
+        case $candidate in
+            "$tryboot_file") ;;
+            "$boot_dir"/.autopioverclock-remove-*) suffix=${candidate#"$boot_dir/.autopioverclock-remove-"} ;;
+            "$boot_dir"/.autopioverclock-stock-reset-*)
+                candidate_name=${candidate#"$boot_dir/.autopioverclock-stock-reset-"}
+                reset_owner=${candidate_name##*-}
+                reset_run=${candidate_name%"-$reset_owner"}
+                reset_stock_safe_id "$reset_run" || { RESET_STOCK_LAST_REASON="The stock-reset quarantine path at $candidate has an invalid reset ID; preserving it."; return 1; }
+                suffix=$reset_owner
+                ;;
+        esac
+        [[ -z $suffix || $suffix =~ ^[0-9a-f]{64}$ ]] || { RESET_STOCK_LAST_REASON="The tryboot quarantine path at $candidate has an invalid ownership suffix; preserving it."; return 1; }
+        kind=$(reset_stock_tryboot_kind "$candidate" "$suffix" || true)
+        [[ -n $kind ]] || { RESET_STOCK_LAST_REASON="The tryboot artifact at $candidate is foreign, malformed, changed, or a symlink; preserving it."; return 1; }
+        RESET_STOCK_TRYBOOT_RUN=$(sed -n '2{s/\r$//;s/^# Run: //;p;q;}' "$candidate" 2>/dev/null || true)
+        RESET_STOCK_TRYBOOT_TOKEN=$(sed -n '3{s/\r$//;s/^# Ownership: //;p;q;}' "$candidate" 2>/dev/null || true)
+        reset_stock_safe_id "$RESET_STOCK_TRYBOOT_RUN" && [[ $RESET_STOCK_TRYBOOT_TOKEN =~ ^[0-9a-f]{64}$ ]] || { RESET_STOCK_LAST_REASON="The managed tryboot identity at $candidate is malformed; preserving it."; return 1; }
+        hash=$(sha256sum "$candidate" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        valid_sha256 "$hash" || { RESET_STOCK_LAST_REASON="The managed tryboot artifact at $candidate could not be hashed; preserving it."; return 1; }
+        RESET_STOCK_TRYBOOT_PATH=$candidate
+        RESET_STOCK_TRYBOOT_HASH=$hash
+        RESET_STOCK_TRYBOOT_KIND=$kind
+    done
+}
+
+reset_stock_prepare_backup_dir() {
+    local root=$1 backup_dir="$1/backups"
+    if [[ -L $root || ( -e $root && ! -d $root ) ]]; then RESET_STOCK_LAST_REASON="Unsafe reset backup root: $root"; return 1; fi
+    [[ -d $root ]] || mkdir -- "$root" || { RESET_STOCK_LAST_REASON="Could not create reset backup root: $root"; return 1; }
+    if [[ -L $backup_dir || ( -e $backup_dir && ! -d $backup_dir ) ]]; then RESET_STOCK_LAST_REASON="Unsafe reset backup directory: $backup_dir"; return 1; fi
+    [[ -d $backup_dir ]] || mkdir -- "$backup_dir" || { RESET_STOCK_LAST_REASON="Could not create reset backup directory: $backup_dir"; return 1; }
+    chmod 700 "$backup_dir" 2>/dev/null || true
+    printf '%s' "$backup_dir"
+}
+
+reset_stock_backup_verified() {
+    local source_file=$1 backup_file=$2 expected_hash=$3 temporary_file actual_hash
+    [[ -f $source_file && ! -L $source_file ]] || return 1
+    [[ ! -e $backup_file && ! -L $backup_file ]] || return 1
+    temporary_file="${backup_file}.tmp-${BASHPID}"
+    [[ ! -e $temporary_file && ! -L $temporary_file ]] || return 1
+    cp -a -- "$source_file" "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
+    actual_hash=$(sha256sum "$temporary_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $actual_hash == "$expected_hash" ]] || { rm -f -- "$temporary_file"; return 1; }
+    sync "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
+    mv -n -- "$temporary_file" "$backup_file" || { rm -f -- "$temporary_file"; return 1; }
+    [[ ! -e $temporary_file && ! -L $temporary_file && -f $backup_file && ! -L $backup_file ]] || { rm -f -- "$temporary_file"; return 1; }
+    actual_hash=$(sha256sum "$backup_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $actual_hash == "$expected_hash" ]] || return 1
+    sync "$backup_file"
+}
+
+reset_stock_remove_tryboot() {
+    local boot_config=$1 reset_id=$2 boot_dir quarantine_path moved_kind moved_hash required_suffix=''
+    [[ -n $RESET_STOCK_TRYBOOT_PATH ]] || return 0
+    boot_dir=$(dirname "$boot_config")
+    quarantine_path="$boot_dir/.autopioverclock-stock-reset-${reset_id}-${RESET_STOCK_TRYBOOT_TOKEN}"
+    [[ ! -e $quarantine_path && ! -L $quarantine_path ]] || { RESET_STOCK_LAST_REASON='The reset tryboot quarantine path is already occupied.'; return 1; }
+    case $RESET_STOCK_TRYBOOT_PATH in
+        "$boot_dir/tryboot.txt") ;;
+        "$boot_dir"/.autopioverclock-remove-*) required_suffix=${RESET_STOCK_TRYBOOT_PATH#"$boot_dir/.autopioverclock-remove-"} ;;
+        "$boot_dir"/.autopioverclock-stock-reset-*) required_suffix=${RESET_STOCK_TRYBOOT_PATH##*-} ;;
+        *) RESET_STOCK_LAST_REASON='The planned reset tryboot source path is outside the approved lifecycle paths.'; return 1 ;;
+    esac
+    moved_kind=$(reset_stock_tryboot_kind "$RESET_STOCK_TRYBOOT_PATH" "$required_suffix" 2>/dev/null || true)
+    moved_hash=$(sha256sum "$RESET_STOCK_TRYBOOT_PATH" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $moved_kind == "$RESET_STOCK_TRYBOOT_KIND" && $moved_hash == "$RESET_STOCK_TRYBOOT_HASH" ]] || { RESET_STOCK_LAST_REASON='The managed tryboot artifact changed at the reset mutation boundary.'; return 1; }
+    mv -n -- "$RESET_STOCK_TRYBOOT_PATH" "$quarantine_path" || { RESET_STOCK_LAST_REASON='Could not quarantine the managed tryboot artifact for verified removal.'; return 1; }
+    [[ ! -e $RESET_STOCK_TRYBOOT_PATH && ! -L $RESET_STOCK_TRYBOOT_PATH ]] || { RESET_STOCK_LAST_REASON='The managed tryboot path remained after its no-clobber quarantine move.'; return 1; }
+    moved_kind=$(reset_stock_tryboot_kind "$quarantine_path" || true)
+    moved_hash=$(sha256sum "$quarantine_path" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $moved_kind == "$RESET_STOCK_TRYBOOT_KIND" && $moved_hash == "$RESET_STOCK_TRYBOOT_HASH" ]] || { RESET_STOCK_LAST_REASON="The reset tryboot quarantine failed ownership verification; preserving $quarantine_path."; return 1; }
+    sync || { RESET_STOCK_LAST_REASON="Could not sync the reset tryboot quarantine; preserving $quarantine_path."; return 1; }
+    rm -f -- "$quarantine_path" || { RESET_STOCK_LAST_REASON="Could not remove the verified reset tryboot quarantine; preserving $quarantine_path."; return 1; }
+    sync || { RESET_STOCK_LAST_REASON='Could not sync managed tryboot removal.'; return 1; }
+}
+
+reset_stock_no_artifacts() {
+    local boot_config=$1 live_flag
+    live_flag=$(od -An -tx1 /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d ' \n' || true)
+    [[ $live_flag == 00000000 ]] || return 1
+    reset_stock_paths_clear "$boot_config"
+}
+
+reset_stock_paths_clear() {
+    local boot_config=$1 tryboot_config path exists _type _hash
+    tryboot_config="$(dirname "$boot_config")/tryboot.txt"
+    inspect_tryboot_path "$tryboot_config" exists _type _hash
+    [[ $exists == 0 ]] || return 1
+    for path in "$(dirname "$boot_config")"/.autopioverclock-remove-*; do
+        [[ ! -e $path && ! -L $path ]] || return 1
+    done
+    for path in "$(dirname "$boot_config")"/.autopioverclock-stock-reset-*; do
+        [[ ! -e $path && ! -L $path ]] || return 1
+    done
+}
+
+reset_stock_replace_verified() {
+    local source_file=$1 destination_file=$2 expected_source_hash=$3 expected_destination_hash=$4 reset_id=$5
+    local temporary_file='' actual_hash destination_hash
+    valid_sha256 "$expected_source_hash" || return 1
+    valid_sha256 "$expected_destination_hash" || return 1
+    reset_stock_safe_id "$reset_id" || return 1
+    [[ -f $source_file && ! -L $source_file && -f $destination_file && ! -L $destination_file ]] || return 1
+    actual_hash=$(sha256sum "$source_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $actual_hash == "$expected_source_hash" ]] || return 1
+    destination_hash=$(sha256sum "$destination_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $destination_hash == "$expected_destination_hash" ]] || return 1
+    temporary_file=$(mktemp "${destination_file}.autopioverclock-reset-${reset_id}.XXXXXX") || return 1
+    [[ -f $temporary_file && ! -L $temporary_file ]] || { rm -f -- "$temporary_file"; return 1; }
+    cp -a -- "$source_file" "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
+    actual_hash=$(sha256sum "$temporary_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $actual_hash == "$expected_source_hash" ]] || { rm -f -- "$temporary_file"; return 1; }
+    sync "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
+    [[ -f $destination_file && ! -L $destination_file ]] || { rm -f -- "$temporary_file"; return 1; }
+    destination_hash=$(sha256sum "$destination_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $destination_hash == "$expected_destination_hash" ]] || { rm -f -- "$temporary_file"; return 1; }
+    mv -f -- "$temporary_file" "$destination_file" || { rm -f -- "$temporary_file"; return 1; }
+    sync "$destination_file" || return 1
+    actual_hash=$(sha256sum "$destination_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $actual_hash == "$expected_source_hash" ]]
+}
+
+cmd_reset_stock() {
+    local expected_old_hash=$1 reset_id=$2 boot_config=/boot/config.txt old_hash new_hash disabled_keys reset_timestamp backup_dir backup_file tryboot_backup=''
+    local rendered_file installed_hash tryboot_flag current_hash planned_tryboot_path planned_tryboot_hash planned_tryboot_kind planned_tryboot_run planned_tryboot_token
+    local result_code=0 install_attempted=0 failure_reason=''
+    valid_sha256 "$expected_old_hash" || { emit_result APPLY_FAILURE 'Stock reset received a malformed expected permanent-config hash.'; return 1; }
+    reset_stock_safe_id "$reset_id" || { emit_result APPLY_FAILURE 'Stock reset received an unsafe reset/run ID.'; return 1; }
+    reset_stock_validate_config "$boot_config" || { emit_result APPLY_FAILURE "$RESET_STOCK_LAST_REASON"; return 1; }
+    old_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $old_hash == "$expected_old_hash" ]] || { emit_result APPLY_FAILURE 'Permanent config changed before stock-reset planning.'; return 1; }
+    if ! disabled_keys=$(permanent_tuning_override_evidence "$boot_config"); then
+        emit_result APPLY_FAILURE "Permanent tuning audit was ambiguous before reset (${disabled_keys:-unknown audit error})."
+        return 1
+    fi
+    [[ -n $disabled_keys ]] || disabled_keys=none
+    rendered_file=$(mktemp /tmp/autopioverclock-stock-reset.XXXXXX) || { emit_result APPLY_FAILURE 'Could not create the stock-reset rendering file.'; return 1; }
+    if ! reset_stock_render_config "$boot_config" "$rendered_file"; then rm -f -- "$rendered_file"; emit_result APPLY_FAILURE 'Could not render the stock permanent config.'; return 1; fi
+    new_hash=$(sha256sum "$rendered_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    if ! valid_sha256 "$new_hash"; then rm -f -- "$rendered_file"; emit_result APPLY_FAILURE 'Could not hash the rendered stock permanent config.'; return 1; fi
+    if ! chmod --reference="$boot_config" "$rendered_file" 2>/dev/null && ! chmod 644 "$rendered_file"; then rm -f -- "$rendered_file"; emit_result APPLY_FAILURE 'Could not preserve permanent-config permissions in the stock rendering.'; return 1; fi
+    audit_permanent_tuning_config "$rendered_file"
+    if [[ $PERMANENT_TUNING_PROVENANCE != verified-default || $PERMANENT_TUNING_EVIDENCE != none || $PERMANENT_TUNING_CONFIG_HASH != "$new_hash" ]]; then
+        rm -f -- "$rendered_file"; emit_result APPLY_FAILURE 'Rendered stock config did not pass the explicit-tuning provenance audit.'; return 1
+    fi
+    tryboot_flag=$(od -An -tx1 /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d ' \n' || true)
+    reset_stock_scan_tryboot "$boot_config" || { rm -f -- "$rendered_file"; emit_result APPLY_FAILURE "$RESET_STOCK_LAST_REASON"; return 1; }
+    case $tryboot_flag in
+        00000000) ;;
+        # A previous reset may have removed its owned candidate and then lost
+        # the controller before issuing the normal reboot. With no staged or
+        # quarantined path left to delete, rewriting the backed-up permanent
+        # config to stock and rebooting is the safe, idempotent recovery.
+        00000001) ;;
+        *) rm -f -- "$rendered_file"; emit_result APPLY_FAILURE "Stock reset requires a readable normal/tryboot state; found ${tryboot_flag:-unreadable}."; return 1 ;;
+    esac
+    planned_tryboot_path=$RESET_STOCK_TRYBOOT_PATH
+    planned_tryboot_hash=$RESET_STOCK_TRYBOOT_HASH
+    planned_tryboot_kind=$RESET_STOCK_TRYBOOT_KIND
+    planned_tryboot_run=$RESET_STOCK_TRYBOOT_RUN
+    planned_tryboot_token=$RESET_STOCK_TRYBOOT_TOKEN
+    backup_dir=$(reset_stock_prepare_backup_dir "${RESET_STOCK_BACKUP_DIR%/backups}") || { rm -f -- "$rendered_file"; emit_result APPLY_FAILURE "$RESET_STOCK_LAST_REASON"; return 1; }
+    reset_timestamp=$(date -u '+%Y%m%dT%H%M%SZ') || { rm -f -- "$rendered_file"; emit_result APPLY_FAILURE 'Could not timestamp the stock-reset backup.'; return 1; }
+    backup_file="$backup_dir/config-${reset_timestamp}-reset-${reset_id}.txt"
+    reset_stock_backup_verified "$boot_config" "$backup_file" "$old_hash" || { rm -f -- "$rendered_file"; emit_result APPLY_FAILURE 'Could not create a verified no-clobber permanent-config reset backup.'; return 1; }
+    if [[ -n $planned_tryboot_path ]]; then
+        tryboot_backup="$backup_dir/tryboot-${reset_timestamp}-reset-${reset_id}-${planned_tryboot_token}.txt"
+        reset_stock_backup_verified "$planned_tryboot_path" "$tryboot_backup" "$planned_tryboot_hash" || { rm -f -- "$rendered_file"; emit_result APPLY_FAILURE 'Could not create a verified no-clobber managed-tryboot reset backup.'; return 1; }
+    fi
+
+    apply_install_traps
+    APO_APPLY_BOOT_RW=1
+    if ! remount_boot_rw; then
+        apply_remount_boot_ro >/dev/null 2>&1 || true
+        (( APO_APPLY_BOOT_RW == 0 )) && apply_clear_traps
+        rm -f -- "$rendered_file"
+        emit_result APPLY_FAILURE 'Could not remount and verify /boot read-write for stock reset.'
+        return 1
+    fi
+    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    if [[ $current_hash != "$old_hash" ]] || ! reset_stock_validate_config "$boot_config"; then
+        result_code=1; failure_reason='Permanent config changed at the stock-reset mutation boundary.'
+    elif ! reset_stock_scan_tryboot "$boot_config"; then
+        result_code=1; failure_reason=$RESET_STOCK_LAST_REASON
+    elif [[ $RESET_STOCK_TRYBOOT_PATH != "$planned_tryboot_path" || $RESET_STOCK_TRYBOOT_HASH != "$planned_tryboot_hash" ||
+            $RESET_STOCK_TRYBOOT_KIND != "$planned_tryboot_kind" || $RESET_STOCK_TRYBOOT_RUN != "$planned_tryboot_run" ||
+            $RESET_STOCK_TRYBOOT_TOKEN != "$planned_tryboot_token" ]]; then
+        result_code=1; failure_reason='Tryboot ownership evidence changed while /boot was remounted; refusing reset.'
+    elif ! reset_stock_remove_tryboot "$boot_config" "$reset_id"; then
+        result_code=1; failure_reason=$RESET_STOCK_LAST_REASON
+    elif ! reset_stock_paths_clear "$boot_config"; then
+        result_code=1; failure_reason='Tryboot evidence remained after verified stock-reset cleanup.'
+    else
+        if [[ $new_hash != "$old_hash" ]]; then
+            install_attempted=1
+            if ! reset_stock_replace_verified "$rendered_file" "$boot_config" "$new_hash" "$old_hash" "$reset_id"; then
+                result_code=1; failure_reason='Atomic stock-config replacement failed.'
+            fi
+        fi
+        if (( result_code == 0 )); then
+            installed_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+            if [[ $installed_hash != "$new_hash" ]]; then result_code=1; failure_reason='Installed stock config failed final hash verification.'; fi
+        fi
+    fi
+    if (( result_code != 0 && install_attempted == 1 )); then
+        installed_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        if [[ $installed_hash == "$new_hash" ]]; then
+            if reset_stock_replace_verified "$backup_file" "$boot_config" "$old_hash" "$new_hash" "${reset_id}-restore"; then
+                failure_reason="$failure_reason The verified pre-reset config was restored."
+            else
+                failure_reason="$failure_reason Verified pre-reset config restoration failed."
+            fi
+        elif [[ $installed_hash == "$old_hash" ]]; then
+            failure_reason="$failure_reason The verified original config remains installed."
+        else
+            failure_reason="$failure_reason Destination hash is ${installed_hash:-unavailable}; unknown content was preserved."
+        fi
+    fi
+    rm -f -- "$rendered_file"
+    if ! apply_remount_boot_ro; then
+        emit_result APPLY_FAILURE 'Stock reset could not restore and verify /boot read-only; the exit cleanup will retry.'
+        return 1
+    fi
+    apply_clear_traps
+    if (( result_code != 0 )); then emit_result APPLY_FAILURE "$failure_reason"; return 1; fi
+    sync || { emit_result APPLY_FAILURE 'Could not durably sync the completed stock reset.'; return 1; }
+    emit_data RESET_BACKUP "$backup_file"
+    [[ -z $tryboot_backup ]] || emit_data RESET_TRYBOOT_BACKUP "$tryboot_backup"
+    emit_data RESET_OLD_HASH "$old_hash"
+    emit_data RESET_NEW_HASH "$new_hash"
+    emit_data RESET_DISABLED_KEYS "$disabled_keys"
+    emit_result PASS 'Permanent tuning was disabled, owned tryboot evidence was safely handled, verified reset backups were preserved, and /boot returned read-only.'
+}
+
+cmd_reboot_stock_reset() {
+    local expected_hash=$1 boot_config=/boot/config.txt current_hash tryboot_flag
+    valid_sha256 "$expected_hash" || { emit_result RECOVERY_FAILURE 'Stock-reset reboot received a malformed permanent-config hash.'; return 1; }
+    [[ -f $boot_config && ! -L $boot_config ]] || { emit_result RECOVERY_FAILURE 'Stock-reset reboot refuses a missing, non-regular, or symlinked permanent config.'; return 1; }
+    reset_stock_paths_clear "$boot_config" || { emit_result RECOVERY_FAILURE 'Stock-reset reboot requires all staged and quarantined tryboot paths to be absent.'; return 1; }
+    boot_mount_has_option ro || { emit_result RECOVERY_FAILURE 'Stock-reset reboot requires Batocera /boot to be read-only.'; return 1; }
+    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $current_hash == "$expected_hash" ]] || { emit_result RECOVERY_FAILURE 'Permanent config changed at the stock-reset reboot boundary.'; return 1; }
+    tryboot_flag=$(od -An -tx1 /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d ' \n' || true)
+    [[ $tryboot_flag == 00000000 || $tryboot_flag == 00000001 ]] || { emit_result RECOVERY_FAILURE "Stock-reset reboot found unreadable tryboot state ${tryboot_flag:-missing}."; return 1; }
+    vcgencmd get_throttled 0x0f >/dev/null 2>&1 || true
+    sync || { emit_result RECOVERY_FAILURE 'Could not sync before stock-reset reboot.'; return 1; }
+    trap - EXIT INT TERM HUP
+    verified_normal_reboot_now
+    emit_result RECOVERY_FAILURE 'The verified stock-reset reboot syscall returned without restarting the target.'
+    return 1
+}
+
+cmd_verify_stock_reset() {
+    local expected_new_hash=$1 boot_config=/boot/config.txt current_hash model compatible cpu_mhz gpu_mhz voltage_uv throttle throttle_value
+    valid_sha256 "$expected_new_hash" || { emit_result RECOVERY_FAILURE 'Stock-reset verification received a malformed expected hash.'; return 1; }
+    reset_stock_validate_config "$boot_config" || { emit_result RECOVERY_FAILURE "$RESET_STOCK_LAST_REASON"; return 1; }
+    reset_stock_no_artifacts "$boot_config" || { emit_result RECOVERY_FAILURE 'Stock-reset verification found live, staged, quarantined, or unresolved tryboot evidence.'; return 1; }
+    boot_mount_has_option ro || { emit_result RECOVERY_FAILURE 'Batocera /boot is not read-only after stock-reset reboot.'; return 1; }
+    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $current_hash == "$expected_new_hash" ]] || { emit_result RECOVERY_FAILURE 'Permanent config does not match the expected stock-reset hash.'; return 1; }
+    audit_permanent_tuning_config "$boot_config"
+    [[ $PERMANENT_TUNING_PROVENANCE == verified-default && $PERMANENT_TUNING_EVIDENCE == none && $PERMANENT_TUNING_CONFIG_HASH == "$expected_new_hash" ]] || { emit_result RECOVERY_FAILURE 'Permanent config did not retain verified-default tuning provenance after reboot.'; return 1; }
+    model=$(tr -d '\000' < /proc/device-tree/model 2>/dev/null || true)
+    compatible=$(tr '\000' ',' < /proc/device-tree/compatible 2>/dev/null || true)
+    [[ $model == *'Raspberry Pi 5'* || $compatible == *bcm2712* ]] || { emit_result RECOVERY_FAILURE 'Stock-reset verification target is not Raspberry Pi 5/bcm2712.'; return 1; }
+    cpu_mhz=$(active_config_value arm_freq)
+    gpu_mhz=$(active_config_value v3d_freq)
+    voltage_uv=$(active_config_value over_voltage_delta)
+    if [[ -z $voltage_uv ]] && active_config_interface_ready; then voltage_uv=0; fi
+    [[ $cpu_mhz == 2400 && ( $gpu_mhz == 800 || $gpu_mhz == 960 ) && $voltage_uv == 0 ]] || { emit_result RECOVERY_FAILURE "Active clocks are not verified Pi 5 stock values (CPU=${cpu_mhz:-missing}, V3D=${gpu_mhz:-missing}, voltage=${voltage_uv:-missing})."; return 1; }
+    throttle=$(permanent_throttle)
+    throttle_value=$(throttle_word "$throttle" || true)
+    [[ $throttle_value =~ ^[0-9]+$ ]] && (( (throttle_value & 0xffff) == 0 )) || { emit_result RECOVERY_FAILURE "Current throttle/power bits are active or unreadable after stock reset (${throttle:-missing})."; return 1; }
+    watchdog_health_ready "$boot_config" || { emit_result RECOVERY_FAILURE "Post-reset watchdog proof failed: ${WATCHDOG_LAST_REASON:-unknown watchdog error}"; return 1; }
+    reset_stock_no_artifacts "$boot_config" || { emit_result RECOVERY_FAILURE 'Tryboot evidence appeared during final stock-reset verification.'; return 1; }
+    boot_mount_has_option ro || { emit_result RECOVERY_FAILURE 'Batocera /boot changed from read-only during final stock-reset verification.'; return 1; }
+    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $current_hash == "$expected_new_hash" ]] || { emit_result RECOVERY_FAILURE 'Permanent config changed during final stock-reset verification.'; return 1; }
+    emit_data RESET_NEW_HASH "$current_hash"
+    emit_data RESET_ACTIVE_CPU "$cpu_mhz"
+    emit_data RESET_ACTIVE_GPU "$gpu_mhz"
+    emit_data RESET_ACTIVE_VOLTAGE "$voltage_uv"
+    emit_result PASS 'Normal boot, protected hash, default provenance, Pi 5 stock clocks, voltage, current power state, watchdogs, and read-only /boot were verified.'
+}
+
 valid_sha256() { [[ ${1-} =~ ^[0-9a-f]{64}$ ]]; }
 
 atomic_replace_verified() {
@@ -1860,6 +2310,9 @@ main() {
         stress) cmd_stress "$@" ;;
         reset-throttle-history) cmd_reset_throttle_history "$@" ;;
         render-permanent) cmd_render_permanent "$@" ;;
+        reset-stock) run_with_mutation_lock "reset-${2:-}" APPLY_FAILURE cmd_reset_stock "$@" ;;
+        reboot-stock-reset) run_with_mutation_lock "reset-reboot-${BASHPID}" RECOVERY_FAILURE cmd_reboot_stock_reset "$@" ;;
+        verify-stock-reset) run_with_mutation_lock "reset-verify-${BASHPID}" RECOVERY_FAILURE cmd_verify_stock_reset "$@" ;;
         apply-permanent) run_with_mutation_lock "apply-${4:-}" APPLY_FAILURE cmd_apply_permanent "$@" ;;
         restore-backup) run_with_mutation_lock "restore-${2:-}" APPLY_FAILURE cmd_restore_backup "$@" ;;
         repair-watchdogs) cmd_repair_watchdogs "$@" ;;

@@ -1,6 +1,8 @@
 # Output and classifications
 
-All artifacts are flat under `--output-dir` (`$HOME/overclock-results` by default); no per-target directories are created and existing runs are never deleted. Each run records its effective `.conf`, read-only `-discovery.txt`, atomic `.state`, `.log`, `.csv`, `.jsonl`/`.json`, summary, and per-candidate logs. The `*-latest.log`, `*-latest-summary.txt`, `*-latest.state`, and `*-latest.json` links select the latest retained run for a target.
+All artifacts are flat under `--output-dir` (`$HOME/overclock-results` by default); no per-target directories are created and existing runs are never deleted. Tuning runs record their effective `.conf`, read-only `-discovery.txt`, atomic `.state`, `.log`, `.csv`, `.jsonl`/`.json`, summary, and per-candidate logs. A reset records its own atomic state and audit output without manufacturing a tuning configuration or candidate logs. The `*-latest.log`, `*-latest-summary.txt`, `*-latest.state`, and `*-latest.json` links select the latest retained run for a target.
+
+A postfix `TARGET reset` creates a separate audit run instead of reusing or deleting tuning history. Previous run files remain byte-preserved even when the target's `*-latest` links advance to the reset audit. A successful reset state ends at `COMPLETE/STOCK_VERIFIED` and records the verified pre-reset hash, post-reset hash, persistent remote config-backup path, and disabled-key evidence. When attributable project tryboot evidence required cleanup, its backup path is recorded separately. The final `reset` PASS event reports that a new permanent-config boot reached verified firmware stock defaults and that prior logs and saved runs were preserved.
 
 | Classification | Meaning |
 |---|---|
