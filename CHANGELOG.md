@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.14 — 2026-08-25
+
+- Expanded current-boot kernel-journal failure detection on both Debian-family and Batocera workers to fail immediately on direct kernel panic, ARM internal-error and unable-to-handle-kernel reports, RCU stalls and starvation/timer failures, and hung-task warnings.
+- Applied the same signatures to unstructured controller fallback classification so a truncated worker result is still classified as a stability failure, and added per-signature regressions plus a benign RCU-initialization negative control.
+
 ## 0.1.0-alpha.13 — 2026-08-25
 
 - Made configuration-free auto mode fail closed unless the active Raspberry Pi 5 baseline is stock: 2400 MHz CPU, a recognized 800/960 MHz firmware-stock V3D clock, zero voltage delta, and no explicit boost, turbo, fixed-clock, `*_freq`/`*_freq_min`, or `over_voltage*` control in one stable before/after-hashed root-config snapshot. Any snapshot change or `include` directive is ambiguous until all content is bound to the protected permanent-config hash. Existing overclocks are reported rather than reinterpreted as the baseline or rewritten automatically.

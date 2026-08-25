@@ -1,0 +1,9 @@
+kernel: Kernel panic - not syncing: Fatal exception
+kernel: Internal error: synchronous external abort: 96000210 [#1] PREEMPT SMP
+kernel: Unable to handle kernel NULL pointer dereference at virtual address 0000000000000008
+kernel: rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
+kernel: rcu: INFO: rcu_sched self-detected stall on CPU
+kernel: rcu_sched kthread starved for 23807 jiffies!
+kernel: kthread timer wakeup didn't happen for 23804 jiffies!
+kernel: INFO: task kworker/0:1:42 blocked for more than 120 seconds.
+kernel: hung_task: blocked tasks report

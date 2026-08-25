@@ -3,7 +3,7 @@
 set -u -o pipefail
 umask 077
 
-ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs (error|warning)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|Call trace|watchdog:.*lockup'
+ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Internal error[[:space:]]*:|Unable to handle kernel|RCU.*(detected|self-detected).*stall|kthread starved for|kthread timer wakeup.*happen|hung[_ -]?task|task[[:space:]].*blocked for more than[[:space:]]+[0-9]+[[:space:]]+seconds|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs (error|warning)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|Call trace|watchdog:.*lockup'
 USB_RESET_PATTERN='usb [0-9.-]+: reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)?[[:space:]]*USB device|reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)[[:space:]]+USB device'
 CLOCK_MARKER_BEGIN='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS'
 CLOCK_MARKER_END='# END AUTOPIOVERCLOCK MANAGED CLOCKS'
@@ -1840,7 +1840,7 @@ cmd_classify_kernel_log() {
     [[ -r $log_file ]] || { emit_result HARNESS_FAILURE "Kernel-log fixture is unreadable: $log_file"; return 1; }
     common_errors=$(grep -Ei "$ERROR_PATTERN" "$log_file" || true)
     usb_errors=$(grep -Ei "$USB_RESET_PATTERN" "$log_file" || true)
-    if [[ -n $common_errors || -n $usb_errors ]]; then printf '%s\n%s\n' "$common_errors" "$usb_errors" | awk 'NF && !seen[$0]++'; emit_result STABILITY_FAILURE 'Kernel-log fixture contains a power, GPU, USB, storage, or filesystem failure.'; return 1; fi
+    if [[ -n $common_errors || -n $usb_errors ]]; then printf '%s\n%s\n' "$common_errors" "$usb_errors" | awk 'NF && !seen[$0]++'; emit_result STABILITY_FAILURE 'Kernel-log fixture contains a kernel, power, GPU, USB, storage, or filesystem failure.'; return 1; fi
     emit_result PASS 'Kernel-log fixture is clean.'
 }
 

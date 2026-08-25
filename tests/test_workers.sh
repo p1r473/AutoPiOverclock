@@ -273,6 +273,28 @@ EXT4_RC=$?
 set -e
 [[ $EXT4_RC -ne 0 && $EXT4_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
 
+assert_worker_kernel_failure() {
+    local worker=$1 fixture=$2 output rc
+    set +e
+    output=$("$worker" classify-kernel-log "$fixture" 2>&1)
+    rc=$?
+    set -e
+    [[ $rc -ne 0 && $output == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+}
+
+KERNEL_SIGNATURE_FIXTURE="$TEMP_DIR/kernel-fatal-single.log"
+while IFS= read -r kernel_signature; do
+    printf '%s\n' "$kernel_signature" > "$KERNEL_SIGNATURE_FIXTURE"
+    assert_worker_kernel_failure "$ROOT/workers/debian-worker.sh" "$KERNEL_SIGNATURE_FIXTURE"
+    assert_worker_kernel_failure "$ROOT/workers/batocera-worker.sh" "$KERNEL_SIGNATURE_FIXTURE"
+done < "$FIXTURES/kernel-fatal-signatures.log"
+
+printf '%s\n' 'kernel: rcu: Hierarchical RCU implementation.' > "$TEMP_DIR/kernel-benign-rcu.log"
+for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do
+    KERNEL_BENIGN_OUTPUT=$("$worker" classify-kernel-log "$TEMP_DIR/kernel-benign-rcu.log" 2>&1)
+    [[ $KERNEL_BENIGN_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+done
+
 APO_WORKER_LIBRARY_ONLY=1 source "$ROOT/workers/batocera-worker.sh"
 throttle_clean_relative throttled=0x50000 throttled=0x50000
 if throttle_clean_relative throttled=0x50001 throttled=0x50000; then exit 1; fi

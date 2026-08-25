@@ -2,7 +2,7 @@
 
 AutoPiOverclock optimizes for recoverability and long-term stability rather than the highest benchmark number.
 
-A candidate fails immediately on any current-boot undervoltage/throttle flag, thermal ceiling event, V3D/DRM fault, kernel Oops/BUG/call trace, USB-device reset, device-offline event, I/O error, buffer error, ext4/btrfs error, nonzero stress process, missing renderer proof, required graphical/audio/service failure, watchdog-chain failure, unexpected reboot, or permanent-config hash change.
+A candidate fails immediately on any current-boot undervoltage/throttle flag, thermal ceiling event, V3D/DRM fault, kernel panic/internal error/unable-to-handle-kernel report, Oops/BUG/call trace, RCU stall/starvation/timer failure, hung-task warning, USB-device reset, device-offline event, I/O error, buffer error, ext4/btrfs error, nonzero stress process, missing renderer proof, required graphical/audio/service failure, watchdog-chain failure, unexpected reboot, or permanent-config hash change.
 
 `BOOT_FAILURE` and `STABILITY_FAILURE` define a sweep boundary. A lower passing candidate can still proceed to conservative selection. `HARNESS_FAILURE` and `RECOVERY_FAILURE` abort the run because they do not establish a silicon stability boundary.
 

@@ -75,7 +75,7 @@ grep -q 'git -C "$ROOT" archive' "$ROOT/tools/package.sh"
 grep -q 'status --porcelain --untracked-files=normal' "$ROOT/tools/package.sh"
 grep -q "trap 'exit 143' TERM" "$ROOT/autopioverclock"
 grep -q '^/dist export-ignore$' "$ROOT/.gitattributes"
-for fixture in debian-pass.log batocera-canvas-failure.log undervoltage.log root-usb-reset.log ext4-error.log black-null-display.log missing-audio.log interrupted-tryboot.state; do
+for fixture in debian-pass.log batocera-canvas-failure.log undervoltage.log root-usb-reset.log ext4-error.log kernel-fatal-signatures.log black-null-display.log missing-audio.log interrupted-tryboot.state; do
     [[ -f "$ROOT/tests/fixtures/$fixture" ]]
 done
 for worker_file in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do

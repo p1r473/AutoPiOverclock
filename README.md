@@ -233,7 +233,7 @@ This discovery-first template is valid for `prepare`. When an explicit configura
 - Requested clocks are observed under load within tolerance.
 - Current/new throttle and undervoltage evidence remains clean.
 - Temperature remains below the configured ceiling.
-- No new filesystem, storage, USB-reset, GPU, kernel-oops, or watchdog fault appears.
+- No new filesystem, storage, USB-reset, GPU, kernel panic/internal error/Oops, RCU-stall, hung-task, or watchdog fault appears.
 - The stress process exits successfully and within its hard deadline.
 - Graphical runs always preserve the captured display baseline. Debian also preserves a default audio sink when discovery captured one or `audio_sink_pattern` requires one; Batocera graphical runs require and preserve both display and audio baselines.
 - Required services and processes remain healthy.
