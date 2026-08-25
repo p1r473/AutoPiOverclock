@@ -426,6 +426,7 @@ PROCESS_RESTORE_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocer
         stress_gpu_pid=$!
     }
     sleep() { command /bin/sleep 0.15; SECONDS=$((SECONDS + $1)); }
+    set +e
     cmd_stress gpu 20 75 graphical fixture-display 0 2400 800 throttled=0x0 60 fixture-audio
     stress_rc=$?
     exit "$stress_rc"
