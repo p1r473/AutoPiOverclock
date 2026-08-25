@@ -367,10 +367,15 @@ display_hardware_present() {
 }
 
 find_glmark_binary() {
-    local candidate_file
+    local mode=${1:-headless} binary_name candidate_file
+    case $mode in
+        graphical) binary_name=glmark2-es2-wayland ;;
+        headless) binary_name=glmark2-es2-drm ;;
+        *) return 1 ;;
+    esac
     for candidate_file in \
-        "$PERSISTENT_ROOT/glmark2/usr/bin/glmark2-es2-drm" \
-        /userdata/system/overclock/glmark2/usr/bin/glmark2-es2-drm; do
+        "$PERSISTENT_ROOT/glmark2/usr/bin/$binary_name" \
+        "/userdata/system/overclock/glmark2/usr/bin/$binary_name"; do
         [[ -x $candidate_file ]] && { printf '%s' "$candidate_file"; return 0; }
     done
     return 1
@@ -434,7 +439,7 @@ gpu_output_has_positive_score() {
 
 gpu_output_has_harness_error() {
     local output_file=$1
-    grep -Eqi 'Could not initialize|glwindow has never been initialized|Failed to become DRM master|drmModeGetResources|GBM.*(fail|error)|EGL.*(fail|error)|MESA-LOADER.*(fail|error)|failed to open.*(DRM|render|card)|GLIBC_[0-9.]+.*not found|version [`'\''"]?[^ ]+[`'\''"]? not found|undefined symbol|symbol lookup error|error while loading shared libraries|No such file|Permission denied|unrecognized option|unknown option|openvt:.*(deallocat|activat|Unable to open|ioctl)' "$output_file"
+    grep -Eqi 'Could not initialize|glwindow has never been initialized|Failed to become DRM master|drmModeGetResources|GBM.*(fail|error)|EGL.*(fail|error)|Wayland.*(fail|error|connect|unavailable)|failed to connect to.*Wayland|XDG_RUNTIME_DIR.*(invalid|not set|unavailable)|WAYLAND_DISPLAY.*(invalid|not set|unavailable)|MESA-LOADER.*(fail|error)|failed to open.*(DRM|render|card)|GLIBC_[0-9.]+.*not found|version [`'\''"]?[^ ]+[`'\''"]? not found|undefined symbol|symbol lookup error|error while loading shared libraries|No such file|Permission denied|unrecognized option|unknown option' "$output_file"
 }
 
 gpu_early_exit_class() {
@@ -771,7 +776,7 @@ watchdog_health_ready() {
 
 cmd_discover() {
     local boot_config=/boot/config.txt tryboot_config=/boot/tryboot.txt gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
-    local model compatible version boot_watchdog kernel_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source baseline display_present audio_baseline permanent_hash glmark_binary glmark_data
+    local model compatible version boot_watchdog kernel_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source baseline display_present audio_baseline permanent_hash glmark_binary glmark_wayland_binary glmark_drm_binary glmark_data
     local openssl_binary tryboot_exists tryboot_type tryboot_hash
     [[ -f $boot_config ]] || { emit_result PREFLIGHT_FAILURE 'Batocera boot config /boot/config.txt was not found.'; return 1; }
     inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
@@ -805,7 +810,10 @@ cmd_discover() {
     display_present=$(display_hardware_present && printf 1 || printf 0)
     audio_baseline=$(audio_identity || true)
     permanent_hash=$(sha256sum "$boot_config" | awk '{print $1}')
-    glmark_binary=$(find_glmark_binary || true)
+    glmark_wayland_binary=$(find_glmark_binary graphical || true)
+    glmark_drm_binary=$(find_glmark_binary headless || true)
+    glmark_binary=$glmark_wayland_binary
+    [[ -n $glmark_binary ]] || glmark_binary=$glmark_drm_binary
     glmark_data=$(find_glmark_data || true)
     openssl_binary=$(command -v openssl 2>/dev/null || true)
 
@@ -843,9 +851,11 @@ cmd_discover() {
     emit_data AUDIO_BASELINE "$audio_baseline"
     emit_data DISPLAY_CONNECTED "$([[ -n $baseline ]] && printf 1 || printf 0)"
     emit_data CPU_STRESS_AVAILABLE "$([[ -n $openssl_binary ]] && printf 1 || printf 0)"
-    emit_data GPU_STRESS_AVAILABLE "$([[ -n $glmark_binary && -n $glmark_data ]] && printf 1 || printf 0)"
+    emit_data GPU_STRESS_AVAILABLE "$([[ -n $glmark_data && ( -n $glmark_wayland_binary || -n $glmark_drm_binary ) ]] && printf 1 || printf 0)"
     emit_data OPENSSL_BINARY "$openssl_binary"
     emit_data GLMARK_BINARY "$glmark_binary"
+    emit_data GLMARK_WAYLAND_BINARY "$glmark_wayland_binary"
+    emit_data GLMARK_DRM_BINARY "$glmark_drm_binary"
     emit_data GLMARK_DATA "$glmark_data"
     emit_data GLMARK_LIBRARY_DIRS "$(find_glmark_library_dirs)"
     emit_data PERMANENT_HASH "$permanent_hash"
@@ -1275,103 +1285,113 @@ cmd_reset_throttle_history() {
     emit_result PASS 'Recent throttle history was cleared and verified.'
 }
 
-stop_frontend() {
-    [[ -x /etc/init.d/S31emulationstation ]] || return 1
-    /etc/init.d/S31emulationstation stop >/tmp/autopioverclock-es-stop.log 2>&1 || return 1
-    local elapsed=0
-    while (( elapsed < 30 )); do
-        if ! pidof emulationstation sway labwc openbox >/dev/null 2>&1; then return 0; fi
-        sleep 1; elapsed=$((elapsed + 1))
+wayland_socket_ready() {
+    local socket_path=$1
+    [[ -S $socket_path && ! -L $socket_path ]]
+}
+
+safe_wayland_runtime_dir() {
+    local runtime_dir=$1 run_root=${2:-/run} canonical_runtime canonical_root
+    [[ -n $runtime_dir && $runtime_dir == /* && $runtime_dir != *$'\t'* && $runtime_dir != *$'\n'* && $runtime_dir != *$'\r'* ]] || return 1
+    canonical_root=$(readlink -f -- "$run_root" 2>/dev/null || true)
+    canonical_runtime=$(readlink -f -- "$runtime_dir" 2>/dev/null || true)
+    [[ -n $canonical_root && -n $canonical_runtime ]] || return 1
+    [[ $canonical_runtime == "$canonical_root" || $canonical_runtime == "$canonical_root/"* ]] || return 1
+    printf '%s' "$canonical_runtime"
+}
+
+wayland_display_name_safe() {
+    [[ $1 =~ ^wayland-[0-9]+$ ]]
+}
+
+wayland_session_from_frontend_pid() {
+    local process_pid=$1 proc_root=${2:-/proc} run_root=${3:-/run}
+    local environment_file="$proc_root/$process_pid/environ" environment_entry runtime_dir='' display_name='' canonical_runtime
+    [[ $process_pid =~ ^[0-9]+$ && -r $environment_file ]] || return 1
+    while IFS= read -r -d '' environment_entry; do
+        case $environment_entry in
+            XDG_RUNTIME_DIR=*) runtime_dir=${environment_entry#XDG_RUNTIME_DIR=} ;;
+            WAYLAND_DISPLAY=*) display_name=${environment_entry#WAYLAND_DISPLAY=} ;;
+        esac
+    done < "$environment_file"
+    [[ -n $runtime_dir ]] || runtime_dir=$run_root
+    wayland_display_name_safe "$display_name" || return 1
+    canonical_runtime=$(safe_wayland_runtime_dir "$runtime_dir" "$run_root") || return 1
+    wayland_socket_ready "$canonical_runtime/$display_name" || return 1
+    printf '%s\t%s\n' "$canonical_runtime" "$display_name"
+}
+
+discover_wayland_session() {
+    local proc_root=${1:-/proc} run_root=${2:-/run} process_pid socket_path display_name pid_output
+    local frontend_found=0 canonical_root
+    local -a fallback_sockets=() frontend_pids=()
+    pid_output=$(pidof emulationstation 2>/dev/null || true)
+    read -r -a frontend_pids <<< "$pid_output"
+    for process_pid in "${frontend_pids[@]}"; do
+        [[ $process_pid =~ ^[0-9]+$ ]] || continue
+        [[ -d $proc_root/$process_pid ]] || continue
+        frontend_found=1
+        wayland_session_from_frontend_pid "$process_pid" "$proc_root" "$run_root" && return 0
     done
-    return 1
-}
-
-start_frontend() {
-    [[ -x /etc/init.d/S31emulationstation ]] || return 1
-    /etc/init.d/S31emulationstation start >/tmp/autopioverclock-es-start.log 2>&1 || return 1
-}
-
-wait_graphical_baseline() {
-    local baseline=$1 elapsed=0
-    while (( elapsed < 180 )); do frontend_baseline_ready "$baseline" && return 0; sleep 5; elapsed=$((elapsed + 5)); done
-    return 1
-}
-
-frontend_baseline_ready() {
-    local baseline=$1 current_audio active_tty=''
-    if [[ ${stress_gpu_previous_vt:-} =~ ^[0-9]+$ ]]; then
-        active_tty=$(cat /sys/class/tty/tty0/active 2>/dev/null || true)
-        [[ $active_tty == "tty${stress_gpu_previous_vt}" ]] || return 1
-    fi
-    check_graphical "$baseline" || return 1
-    [[ -n ${stress_audio_baseline:-} ]] || return 0
-    current_audio=$(audio_identity || true)
-    [[ $current_audio == "$stress_audio_baseline" ]]
-}
-
-glmark_graphical_request_size() {
-    local baseline=$1 native_mode requested_size=640x480
-    native_mode=${baseline#*mode=}
-    if [[ $native_mode != "$baseline" ]]; then
-        native_mode=${native_mode%%;*}
-        native_mode=${native_mode%%.*}
-    else
-        native_mode=''
-    fi
-    # glmark2 2023.01 can mistake the DRM backend's pre-populated native mode
-    # for an already-created window.  Requesting a different positive size
-    # forces create_window(); native-state-drm still creates the scanout surface
-    # at the connected mode reported by the kernel.
-    [[ $native_mode == "$requested_size" ]] && requested_size=641x480
-    printf '%s' "$requested_size"
+    (( frontend_found == 1 )) || return 1
+    canonical_root=$(readlink -f -- "$run_root" 2>/dev/null || true)
+    [[ -n $canonical_root ]] || return 1
+    for socket_path in "$canonical_root"/wayland-*; do
+        [[ -e $socket_path || -L $socket_path ]] || continue
+        display_name=${socket_path##*/}
+        wayland_display_name_safe "$display_name" || continue
+        wayland_socket_ready "$socket_path" || continue
+        fallback_sockets+=("$socket_path")
+    done
+    (( ${#fallback_sockets[@]} == 1 )) || return 1
+    printf '%s\t%s\n' "$canonical_root" "${fallback_sockets[0]##*/}"
 }
 
 write_glmark_launcher() {
-    local launcher_file=$1 duration=$2 glmark_binary=$3 glmark_data=$4 library_dirs=$5 mode=$6 baseline=${7:-}
-    local requested_size
-    local -a canvas_args=()
-    if [[ $mode == graphical ]]; then
-        requested_size=$(glmark_graphical_request_size "$baseline")
-        canvas_args=("--size=${requested_size}")
-    else
-        canvas_args=(--off-screen --size=640x480)
-    fi
+    local launcher_file=$1 duration=$2 glmark_binary=$3 glmark_data=$4 library_dirs=$5 mode=$6
+    local wayland_runtime_dir=${7:-} wayland_display=${8:-}
+    local strategy
+    local -a canvas_args=(--off-screen)
+    case $mode in
+        graphical)
+            [[ -n $wayland_runtime_dir ]] || return 1
+            wayland_display_name_safe "$wayland_display" || return 1
+            strategy=graphical-wayland-off-screen
+            canvas_args+=(--size=1280x720)
+            ;;
+        headless)
+            strategy=headless-drm-off-screen
+            canvas_args+=(--size=640x480)
+            ;;
+        *) return 1 ;;
+    esac
     {
         printf '#!/usr/bin/env bash\nset -u\n'
-        printf 'export HOME=/userdata/system\nexport XDG_RUNTIME_DIR=/run\n'
+        printf 'export HOME=/userdata/system\n'
+        if [[ $mode == graphical ]]; then
+            printf 'export XDG_RUNTIME_DIR=%q\n' "$wayland_runtime_dir"
+            printf 'export WAYLAND_DISPLAY=%q\n' "$wayland_display"
+            printf 'printf "%%s\\n" %q\n' "GPU_WAYLAND_SOCKET=${wayland_runtime_dir}/${wayland_display}"
+        else
+            printf 'unset WAYLAND_DISPLAY\n'
+        fi
         printf 'export LD_LIBRARY_PATH=%q${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\n' "$library_dirs"
-        printf 'printf "%%s\\n" %q\n' "GPU_STRATEGY=${mode}-drm"
+        printf 'printf "%%s\\n" %q\n' "GPU_STRATEGY=${strategy}"
         printf 'exec %q --data-path %q' "$glmark_binary" "$glmark_data"
         printf ' %q' "${canvas_args[@]}"
         printf ' --benchmark %q\n' "shading:duration=${duration}:shading=phong"
-    } > "$launcher_file"
-    chmod 700 "$launcher_file"
+    } > "$launcher_file" || return 1
+    chmod 700 "$launcher_file" || return 1
 }
 
 launch_gpu_test() {
-    local launcher_file=$1 output_file=$2 mode=$3 tty_active_file=${4:-/sys/class/tty/tty0/active}
-    local active_tty='' active_vt='' active_vt_label=unknown openvt_help=''
-    active_tty=$(cat "$tty_active_file" 2>/dev/null || true)
-    if [[ $active_tty =~ ^tty([0-9]+)$ ]]; then
-        active_vt=${BASH_REMATCH[1]}
-        active_vt_label=$active_vt
-    fi
-    stress_gpu_uses_openvt=0
-    stress_gpu_previous_vt=''
-    [[ $mode == graphical && -n $active_vt ]] && stress_gpu_previous_vt=$active_vt
-    if [[ $mode == graphical ]] && command -v openvt >/dev/null 2>&1; then
-        openvt_help=$(openvt --help 2>&1 || true)
-    fi
-    if [[ -n $active_vt && $openvt_help == *-w* && $openvt_help == *-s* ]]; then
-        stress_gpu_uses_openvt=1
-        printf 'GPU_VT=auto previous=%s\n' "$active_vt" > "$output_file"
-        openvt -w -s -- /bin/bash -c 'exec >>"$2" 2>&1; exec /bin/bash "$1"' \
-            autopi-glmark "$launcher_file" "$output_file" >>"$output_file" 2>&1 &
-    else
-        if [[ $mode == graphical && -n $active_vt ]] && command -v chvt >/dev/null 2>&1; then chvt "$active_vt" >/dev/null 2>&1 || true; fi
-        printf 'GPU_VT=%s direct=1\n' "$active_vt_label" > "$output_file"
-        /bin/bash "$launcher_file" >>"$output_file" 2>&1 &
-    fi
+    local launcher_file=$1 output_file=$2 mode=$3
+    case $mode in
+        graphical) printf 'GPU_LAUNCH=wayland-compositor\n' > "$output_file" ;;
+        headless) printf 'GPU_LAUNCH=headless-drm\n' > "$output_file" ;;
+        *) return 1 ;;
+    esac
+    /bin/bash "$launcher_file" >>"$output_file" 2>&1 &
     stress_gpu_pid=$!
 }
 
@@ -1403,66 +1423,8 @@ terminate_child() {
     wait "$child_pid" 2>/dev/null || true
 }
 
-activate_stress_previous_vt() {
-    local active_tty='' attempts=0
-    [[ ${stress_gpu_previous_vt:-} =~ ^[0-9]+$ ]] || return 0
-    active_tty=$(cat /sys/class/tty/tty0/active 2>/dev/null || true)
-    [[ $active_tty == "tty${stress_gpu_previous_vt}" ]] && return 0
-    command -v chvt >/dev/null 2>&1 || return 1
-    chvt "$stress_gpu_previous_vt" >/dev/null 2>&1 || return 1
-    while (( attempts < 10 )); do
-        active_tty=$(cat /sys/class/tty/tty0/active 2>/dev/null || true)
-        [[ $active_tty == "tty${stress_gpu_previous_vt}" ]] && return 0
-        sleep 1
-        attempts=$((attempts + 1))
-    done
-    return 1
-}
-
-process_is_running() {
-    local process_pid=$1 state_key state_value ignored
-    [[ $process_pid =~ ^[0-9]+$ && -r /proc/$process_pid/status ]] || return 1
-    while read -r state_key state_value ignored; do
-        if [[ $state_key == State: ]]; then
-            [[ $state_value != Z ]]
-            return
-        fi
-    done < "/proc/$process_pid/status"
-    return 1
-}
-
 terminate_gpu_child() {
-    local child_pid=$1 attempts=0 process_pid
-    local -a process_tree=() descendants=()
-    [[ -n $child_pid ]] || return 0
-    if (( ${stress_gpu_uses_openvt:-0} != 1 )); then
-        terminate_child "$child_pid"
-        return 0
-    fi
-    mapfile -t process_tree < <(process_tree_pids "$child_pid")
-    for process_pid in "${process_tree[@]}"; do
-        [[ $process_pid == "$child_pid" ]] || descendants+=("$process_pid")
-    done
-    (( ${#descendants[@]} == 0 )) || kill -TERM "${descendants[@]}" 2>/dev/null || true
-    while (( attempts < 10 )) && process_is_running "$child_pid"; do
-        sleep 1
-        attempts=$((attempts + 1))
-    done
-    if process_is_running "$child_pid"; then
-        (( ${#descendants[@]} == 0 )) || kill -KILL "${descendants[@]}" 2>/dev/null || true
-        attempts=0
-        while (( attempts < 3 )) && process_is_running "$child_pid"; do
-            sleep 1
-            attempts=$((attempts + 1))
-        done
-    fi
-    if process_is_running "$child_pid"; then
-        kill -TERM "$child_pid" 2>/dev/null || true
-        sleep 1
-        kill -KILL "$child_pid" 2>/dev/null || true
-    fi
-    wait "$child_pid" 2>/dev/null || true
-    activate_stress_previous_vt
+    terminate_child "$1"
 }
 
 start_io_activity() {
@@ -1485,57 +1447,22 @@ stress_gpu_pid=''
 stress_io_pid=''
 stress_work_dir=''
 stress_io_file=''
-stress_frontend_stopped=0
-stress_frontend_restore_attempted=0
-stress_frontend_baseline=''
-stress_audio_baseline=''
-
-restore_frontend_baseline() {
-    local start_failed=0
-    (( stress_frontend_stopped == 1 )) || return 0
-    # Mark the attempt before any probe, VT switch, service operation, or wait.
-    # A signal during restoration must not re-enter another long restoration
-    # from cleanup_stress; the controller will perform normal-boot recovery.
-    stress_frontend_restore_attempted=1
-    if frontend_baseline_ready "$stress_frontend_baseline"; then
-        stress_frontend_stopped=0
-        return 0
-    fi
-    activate_stress_previous_vt || start_failed=1
-    start_frontend || start_failed=1
-    if ! wait_graphical_baseline "$stress_frontend_baseline"; then
-        (( start_failed == 0 )) || cat /tmp/autopioverclock-es-start.log 2>/dev/null || true
-        return 1
-    fi
-    stress_frontend_stopped=0
-}
 
 cleanup_stress() {
-    local cleanup_failed=0
     trap '' INT TERM HUP
     if [[ -n ${stress_cpu_pid:-} ]]; then terminate_child "$stress_cpu_pid"; stress_cpu_pid=''; fi
-    if [[ -n ${stress_gpu_pid:-} ]]; then terminate_gpu_child "$stress_gpu_pid" || cleanup_failed=1; stress_gpu_pid=''; fi
+    if [[ -n ${stress_gpu_pid:-} ]]; then terminate_gpu_child "$stress_gpu_pid"; stress_gpu_pid=''; fi
     if [[ -n ${stress_io_pid:-} ]]; then terminate_child "$stress_io_pid"; stress_io_pid=''; fi
     if [[ -n ${stress_io_file:-} ]]; then rm -f -- "$stress_io_file" "${stress_io_file}.new" 2>/dev/null || true; stress_io_file=''; fi
-    if (( stress_frontend_stopped == 1 )); then
-        if (( stress_frontend_restore_attempted == 0 )); then
-            restore_frontend_baseline || cleanup_failed=1
-        else
-            cleanup_failed=1
-        fi
-    fi
     if [[ ${stress_work_dir:-} == /tmp/autopioverclock-stress.* ]]; then rm -rf -- "$stress_work_dir"; fi
     stress_work_dir=''
-    (( cleanup_failed == 0 ))
 }
 
 stress_signal_cleanup() {
     local exit_code=$1
     trap - EXIT
     trap '' INT TERM HUP
-    if ! cleanup_stress; then
-        emit_result RECOVERY_FAILURE 'A signal interrupted stress and the Batocera graphical baseline could not be restored.'
-    fi
+    cleanup_stress
     exit "$exit_code"
 }
 
@@ -1546,11 +1473,11 @@ cmd_stress() {
     local cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' glmark_binary glmark_data library_dirs gpu_stack
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0
+    local wayland_runtime_dir='' wayland_display=''
+    : "$baseline" "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
-    stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_work_dir=''; stress_io_file=''; stress_frontend_stopped=0; stress_frontend_restore_attempted=0
-    stress_frontend_baseline=$baseline
-    stress_audio_baseline=$audio_baseline
+    stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_work_dir=''; stress_io_file=''
     stress_work_dir=$(mktemp -d /tmp/autopioverclock-stress.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create stress workspace.'; return 1; }
     cpu_output="$stress_work_dir/cpu.log"; gpu_output="$stress_work_dir/gpu.log"; launcher_file="$stress_work_dir/glmark.sh"; stress_io_file="$PERSISTENT_ROOT/.io-test-$$"
     trap cleanup_stress EXIT
@@ -1559,24 +1486,21 @@ cmd_stress() {
     trap 'stress_signal_cleanup 129' HUP
     command -v openssl >/dev/null 2>&1 || { emit_result HARNESS_FAILURE 'openssl is unavailable for Batocera CPU stress.'; return 1; }
     if [[ $stress_kind == gpu || $stress_kind == combined ]]; then
-        glmark_binary=$(find_glmark_binary || true); glmark_data=$(find_glmark_data || true); library_dirs=$(find_glmark_library_dirs)
+        glmark_binary=$(find_glmark_binary "$mode" || true); glmark_data=$(find_glmark_data || true); library_dirs=$(find_glmark_library_dirs)
         [[ -n $glmark_binary && -n $glmark_data ]] || { emit_result HARNESS_FAILURE 'Portable glmark2 binary or data directory is missing.'; return 1; }
         gpu_stack=$(gpu_stack_probe || true)
         [[ -n $gpu_stack ]] || { emit_result HARNESS_FAILURE 'No DRM render node bound to the V3D driver was found.'; return 1; }
         printf 'GPU_STACK=%s\n' "$gpu_stack"
         if [[ $mode == graphical ]]; then
-            stress_frontend_stopped=1
-            if ! stop_frontend; then
-                cat /tmp/autopioverclock-es-stop.log 2>/dev/null || true
-                if restore_frontend_baseline; then
-                    emit_result HARNESS_FAILURE 'Could not stop EmulationStation and its compositor before DRM stress; the graphical baseline was restored.'
-                else
-                    emit_result RECOVERY_FAILURE 'Could not stop EmulationStation cleanly or restore the Batocera graphical baseline.'
-                fi
-                return 1
-            fi
+            IFS=$'\t' read -r wayland_runtime_dir wayland_display < <(discover_wayland_session) || true
+            [[ -n $wayland_runtime_dir && -n $wayland_display ]] || { emit_result HARNESS_FAILURE 'The live EmulationStation Wayland socket could not be discovered safely.'; return 1; }
+            printf 'GPU_WAYLAND_SESSION=runtime:%s;display:%s\n' "$wayland_runtime_dir" "$wayland_display"
+        elif [[ $mode != headless ]]; then
+            emit_result HARNESS_FAILURE "Unsupported Batocera stress mode: $mode."
+            return 1
         fi
-        write_glmark_launcher "$launcher_file" "$duration" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode" "$baseline"
+        write_glmark_launcher "$launcher_file" "$duration" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode" "$wayland_runtime_dir" "$wayland_display" \
+            || { emit_result HARNESS_FAILURE 'Could not create the mode-specific glmark2 launcher.'; return 1; }
     fi
 
     kernel_lines=$(kernel_log | wc -l)
@@ -1641,10 +1565,7 @@ cmd_stress() {
     if [[ -n $failure_class ]]; then
         if [[ -n $stress_cpu_pid ]] && kill -0 "$stress_cpu_pid" 2>/dev/null; then terminate_child "$stress_cpu_pid"; cpu_rc=124; stress_cpu_pid=''; fi
         if [[ -n $stress_gpu_pid ]] && kill -0 "$stress_gpu_pid" 2>/dev/null; then
-            if ! terminate_gpu_child "$stress_gpu_pid"; then
-                failure_reason="Original $failure_class: $failure_reason; the temporary GPU VT could not be restored."
-                failure_class=RECOVERY_FAILURE
-            fi
+            terminate_gpu_child "$stress_gpu_pid"
             gpu_rc=124
             stress_gpu_pid=''
         fi
@@ -1666,16 +1587,8 @@ cmd_stress() {
         elif ! gpu_output_has_positive_score "$gpu_output"; then failure_class=HARNESS_FAILURE; failure_reason='glmark2 did not produce a positive numeric score.'; fi
     fi
 
-    if (( stress_frontend_stopped == 1 )) && ! restore_frontend_baseline; then
-        if [[ -n $failure_class ]]; then
-            failure_reason="Original $failure_class: $failure_reason; Batocera frontend restart did not restore the saved graphical baseline."
-        else
-            failure_reason='Batocera frontend restart did not restore the saved graphical baseline.'
-        fi
-        failure_class=RECOVERY_FAILURE
-    fi
     if [[ -n $failure_class ]]; then emit_result "$failure_class" "$failure_reason" "$max_seen"; return 1; fi
-    emit_result PASS "$stress_kind stress completed successfully and the frontend recovered." "$max_seen"
+    emit_result PASS "$stress_kind stress completed successfully." "$max_seen"
     cleanup_stress; trap - EXIT INT TERM HUP
 }
 
