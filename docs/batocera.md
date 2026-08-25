@@ -9,7 +9,7 @@ Before any GPU sweep, the controller runs a 20-second smoke test at normal clock
 1. Captures the known-good connector/mode/frontend baseline.
 2. Stops EmulationStation and waits for compositor ownership to clear.
 3. asks `openvt -s` for a free VT when available, without forcing the already-active frontend VT;
-4. runs `glmark2-es2-drm` on a real fullscreen DRM surface while retaining its renderer and score output in the run log;
+4. runs `glmark2-es2-drm` on a real DRM scanout surface while retaining its renderer and score output in the run log; the launcher requests a positive size different from the connected mode to avoid glmark2 2023.01's pre-window fullscreen short circuit, while the DRM backend still creates the surface at the kernel-reported connected mode;
 5. requires `GL_RENDERER` and `glmark2 Score` output;
 6. switches back to the original VT, releases the temporary VT, restarts the frontend, and waits for the original baseline.
 

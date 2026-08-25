@@ -1309,15 +1309,38 @@ frontend_baseline_ready() {
     [[ $current_audio == "$stress_audio_baseline" ]]
 }
 
+glmark_graphical_request_size() {
+    local baseline=$1 native_mode requested_size=640x480
+    native_mode=${baseline#*mode=}
+    if [[ $native_mode != "$baseline" ]]; then
+        native_mode=${native_mode%%;*}
+        native_mode=${native_mode%%.*}
+    else
+        native_mode=''
+    fi
+    # glmark2 2023.01 can mistake the DRM backend's pre-populated native mode
+    # for an already-created window.  Requesting a different positive size
+    # forces create_window(); native-state-drm still creates the scanout surface
+    # at the connected mode reported by the kernel.
+    [[ $native_mode == "$requested_size" ]] && requested_size=641x480
+    printf '%s' "$requested_size"
+}
+
 write_glmark_launcher() {
-    local launcher_file=$1 duration=$2 glmark_binary=$3 glmark_data=$4 library_dirs=$5 mode=$6
+    local launcher_file=$1 duration=$2 glmark_binary=$3 glmark_data=$4 library_dirs=$5 mode=$6 baseline=${7:-}
+    local requested_size
     local -a canvas_args=()
-    if [[ $mode == graphical ]]; then canvas_args=(--fullscreen); else canvas_args=(--off-screen --size=640x480); fi
+    if [[ $mode == graphical ]]; then
+        requested_size=$(glmark_graphical_request_size "$baseline")
+        canvas_args=("--size=${requested_size}")
+    else
+        canvas_args=(--off-screen --size=640x480)
+    fi
     {
         printf '#!/usr/bin/env bash\nset -u\n'
         printf 'export HOME=/userdata/system\nexport XDG_RUNTIME_DIR=/run\n'
         printf 'export LD_LIBRARY_PATH=%q${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\n' "$library_dirs"
-        printf 'printf %q\n' "GPU_STRATEGY=${mode}-drm"
+        printf 'printf "%%s\\n" %q\n' "GPU_STRATEGY=${mode}-drm"
         printf 'exec %q --data-path %q' "$glmark_binary" "$glmark_data"
         printf ' %q' "${canvas_args[@]}"
         printf ' --benchmark %q\n' "shading:duration=${duration}:shading=phong"
@@ -1553,7 +1576,7 @@ cmd_stress() {
                 return 1
             fi
         fi
-        write_glmark_launcher "$launcher_file" "$duration" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode"
+        write_glmark_launcher "$launcher_file" "$duration" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode" "$baseline"
     fi
 
     kernel_lines=$(kernel_log | wc -l)

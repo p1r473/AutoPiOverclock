@@ -699,14 +699,22 @@ DEBIAN_IO_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); pr
     [[ $(paste -sd, "$BOOT_TEST_DIR/remounts") == rw,ro,rw,ro ]]
     [[ $APO_APPLY_BOOT_RW == 0 ]]
 )
-write_glmark_launcher "$TEMP_DIR/graphical.sh" 20 /opt/glmark /opt/data /opt/lib graphical
+[[ $(glmark_graphical_request_size 'connector=HDMI-A-1;mode=1920x1080.60000;frontend=emulationstation') == 640x480 ]]
+[[ $(glmark_graphical_request_size 'connector=HDMI-A-1;mode=640x480.60000;frontend=emulationstation') == 641x480 ]]
+[[ $(glmark_graphical_request_size 'malformed-baseline') == 640x480 ]]
+write_glmark_launcher "$TEMP_DIR/graphical.sh" 20 /opt/glmark /opt/data /opt/lib graphical 'connector=HDMI-A-1;mode=1920x1080.60000;frontend=emulationstation'
+write_glmark_launcher "$TEMP_DIR/graphical-native-640.sh" 20 /opt/glmark /opt/data /opt/lib graphical 'connector=HDMI-A-1;mode=640x480.60000;frontend=emulationstation'
 write_glmark_launcher "$TEMP_DIR/headless.sh" 20 /opt/glmark /opt/data /opt/lib headless
 bash -n "$TEMP_DIR/graphical.sh"
+bash -n "$TEMP_DIR/graphical-native-640.sh"
 bash -n "$TEMP_DIR/headless.sh"
-grep -q -- '--fullscreen' "$TEMP_DIR/graphical.sh"
+grep -q -- '--size=640x480' "$TEMP_DIR/graphical.sh"
+grep -q -- '--size=641x480' "$TEMP_DIR/graphical-native-640.sh"
+if grep -q -- '--fullscreen' "$TEMP_DIR/graphical.sh"; then exit 1; fi
 if grep -q -- '--off-screen' "$TEMP_DIR/graphical.sh"; then exit 1; fi
 grep -q -- '--off-screen' "$TEMP_DIR/headless.sh"
-grep -q 'GPU_STRATEGY=graphical-drm' "$TEMP_DIR/graphical.sh"
+GRAPHICAL_LAUNCH_OUTPUT=$(bash "$TEMP_DIR/graphical.sh" 2>&1 || true)
+[[ ${GRAPHICAL_LAUNCH_OUTPUT%%$'\n'*} == GPU_STRATEGY=graphical-drm ]]
 
 # A graphical DRM launch must ask openvt for a free VT.  Forcing the already
 # active VT with -c/-f makes kbd openvt try to deallocate that active console

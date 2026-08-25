@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.11 — 2026-08-24
+
+- Worked around glmark2 2023.01's DRM canvas-initialization defect by replacing `--fullscreen` with an explicit positive request size guaranteed to differ from the connected native mode; the DRM backend still creates its scanout surface at the kernel-reported mode.
+- Added regressions for ordinary, matching-native, and malformed display baselines, and made the retained `GPU_STRATEGY` marker newline-terminated.
+
 ## 0.1.0-alpha.10 — 2026-08-24
 
 - Fixed Batocera graphical GPU stress to allocate a free temporary VT instead of force-reusing the active frontend VT, preventing `openvt` rc=8 from trying to deallocate `tty1`.
