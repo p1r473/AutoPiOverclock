@@ -290,6 +290,21 @@ fi
 [[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
 [[ ${#ACTIONS[@]} == 0 ]]
 
+# Single-digit post-endurance boot and normal-recovery checkpoints are valid
+# resumable stages when the ordinary eight-hour duration is already recorded.
+for resume_stage in BOOT_1 NORMAL_1; do
+    APO_STATE=()
+    seed_valid_guarded_auto_floor_plan
+    APO_EDGE_CPU_24H=0
+    apo_state_set RECOMMENDED_CPU 3000
+    apo_state_set RECOMMENDED_GPU 900
+    apo_state_set FINAL_TARGET_CPU 3000
+    apo_state_set FINAL_TARGET_GPU 900
+    apo_state_set FINAL_STAGE "$resume_stage"
+    apo_state_set VALIDATION_DURATION_S 28800
+    apo_validate_auto_resume_state
+done
+
 # A running edge checkpoint cannot jump to VERIFY without a completed 24-hour
 # endurance checkpoint.
 APO_STATE=()
@@ -410,10 +425,28 @@ if apo_validate_auto_resume_state; then
 fi
 [[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
 
+# Downgrading only the persisted auto marker cannot reinterpret an automatic
+# run as an explicit plan and bypass its stock, refinement, guard, and final
+# identity checks.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+APO_AUTO_GENERATED_CANDIDATES=0
+APO_EDGE_CPU_24H=0
+if apo_validate_auto_resume_state; then
+    echo 'automatic state with a downgraded origin marker was accepted as explicit' >&2
+    exit 1
+fi
+[[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+
+# A genuine explicit-plan state carries none of the automatic-only evidence.
 APO_STATE=()
 APO_AUTO_GENERATED_CANDIDATES=0
 APO_EDGE_CPU_24H=0
-APO_AUTO_BASELINE_PROVENANCE=missing
+APO_AUTO_BASELINE_CPU=''
+APO_AUTO_BASELINE_GPU=''
+APO_AUTO_BASELINE_VOLTAGE=''
+APO_AUTO_BASELINE_PROVENANCE=''
+APO_AUTO_BASELINE_EVIDENCE=''
 apo_validate_auto_resume_state
 
 printf 'test_resume_progress: PASS\n'

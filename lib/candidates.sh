@@ -473,7 +473,11 @@ apo_auto_validate_final_state() {
         PRE_STRESS_BOOT|CPU_STRESS|GPU_STRESS|ENDURANCE)
             [[ -z $duration ]] || { APO_AUTO_VALIDATION_REASON="Saved final duration exists before endurance completed at stage $stage"; return 1; }
             ;;
-        RETURN_NORMAL|BOOT_[1-9][0-9]*|NORMAL_[1-9][0-9]*|VERIFY|COMPLETE)
+        RETURN_NORMAL|VERIFY|COMPLETE)
+            [[ $duration == "$expected_duration" ]] || { APO_AUTO_VALIDATION_REASON="Saved final stage $stage lacks its required ${expected_duration}s endurance evidence"; return 1; }
+            ;;
+        BOOT_*|NORMAL_*)
+            [[ $stage =~ ^(BOOT|NORMAL)_([1-9][0-9]*)$ ]] || { APO_AUTO_VALIDATION_REASON="Saved final stage is malformed: $stage"; return 1; }
             [[ $duration == "$expected_duration" ]] || { APO_AUTO_VALIDATION_REASON="Saved final stage $stage lacks its required ${expected_duration}s endurance evidence"; return 1; }
             ;;
         *) APO_AUTO_VALIDATION_REASON="Saved final stage is malformed: $stage"; return 1 ;;
@@ -497,6 +501,37 @@ apo_auto_validate_final_state() {
         APO_AUTO_VALIDATION_REASON='Saved automatic run contains partial final-validation evidence'
         return 1
     fi
+}
+
+apo_auto_validate_non_auto_state() {
+    local key value
+    if [[ -n ${APO_AUTO_BASELINE_CPU:-} || -n ${APO_AUTO_BASELINE_GPU:-} ||
+          -n ${APO_AUTO_BASELINE_VOLTAGE:-} || -n ${APO_AUTO_BASELINE_PROVENANCE:-} ||
+          -n ${APO_AUTO_BASELINE_EVIDENCE:-} ]]; then
+        APO_AUTO_VALIDATION_REASON='Saved non-auto run retains automatic stock-baseline evidence'
+        return 1
+    fi
+    for key in CPU_REFINE_CANDIDATES GPU_REFINE_CANDIDATES CPU_GUARD_TARGET GPU_GUARD_TARGET \
+               FLOOR_CPU FLOOR_GPU FLOOR_DURATION_S FLOOR_VALIDATION_SCHEMA EDGE_CPU_TARGET \
+               EDGE_CPU_FAILURE_CLASS EDGE_CPU_FAILURE_REASON; do
+        value=$(apo_state_get "$key" '')
+        [[ -z $value ]] || {
+            APO_AUTO_VALIDATION_REASON="Saved non-auto run retains automatic state in $key"
+            return 1
+        }
+    done
+    for key in CPU_REFINE_INDEX GPU_REFINE_INDEX CPU_REFINE_COMPLETE GPU_REFINE_COMPLETE \
+               CPU_GUARD_VERIFIED GPU_GUARD_VERIFIED FLOOR_VALIDATED; do
+        value=$(apo_state_get "$key" 0)
+        [[ $value == 0 ]] || {
+            APO_AUTO_VALIDATION_REASON="Saved non-auto run retains automatic state in $key"
+            return 1
+        }
+    done
+    [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved non-auto run retains an automatic edge CPU disposition'
+        return 1
+    }
 }
 
 apo_validate_auto_resume_state() {
@@ -547,6 +582,8 @@ apo_validate_auto_resume_state() {
     elif (( edge_marker == 1 )); then
         apo_auto_state_invalid 'Edge CPU validation is saved on a non-auto run.'
         return 1
+    else
+        apo_auto_validate_non_auto_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     fi
     apo_auto_validate_edge_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     if (( auto_marker == 1 )); then
