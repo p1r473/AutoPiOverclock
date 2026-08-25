@@ -37,12 +37,13 @@ else
     mkdir -p "$DOWNLOAD_DIR"
     cd "$DOWNLOAD_DIR"
     printf 'Downloading ARM64 packages without installing them...\n' >&2
-    apt-get download "glmark2-es2-drm:${ARCHITECTURE}" "glmark2-data:${ARCHITECTURE}" "libjpeg62-turbo:${ARCHITECTURE}"
+    apt-get download "glmark2-es2-drm:${ARCHITECTURE}" "glmark2-es2-wayland:${ARCHITECTURE}" "glmark2-data:${ARCHITECTURE}" "libjpeg62-turbo:${ARCHITECTURE}"
     shopt -s nullglob
     GLMARK_PACKAGES=()
     while IFS= read -r -d '' package_file; do GLMARK_PACKAGES+=("${package_file#./}"); done < <(
         find . -maxdepth 1 -type f \( \
             -name "glmark2-es2-drm_*_${ARCHITECTURE}.deb" -o \
+            -name "glmark2-es2-wayland_*_${ARCHITECTURE}.deb" -o \
             -name 'glmark2-data_*_all.deb' -o \
             -name "glmark2-data_*_${ARCHITECTURE}.deb" \
         \) -print0 | LC_ALL=C sort -z
@@ -51,7 +52,7 @@ else
     while IFS= read -r -d '' package_file; do JPEG_PACKAGES+=("${package_file#./}"); done < <(
         find . -maxdepth 1 -type f -name "libjpeg62-turbo_*_${ARCHITECTURE}.deb" -print0 | LC_ALL=C sort -z
     )
-    (( ${#GLMARK_PACKAGES[@]} >= 2 )) || { printf 'Could not locate downloaded glmark2 binary and data packages.\n' >&2; exit 1; }
+    (( ${#GLMARK_PACKAGES[@]} >= 3 )) || { printf 'Could not locate both downloaded glmark2 binaries and the data package.\n' >&2; exit 1; }
     (( ${#JPEG_PACKAGES[@]} == 1 )) || { printf 'Could not locate the downloaded libjpeg package.\n' >&2; exit 1; }
     for package_file in "${GLMARK_PACKAGES[@]}"; do dpkg-deb -x "$package_file" "$STAGE"; done
     mkdir -p "$STAGE/jpeg-package"
@@ -66,6 +67,7 @@ else
 fi
 
 [[ -x $STAGE/usr/bin/glmark2-es2-drm ]] || { printf 'Staged glmark2-es2-drm is missing or not executable.\n' >&2; exit 1; }
+[[ -x $STAGE/usr/bin/glmark2-es2-wayland ]] || { printf 'Staged glmark2-es2-wayland is missing or not executable.\n' >&2; exit 1; }
 [[ -d $STAGE/usr/share/glmark2 ]] || { printf 'Staged glmark2 data directory is missing.\n' >&2; exit 1; }
 find "$STAGE/jpeg-package" -type f -name 'libjpeg.so.62*' -print -quit | grep -q . || { printf 'Staged libjpeg.so.62 is missing.\n' >&2; exit 1; }
 
@@ -75,10 +77,11 @@ AutoPiOverclock Batocera glmark2 compatibility payload
 Source: ${SOURCE_DESCRIPTION}
 Architecture: ${ARCHITECTURE}
 
-This archive contains the glmark2-es2-drm executable, its data files, and a
-private libjpeg compatibility library. It does not replace Batocera's glibc,
-Mesa, DRM stack, kernel, or system libraries. AutoPiOverclock verifies this
-payload with a short renderer smoke test before any candidate or endurance run.
+This archive contains the glmark2-es2-drm and glmark2-es2-wayland executables,
+their data files, and a private libjpeg compatibility library. It does not
+replace Batocera's glibc, Mesa, DRM stack, kernel, or system libraries.
+AutoPiOverclock verifies this payload with a short renderer smoke test before
+any candidate or endurance run.
 EOF_README
 
 (
