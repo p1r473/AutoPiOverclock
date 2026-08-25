@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.12 — 2026-08-24
+
+- Moved Batocera graphical GPU stress from direct DRM/VT ownership to an off-screen Wayland workload on the live EmulationStation compositor, leaving the frontend running and eliminating the KMS teardown and VT-switch recovery boundary.
+- Added fail-closed discovery of the frontend's Wayland runtime and socket, distinct graphical/headless backend markers, and retained off-screen DRM only for headless operation.
+- Extended the portable Batocera bundle with `glmark2-es2-wayland`, rebuilt stale cached bundles that lack either required backend, and verified both executables before activation.
+- Distinguished a verified permanent-config mismatch from unavailable or malformed remote hash evidence, preserving the primary worker failure across a transport outage so normal recovery can re-verify the exact hash after SSH returns.
+- Added regressions for Wayland session selection, unsafe or ambiguous socket rejection, backend isolation, forbidden frontend/VT calls, and post-stress hash outcomes.
+
 ## 0.1.0-alpha.11 — 2026-08-24
 
 - Worked around glmark2 2023.01's DRM canvas-initialization defect by replacing `--fullscreen` with an explicit positive request size guaranteed to differ from the connected native mode; the DRM backend still creates its scanout surface at the kernel-reported mode.
