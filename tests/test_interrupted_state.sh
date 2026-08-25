@@ -224,6 +224,7 @@ done
 (
     reset_recovery_fixture
     APO_PROFILE=batocera
+    # shellcheck disable=SC2030
     APO_MODE_EFFECTIVE=graphical
     CURRENT_BOOT_ID=forced-post-hash-before
     REBOOT_NORMAL_CALLS=0
@@ -491,7 +492,9 @@ grep -q 'expected hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 # returns.
 (
     source "$ROOT/lib/health.sh"
+    # shellcheck disable=SC2030
     APO_BOOT_CONFIG=/boot/config.txt
+    # shellcheck disable=SC2030
     APO_PERMANENT_CONFIG_HASH=$(printf 'a%.0s' {1..64})
     REMOTE_HASH=$APO_PERMANENT_CONFIG_HASH
     apo_remote_root() { printf '%s  /boot/config.txt\n' "$REMOTE_HASH"; }
