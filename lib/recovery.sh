@@ -2,6 +2,28 @@
 # Tryboot state machine and normal-boot recovery.
 
 APO_RECOVERY_IN_PROGRESS=0
+APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
+APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
+APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
+
+apo_stress_reboot_scope_is_active() {
+    local stress_reboot_scope=$1
+    case $stress_reboot_scope in
+        candidate)
+            [[ $(apo_state_get CANDIDATE_STAGE '') == STRESS ]]
+            ;;
+        final)
+            [[ $(apo_state_get PHASE '') == FINAL_VALIDATION ]] || return 1
+            case $(apo_state_get FINAL_STAGE '') in
+                CPU_STRESS|GPU_STRESS|ENDURANCE) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 apo_prepare_candidate() {
     local cpu_mhz=$1 gpu_mhz=$2 label=$3 tryboot_hash reservation_hash installed_hash
@@ -141,13 +163,30 @@ apo_boot_candidate() {
 }
 
 apo_return_normal() {
-    local context=${1:-normal-recovery} force_normal_reboot=${2:-0} old_boot_id new_boot_id tryboot_flag current_boot_id
-    local expected_tryboot pending_boot_id reboot_attempts=0 forced_normal_reboot_done=0
+    local context=${1:-normal-recovery} force_normal_reboot=${2:-0} stress_reboot_scope=${3:-none}
+    local old_boot_id new_boot_id tryboot_flag current_boot_id
+    local expected_tryboot pending_boot_id reboot_attempts=0 forced_normal_reboot_done=0 controller_reboot_issued=0
+    APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
+    APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
+    APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
     [[ $force_normal_reboot == 0 || $force_normal_reboot == 1 ]] || {
         APO_LAST_CLASS=RECOVERY_FAILURE
         APO_LAST_REASON='The normal-recovery reboot request is malformed.'
         return 1
     }
+    case $stress_reboot_scope in
+        none|candidate|final) ;;
+        *)
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON='The stress-reboot observation scope is malformed.'
+            return 1
+            ;;
+    esac
+    if (( force_normal_reboot == 1 )) && [[ $stress_reboot_scope != none ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Forced graphical recovery and stress-reboot observation cannot be combined.'
+        return 1
+    fi
     if (( force_normal_reboot == 1 )) && [[ ${APO_PROFILE:-} != batocera || ${APO_MODE_EFFECTIVE:-} != graphical ]]; then
         APO_LAST_CLASS=RECOVERY_FAILURE
         APO_LAST_REASON='A forced normal recovery reboot is permitted only for a Batocera graphical-session recovery failure.'
@@ -183,6 +222,15 @@ apo_return_normal() {
                 fi
                 apo_event "$context" WARN '' 'The Batocera graphical worker could not restore its saved session; forcing one verified normal-config reboot.'
             elif [[ $expected_tryboot != 1 || ( -n $pending_boot_id && $current_boot_id != "$pending_boot_id" ) ]]; then
+                if [[ $stress_reboot_scope != none ]] && (( controller_reboot_issued == 0 )) &&
+                   [[ $expected_tryboot == 1 && -n $pending_boot_id &&
+                      $current_boot_id != "$pending_boot_id" &&
+                      $(apo_state_get CANDIDATE_BOOT_ID '') == "$pending_boot_id" ]] &&
+                   apo_stress_reboot_scope_is_active "$stress_reboot_scope"; then
+                    APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=1
+                    APO_RECOVERY_UNEXPECTED_REBOOT_FROM=$pending_boot_id
+                    APO_RECOVERY_UNEXPECTED_REBOOT_TO=$current_boot_id
+                fi
                 new_boot_id=$current_boot_id
                 break
             else
@@ -203,6 +251,7 @@ apo_return_normal() {
         pending_boot_id=$old_boot_id
         apo_state_set LAST_BOOT_ID "$old_boot_id"
         apo_state_save
+        controller_reboot_issued=1
         if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )); then
             apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal "$APO_PERMANENT_CONFIG_HASH" >/dev/null 2>&1 || true
         else
@@ -251,8 +300,9 @@ apo_return_normal() {
 apo_recover_normal() { apo_return_normal "${1:-explicit-recovery}"; }
 
 apo_recover_preserving_failure() {
-    local recovery_context=$1 original_class=$2 original_reason=$3 force_normal_reboot=${4:-0} recovery_class recovery_reason
-    if apo_return_normal "$recovery_context" "$force_normal_reboot"; then
+    local recovery_context=$1 original_class=$2 original_reason=$3 force_normal_reboot=${4:-0} stress_reboot_scope=${5:-none}
+    local recovery_class recovery_reason
+    if apo_return_normal "$recovery_context" "$force_normal_reboot" "$stress_reboot_scope"; then
         APO_LAST_CLASS=$original_class
         APO_LAST_REASON=$original_reason
         return 0
@@ -262,6 +312,22 @@ apo_recover_preserving_failure() {
     APO_LAST_CLASS=RECOVERY_FAILURE
     APO_LAST_REASON="Original $original_class: $original_reason; normal recovery failed with $recovery_class: $recovery_reason"
     return 1
+}
+
+apo_recover_stress_failure() {
+    local recovery_context=$1 original_class=$2 original_reason=$3 result_structured=${4:-1} stress_reboot_scope=${5:-none}
+    if ! apo_recover_preserving_failure "$recovery_context" "$original_class" "$original_reason" 0 "$stress_reboot_scope"; then
+        return 1
+    fi
+    if [[ $original_class == HARNESS_FAILURE && $result_structured == 0 &&
+          $original_reason == 'The worker failed without a structured result.' &&
+          $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]; then
+        APO_LAST_CLASS=STABILITY_FAILURE
+        APO_LAST_REASON="Candidate became unreachable without a structured result during stress and rebooted unexpectedly from boot ${APO_RECOVERY_UNEXPECTED_REBOOT_FROM:-unknown} to verified normal boot ${APO_RECOVERY_UNEXPECTED_REBOOT_TO:-unknown}."
+        apo_state_set LAST_FAILURE_CLASS "$APO_LAST_CLASS"
+        apo_state_set LAST_FAILURE_REASON "$APO_LAST_REASON"
+        apo_state_save
+    fi
 }
 
 apo_record_failure_after_recovery() {

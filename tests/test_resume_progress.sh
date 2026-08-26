@@ -5,6 +5,7 @@ APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/config.sh"
 source "$ROOT/lib/state.sh"
+source "$ROOT/lib/recovery.sh"
 
 APO_CFG=(
     [CANDIDATE_DURATION_S]=60
@@ -134,6 +135,58 @@ apo_state_set TRYBOOT_EXPECTED 0
 apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
 [[ ${ACTIONS[*]} == 'normal:cpu-3000_gpu-800-normal-2 boot:cpu-3000_gpu-800-boot-3 normal:cpu-3000_gpu-800-normal-3 boot:cpu-3000_gpu-800-boot-4 normal:cpu-3000_gpu-800-normal-4 boot:cpu-3000_gpu-800-stress-boot stress:combined:cpu-3000_gpu-800-candidate health:cpu-3000_gpu-800-post-stress normal:cpu-3000_gpu-800-final-normal' ]]
 [[ $(apo_state_get CANDIDATE_STAGE) == COMPLETE ]]
+
+# A missing stress trailer is promoted only when normal recovery proves that
+# the saved candidate boot rebooted before the controller requested it. This is
+# a silicon stability boundary, while same-boot transport loss remains fatal
+# harness uncertainty.
+APO_STATE=()
+apo_state_set CANDIDATE_LABEL cpu-3200_gpu-800
+apo_state_set CANDIDATE_CPU 3200
+apo_state_set CANDIDATE_GPU 800
+apo_state_set CANDIDATE_STAGE STRESS
+apo_state_set TRYBOOT_EXPECTED 1
+apo_state_set CURRENT_CPU 3200
+apo_state_set CURRENT_GPU 800
+apo_run_stress() {
+    APO_LAST_CLASS=HARNESS_FAILURE
+    APO_LAST_REASON='The worker failed without a structured result.'
+    APO_LAST_RESULT_STRUCTURED=0
+    return 1
+}
+RECOVERY_UNEXPECTED_FIXTURE=1
+RECOVERY_STRESS_SCOPE=''
+apo_recover_preserving_failure() {
+    RECOVERY_STRESS_SCOPE=${5:-none}
+    APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=$RECOVERY_UNEXPECTED_FIXTURE
+    if (( RECOVERY_UNEXPECTED_FIXTURE == 1 )); then
+        APO_RECOVERY_UNEXPECTED_REBOOT_FROM=candidate-stress-boot
+        APO_RECOVERY_UNEXPECTED_REBOOT_TO=watchdog-normal-boot
+    else
+        APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
+        APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
+    fi
+}
+if apo_test_candidate 3200 800 cpu-3200_gpu-800 combined; then
+    echo 'unexpected candidate reboot was incorrectly accepted' >&2
+    exit 1
+fi
+[[ $APO_LAST_CLASS == STABILITY_FAILURE ]]
+[[ $APO_LAST_REASON == *'rebooted unexpectedly from boot candidate-stress-boot to verified normal boot watchdog-normal-boot'* ]]
+[[ $RECOVERY_STRESS_SCOPE == candidate ]]
+
+RECOVERY_UNEXPECTED_FIXTURE=0
+if apo_test_candidate 3200 800 cpu-3200_gpu-800 combined; then
+    echo 'same-boot stress transport loss was incorrectly accepted' >&2
+    exit 1
+fi
+[[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+[[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+[[ $RECOVERY_STRESS_SCOPE == candidate ]]
+
+# Restore the general success fixtures used by the remaining resume tests.
+apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
+apo_recover_preserving_failure() { return 0; }
 
 # Resume final validation at post-stress boot 2 of five. Endurance and boot 1
 # are already checkpointed and must not run again.
@@ -380,6 +433,62 @@ fi
 [[ $(apo_state_get STATUS) == FAILED ]]
 [[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
 [[ $(apo_state_get VALIDATED) == 0 ]]
+
+# A proven autonomous reboot during optional edge stress is a real stability
+# rejection, so the already validated production floor remains the final PASS.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+apo_state_set FLOOR_CPU 3000
+apo_state_set FLOOR_GPU 900
+apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+apo_state_set FLOOR_VALIDATED 1
+apo_state_set EDGE_CPU_TARGET 3025
+apo_state_set EDGE_CPU_STATUS RUNNING
+apo_state_set RECOMMENDED_CPU 3025
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3025
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set TRYBOOT_EXPECTED 1
+apo_state_set LAST_BOOT_ID edge-candidate-boot
+apo_state_set CANDIDATE_BOOT_ID edge-candidate-boot
+apo_state_set CURRENT_CPU 3025
+apo_state_set CURRENT_GPU 900
+apo_state_set VALIDATED 0
+APO_BOOT_TIMEOUT=300
+APO_BOOT_SETTLE_SECONDS=0
+APO_REMOTE_WORKER=/tmp/edge-fixture-worker
+EDGE_RECOVERY_REBOOTS=0
+# Restore the production recovery path after the lightweight resume fixtures
+# above replaced its transport boundary.
+source "$ROOT/lib/recovery.sh"
+apo_wait_for_ssh() { return 0; }
+apo_remote_boot_id() { printf edge-watchdog-normal-boot; }
+apo_remote_tryboot_flag() { printf 00000000; }
+apo_remote_worker() { EDGE_RECOVERY_REBOOTS=$((EDGE_RECOVERY_REBOOTS + 1)); }
+apo_health_check() { return 0; }
+apo_final_record_failure edge-watchdog-recovery HARNESS_FAILURE 'The worker failed without a structured result.' 0
+[[ $EDGE_RECOVERY_REBOOTS == 0 ]]
+[[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
+[[ $APO_RECOVERY_UNEXPECTED_REBOOT_FROM == edge-candidate-boot ]]
+[[ $APO_RECOVERY_UNEXPECTED_REBOOT_TO == edge-watchdog-normal-boot ]]
+[[ $(apo_state_get STATUS) == PASS && $(apo_state_get PHASE) == COMPLETE ]]
+[[ $(apo_state_get EDGE_CPU_STATUS) == REJECTED ]]
+[[ $(apo_state_get EDGE_CPU_FAILURE_CLASS) == STABILITY_FAILURE ]]
+[[ $(apo_state_get FINAL_CPU) == 3000 && $(apo_state_get FINAL_GPU) == 900 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == 28800 ]]
+APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
+# Restore the lightweight boundaries expected by the remaining state-only
+# assertions in this script.
+apo_return_normal() {
+    ACTIONS+=("normal:$1")
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+}
+apo_recover_preserving_failure() { return 0; }
 
 # Applying a validated auto result changes the live/permanent normal clocks,
 # but the immutable stock baseline must still make the completed state safe to

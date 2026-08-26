@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.17 — 2026-08-26
+
+- Distinguished a proven autonomous reboot during active candidate or final stress from an ordinary SSH interruption: recovery must observe the saved candidate boot ID change to a clear normal boot before the controller issues any reboot.
+- Promoted only an unstructured stress-result fallback with that exact reboot proof from `HARNESS_FAILURE` to `STABILITY_FAILURE`, allowing automatic sweeps to record the clock as a boundary and continue refinement; same-boot transport loss and structured harness failures remain fatal harness uncertainty.
+- Preserved `RECOVERY_FAILURE` precedence whenever normal boot, tryboot cleanup, permanent-config evidence, or normal health cannot be verified, and retained a previously validated production floor when an optional edge test ends in a proven autonomous reboot and verified normal recovery.
+- Added structured-result, autonomous-reboot, same-boot transport, recovery-precedence, candidate-resume, and optional-edge regressions without changing the run-state schema.
+
 ## 0.1.0-alpha.16 — 2026-08-25
 
 - Constrained Batocera's OpenSSL CPU load to one 16 KiB SHA-256 benchmark measured in elapsed time, so a requested stress duration is the total run time instead of being repeated once for every default buffer size.

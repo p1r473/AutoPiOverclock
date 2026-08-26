@@ -51,7 +51,7 @@ apo_candidate_boot_or_preserve_failure() {
 
 apo_test_candidate() {
     local cpu_mhz=$1 gpu_mhz=$2 label=$3 stress_kind=$4 stage failure_class failure_reason boot_number normal_number
-    local candidate_boots=${APO_CFG[CANDIDATE_BOOTS]}
+    local candidate_boots=${APO_CFG[CANDIDATE_BOOTS]} stress_result_structured
     if ! apo_candidate_identity_matches "$label" "$cpu_mhz" "$gpu_mhz"; then
         apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" BOOT_1
         apo_event "$label" INFO '' "Testing CPU=$cpu_mhz GPU=$gpu_mhz"
@@ -102,10 +102,12 @@ apo_test_candidate() {
                 if ! apo_candidate_tryboot_active_in_state "$cpu_mhz" "$gpu_mhz"; then
                     apo_candidate_boot_or_preserve_failure "$cpu_mhz" "$gpu_mhz" "${label}-stress-resume-boot" "${label}-stress-resume-recovery" || return 1
                 fi
+                APO_LAST_RESULT_STRUCTURED=0
                 if ! apo_run_stress "$stress_kind" "${APO_CFG[CANDIDATE_DURATION_S]}" "${label}-candidate" 0; then
                     failure_class=$APO_LAST_CLASS
                     failure_reason=$APO_LAST_REASON
-                    apo_recover_preserving_failure "${label}-stress-recovery" "$failure_class" "$failure_reason" || return 1
+                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
+                    apo_recover_stress_failure "${label}-stress-recovery" "$failure_class" "$failure_reason" "$stress_result_structured" candidate || return 1
                     return 1
                 fi
                 apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" POST_STRESS_HEALTH
@@ -904,8 +906,16 @@ apo_final_identity_matches() {
 }
 
 apo_final_record_failure() {
-    local recovery_context=$1 failure_class=$2 failure_reason=$3 floor_cpu floor_gpu
-    if ! apo_recover_preserving_failure "$recovery_context" "$failure_class" "$failure_reason"; then
+    local recovery_context=$1 failure_class=$2 failure_reason=$3 stress_result_structured=${4-} floor_cpu floor_gpu
+    if [[ -n $stress_result_structured ]]; then
+        if ! apo_recover_stress_failure "$recovery_context" "$failure_class" "$failure_reason" "$stress_result_structured" final; then
+            apo_state_clear_final_validation
+            apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+            return 1
+        fi
+        failure_class=$APO_LAST_CLASS
+        failure_reason=$APO_LAST_REASON
+    elif ! apo_recover_preserving_failure "$recovery_context" "$failure_class" "$failure_reason"; then
         apo_state_clear_final_validation
         apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
         return 1
@@ -950,7 +960,7 @@ apo_final_recovery_failure() {
 }
 
 apo_final_validation() {
-    local recommended_cpu recommended_gpu final_kind failure_class failure_reason stage boot_number normal_number endurance_duration edge_target cpu_boundary
+    local recommended_cpu recommended_gpu final_kind failure_class failure_reason stress_result_structured stage boot_number normal_number endurance_duration edge_target cpu_boundary
     local final_boots=${APO_CFG[FINAL_BOOTS]}
     apo_validate_auto_resume_state || return 1
     recommended_cpu=$(apo_state_get RECOMMENDED_CPU "$(apo_state_get SAFE_CPU '')")
@@ -982,9 +992,11 @@ apo_final_validation() {
                         return 1
                     fi
                 fi
+                APO_LAST_RESULT_STRUCTURED=0
                 if ! apo_run_stress cpu "${APO_CFG[CANDIDATE_DURATION_S]}" final-cpu-only 0; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure final-cpu-recovery "$failure_class" "$failure_reason"; then return 0; fi
+                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
+                    if apo_final_record_failure final-cpu-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then return 0; fi
                     return 1
                 fi
                 if (( APO_REQUIRE_GPU_STRESS == 1 )); then
@@ -1001,9 +1013,11 @@ apo_final_validation() {
                         return 1
                     fi
                 fi
+                APO_LAST_RESULT_STRUCTURED=0
                 if ! apo_run_stress gpu "${APO_CFG[CANDIDATE_DURATION_S]}" final-gpu-only 0; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure final-gpu-recovery "$failure_class" "$failure_reason"; then return 0; fi
+                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
+                    if apo_final_record_failure final-gpu-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then return 0; fi
                     return 1
                 fi
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" ENDURANCE
@@ -1016,9 +1030,11 @@ apo_final_validation() {
                         return 1
                     fi
                 fi
+                APO_LAST_RESULT_STRUCTURED=0
                 if ! apo_run_stress "$final_kind" "$endurance_duration" final-endurance 1; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason"; then return 0; fi
+                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
+                    if apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then return 0; fi
                     return 1
                 fi
                 if ! apo_health_check "$recommended_cpu" "$recommended_gpu" "$APO_TEST_VOLTAGE" final-post-endurance-health; then

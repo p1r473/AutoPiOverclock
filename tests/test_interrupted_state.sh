@@ -35,6 +35,9 @@ reset_recovery_fixture() {
     APO_LAST_CLASS=''
     APO_LAST_REASON=''
     APO_RECOVERY_IN_PROGRESS=0
+    APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
+    APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
+    APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
 }
 
 # The exit handler is the last recovery boundary after a signal or an error
@@ -95,6 +98,229 @@ apo_return_normal already-normal-fixture
 # The earlier handler fixture intentionally ran in a subshell.
 # shellcheck disable=SC2031
 [[ $APO_RECOVERY_IN_PROGRESS == 0 ]]
+[[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 0 ]]
+
+# Observation is an explicit, fail-closed recovery scope rather than a boolean
+# that a future caller could accidentally enable outside a stress checkpoint.
+(
+    reset_recovery_fixture
+    WAIT_FOR_SSH_CALLS=0
+    apo_wait_for_ssh() { WAIT_FOR_SSH_CALLS=$((WAIT_FOR_SSH_CALLS + 1)); }
+    if apo_return_normal malformed-stress-scope 0 unexpected; then
+        echo 'malformed stress-reboot scope was accepted' >&2
+        exit 1
+    fi
+    [[ $WAIT_FOR_SSH_CALLS == 0 ]]
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+)
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    APO_MODE_EFFECTIVE=graphical
+    WAIT_FOR_SSH_CALLS=0
+    apo_wait_for_ssh() { WAIT_FOR_SSH_CALLS=$((WAIT_FOR_SSH_CALLS + 1)); }
+    if apo_return_normal forced-observation-conflict 1 candidate; then
+        echo 'forced reboot and stress-reboot observation were combined' >&2
+        exit 1
+    fi
+    [[ $WAIT_FOR_SSH_CALLS == 0 ]]
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+)
+
+# If recovery's first observation finds that the saved candidate boot already
+# changed to a clear normal boot, expose that uncommanded reboot as evidence.
+# The caller decides whether the original stress failure is eligible for
+# promotion; recovery itself remains classification-neutral.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID candidate-stress-boot
+    apo_state_set CANDIDATE_BOOT_ID candidate-stress-boot
+    apo_state_set CANDIDATE_STAGE STRESS
+    apo_state_set CURRENT_CPU 3200
+    apo_state_set CURRENT_GPU 960
+    REBOOT_NORMAL_CALLS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf watchdog-normal-boot; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
+    apo_health_check() { APO_LAST_CLASS=PASS; APO_LAST_REASON='normal health passed'; return 0; }
+    apo_recover_stress_failure unexpected-candidate-reboot-fixture HARNESS_FAILURE 'The worker failed without a structured result.' 0 candidate
+    [[ $REBOOT_NORMAL_CALLS == 0 ]]
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
+    [[ $APO_RECOVERY_UNEXPECTED_REBOOT_FROM == candidate-stress-boot ]]
+    [[ $APO_RECOVERY_UNEXPECTED_REBOOT_TO == watchdog-normal-boot ]]
+    [[ $(apo_state_get NORMAL_BOOT_ID) == watchdog-normal-boot ]]
+    [[ $APO_LAST_CLASS == STABILITY_FAILURE ]]
+    [[ $APO_LAST_REASON == *'rebooted unexpectedly from boot candidate-stress-boot to verified normal boot watchdog-normal-boot'* ]]
+)
+
+# Even the same autonomous reboot proof cannot turn a worker-emitted,
+# structured harness diagnosis into silicon evidence.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID structured-candidate-boot
+    apo_state_set CANDIDATE_BOOT_ID structured-candidate-boot
+    apo_state_set CANDIDATE_STAGE STRESS
+    REBOOT_NORMAL_CALLS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf structured-normal-boot; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
+    apo_health_check() { return 0; }
+    apo_recover_stress_failure structured-harness-reboot-fixture HARNESS_FAILURE 'The worker failed without a structured result.' 1 candidate
+    [[ $REBOOT_NORMAL_CALLS == 0 ]]
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    [[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+)
+
+# An unstructured worker failure with a different reason also remains its
+# original classification even when the reboot proof itself is complete.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID reason-candidate-boot
+    apo_state_set CANDIDATE_BOOT_ID reason-candidate-boot
+    apo_state_set CANDIDATE_STAGE STRESS
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf reason-normal-boot; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_remote_worker() { return 1; }
+    apo_health_check() { return 0; }
+    apo_recover_stress_failure different-reason-reboot-fixture HARNESS_FAILURE 'different unstructured harness reason' 0 candidate
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    [[ $APO_LAST_REASON == 'different unstructured harness reason' ]]
+)
+
+# The narrow promotion is class-specific; an otherwise identical non-harness
+# diagnosis is not rewritten by this fallback-only recovery rule.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID class-candidate-boot
+    apo_state_set CANDIDATE_BOOT_ID class-candidate-boot
+    apo_state_set CANDIDATE_STAGE STRESS
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf class-normal-boot; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_remote_worker() { return 1; }
+    apo_health_check() { return 0; }
+    apo_recover_stress_failure different-class-reboot-fixture BOOT_FAILURE 'The worker failed without a structured result.' 0 candidate
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
+    [[ $APO_LAST_CLASS == BOOT_FAILURE ]]
+)
+
+# A same-boot SSH interruption does not become a silicon boundary. Recovery
+# must issue the normal reboot itself, and the original harness uncertainty is
+# preserved even though the target subsequently recovers.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID candidate-stress-boot
+    apo_state_set CANDIDATE_BOOT_ID candidate-stress-boot
+    apo_state_set CANDIDATE_STAGE STRESS
+    CURRENT_BOOT_ID=candidate-stress-boot
+    REBOOT_NORMAL_CALLS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() { [[ $CURRENT_BOOT_ID == candidate-stress-boot ]] && printf 00000001 || printf 00000000; }
+    apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); CURRENT_BOOT_ID=controller-normal-boot; }
+    apo_wait_for_new_boot() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_health_check() { return 0; }
+    apo_recover_stress_failure same-boot-transport-fixture HARNESS_FAILURE 'The worker failed without a structured result.' 0 candidate
+    [[ $REBOOT_NORMAL_CALLS == 1 ]]
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 0 ]]
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    [[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+)
+
+# Exact boot IDs and a clear normal boot are not enough by themselves. Missing
+# saved stage, tryboot expectation, or candidate-boot identity must fail closed
+# as transport uncertainty rather than becoming a clock-stability boundary.
+for missing_proof in active-stage tryboot-expectation pending-boot-id changed-boot-id clear-tryboot candidate-boot-id; do
+    (
+        reset_recovery_fixture
+        apo_state_set TRYBOOT_EXPECTED 1
+        apo_state_set LAST_BOOT_ID candidate-proof-boot
+        apo_state_set CANDIDATE_BOOT_ID candidate-proof-boot
+        apo_state_set CANDIDATE_STAGE STRESS
+        CURRENT_BOOT_ID=proof-normal-boot
+        TRYBOOT_FLAG=00000000
+        case $missing_proof in
+            active-stage) apo_state_set CANDIDATE_STAGE POST_STRESS_HEALTH ;;
+            tryboot-expectation) apo_state_set TRYBOOT_EXPECTED 0 ;;
+            pending-boot-id) apo_state_set LAST_BOOT_ID '' ;;
+            changed-boot-id) CURRENT_BOOT_ID=candidate-proof-boot ;;
+            clear-tryboot) TRYBOOT_FLAG=00000001 ;;
+            candidate-boot-id) apo_state_set CANDIDATE_BOOT_ID different-candidate-boot ;;
+        esac
+        REBOOT_NORMAL_CALLS=0
+        apo_wait_for_ssh() { return 0; }
+        apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+        apo_remote_tryboot_flag() { printf '%s' "$TRYBOOT_FLAG"; }
+        apo_remote_worker() {
+            REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1))
+            CURRENT_BOOT_ID=controller-normal-boot
+            TRYBOOT_FLAG=00000000
+        }
+        apo_wait_for_new_boot() { printf '%s' "$CURRENT_BOOT_ID"; }
+        apo_health_check() { return 0; }
+        apo_recover_stress_failure "missing-${missing_proof}-fixture" HARNESS_FAILURE 'The worker failed without a structured result.' 0 candidate
+        case $missing_proof in
+            pending-boot-id|changed-boot-id|clear-tryboot) [[ $REBOOT_NORMAL_CALLS == 1 ]] ;;
+            *) [[ $REBOOT_NORMAL_CALLS == 0 ]] ;;
+        esac
+        [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 0 ]]
+        [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+        [[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+    )
+done
+
+# Final and optional-edge stress use a separate saved-stage proof. The real
+# recovery implementation accepts only one of the three active final stress
+# checkpoints and rejects a post-stress stage even when every boot predicate
+# otherwise matches.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID final-edge-stress-boot
+    apo_state_set CANDIDATE_BOOT_ID final-edge-stress-boot
+    apo_state_set PHASE FINAL_VALIDATION
+    apo_state_set FINAL_STAGE ENDURANCE
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf final-edge-normal-boot; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_remote_worker() { return 1; }
+    apo_health_check() { return 0; }
+    apo_recover_stress_failure final-edge-reboot-fixture HARNESS_FAILURE 'The worker failed without a structured result.' 0 final
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
+    [[ $APO_LAST_CLASS == STABILITY_FAILURE ]]
+)
+for missing_final_proof in active-phase active-stage; do
+    (
+        reset_recovery_fixture
+        apo_state_set TRYBOOT_EXPECTED 1
+        apo_state_set LAST_BOOT_ID final-post-stress-boot
+        apo_state_set CANDIDATE_BOOT_ID final-post-stress-boot
+        apo_state_set PHASE FINAL_VALIDATION
+        apo_state_set FINAL_STAGE ENDURANCE
+        case $missing_final_proof in
+            active-phase) apo_state_set PHASE CPU_SWEEP ;;
+            active-stage) apo_state_set FINAL_STAGE RETURN_NORMAL ;;
+        esac
+        apo_wait_for_ssh() { return 0; }
+        apo_remote_boot_id() { printf final-post-stress-normal-boot; }
+        apo_remote_tryboot_flag() { printf 00000000; }
+        apo_remote_worker() { return 1; }
+        apo_health_check() { return 0; }
+        apo_recover_stress_failure "final-missing-${missing_final_proof}-fixture" HARNESS_FAILURE 'The worker failed without a structured result.' 0 final
+        [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 0 ]]
+        [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    )
+done
 
 # A Batocera graphical recovery failure at already-normal clocks may request
 # exactly one plain reboot, but only after proving that no tryboot ownership is
@@ -402,6 +628,14 @@ if apo_recover_preserving_failure recovery-failed BOOT_FAILURE 'candidate never 
 fi
 [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
 [[ $APO_LAST_REASON == *'Original BOOT_FAILURE: candidate never reached health'* ]]
+[[ $APO_LAST_REASON == *'Permanent config hash changed during normal recovery.'* ]]
+
+if apo_recover_stress_failure stress-recovery-failed HARNESS_FAILURE 'The worker failed without a structured result.' 0 candidate; then
+    echo 'failed stress recovery was incorrectly promoted to a stability boundary' >&2
+    exit 1
+fi
+[[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+[[ $APO_LAST_REASON == *'Original HARNESS_FAILURE: The worker failed without a structured result.'* ]]
 [[ $APO_LAST_REASON == *'Permanent config hash changed during normal recovery.'* ]]
 
 apo_record_failure_after_recovery recorded-recovery-failure STABILITY_FAILURE 'stress worker failed'
