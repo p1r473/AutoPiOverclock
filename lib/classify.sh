@@ -5,6 +5,7 @@ APO_LAST_CLASS=''
 APO_LAST_REASON=''
 APO_LAST_MAX_TEMP=''
 APO_LAST_WORKER_LOG=''
+APO_LAST_RESULT_STRUCTURED=0
 declare -Ag APO_WORKER_DATA=()
 
 apo_decode_b64() {
@@ -14,10 +15,12 @@ apo_decode_b64() {
 
 apo_classify_output() {
     local output_file=$1 context=${2:-candidate} encoded_reason=''
+    APO_LAST_RESULT_STRUCTURED=0
     APO_LAST_CLASS=$(sed -n 's/^APO_RESULT_CLASS=//p' "$output_file" | tail -1)
     encoded_reason=$(sed -n 's/^APO_RESULT_REASON_B64=//p' "$output_file" | tail -1)
     APO_LAST_REASON=$(apo_decode_b64 "$encoded_reason" || true)
     APO_LAST_MAX_TEMP=$(sed -n 's/^APO_MAX_TEMP=//p' "$output_file" | tail -1)
+    [[ -z $APO_LAST_CLASS ]] || APO_LAST_RESULT_STRUCTURED=1
     if [[ -z $APO_LAST_CLASS ]]; then
         if grep -Eqi 'Could not initialize|glwindow has never been initialized|Failed to become DRM master|drmModeGetResources|GBM.*(fail|error)|EGL.*(fail|error)|MESA-LOADER.*(fail|error)|failed to open.*(DRM|render|card)|GLIBC_[0-9.]+.*not found|undefined symbol|symbol lookup error|missing (binary|data)|command not found|No such file or directory.*glmark|stress-ng.*not found|error while loading shared libraries|No DRM render node bound to the V3D driver|did not prove a hardware V3D renderer|positive numeric score' "$output_file"; then
             APO_LAST_CLASS=HARNESS_FAILURE

@@ -123,14 +123,14 @@ Batocera is treated as Buildroot, not Arch Linux. AutoPiOverclock never attempts
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-08-26, fresh `0.1.0-alpha.16` end-to-end runs are underway on both supported target families. Their logs have not yet completed review, so this README intentionally makes no hardware-pass or production-clock claim.
+As of 2026-08-26, an `alpha.16` Debian-family run safely recovered from an unexpected reboot during the 3200 MHz CPU candidate but exposed a controller-classification gap. `alpha.17` fixes that gap; resumed Debian-family validation and the Batocera run still require completed artifact review, so this README intentionally makes no hardware-pass or production-clock claim.
 
 | Evidence | Current status |
 | --- | --- |
 | Bash fixture suite | 14 scripted suites cover parsing, state, classification, workers, tryboot, watchdogs, selection, resume, apply, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | See the live badge for the current commit. |
-| Debian-family Raspberry Pi 5 run | `alpha.16` validation in progress; outcome pending log review. |
-| Batocera Raspberry Pi 5 run | `alpha.16` validation in progress; outcome pending log review. |
+| Debian-family Raspberry Pi 5 run | `alpha.16` autonomous normal recovery at the 3200 MHz candidate succeeded; `alpha.17` resume and final validation remain pending. |
+| Batocera Raspberry Pi 5 run | Overnight validation outcome remains pending retained-artifact review. |
 | Eight-hour production-floor validation | No public PASS claim until the retained run artifacts complete and are reviewed. |
 | Optional 24-hour CPU edge validation | No public PASS claim until the production floor passes first and the edge artifacts are reviewed. |
 
@@ -285,6 +285,8 @@ Stress timing is fail-closed. Batocera CPU load uses exactly one 16 KiB SHA-256 
 ## Recovery and resume
 
 Each candidate and final-validation substage is checkpointed atomically. The random ownership token, completed-file hash, reservation hash, and token-specific quarantine path are saved before remote creation can begin. If the controller exits while `tryboot` may be active, its exit trap attempts normal recovery. `resume` repeats recovery first whenever saved or live evidence says the target may still be in `tryboot`, verifies normal recovery, and cleans only token/hash-matching project evidence; an unknown or changed path is preserved and fails closed.
+
+An SSH timeout alone remains `HARNESS_FAILURE`. During an active stress stage, it becomes `STABILITY_FAILURE` only when recovery proves that the exact saved candidate boot ID already changed to a clear normal boot before the controller requested any reboot. This captures a proven autonomous candidate reboot without assigning an unverified cause or turning a same-boot network interruption into false silicon evidence; any failed normal recovery remains `RECOVERY_FAILURE`.
 
 ```bash
 ./autopioverclock status target-host --run-id RUN_ID

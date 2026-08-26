@@ -7,9 +7,9 @@ A postfix `TARGET reset` creates a separate audit run instead of reusing or dele
 | Classification | Meaning |
 |---|---|
 | `PREFLIGHT_FAILURE` | Unsupported/missing prerequisite before tuning. |
-| `HARNESS_FAILURE` | The intended test did not actually run or prove its workload. |
+| `HARNESS_FAILURE` | The intended test did not actually run or prove its workload, including an unstructured same-boot transport loss. |
 | `BOOT_FAILURE` | Candidate boot or required display/audio/service health failed. |
-| `STABILITY_FAILURE` | Power, temperature, kernel, GPU, storage, filesystem, or stress failure. |
+| `STABILITY_FAILURE` | Power, temperature, kernel, GPU, storage, filesystem, or stress failure, including a proven autonomous candidate reboot during active stress. |
 | `RECOVERY_FAILURE` | The target did not return to verified permanent normal configuration. |
 | `APPLY_FAILURE` | Permanent application or rollback failed. |
 
