@@ -160,7 +160,7 @@ apo_recover_preserving_failure() {
     RECOVERY_STRESS_SCOPE=${5:-none}
     APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=$RECOVERY_UNEXPECTED_FIXTURE
     if (( RECOVERY_UNEXPECTED_FIXTURE == 1 )); then
-        APO_RECOVERY_UNEXPECTED_REBOOT_FROM=candidate-stress-boot
+        APO_RECOVERY_UNEXPECTED_REBOOT_FROM='candidate-stress-boot'
         APO_RECOVERY_UNEXPECTED_REBOOT_TO=watchdog-normal-boot
     else
         APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''

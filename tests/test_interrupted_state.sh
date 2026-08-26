@@ -144,7 +144,7 @@ apo_return_normal already-normal-fixture
     apo_remote_boot_id() { printf watchdog-normal-boot; }
     apo_remote_tryboot_flag() { printf 00000000; }
     apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
-    apo_health_check() { APO_LAST_CLASS=PASS; APO_LAST_REASON='normal health passed'; return 0; }
+    apo_health_check() { return 0; }
     apo_recover_stress_failure unexpected-candidate-reboot-fixture HARNESS_FAILURE 'The worker failed without a structured result.' 0 candidate
     [[ $REBOOT_NORMAL_CALLS == 0 ]]
     [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
