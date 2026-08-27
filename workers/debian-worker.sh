@@ -382,14 +382,39 @@ connected_display_baseline() {
     return 1
 }
 
+alsa_playback_identity() {
+    local asound_root=${1:-/proc/asound} card_dir pcm_dir card_id pcm_device pcm_id pcm_name info_file
+    local -a identities=()
+    for pcm_dir in "$asound_root"/card*/pcm*p; do
+        [[ -d $pcm_dir ]] || continue
+        card_dir=${pcm_dir%/*}
+        info_file=$pcm_dir/info
+        [[ -r $card_dir/id && -r $info_file ]] || continue
+        card_id=$(tr -d '\r\n' < "$card_dir/id")
+        pcm_device=$(basename -- "$pcm_dir")
+        pcm_id=$(awk -F: '$1 ~ /^[[:space:]]*id[[:space:]]*$/ {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}' "$info_file")
+        pcm_name=$(awk -F: '$1 ~ /^[[:space:]]*name[[:space:]]*$/ {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}' "$info_file")
+        [[ -n $pcm_name ]] || pcm_name=$pcm_id
+        [[ -n $card_id && -n $pcm_device && -n $pcm_id && -n $pcm_name ]] || continue
+        identities+=("alsa:card=${card_id};device=${pcm_device};id=${pcm_id};name=${pcm_name}")
+    done
+    (( ${#identities[@]} > 0 )) || return 1
+    printf '%s\n' "${identities[@]}" | LC_ALL=C sort -u | awk '
+        NR > 1 {printf "|"}
+        {printf "%s", $0}
+        END {if (NR > 0) printf "\n"}
+    '
+}
+
 audio_identity() {
-    local identity='' inspect_output
+    local asound_root=${1:-/proc/asound} identity='' inspect_output
     inspect_output=$(audio_inspect || true)
-    [[ -n $inspect_output ]] || return 1
-    identity=$(sed -n 's/^[[:space:]]*[*]*[[:space:]]*node\.name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$inspect_output" | head -1)
-    [[ -n $identity ]] || identity=$(head -1 <<< "$inspect_output" | tr -d '\r\n')
-    [[ -n $identity ]] || return 1
-    printf '%s' "$identity"
+    if [[ -n $inspect_output ]]; then
+        identity=$(sed -n 's/^[[:space:]]*[*]*[[:space:]]*node\.name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$inspect_output" | head -1)
+        [[ -n $identity ]] || identity=$(head -1 <<< "$inspect_output" | tr -d '\r\n')
+        [[ -n $identity ]] && { printf '%s' "$identity"; return 0; }
+    fi
+    alsa_playback_identity "$asound_root"
 }
 
 audio_runtime_exec() {
@@ -426,7 +451,9 @@ audio_inspect() {
         done
         probe_timeout=$(bounded_probe_timeout 6) || return 1
         output=$(timeout "$probe_timeout" wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null || true)
-    elif command -v pactl >/dev/null 2>&1; then
+        [[ -n $output ]] && { printf '%s\n' "$output"; return 0; }
+    fi
+    if command -v pactl >/dev/null 2>&1; then
         for runtime_dir in /run/user/[0-9]*; do
             [[ -d $runtime_dir ]] || continue
             probe_timeout=$(bounded_probe_timeout 6) || return 1
@@ -718,17 +745,19 @@ application_health_ready() {
         fi
     fi
     if [[ $mode == graphical ]]; then
-        if [[ -n $audio_baseline ]]; then
-            current_audio=$(audio_identity || true)
-            APPLICATION_READINESS_LAST_AUDIO=$current_audio
-            if [[ -z $current_audio ]]; then
-                APPLICATION_READINESS_LAST_FAILURE=audio-unavailable
-                return 1
-            fi
-            if [[ $current_audio != "$audio_baseline" ]]; then
-                APPLICATION_READINESS_LAST_FAILURE=audio-changed
-                return 1
-            fi
+        if [[ -z $audio_baseline ]]; then
+            APPLICATION_READINESS_LAST_FAILURE=audio-baseline-missing
+            return 1
+        fi
+        current_audio=$(audio_identity || true)
+        APPLICATION_READINESS_LAST_AUDIO=$current_audio
+        if [[ -z $current_audio ]]; then
+            APPLICATION_READINESS_LAST_FAILURE=audio-unavailable
+            return 1
+        fi
+        if [[ $current_audio != "$audio_baseline" ]]; then
+            APPLICATION_READINESS_LAST_FAILURE=audio-changed
+            return 1
         fi
         check_display "$baseline" || { APPLICATION_READINESS_LAST_FAILURE=display; return 1; }
     fi
@@ -761,8 +790,9 @@ emit_application_health_failure() {
         service) emit_result BOOT_FAILURE "A required service is not active in $context." "$temp" ;;
         audio-inspection) emit_result HARNESS_FAILURE 'AUDIO_SINK_MATCH was configured but default-sink inspection is unavailable.' "$temp" ;;
         audio-match) emit_result BOOT_FAILURE "Default audio sink does not match the configured requirement in $context." "$temp" ;;
-        audio-unavailable) emit_result BOOT_FAILURE "The default audio sink is unavailable in $context." "$temp" ;;
-        audio-changed) emit_result BOOT_FAILURE "The default audio sink changed in $context: expected $audio_baseline, found ${APPLICATION_READINESS_LAST_AUDIO:-missing}." "$temp" ;;
+        audio-baseline-missing) emit_result HARNESS_FAILURE "No Debian audio-output baseline was supplied for graphical validation in $context." "$temp" ;;
+        audio-unavailable) emit_result BOOT_FAILURE "The captured audio output is unavailable in $context." "$temp" ;;
+        audio-changed) emit_result BOOT_FAILURE "The captured audio output changed in $context: expected $audio_baseline, found ${APPLICATION_READINESS_LAST_AUDIO:-missing}." "$temp" ;;
         display) emit_result BOOT_FAILURE "Graphical baseline did not recover within 60 seconds in $context." "$temp" ;;
         *) emit_result BOOT_FAILURE "Application readiness did not recover within 60 seconds in $context." "$temp" ;;
     esac

@@ -26,9 +26,9 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" AUDIO_ATTEMPTS
     [[ $(<"$AUDIO_ATTEMPTS_FILE") == 3 ]]
 '
 
-# A Debian graphical target can have a healthy DRM display without running a
-# desktop audio server.  Preserve audio when discovery captured it, but do not
-# misclassify a display-only graphical baseline as a failed display harness.
+# Debian graphical health always requires the automatically discovered audio
+# baseline. A missing baseline is a harness defect; a captured output that
+# disappears is a boot-health failure.
 APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     set -Eeuo pipefail
     source "$WORKER"
@@ -36,8 +36,8 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     check_required_services() { :; }
     check_display() { :; }
     audio_identity() { return 1; }
-    application_health_ready graphical fixture-display "" "" "" ""
-    [[ -z ${APPLICATION_READINESS_LAST_FAILURE:-} ]]
+    if application_health_ready graphical fixture-display "" "" "" ""; then exit 1; fi
+    [[ $APPLICATION_READINESS_LAST_FAILURE == audio-baseline-missing ]]
     if application_health_ready graphical fixture-display "" "" "" fixture-audio; then exit 1; fi
     [[ $APPLICATION_READINESS_LAST_FAILURE == audio-unavailable ]]
 '
@@ -249,6 +249,31 @@ chmod 755 "$TEMP_DIR/debian-audio-bin/wpctl"
 [[ $(PATH="$TEMP_DIR/debian-audio-bin:$PATH" audio_identity) == alsa_output.debian-fixture ]]
 printf '#!/bin/sh\nprintf '\''id 42, type PipeWire:Interface:Node/3\\n  * node.name = "alsa_output.debian-starred-fixture"\\n'\''\n' > "$TEMP_DIR/debian-audio-bin/wpctl"
 [[ $(PATH="$TEMP_DIR/debian-audio-bin:$PATH" audio_identity) == alsa_output.debian-starred-fixture ]]
+
+# A graphical Debian target without a running desktop audio server falls back
+# to the complete stable ALSA playback inventory instead of skipping audio or
+# guessing one device.
+DEBIAN_ASOUND="$TEMP_DIR/debian-asound"
+mkdir -p "$DEBIAN_ASOUND/card0/pcm0p" "$DEBIAN_ASOUND/card2/pcm1p"
+printf 'vc4hdmi0\n' > "$DEBIAN_ASOUND/card0/id"
+cat > "$DEBIAN_ASOUND/card0/pcm0p/info" <<'ALSA_INFO'
+card: 0
+device: 0
+id: MAI PCM i2s-hifi-0
+name: vc4-hdmi-0
+ALSA_INFO
+printf 'USBAudio\n' > "$DEBIAN_ASOUND/card2/id"
+cat > "$DEBIAN_ASOUND/card2/pcm1p/info" <<'ALSA_INFO'
+card: 2
+device: 1
+id: USB Audio
+name: USB Playback
+ALSA_INFO
+(
+    audio_inspect() { return 1; }
+    expected_audio='alsa:card=USBAudio;device=pcm1p;id=USB Audio;name=USB Playback|alsa:card=vc4hdmi0;device=pcm0p;id=MAI PCM i2s-hifi-0;name=vc4-hdmi-0'
+    [[ $(audio_identity "$DEBIAN_ASOUND") == "$expected_audio" ]]
+)
 
 set +e
 DEBIAN_USB_OUTPUT=$("$ROOT/workers/debian-worker.sh" classify-kernel-log "$FIXTURES/root-usb-reset.log" /dev/sda2 2>&1)

@@ -1,5 +1,9 @@
 SHELL := /usr/bin/env bash
 SHELLCHECK_FILES := autopioverclock $(wildcard lib/*.sh profiles/*.sh workers/*.sh tools/*.sh examples/*.sh tests/*.sh assets/batocera/*.sh) assets/batocera/AutoPiOverclockWatchdog
+BATOCERA_ASSETS := \
+	assets/batocera/AutoPiOverclockWatchdog \
+	assets/batocera/install_watchdog.sh \
+	assets/batocera/watchdog_keeper.py
 
 PREFIX ?= /usr/local
 DESTDIR ?=
@@ -28,5 +32,5 @@ install:
 	install -m 644 profiles/*.sh "$(INSTALL_ROOT)/profiles/"
 	install -m 755 workers/*.sh "$(INSTALL_ROOT)/workers/"
 	install -m 755 tools/*.sh "$(INSTALL_ROOT)/tools/"
-	install -m 755 assets/batocera/* "$(INSTALL_ROOT)/assets/batocera/"
+	install -m 755 $(BATOCERA_ASSETS) "$(INSTALL_ROOT)/assets/batocera/"
 	ln -sfn ../lib/autopioverclock/autopioverclock "$(INSTALL_BIN)/autopioverclock"

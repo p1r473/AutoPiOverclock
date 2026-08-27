@@ -239,12 +239,11 @@ apo_context_from_discovery() {
         (( candidate > APO_NORMAL_GPU )) || apo_die "GPU/V3D candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_GPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"
     done
     if [[ $APO_MODE_EFFECTIVE == graphical && -z $APO_AUDIO_BASELINE ]]; then
-        if [[ $APO_PROFILE == batocera ]]; then
-            apo_die 'Batocera graphical mode requires a healthy default audio-sink baseline, but none could be captured.' "$APO_EXIT_HARNESS"
-        fi
-        if [[ -n ${APO_CFG[AUDIO_SINK_MATCH]} ]]; then
-            apo_die 'audio_sink_pattern was configured, but no default audio sink could be captured.' "$APO_EXIT_HARNESS"
-        fi
+        case $APO_PROFILE in
+            debian) apo_die 'Debian graphical mode requires a healthy audio-output baseline, but neither a default PipeWire/PulseAudio sink nor ALSA playback hardware could be captured.' "$APO_EXIT_HARNESS" ;;
+            batocera) apo_die 'Batocera graphical mode requires a healthy default audio-sink baseline, but none could be captured.' "$APO_EXIT_HARNESS" ;;
+            *) apo_die 'Graphical mode requires a healthy audio-output baseline, but none could be captured.' "$APO_EXIT_HARNESS" ;;
+        esac
     fi
 }
 
@@ -367,9 +366,6 @@ apo_prepare_target() {
     awk -v t="$temp" -v m="${APO_CFG[MAX_TEMP_C]}" 'BEGIN{exit !(t<m)}' || apo_die "Starting temperature ${temp}C is not below ${APO_CFG[MAX_TEMP_C]}C." "$APO_EXIT_PREFLIGHT"
     apo_dependency_preflight
     apo_watchdog_preflight
-    if [[ $APO_MODE_EFFECTIVE == graphical && $APO_PROFILE == debian && -z $APO_AUDIO_BASELINE ]]; then
-        apo_warn 'No default audio sink was captured. Debian graphical validation will preserve the display baseline and skip default-sink identity checks unless audio_sink_pattern is configured.'
-    fi
     apo_store_discovery_state
     audio_summary=${APO_AUDIO_BASELINE:-not-captured}
     {

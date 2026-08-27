@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.20 — 2026-08-27
+
+- Made `make install` copy an explicit manifest of the three Batocera watchdog assets instead of expanding `assets/batocera/*`, so an ignored Python `__pycache__` directory can never be passed to `install` as a file.
+- Added an installation regression that creates the exact ignored cache directory, verifies all declared assets, and proves the cache is neither copied nor treated as an installation error.
+- Made Debian graphical preparation capture audio automatically: it preserves a working PipeWire/PulseAudio default sink when available and otherwise records the sorted complete ALSA playback inventory. Graphical validation no longer silently skips audio merely because no desktop audio server is running.
+- Added worker and public-safety regressions for multi-device ALSA fallback, mandatory graphical audio baselines, disappearing outputs, and the removal of the former skip warning.
+- Clarified that every operational command runs on a separate controller and requires an explicit target, while keeping public README connection examples in ordinary `ssh` syntax.
+
 ## 0.1.0-alpha.19 — 2026-08-27
 
 - Made Batocera `prepare` preserve any already-positive `BOOT_WATCHDOG_TIMEOUT` instead of unnecessarily scheduling a fixed EEPROM replacement. A target such as Tron with an active 30-second EEPROM watchdog now skips EEPROM mutation while still installing and verifying the missing kernel/userspace chain.
