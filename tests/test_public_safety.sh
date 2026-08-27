@@ -58,7 +58,7 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
 fi
 approved_options=$(printf '%s\n' \
     --edge-cpu-24h --help --identity-file --output-dir --ssh-port --version | LC_ALL=C sort)
-documented_options=$(awk '/^Options:/{capture=1; next} /^Advanced support commands/{capture=0} capture' "$ROOT/autopioverclock" |
+documented_options=$(awk '/^Common options:/{capture=1; next} /^Advanced options:/{capture=0} capture' "$ROOT/autopioverclock" |
     grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
     printf 'primary CLI options differ from the simple-workflow whitelist\nexpected:\n%s\nactual:\n%s\n' "$approved_options" "$documented_options" >&2
