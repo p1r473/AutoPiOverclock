@@ -71,7 +71,7 @@ apo_normalize_initial_boot() {
             return 0
             ;;
         00000001)
-            if [[ $APO_COMMAND == prepare || $APO_DRY_RUN == 1 ]]; then
+            if (( APO_DRY_RUN == 1 )); then
                 apo_die 'Target is currently booted through tryboot. Read-only discovery refuses to record candidate clocks as the normal baseline; reboot normally or start a run that can recover it first.' "$APO_EXIT_PREFLIGHT"
             fi
             old_boot_id=$(apo_remote_boot_id) || apo_die 'Could not read boot ID before initial tryboot normalization.' "$APO_EXIT_RECOVERY"
@@ -210,8 +210,8 @@ apo_context_from_discovery() {
             *) apo_die "Discovery returned an unsupported tryboot path type: ${APO_INITIAL_TRYBOOT_TYPE:-missing}" "$APO_EXIT_PREFLIGHT" ;;
         esac
     fi
-    if [[ $APO_COMMAND == run && $APO_DRY_RUN == 0 && $APO_INITIAL_TRYBOOT_EXISTS == 1 ]]; then
-        apo_die "An existing tryboot path is present at $APO_TRYBOOT_CONFIG (type $APO_INITIAL_TRYBOOT_TYPE, hash $APO_INITIAL_TRYBOOT_HASH). Live run refuses to overwrite it; inspect and remove or preserve it explicitly, then repeat prepare." "$APO_EXIT_PREFLIGHT"
+    if [[ $APO_COMMAND =~ ^(run|prepare)$ && $APO_DRY_RUN == 0 && $APO_INITIAL_TRYBOOT_EXISTS == 1 ]]; then
+        apo_die "An existing tryboot path is present at $APO_TRYBOOT_CONFIG (type $APO_INITIAL_TRYBOOT_TYPE, hash $APO_INITIAL_TRYBOOT_HASH). AutoPiOverclock will not overwrite it. If it is project-owned recovery evidence, run autopioverclock reset ${APO_RAW_TARGET}; otherwise inspect it manually." "$APO_EXIT_PREFLIGHT"
     fi
     [[ $APO_NORMAL_CPU =~ ^[1-9][0-9]{0,8}$ ]] || apo_die "Discovery returned an invalid normal CPU clock: $APO_NORMAL_CPU" "$APO_EXIT_PREFLIGHT"
     [[ $APO_NORMAL_GPU =~ ^[1-9][0-9]{0,8}$ ]] || apo_die "Discovery returned an invalid normal GPU clock: $APO_NORMAL_GPU" "$APO_EXIT_PREFLIGHT"
@@ -279,12 +279,12 @@ apo_dependency_preflight() {
         apo_summary_line "Dependencies: READY ($dependency_detail)"
         return 0
     fi
-    if [[ $APO_COMMAND == prepare || $APO_DRY_RUN == 1 ]]; then
-        apo_warn 'Required stress dependencies are not ready; prepare remains read-only.'
-        apo_summary_line "Dependencies: NOT READY ($dependency_detail; prepare did not modify target)"
+    if (( APO_DRY_RUN == 1 )); then
+        apo_warn 'Required stress dependencies are not ready; dry-run remains read-only.'
+        apo_summary_line "Dependencies: NOT READY ($dependency_detail; dry-run did not modify target)"
         return 0
     fi
-    (( APO_INSTALL_MISSING == 1 )) || apo_die 'Required stress dependencies are missing. Re-run with --install-missing after reviewing the plan.' "$APO_EXIT_PREFLIGHT"
+    (( APO_INSTALL_MISSING == 1 )) || apo_die "Required stress dependencies are missing. Run autopioverclock prepare ${APO_RAW_TARGET} first." "$APO_EXIT_PREFLIGHT"
     apo_reset_throttle_history dependency-staging-baseline || apo_die "$APO_LAST_REASON" "$APO_EXIT_PREFLIGHT"
     apo_profile_install_dependencies || apo_die 'Dependency installation/staging failed.' "$APO_EXIT_PREFLIGHT"
     apo_discovery_capture
@@ -303,8 +303,8 @@ apo_watchdog_preflight() {
         return 0
     fi
     apo_summary_line "Watchdogs: NOT READY ($(apo_profile_watchdog_description))"
-    if [[ $APO_COMMAND == prepare || $APO_DRY_RUN == 1 ]]; then return 0; fi
-    (( APO_REPAIR_WATCHDOGS == 1 )) || apo_die 'The tryboot/watchdog recovery chain is not ready. Use prepare to inspect it or --repair-watchdogs for the separately confirmed remediation path.' "$APO_EXIT_PREFLIGHT"
+    if (( APO_DRY_RUN == 1 )); then return 0; fi
+    (( APO_REPAIR_WATCHDOGS == 1 )) || apo_die "The tryboot/watchdog recovery chain is not ready. Run autopioverclock prepare ${APO_RAW_TARGET} first." "$APO_EXIT_PREFLIGHT"
     # Persist the complete, still-unmodified target context before the separately
     # confirmed repair path plans or changes any permanent target file.
     apo_store_discovery_state
@@ -340,7 +340,7 @@ apo_prepare_target() {
     apo_ssh_preflight
     APO_PROFILE=$(apo_probe_profile)
     apo_load_profile "$APO_PROFILE"
-    if [[ $APO_COMMAND == run && $APO_DRY_RUN == 0 ]]; then apo_deploy_worker; fi
+    if (( APO_DRY_RUN == 0 )); then apo_deploy_worker; fi
     APO_HAVE_REMOTE_CONTEXT=1
     apo_normalize_initial_boot
     apo_discovery_capture

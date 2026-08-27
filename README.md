@@ -9,7 +9,7 @@
 > [!CAUTION]
 > Overclocking can crash the target, corrupt storage, damage data, and in unusual cases contribute to hardware damage. `tryboot` and watchdogs reduce risk; they do not eliminate it. Back up the target and do not use this alpha on a system whose outage or corruption you cannot tolerate.
 
-Run AutoPiOverclock from a separate Linux controller. The target must be a 64-bit ARM Raspberry Pi 5 with working SSH key authentication, cooling, normal-boot recovery, and an active watchdog chain.
+Run AutoPiOverclock from a separate Linux controller. The target must be a 64-bit ARM Raspberry Pi 5 with working SSH key authentication, adequate cooling, and a backup. `prepare` installs and proves the target-side prerequisites and recovery watchdog.
 
 For a new checkout:
 
@@ -17,7 +17,8 @@ For a new checkout:
 git clone https://github.com/p1r473/AutoPiOverclock.git
 cd AutoPiOverclock
 make test
-./autopioverclock --version
+sudo make install
+autopioverclock --version
 ```
 
 For an existing checkout:
@@ -27,35 +28,35 @@ cd AutoPiOverclock
 git switch main
 git pull --ff-only origin main
 make test
-./autopioverclock --version
+sudo make install
+autopioverclock --version
 ```
 
-Then connect to the target and begin with read-only discovery:
+Then use the three-command workflow:
 
 ```bash
 
-# Replace this with the target's real SSH destination.
-TARGET=user@target-host
+# 1. Install and verify dependencies and watchdog recovery.
+autopioverclock prepare
 
-# Review and accept the host key, then separately prove key-only SSH.
-command ssh -F /dev/null "$TARGET" true
-command ssh -F /dev/null -o BatchMode=yes "$TARGET" true
+# 2. Automatically tune, validate, and apply the safe result.
+autopioverclock overclock
 
-# Read-only: discover the target and preview the automatic plan.
-./autopioverclock prepare "$TARGET" --mode auto
-
-# Mutating: after reviewing prepare, begin the real tuning run.
-./autopioverclock run "$TARGET" --mode auto
+# 3. Return to verified stock clocks whenever needed.
+autopioverclock reset
 ```
 
-Important shortcuts and stop conditions:
+That is the normal interface. The optional final CPU +25 MHz test is the only tuning switch most users need:
 
-- `prepare` does not write target files or reboot. Resolve every preflight error before `run`.
-- `run` can reboot or crash the target and takes many hours; optional edge validation can extend the complete run across multiple days. Add `--yes` only when you want the ordinary tuning confirmation accepted unattended; it never bypasses permanent `apply` confirmation.
-- Do not add `--install-missing` unless `prepare` explicitly reports a missing dependency you have reviewed and want AutoPiOverclock to install or stage.
-- For the optional edge search, add `--edge-cpu-24h`. It first validates the normal 50 MHz-buffered CPU floor, then runs another complete validation at CPU 25 MHz higher; that second validation's endurance stage alone lasts 24 hours.
-- Configuration-free auto mode requires verified firmware-stock clocks and no explicit clock, voltage, or unbound `include` directive. If `prepare` finds an old overclock and you explicitly want to return to stock first, use `./autopioverclock "$TARGET" reset`; it creates a verified backup, reboots, and proves stock settings before reporting success.
-- Results are retained under `$HOME/overclock-results` by default. Use `./autopioverclock status "$TARGET"` or `./autopioverclock report "$TARGET"` to inspect them.
+```bash
+autopioverclock overclock --edge-cpu-24h
+```
+
+The first targetless `prepare` asks once for the SSH hostname, IP, or `username@host`; a successful preparation remembers it in the controller user's private config. New SSH host keys are accepted on first use, but changed keys are refused. Passing `TARGET` explicitly remains supported when one controller manages multiple Pis.
+
+`prepare` may install packages, stage the Batocera GPU payload, install or repair watchdog recovery, preserve verified backups, and reboot to prove the result. `overclock` can reboot or crash the target and takes many hours; it keeps candidate clocks in `tryboot.txt`, validates a guarded result for eight hours, displays and retains the exact permanent diff, then applies and verifies that result. `--edge-cpu-24h` adds a fresh 24-hour validation at CPU 25 MHz above the validated floor. `reset` is standalone and noninteractive; it backs up the boot config, removes permanent tuning, reboots, and verifies stock clocks while retaining every prior run artifact.
+
+If `prepare` reports an existing unknown `tryboot.txt`, a dirty or ambiguous boot configuration, a foreign watchdog owner, an unhealthy target, or a missing controller-side Batocera bundle prerequisite, it stops without overwriting that evidence. Results are retained under `$HOME/overclock-results`.
 
 AutoPiOverclock tests clock candidates through Raspberry Pi `tryboot`, proves that the target can recover normally after every candidate, and refuses to treat a short benchmark pass as a production recommendation. It is built for repeatability and recovery—not benchmark records.
 
@@ -84,16 +85,16 @@ The tool deliberately records distinct result concepts instead of collapsing eve
 
 - Permanent `config.txt` is hashed and protected throughout testing.
 - Candidate values are written only to `tryboot.txt`.
-- A live `run` refuses to start if any `tryboot.txt` already exists; it never overwrites an operator-owned or unknown recovery file.
+- `prepare` and `overclock` refuse to overwrite any pre-existing `tryboot.txt` or unknown recovery file.
 - Every project-created `tryboot.txt` is bound to the current attempt by a fresh random ownership token and recorded SHA-256 evidence. Creation is no-clobber, trigger re-verifies the completed file, and cleanup quarantines then re-verifies it after a normal recovery before removal.
-- Candidate clock values are never written to permanent configuration by `run`, `prepare`, `resume`, or `recover`; the separately confirmed watchdog-remediation path is the only non-`apply` exception for permanent watchdog settings.
+- Candidate clock values remain confined to `tryboot.txt`. Only the final fully validated result is written to permanent configuration at the end of `overclock`; `prepare` may change only required dependency and watchdog configuration.
 - Every candidate includes repeated candidate boots, normal recoveries, stress, health checks, and a final normal boot.
 - Active EEPROM, kernel, runtime, and userspace-watchdog evidence is required before tuning.
 - Historical sticky throttle bits are separated from current or newly observed failures.
 - Failed, missing, late, or malformed evidence fails closed.
 - Tryboot staging/trigger/cleanup, normal reboot, stock reset, watchdog repair, permanent apply, and rollback share one target-side atomic lock, so independent controllers cannot overlap boot-critical mutations.
 - Existing run artifacts are retained; only `*-latest.*` links are updated.
-- `apply` requires a fully validated current-schema result, shows an exact diff, and demands a separate typed confirmation.
+- The simple `overclock` command applies only a fully validated current-schema result and retains the exact diff. The advanced standalone `apply` recovery command still demands a typed confirmation.
 
 ```mermaid
 flowchart TD
@@ -123,18 +124,18 @@ Batocera is treated as Buildroot, not Arch Linux. AutoPiOverclock never attempts
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-08-26, an `alpha.16` Debian-family run safely recovered from an unexpected reboot during the 3200 MHz CPU candidate but exposed a controller-classification gap. `alpha.17` fixes that gap; resumed Debian-family validation and the Batocera run still require completed artifact review, so this README intentionally makes no hardware-pass or production-clock claim.
+As of 2026-08-27, `alpha.18` makes `prepare`, `overclock`, and `reset` the complete normal interface while retaining the existing fail-closed recovery engine underneath. Earlier Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
 
 | Evidence | Current status |
 | --- | --- |
-| Bash fixture suite | 14 scripted suites cover parsing, state, classification, workers, tryboot, watchdogs, selection, resume, apply, reset, packaging, and public-safety contracts. |
+| Bash fixture suite | 17 scripted suites cover the three-command interface, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | See the live badge for the current commit. |
-| Debian-family Raspberry Pi 5 run | `alpha.16` autonomous normal recovery at the 3200 MHz candidate succeeded; `alpha.17` resume and final validation remain pending. |
-| Batocera Raspberry Pi 5 run | Overnight validation outcome remains pending retained-artifact review. |
+| Debian-family Raspberry Pi 5 run | Earlier autonomous normal recovery at the 3200 MHz candidate succeeded; a complete `alpha.18` run remains pending. |
+| Batocera Raspberry Pi 5 run | Recovery-mode boot returned, but a complete `alpha.18` run remains pending. |
 | Eight-hour production-floor validation | No public PASS claim until the retained run artifacts complete and are reviewed. |
 | Optional 24-hour CPU edge validation | No public PASS claim until the production floor passes first and the edge artifacts are reviewed. |
 
-Do not infer a production recommendation from a candidate pass, an active run, or this table. Only a run that reaches `COMPLETE` and records `Validated: 1` under the current validation schema is a final validated result; `apply` remains a separate operation with fresh live safety checks and typed confirmation.
+Do not infer a production recommendation from a candidate pass, an active run, or this table. Only a run that reaches `COMPLETE`, records `Validated: 1` under the current validation schema, and finishes `overclock` with `APPLY_STATUS=APPLIED` is installed by the normal workflow. The standalone expert `apply` command retains its separate confirmation.
 
 ## Controller prerequisites
 
@@ -143,86 +144,56 @@ Do not infer a production recommendation from a candidate pass, an active run, o
 - Noninteractive SSH key authentication.
 - `sudo -n` on a non-root Debian-family target, or an explicitly supplied root target where appropriate.
 - Local `ssh`, `awk`, `sed`, `grep`, `date`, `mktemp`, `sha256sum`, `base64`, `diff`, `cmp`, `flock`, `od`, `tr`, and `sync`.
+- A Debian-family controller with `apt-get`, `dpkg-deb`, and `tar` when `prepare` must build the Batocera ARM64 glmark2 payload locally.
 - Remote `/bin/bash`.
 - A 64-bit ARM (`aarch64`/`arm64`) Raspberry Pi 5 target with tested power, cooling, backups, and a working normal boot.
 
-AutoPiOverclock runs `command ssh -F /dev/null`; user SSH aliases and wrappers are intentionally bypassed. First review and accept the target host key interactively, then prove that authentication also succeeds in batch mode without a password prompt:
+AutoPiOverclock runs `command ssh -F /dev/null`; user SSH aliases and wrappers are intentionally bypassed. SSH key authentication must already work without a password prompt. A new host key is accepted on first use and a changed key is rejected. If `user@` is omitted, the controller's current `id -un` value becomes the SSH username; the tool never silently assumes `pi` or `root`.
+
+## First hardware run
+
+Prepare the target once:
 
 ```bash
-command ssh -F /dev/null user@target true
-command ssh -F /dev/null -o BatchMode=yes user@target true
+autopioverclock prepare
 ```
 
-If `user@` is omitted, the controller's current `id -un` value becomes the SSH username. The tool never silently assumes `pi` or `root`.
+`prepare` discovers the Raspberry Pi 5 and its boot layout, chooses graphical or headless validation, installs missing stress dependencies, installs or repairs the recovery watchdog when required, reboots when activation needs it, and finishes only after the active watchdog chain and normal stock baseline are proved. On Batocera it preserves existing services, installs a project-owned keeper only when needed, requires the single current IPv4 default gateway to answer before binding network-loss detection to it, waits three minutes before judging startup connectivity, and stops rebooting after three consecutive recovery attempts within 30 minutes.
 
-## Detailed first hardware run
-
-Start as a new user would: do not import remembered clocks or assumptions from an older tuning script. Run read-only discovery with no configuration file:
+Configuration-free automatic tuning requires the firmware-stock tuple: CPU 2400 MHz, V3D 800 or 960 MHz, and zero voltage delta, with no explicit clock/voltage override or unbound `include`. Preparation still installs and proves prerequisites on a currently tuned host; it then tells you to reset once before overclocking:
 
 ```bash
-./autopioverclock prepare target-host --mode auto
+autopioverclock reset
+autopioverclock overclock
 ```
 
-Review the detected platform, graphical/headless mode, permanent normal clocks, voltage and its evidence source, power history, boot paths, permanent hash, exact dependency evidence, watchdog chain, and `tryboot.txt` status in the generated discovery and summary artifacts under `$HOME/overclock-results` (or the selected `--output-dir`). A live run requires the discovered tryboot file status to be `ABSENT`.
-
-Configuration-free auto mode accepts only the verified active Raspberry Pi 5 stock tuple: CPU 2400 MHz, V3D 800 or 960 MHz according to the active firmware generation, and zero voltage delta. The worker hashes the permanent root boot config before and after auditing it; any snapshot change or read ambiguity fails closed. It rejects explicit `arm_boost`, `force_turbo`, `initial_turbo`, `core_freq_fixed`, any `*_freq` or `*_freq_min` assignment, and any `over_voltage*` assignment. An `include` directive also fails closed because included files are not yet bound to the protected permanent-config hash. This distinguishes a firmware-default 960 MHz V3D clock from a user-written 960 MHz override. `prepare` and `run` never rewrite permanent clocks to manufacture a baseline. Returning a target to firmware stock defaults is the separate, explicit postfix `TARGET reset` operation documented below.
-
-Resolve preflight findings before tuning:
-
-- `Dependencies: NOT READY` means a live run will refuse to continue unless the reviewed run explicitly includes `--install-missing`.
-- `Watchdogs: NOT READY` means no tryboot testing may begin. Debian-family targets can enter the separately confirmed `--repair-watchdogs` path. Batocera watchdog ownership is installation-specific, so automatic repair is refused; configure and verify that chain outside AutoPiOverclock, then repeat `prepare`.
-- Any active power/throttle condition, present or unknown tryboot file, missing telemetry, unhealthy graphical baseline, or unexpected permanent clock is a stop condition rather than a candidate result. Inspect and resolve an existing tryboot file explicitly; AutoPiOverclock will not replace it.
-
-With `--mode auto` and no configuration file, AutoPiOverclock proves the stock baseline first and never asks for clock parameters. CPU candidates climb from 2500 MHz in 100 MHz steps through 3200 MHz. From an 800 MHz firmware-stock V3D baseline, GPU candidates begin at 850 MHz; from a 960 MHz firmware-stock baseline, they begin at the next 50 MHz grid point, 1000 MHz. Both climb in 50 MHz steps through 1200 MHz. After the first genuine boot/stability boundary, the last passing-to-failing gap is retested in 25 MHz steps. The production target is itself candidate-tested and kept 50 MHz below the CPU boundary and 25 MHz below the GPU boundary. If a ceiling passes without a failure, the same guards are applied below the highest ceiling pass. Voltage remains zero in configuration-free auto mode.
+Then start the full run:
 
 ```bash
-./autopioverclock run target-host --mode auto
+autopioverclock overclock
 ```
 
-The generated run persists its complete effective configuration for repeatability. `prepare --mode auto` previews the same baseline-relative ladder without changing the target. Before a live run's ordinary confirmation, the controller prints the freshly rediscovered baseline, generated candidates, test voltage, and permanent hash; answer no if they differ from the reviewed `prepare`. `--mode auto` removes parameter-entry prompts, but it does not bypass this safety confirmation; use the separate `--yes` option only when unattended confirmation is intended.
+CPU candidates climb from 2500 through 3200 MHz in 100 MHz steps. V3D climbs in 50 MHz steps through 1200 MHz from the detected 800 or 960 MHz firmware default. A real boot/stability boundary is refined in 25 MHz steps. The guarded result is candidate-tested 50 MHz below the CPU boundary and 25 MHz below the GPU boundary, then validated for eight hours. The command retains and displays the exact permanent-config diff, applies only that fully validated result, reboots, and proves it.
 
-`--edge-cpu-24h` is an optional configuration-free auto extension. It first completes the ordinary eight-hour validation at the 50 MHz-buffered CPU production floor. Only then does it try CPU 25 MHz higher, with GPU unchanged, through a fresh 24-hour complete validation. A genuine edge boot/stability failure that recovers normally retains the already-validated production floor; harness or recovery failures still stop the run.
-
-For a custom plan, copy the matching template, fill its deliberately empty lists after discovery, and review it with `prepare` before `run`. An explicit configuration file remains authoritative and is never auto-filled:
+To add the optional final edge test:
 
 ```bash
-cp examples/debian-headless.conf my-target.conf
-./autopioverclock prepare target-host --mode auto --config my-target.conf
-./autopioverclock run target-host --mode auto --config my-target.conf
+autopioverclock overclock --edge-cpu-24h
 ```
 
-The templates contain no clock values and are not recommendations.
+That first validates the ordinary guarded floor, then tests CPU exactly 25 MHz higher through a separate 24-hour validation. A safely recovered edge boot/stability failure keeps and applies the already-validated floor; harness or recovery uncertainty still stops the run.
 
-After any explicitly approved dependency/watchdog remediation and the ordinary run confirmation, the first tuning phase is a dedicated recovery proof: it writes the discovered normal clocks to a token-bound, hash-recorded candidate `tryboot.txt`, re-verifies that exact completed file immediately before trigger, boots through tryboot, verifies the flag/clocks/health/watchdogs, reboots normally, proves the flag cleared and the permanent hash unchanged, quarantines and re-verifies only that owned file before removal, then requires the complete normal health and watchdog gate to pass. Any mismatch, foreign replacement, or failed cleanup is preserved as evidence and stops the run before fresh clock candidates. Any graphical or GPU plan then runs a 20-second GPU harness smoke before its first clock candidate; Batocera graphical mode binds an off-screen Wayland workload to the verified live EmulationStation session without stopping the frontend or taking DRM/VT ownership, and requires a hardware V3D renderer, a positive completed score, zero exit, requested-clock evidence, and an unchanged graphical/audio baseline.
-
-Unlike `prepare`, a live `run` is not read-only. Before the ordinary tuning confirmation, it stages a run-isolated target worker; if the target is already booted through tryboot, it may reboot to the permanent normal configuration before baseline discovery. An explicitly requested `--install-missing` may stage dependencies during preflight, and `--repair-watchdogs` may enter its own separately confirmed permanent watchdog-remediation path. Use `prepare` when you require a mutation-free review. After the ordinary tuning confirmation, `run` executes filesystem writeability probes and begins the recovery proof and candidate sequence. The worker path includes the collision-resistant run ID so concurrent controllers cannot replace or delete each other's recovery worker. Candidate clocks remain confined to a random-token-owned `tryboot.txt`, which is hash checked before trigger and quarantined/re-verified after each normal recovery, until a separately validated and confirmed `apply`.
-
-### Custom configured sweep, after reviewed prepare
-
-```bash
-./autopioverclock run target-host --config my-target.conf
-```
-
-Batocera may require a portable GPU payload. Review the read-only plan first; dependency staging occurs only when a mutating run is explicitly given `--install-missing`. The supported bundle-builder path is an ARM64 Debian-family controller with `apt-get`, `dpkg-deb`, Debian package access, `sha256sum`, and `tar`; see [`docs/batocera.md`](docs/batocera.md).
-
-```bash
-./autopioverclock run root@target-host --mode graphical --config my-batocera.conf --install-missing
-```
+The controller preserves the internal recovery proof, token/hash-owned `tryboot.txt` lifecycle, candidate/normal boot cycles, GPU harness, telemetry, artifacts, and resumable state. Rerunning `autopioverclock overclock` continues its own latest safely resumable current-version run and completes application; failed or ambiguous evidence still stops. Ordinary users do not have to assemble a chain of `run`, dependency, watchdog, `resume`, and `apply` commands.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `run` | Prepare, prove recovery, sweep, select conservatively, and validate. |
-| `prepare` | Read-only discovery and plan generation. |
-| `resume` | Recover an interrupted tryboot when necessary and continue saved progress. |
-| `status` | Show local state for the selected or latest run; supports redaction. |
-| `recover` | Return the target to permanent normal configuration and verify health. |
-| `apply` | Apply only a fully validated result after an exact diff and typed confirmation. |
-| `report` | Generate a concise run report; supports redaction. |
-| `TARGET reset` | Back up the permanent boot config, disable explicit clock/voltage overrides, reboot normally, and verify firmware stock defaults. |
+| `prepare` | Remember the target, then install and verify dependencies and watchdog recovery. |
+| `overclock` | Automatically tune, validate, apply, reboot, and verify the remembered target. |
+| `reset` | Back up the boot config, remove tuning, reboot, and verify stock clocks on the remembered target. |
 
-The approved options and command-specific rules are documented in [`docs/cli.md`](docs/cli.md). No short aliases or hidden public switches are accepted.
+`--edge-cpu-24h` is the optional final CPU edge test. Transport/output options and the retained expert recovery/reporting interface are documented in [`docs/cli.md`](docs/cli.md); they are not part of the normal three-command workflow.
 
 ## Configuration
 
@@ -244,7 +215,7 @@ frontend_process=
 audio_sink_pattern=
 ```
 
-This discovery-first template is valid for `prepare`. When an explicit configuration file is supplied, fill at least one candidate list before `run`; the controller will not replace blank configured domains with automatic values. Candidate lists must be strictly increasing, an empty list skips that tuning domain, and a configured `run` must contain at least one CPU or GPU candidate. Without `--config`, `--mode auto` requires the stock tuple and generates and persists the bounded coarse lists described above; refinement and MHz guards are checkpointed separately in run state.
+Custom configuration is an advanced `run TARGET --config FILE` interface retained for development and support. The normal `autopioverclock overclock` command intentionally uses the fixed automatic policy above and accepts no custom clock plan. Explicit candidate lists must be strictly increasing; empty lists skip that domain, and at least one domain must contain candidates.
 
 `voltage_delta_uv=existing` preserves the target's existing value; AutoPiOverclock never silently raises voltage. `final_duration_seconds` cannot be shorter than 28,800 seconds, candidate boots cannot be lower than two, and final boot/recovery cycles cannot be lower than three.
 
@@ -289,29 +260,29 @@ Each candidate and final-validation substage is checkpointed atomically. The ran
 An SSH timeout alone remains `HARNESS_FAILURE`. During an active stress stage, it becomes `STABILITY_FAILURE` only when recovery proves that the exact saved candidate boot ID already changed to a clear normal boot before the controller requested any reboot. This captures a proven autonomous candidate reboot without assigning an unverified cause or turning a same-boot network interruption into false silicon evidence; any failed normal recovery remains `RECOVERY_FAILURE`.
 
 ```bash
-./autopioverclock status target-host --run-id RUN_ID
-./autopioverclock report target-host --run-id RUN_ID
-./autopioverclock resume target-host --run-id RUN_ID
-./autopioverclock recover target-host --run-id RUN_ID
+autopioverclock status target-host --run-id RUN_ID
+autopioverclock report target-host --run-id RUN_ID
+autopioverclock resume target-host --run-id RUN_ID
+autopioverclock recover target-host --run-id RUN_ID
 ```
 
-Use the explicit run ID whenever more than one retained run exists; a reset audit also advances the target's `*-latest` links. `resume` is only for a run interrupted after the ordinary tuning confirmation created resumable tuning state. A preflight failure or declined tuning confirmation remains available through `status` and `report`; resolve the finding and start a new `run` instead of resuming it. Evidence tied to an interrupted candidate boot is repeated when it cannot be preserved safely. A state file from an older safety schema cannot be resumed through newer gates.
+These are expert support commands, not normal setup steps. Use an explicit run ID whenever more than one retained run exists; a reset audit also advances the target's `*-latest` links. Evidence tied to an interrupted candidate boot is repeated when it cannot be preserved safely, and an older safety schema cannot bypass newer gates.
 
 ### Reset a target to verified stock defaults
 
-Reset is an explicit postfix target action. The order is exact:
+Reset is command-first:
 
 ```bash
-./autopioverclock target-host reset
+autopioverclock reset
 ```
 
-`run reset` and a lone `reset` retain their historical meaning: they run against a host literally named `reset`. There is no command-first `reset target-host` alias and no `--reset` option. The postfix action is noninteractive, so it neither needs nor accepts `--yes`. It also rejects `--run-id`, tuning/configuration flags, dependency/watchdog flags, dry-run, edge-validation, mode, and redaction flags; only `--output-dir`, `--ssh-port`, and `--identity-file` may accompany it.
+An explicit `autopioverclock reset target-host` remains available for multi-Pi controllers, and the old `target-host reset` order remains accepted for compatibility. Reset is noninteractive, so it neither needs nor accepts `--yes`. It also rejects run-selection, tuning, dependency, watchdog, dry-run, edge-validation, mode, and redaction flags; only transport/output selectors may accompany it.
 
 Before changing the permanent root boot config, reset requires a regular non-symlink config, a stable expected hash, no active `include` directive, and no foreign or ambiguous `tryboot.txt`/quarantine path. It writes a hash-verified, no-clobber backup under `/var/lib/autopioverclock/backups/` on Debian-family systems or `/userdata/system/autopioverclock/backups/` on Batocera. Standalone boost, fixed-clock, `*_freq`/`*_freq_min`, and `over_voltage*` lines are retained as comments prefixed with `# AUTOPIOVERCLOCK-STOCK-DISABLED`; the clock directives and markers in one structurally valid AutoPiOverclock managed block are removed while its `[all]` section boundary is retained, with the complete original bytes in the verified backup. An attributable AutoPiOverclock tryboot artifact is backed up before removal, while unknown paths are preserved and reset fails closed. If the running firmware reports a tryboot boot but no live or quarantined path exists, reset does not claim ownership of that boot; it safely prepares the backed-up permanent stock config, forces a normal reboot, and requires the post-reboot tryboot flag to be clear. Batocera must also restore and verify `/boot` read-only.
 
 Reset then forces a permanent-config reboot and accepts success only after a new boot ID, an exact expected config hash, an absent/cleared tryboot state, and active Raspberry Pi 5 stock clocks are all verified: CPU 2400 MHz, firmware-default V3D 800 or 960 MHz, and zero voltage delta. The same verification checks current throttle/power state and the active watchdog chain; reset does not claim the broader display, audio, service, or workload health gates used by tuning. A reset creates its own audit state/log and reports the remote backup path; it never deletes or truncates prior logs, state, summaries, candidate logs, or saved runs.
 
-Reset does not run `tmux`, Byobu, job-control, or process-wide kill commands. If another controller still owns the per-target lock, reset fails without signaling that process or its terminal session; stop that one foreground controller yourself and repeat the exact postfix command.
+Reset does not run `tmux`, Byobu, job-control, or process-wide kill commands. If another controller still owns the per-target lock, reset fails without signaling that process or its terminal session; stop that one foreground controller yourself and repeat `autopioverclock reset`.
 
 ## Results
 
@@ -337,13 +308,9 @@ See [`docs/output.md`](docs/output.md) for artifact fields and failure classific
 
 ## Applying a validated result
 
-Candidate tuning never writes candidate clocks to permanent `config.txt`. The separately confirmed watchdog-repair path may edit permanent watchdog settings, `TARGET reset` backs up and disables explicit permanent tuning, and only `apply` writes fully validated clock results. After a tuning result completes the current validation schema and at least eight hours of final validation:
+`autopioverclock overclock` includes application: candidate clocks remain isolated in `tryboot.txt`; after the guarded result completes the current validation schema and at least eight hours of endurance, the same command displays and retains the exact permanent diff, writes the validated clocks, reboots, and proves the result. A failed or incomplete validation is never applied.
 
-```bash
-./autopioverclock apply target-host --run-id RUN_ID
-```
-
-Use the validated tuning run's explicit ID from `status` or its artifact names. This matters because a later standalone reset creates its own audit run and advances the target's `*-latest` links without turning that reset audit into an applyable tuning result. `apply` verifies a fresh normal boot and the protected permanent hash, displays the exact proposed diff, and requires typing `APPLY target-slug run-id`. `--yes` cannot bypass that confirmation or EEPROM-remediation confirmation.
+The standalone `apply TARGET --run-id RUN_ID` command remains available only for expert recovery of a previously completed, unapplied run. It retains the separate typed confirmation and cannot apply a reset audit or stale validation schema.
 
 ## Repository layout
 
@@ -352,6 +319,7 @@ autopioverclock       command dispatcher
 lib/                  controller libraries
 profiles/             supported target profiles
 workers/              target-side workers
+assets/               packaged target-side watchdog assets
 tests/                fixture and safety tests
 examples/             approved configuration examples
 tools/                packaging and Batocera bundle tooling

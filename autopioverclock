@@ -2,8 +2,16 @@
 set -Eeuo pipefail
 umask 077
 
-APO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+APO_SOURCE=${BASH_SOURCE[0]}
+while [[ -L $APO_SOURCE ]]; do
+    APO_SOURCE_DIRECTORY=$(cd -- "$(dirname -- "$APO_SOURCE")" && pwd -P)
+    APO_SOURCE_LINK=$(readlink -- "$APO_SOURCE")
+    if [[ $APO_SOURCE_LINK == /* ]]; then APO_SOURCE=$APO_SOURCE_LINK
+    else APO_SOURCE=${APO_SOURCE_DIRECTORY}/${APO_SOURCE_LINK}; fi
+done
+APO_ROOT=$(cd -- "$(dirname -- "$APO_SOURCE")" && pwd -P)
 export APO_ROOT
+unset APO_SOURCE APO_SOURCE_DIRECTORY APO_SOURCE_LINK
 
 # shellcheck source=lib/common.sh
 source "${APO_ROOT}/lib/common.sh"
@@ -33,6 +41,10 @@ source "${APO_ROOT}/lib/apply.sh"
 source "${APO_ROOT}/lib/report.sh"
 
 APO_COMMAND=run
+APO_ORIGIN_COMMAND=run
+APO_PUBLIC_COMMAND=''
+APO_AUTO_APPLY=0
+APO_AUTO_PREPARE=0
 APO_CONFIG_FILE=''
 APO_CONFIG_OPTION_SEEN=0
 APO_MODE_REQUESTED=auto
@@ -51,49 +63,93 @@ APO_REDACT=0
 APO_HAVE_REMOTE_CONTEXT=0
 APO_MUTATING_COMMAND=0
 APO_LOCK_FD=''
+APO_RESOLVED_TARGET=''
 
 usage() {
     cat <<'USAGE'
 AutoPiOverclock — recoverable Raspberry Pi 5 overclock validation
 
 Usage:
-  ./autopioverclock TARGET [OPTIONS]
-  ./autopioverclock COMMAND TARGET [OPTIONS]
-  ./autopioverclock TARGET reset [OPTIONS]
+  autopioverclock prepare [TARGET]
+  autopioverclock overclock [TARGET] [--edge-cpu-24h]
+  autopioverclock reset [TARGET]
 
 Commands:
-  run       Prepare, sweep, conservatively select, and validate (default)
-  prepare   Read-only remote discovery and plan generation; no target writes or reboot
-  resume    Recover an interrupted tryboot if necessary and continue its saved phase
-  status    Show local state for the selected or latest run
-  recover   Return the target to its permanent normal config and verify health
-  apply     Show an exact diff and apply only a fully validated result
-  report    Generate a concise run report; supports --redact
+  prepare    Install and verify required dependencies and watchdog recovery
+  overclock  Automatically tune, validate, and apply the safe result
+  reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
 
-Postfix target action:
-  reset     Back up the permanent boot config, disable clock/voltage overrides,
-            reboot, and verify stock clocks; prior run artifacts are preserved
+The optional --edge-cpu-24h flag adds the final CPU +25 MHz/24-hour test.
+Advanced recovery and reporting commands remain available for support in the project documentation.
 
 Target:
   hostname | IP | username@hostname | username@IP
   Without username@, the current controller username from `id -un` is used.
+  TARGET is remembered after a successful prepare and may then be omitted.
 
 Options:
-  --config FILE            Strict KEY=VALUE tuning plan
-  --mode MODE              auto (default), graphical, or headless; auto derives candidates without --config
+  --edge-cpu-24h           Add the final CPU +25 MHz/24-hour test to overclock
   --output-dir DIR         Flat artifact directory (default: $HOME/overclock-results)
   --ssh-port PORT          SSH port (default: 22)
   --identity-file FILE     SSH private key; otherwise use agent/default keys
-  --run-id ID              Select a run for resume/status/recover/apply/report
-  --install-missing        Permit dependency installation/staging
-  --repair-watchdogs       Permit the separately confirmed watchdog remediation path
-  --dry-run                Read-only detection and plan rendering
-  --edge-cpu-24h           Try the final 25 MHz CPU margin with 24-hour validation
-  --yes                    Accept ordinary prompts; never EEPROM repair or permanent apply
-  --redact                 Redact private target data from report output
   --help                   Show help
   --version                Show version
+
+Advanced support commands and options are documented on the project website.
 USAGE
+}
+
+apo_default_target_file() {
+    printf '%s/autopioverclock/target' "${XDG_CONFIG_HOME:-${HOME}/.config}"
+}
+
+apo_resolve_default_target() {
+    local target_file line
+    local -a target_lines=()
+    target_file=$(apo_default_target_file)
+    if [[ -e $target_file || -L $target_file ]]; then
+        [[ -f $target_file && ! -L $target_file ]] || apo_die "Saved target path is not a regular file: $target_file" "$APO_EXIT_USAGE"
+        mapfile -t target_lines < "$target_file"
+        (( ${#target_lines[@]} == 1 )) || apo_die "Saved target file is empty or malformed: $target_file" "$APO_EXIT_USAGE"
+        line=${target_lines[0]}
+        line=$(apo_trim "$line")
+        [[ -n $line ]] || apo_die "Saved target file is empty or malformed: $target_file" "$APO_EXIT_USAGE"
+        APO_RESOLVED_TARGET=$line
+        return 0
+    fi
+    [[ -t 0 ]] || apo_die 'No target was supplied and no prepared target is saved. Run autopioverclock prepare interactively once, or pass TARGET explicitly.' "$APO_EXIT_USAGE"
+    printf 'SSH target (hostname, IP, or username@host): ' >&2
+    IFS= read -r line || apo_die 'Could not read the SSH target.' "$APO_EXIT_USAGE"
+    line=$(apo_trim "$line")
+    [[ -n $line ]] || apo_die 'SSH target cannot be empty.' "$APO_EXIT_USAGE"
+    APO_RESOLVED_TARGET=$line
+}
+
+apo_save_default_target() {
+    local target_file target_directory temporary_file current_target save_rc
+    target_file=$(apo_default_target_file) || return 1
+    target_directory=${target_file%/*}
+    mkdir -p -- "$target_directory" || return 1
+    chmod 700 "$target_directory" || return 1
+    (
+        flock -x 9 || exit 1
+        if [[ -e $target_file || -L $target_file ]]; then
+            [[ -f $target_file && ! -L $target_file ]] || exit 1
+            IFS= read -r current_target < "$target_file" || exit 1
+            [[ $current_target == "$APO_REMOTE_TARGET" ]] || exit 2
+        fi
+        temporary_file=$(mktemp "${target_file}.new.XXXXXX") || exit 1
+        if ! printf '%s\n' "$APO_REMOTE_TARGET" > "$temporary_file" ||
+           ! chmod 600 "$temporary_file" ||
+           ! sync "$temporary_file" ||
+           ! mv -f -- "$temporary_file" "$target_file" ||
+           ! sync "$target_file"; then
+            rm -f -- "$temporary_file"
+            exit 1
+        fi
+    ) 9>"${target_directory}/.target.lock"
+    save_rc=$?
+    return "$save_rc"
 }
 
 apo_parse_cli() {
@@ -101,16 +157,42 @@ apo_parse_cli() {
     local index=0 token target=''
     (( ${#arguments[@]} > 0 )) || { usage >&2; exit "$APO_EXIT_USAGE"; }
     case ${arguments[0]} in
-        run|prepare|resume|status|recover|apply|report) APO_COMMAND=${arguments[0]}; index=1 ;;
+        prepare)
+            APO_COMMAND=prepare
+            APO_ORIGIN_COMMAND=prepare
+            APO_PUBLIC_COMMAND=prepare
+            APO_AUTO_PREPARE=1
+            index=1
+            ;;
+        overclock)
+            APO_COMMAND=run
+            APO_ORIGIN_COMMAND=overclock
+            APO_PUBLIC_COMMAND=overclock
+            APO_AUTO_APPLY=1
+            index=1
+            ;;
+        reset)
+            APO_COMMAND=reset
+            APO_ORIGIN_COMMAND=reset
+            APO_PUBLIC_COMMAND=reset
+            index=1
+            ;;
+        run|resume|status|recover|apply|report)
+            APO_COMMAND=${arguments[0]}
+            APO_ORIGIN_COMMAND=${arguments[0]}
+            index=1
+            ;;
         --help) usage; exit 0 ;;
         --version) printf '%s\n' "$APO_VERSION"; exit 0 ;;
         *)
             if (( ${#arguments[@]} >= 2 )) && [[ ${arguments[0]} != -* && ${arguments[1]} == reset ]]; then
                 APO_COMMAND=reset
+                APO_ORIGIN_COMMAND=reset
                 target=${arguments[0]}
                 index=2
             else
                 APO_COMMAND=run
+                APO_ORIGIN_COMMAND=run
             fi
             ;;
     esac
@@ -141,21 +223,43 @@ apo_parse_cli() {
             *) [[ -z $target ]] || apo_die "Unexpected extra argument: $token" "$APO_EXIT_USAGE"; target=$token; index=$((index + 1)) ;;
         esac
     done
-    [[ -n $target ]] || apo_die 'TARGET is required.' "$APO_EXIT_USAGE"
+    if [[ -z $target ]]; then
+        apo_resolve_default_target
+        target=$APO_RESOLVED_TARGET
+    fi
     case $APO_MODE_REQUESTED in auto|graphical|headless) ;; *) apo_die '--mode must be auto, graphical, or headless.' "$APO_EXIT_USAGE" ;; esac
     apo_validate_uint_range "$APO_SSH_PORT" 1 65535 || apo_die '--ssh-port must be 1-65535.' "$APO_EXIT_USAGE"
     [[ -z $APO_SELECTED_RUN_ID ]] || apo_is_safe_run_id "$APO_SELECTED_RUN_ID" || apo_die 'Invalid --run-id.' "$APO_EXIT_USAGE"
     [[ -z $APO_IDENTITY_FILE || -r $APO_IDENTITY_FILE ]] || apo_die "Identity file is unreadable: $APO_IDENTITY_FILE" "$APO_EXIT_USAGE"
     if [[ $APO_COMMAND == reset ]]; then
-        (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die '--config is not valid with TARGET reset.' "$APO_EXIT_USAGE"
-        (( APO_MODE_OPTION_SEEN == 0 )) || apo_die '--mode is not valid with TARGET reset.' "$APO_EXIT_USAGE"
-        (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with TARGET reset; reset records a new standalone operation.' "$APO_EXIT_USAGE"
-        (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is not valid with TARGET reset.' "$APO_EXIT_USAGE"
-        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is not valid with TARGET reset.' "$APO_EXIT_USAGE"
-        (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with TARGET reset.' "$APO_EXIT_USAGE"
-        (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is not valid with TARGET reset.' "$APO_EXIT_USAGE"
-        (( APO_ASSUME_YES == 0 )) || apo_die '--yes is not valid with TARGET reset; reset does not prompt.' "$APO_EXIT_USAGE"
-        (( APO_REDACT == 0 )) || apo_die '--redact is not valid with TARGET reset.' "$APO_EXIT_USAGE"
+        (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die '--config is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+        (( APO_MODE_OPTION_SEEN == 0 )) || apo_die '--mode is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+        (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with reset TARGET; reset records a new standalone operation.' "$APO_EXIT_USAGE"
+        (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+        (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+        (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+        (( APO_ASSUME_YES == 0 )) || apo_die '--yes is not valid with reset TARGET; reset does not prompt.' "$APO_EXIT_USAGE"
+        (( APO_REDACT == 0 )) || apo_die '--redact is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+    fi
+    if [[ $APO_PUBLIC_COMMAND == prepare ]]; then
+        (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'prepare TARGET uses automatic host discovery; custom plans belong to the advanced run command.' "$APO_EXIT_USAGE"
+        (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'prepare TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
+        (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
+        (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h belongs on overclock TARGET, not prepare TARGET.' "$APO_EXIT_USAGE"
+        (( APO_REDACT == 0 )) || apo_die '--redact is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
+        APO_INSTALL_MISSING=1
+        APO_REPAIR_WATCHDOGS=1
+    fi
+    if [[ $APO_PUBLIC_COMMAND == overclock ]]; then
+        (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'overclock TARGET is automatic; advanced custom plans use run TARGET --config FILE.' "$APO_EXIT_USAGE"
+        (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'overclock TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
+        (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with overclock TARGET.' "$APO_EXIT_USAGE"
+        (( APO_INSTALL_MISSING == 0 )) || apo_die 'Run prepare TARGET to install dependencies; overclock does not change host prerequisites.' "$APO_EXIT_USAGE"
+        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die 'Run prepare TARGET to install watchdogs; overclock does not change host prerequisites.' "$APO_EXIT_USAGE"
+        (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with overclock TARGET; use prepare TARGET --dry-run for inspection.' "$APO_EXIT_USAGE"
+        (( APO_REDACT == 0 )) || apo_die '--redact is not valid with overclock TARGET.' "$APO_EXIT_USAGE"
+        APO_ASSUME_YES=1
     fi
     case $APO_COMMAND in
         run|prepare) ;;
@@ -184,6 +288,47 @@ apo_acquire_lock() {
     flock -n "$APO_LOCK_FD" || apo_die "Another AutoPiOverclock process holds $lock_file" "$APO_EXIT_PREFLIGHT"
 }
 
+apo_public_overclock_select_continuation() {
+    local state_file stored_run_id stored_target origin status phase apply_status
+    [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
+    state_file=$(apo_find_state_file '' || true)
+    [[ -n $state_file ]] || return 0
+    apo_state_load "$state_file"
+    stored_run_id=$(apo_state_get RUN_ID '')
+    stored_target=$(apo_state_get REMOTE_TARGET '')
+    origin=$(apo_state_get ORIGIN_COMMAND '')
+    status=$(apo_state_get STATUS '')
+    phase=$(apo_state_get PHASE '')
+    apply_status=$(apo_state_get APPLY_STATUS NOT_APPLIED)
+    if apo_is_safe_run_id "$stored_run_id" &&
+       [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
+          $stored_target == "$APO_REMOTE_TARGET" && $origin == overclock ]] &&
+       { { [[ $status == RUNNING || $status == INTERRUPTED ]] &&
+           [[ $phase != PREPARE && $phase != PREPARED ]]; } ||
+         { [[ $status == PASS && $phase == COMPLETE ]] &&
+           [[ $apply_status == NOT_APPLIED || $apply_status == APPLYING ||
+              $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; }; }; then
+        APO_SELECTED_RUN_ID=$stored_run_id
+        APO_COMMAND=resume
+        APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
+        return 0
+    fi
+    APO_STATE=()
+    APO_STATE_FILE=''
+}
+
+apo_finish_public_overclock() {
+    (( APO_AUTO_APPLY == 1 )) || return 0
+    [[ $(apo_state_get STATUS '') == PASS && $(apo_state_get PHASE '') == COMPLETE ]] || return 0
+    apo_apply_recommendation
+    if [[ $(apo_state_get APPLY_STATUS '') == APPLIED && $(apo_state_get OVERCLOCK_COMPLETE_RECORDED 0) != 1 ]]; then
+        apo_summary_line 'OVERCLOCK COMPLETE: the validated clocks were applied and verified after reboot.'
+        apo_event overclock PASS '' 'Automatic tuning, final validation, permanent application, and post-reboot verification completed.'
+        apo_state_set OVERCLOCK_COMPLETE_RECORDED 1
+        apo_state_save
+    fi
+}
+
 apo_store_artifact_state() {
     apo_state_set LOG_FILE "$APO_LOG_FILE"
     apo_state_set CSV_FILE "$APO_CSV_FILE"
@@ -196,13 +341,14 @@ apo_store_artifact_state() {
 }
 
 apo_start_new_run() {
+    local save_rc
     apo_config_load_for_new_run
     apo_init_artifacts
     apo_state_initialize
     apo_config_store_in_state
     apo_store_artifact_state
     apo_write_effective_config "$APO_EFFECTIVE_CONFIG_FILE"
-    apo_summary_line 'AutoPiOverclock run'
+    apo_summary_line "AutoPiOverclock ${APO_ORIGIN_COMMAND}"
     apo_summary_line "Run ID: $APO_RUN_ID"
     apo_summary_line "Target: $APO_REMOTE_TARGET"
     apo_summary_line "Configured voltage delta: ${APO_CFG[VOLTAGE_DELTA_UV]}"
@@ -219,13 +365,38 @@ apo_start_new_run() {
         apo_summary_line "Optional post-floor CPU +25MHz/24-hour validation: $([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled)"
     fi
     apo_summary_line ''
-    apo_event run-start INFO '' "command=$APO_COMMAND version=$APO_VERSION"
+    apo_event run-start INFO '' "command=$APO_ORIGIN_COMMAND version=$APO_VERSION"
 
     apo_prepare_target
     APO_HAVE_REMOTE_CONTEXT=1
-    if [[ $APO_COMMAND == prepare || $APO_DRY_RUN == 1 ]]; then
+    if [[ $APO_COMMAND == prepare ]]; then
+        if apo_save_default_target; then
+            apo_summary_line "Remembered target: $APO_REMOTE_TARGET"
+        else
+            save_rc=$?
+            if (( save_rc == 2 )); then
+                apo_warn 'Host preparation passed. A different default target is already remembered, so it was preserved; pass this target explicitly on a multi-Pi controller.'
+            else
+                apo_warn 'Host preparation passed, but the controller could not save this as the default target. Pass TARGET explicitly next time.'
+            fi
+        fi
+        if apo_config_stock_auto_baseline_ready "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" \
+            "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"; then
+            apo_state_phase COMPLETE HOST_READY PASS
+            apo_summary_line "HOST READY: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
+            apo_summary_line 'Next: autopioverclock overclock'
+            apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. The stock host is ready to overclock.'
+        else
+            apo_state_phase COMPLETE HOST_PREPARED PASS
+            apo_summary_line "HOST PREPARED: dependencies and watchdog recovery are ready; permanent clocks must be reset before tuning."
+            apo_summary_line 'Next: autopioverclock reset'
+            apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. Run reset once before overclocking this currently tuned host.'
+        fi
+        return 0
+    fi
+    if (( APO_DRY_RUN == 1 )); then
         apo_state_phase PREPARED READ_ONLY PASS
-        apo_summary_line "PREPARED: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
+        apo_summary_line "READ-ONLY PLAN: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
         apo_event prepare PASS '' 'Read-only discovery and plan generation completed; no target file was written and no reboot was requested.'
         return 0
     fi
@@ -252,7 +423,7 @@ apo_load_selected_run() {
     apo_attach_artifacts_from_state
     case $APO_COMMAND in status|report) return 0 ;; esac
     if [[ $(apo_state_get ORIGIN_COMMAND '') == reset ]]; then
-        apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/report, or use TARGET reset again.' "$APO_EXIT_USAGE"
+        apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/report, or run autopioverclock reset again.' "$APO_EXIT_USAGE"
     fi
     stored_profile=$(apo_state_get PROFILE '')
     if [[ -z $stored_profile ]]; then
@@ -325,16 +496,18 @@ apo_exit_from_saved_failure() {
 main() {
     local status
     apo_parse_cli "$@"
-    apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync
+    apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync chmod mkdir mv readlink rm
     case $APO_COMMAND in run|prepare|resume|recover|reset|apply) apo_acquire_lock ;; esac
+    apo_public_overclock_select_continuation
     trap apo_cleanup_handler EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
     case $APO_COMMAND in
         run|prepare)
-            APO_MUTATING_COMMAND=$([[ $APO_COMMAND == run && $APO_DRY_RUN == 0 ]] && printf 1 || printf 0)
+            APO_MUTATING_COMMAND=$([[ $APO_DRY_RUN == 0 ]] && printf 1 || printf 0)
             apo_start_new_run
+            apo_finish_public_overclock
             ;;
         reset)
             # Stock reset has its own idempotent worker/reboot protocol. The
@@ -354,6 +527,9 @@ main() {
         resume)
             APO_MUTATING_COMMAND=1
             apo_load_selected_run
+            if [[ $APO_PUBLIC_COMMAND == overclock ]]; then
+                apo_event overclock-resume INFO '' "Continuing interrupted overclock run $APO_RUN_ID through the same safety gates."
+            fi
             [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]] ||
                 apo_die 'This interrupted state predates the current safety/resume schema and cannot be resumed without bypassing required gates. Start a new run; status and report remain available.' "$APO_EXIT_USAGE"
             apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
@@ -376,6 +552,9 @@ main() {
                 fi
                 apo_prepare_remote_for_saved_run
                 if ! apo_reconcile_interrupted_apply; then return "$APO_EXIT_APPLY"; fi
+                if (( APO_AUTO_APPLY == 1 )) && [[ $(apo_state_get APPLY_STATUS '') != APPLIED ]]; then
+                    apo_finish_public_overclock
+                fi
                 apo_print_status
                 return 0
             fi
@@ -383,7 +562,14 @@ main() {
                 apo_die "This run has an unresolved permanent-config mismatch: $(apo_state_get APPLY_FAILURE_REASON 'manual recovery required')" "$APO_EXIT_APPLY"
             fi
             status=$(apo_state_get STATUS)
-            if [[ $status == PASS && $(apo_state_get PHASE) == COMPLETE ]]; then apo_print_status; return 0; fi
+            if [[ $status == PASS && $(apo_state_get PHASE) == COMPLETE ]]; then
+                if (( APO_AUTO_APPLY == 1 )); then
+                    apo_prepare_remote_for_saved_run
+                    apo_finish_public_overclock
+                fi
+                apo_print_status
+                return 0
+            fi
             apo_prepare_remote_for_saved_run
             apo_recover_normal resume-initial-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
             apo_state_set STATUS RUNNING
@@ -391,6 +577,7 @@ main() {
             apo_state_set FAILURE_REASON ''
             apo_state_save
             apo_run_tuning
+            apo_finish_public_overclock
             ;;
         recover)
             APO_MUTATING_COMMAND=1
@@ -414,4 +601,4 @@ main() {
     return 0
 }
 
-main "$@"
+if [[ ${APO_CLI_LIBRARY_ONLY:-0} != 1 ]]; then main "$@"; fi

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-alpha.18 — 2026-08-27
+
+- Replaced the ordinary multi-command workflow with three actions: `autopioverclock prepare`, `autopioverclock overclock`, and `autopioverclock reset`. The first successful preparation securely remembers its SSH target; an explicit target remains an override for multi-Pi controllers.
+- Made `prepare` install and verify missing workload dependencies and the complete watchdog recovery chain. Batocera now receives a project-owned keeper and service through hash-bound planning, verified backups, read-only `/boot` restoration, current-default-gateway liveness, startup grace, and bounded reboot-loop suppression.
+- Made `overclock` the complete automatic operation: it selects the fixed candidate policy, retains every tryboot/recovery and validation gate, safely continues its own latest resumable current-schema run when repeated, optionally runs the final `--edge-cpu-24h` test, displays the exact permanent diff, applies only a validated result, and verifies the post-apply reboot without a second ordinary prompt.
+- Made targetless `reset` the normal remembered-target action while retaining both command-first explicit-target and historical postfix forms, without weakening reset's protected-hash, watchdog, stock-clock, backup, or artifact-preservation gates.
+- Added simple-CLI and Batocera-watchdog installer fixtures and updated public documentation around the three-command contract.
+- Added a standard `make install` layout and a PATH entry-point test so public examples use the installed `autopioverclock` command instead of repository-relative paths.
+
 ## 0.1.0-alpha.17 — 2026-08-26
 
 - Distinguished a proven autonomous reboot during active candidate or final stress from an ordinary SSH interruption: recovery must observe the saved candidate boot ID change to a clear normal boot before the controller issues any reboot.

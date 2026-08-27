@@ -11,6 +11,7 @@ apo_ssh_init() {
         -o ConnectTimeout=8
         -o ServerAliveInterval=5
         -o ServerAliveCountMax=3
+        -o StrictHostKeyChecking=accept-new
         -p "$APO_SSH_PORT"
     )
     if [[ -n $APO_IDENTITY_FILE ]]; then APO_SSH_OPTIONS+=(-i "$APO_IDENTITY_FILE" -o IdentitiesOnly=yes); fi
@@ -38,7 +39,7 @@ apo_remote_root_stdin() {
 
 apo_ssh_preflight() {
     local uid has_bash
-    apo_ssh_exec true >/dev/null 2>&1 || apo_die "Noninteractive SSH failed for $APO_REMOTE_TARGET. Configure key authentication and accept its host key first." "$APO_EXIT_PREFLIGHT"
+    apo_ssh_exec true >/dev/null 2>&1 || apo_die "Noninteractive SSH failed for $APO_REMOTE_TARGET. Configure key authentication and run prepare again." "$APO_EXIT_PREFLIGHT"
     uid=$(apo_ssh_exec 'id -u' 2>/dev/null) || apo_die 'Could not determine remote UID.' "$APO_EXIT_PREFLIGHT"
     has_bash=$(apo_ssh_exec 'command -v bash >/dev/null 2>&1 && printf yes || printf no' 2>/dev/null || true)
     [[ $has_bash == yes ]] || apo_die 'Remote Bash is required.' "$APO_EXIT_PREFLIGHT"

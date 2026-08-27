@@ -349,7 +349,11 @@ apo_apply_recommendation() {
     cat "$diff_file" >&2
     printf '=======================================\n\n' >&2
     expected_confirmation="APPLY ${APO_TARGET_SLUG} ${APO_RUN_ID}"
-    apo_confirm_exact 'Applying writes the displayed validated clocks to permanent config and reboots the target. --yes never bypasses this confirmation.' "$expected_confirmation" || apo_die 'Permanent application was not confirmed.' "$APO_EXIT_APPLY"
+    if (( ${APO_AUTO_APPLY:-0} == 1 )); then
+        apo_info 'The explicit overclock command authorizes this displayed, fully validated permanent result; applying it now.'
+    else
+        apo_confirm_exact 'Applying writes the displayed validated clocks to permanent config and reboots the target. --yes never bypasses this confirmation.' "$expected_confirmation" || apo_die 'Permanent application was not confirmed.' "$APO_EXIT_APPLY"
+    fi
     apo_apply_assert_tryboot_clear || apo_die "Tryboot state changed while the apply confirmation was pending: $APO_LAST_REASON" "$APO_EXIT_APPLY"
 
     backup_file=$(apo_apply_backup_path "$APO_RUN_ID" || true)

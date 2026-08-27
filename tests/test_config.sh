@@ -137,7 +137,7 @@ resolve_discovered_auto_plan debian 2400 960 0
 [[ "${APO_CFG[CPU_CANDIDATES]}|${APO_CFG[GPU_CANDIDATES]}" == "$DEBIAN_AUTO_PLAN" ]]
 
 (
-    APO_COMMAND=prepare
+    APO_COMMAND=run
     APO_DRY_RUN=0
     APO_CONFIG_FILE=''
     APO_MODE_REQUESTED=auto
@@ -183,7 +183,7 @@ expect_auto_stock_rejection() {
     local output_file="$TEMP_DIR/reject-${fixture_name}.out" status
     set +e
     (
-        APO_COMMAND=prepare
+        APO_COMMAND=run
         APO_DRY_RUN=0
         APO_CONFIG_FILE=''
         APO_MODE_REQUESTED=auto
@@ -201,6 +201,20 @@ expect_auto_stock_rejection() {
     grep -Fq 'AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline.' "$output_file"
     ! grep -q '3100,3200' "$output_file"
 }
+
+(
+    APO_COMMAND=prepare
+    APO_DRY_RUN=0
+    APO_CONFIG_FILE=''
+    APO_MODE_REQUESTED=auto
+    APO_EDGE_CPU_24H=0
+    apo_config_load_for_new_run
+    [[ $APO_AUTO_GENERATED_CANDIDATES == 0 ]]
+    [[ $APO_AUTO_CANDIDATES_PENDING == 0 ]]
+    [[ -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]
+    apo_config_stock_auto_baseline_ready 2400 960 0 verified-default none
+    ! apo_config_stock_auto_baseline_ready 3000 960 0 explicit-override arm_freq
+)
 expect_auto_stock_rejection existing-overclock 3000 800 50000
 expect_auto_stock_rejection cpu-overclock 3000 800 0
 expect_auto_stock_rejection gpu-overclock 2400 950 0

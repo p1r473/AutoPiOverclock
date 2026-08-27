@@ -38,8 +38,8 @@ run_cli() {
     set -e
 }
 
-# The reset verb is deliberately postfix. The two historical forms below must
-# continue to mean a target literally named "reset", not the reset operation.
+# Explicit `run reset` continues to mean a target literally named "reset".
+# The ordinary public reset syntax is now command-first.
 MISSING_CONFIG="$TEST_ROOT/does-not-exist.conf"
 run_cli run reset --config "$MISSING_CONFIG"
 (( CLI_RC != 0 )) || fail '`run reset` unexpectedly succeeded'
@@ -47,20 +47,11 @@ run_cli run reset --config "$MISSING_CONFIG"
     fail '`run reset` no longer treats reset as the run target'
 [[ ! -s $SSH_LOG ]] || fail '`run reset` reached SSH before its local fixture failure'
 
-run_cli reset --config "$MISSING_CONFIG"
-(( CLI_RC != 0 )) || fail 'lone `reset` unexpectedly succeeded'
-[[ $CLI_OUTPUT == *"Cannot read configuration file: $MISSING_CONFIG"* ]] ||
-    fail 'lone `reset` no longer means the default run against target reset'
-[[ ! -s $SSH_LOG ]] || fail 'lone `reset` reached SSH before its local fixture failure'
-
 run_cli reset fixture-target
-(( CLI_RC != 0 )) || fail 'command-first `reset fixture-target` unexpectedly succeeded'
-[[ ! -s $SSH_LOG ]] || fail 'command-first reset alias reached SSH'
-[[ $CLI_OUTPUT == *'Unexpected extra argument: fixture-target'* ]] ||
-    fail 'command-first reset unexpectedly became a public alias'
+(( CLI_RC != 0 )) || fail 'fake-transport command-first reset unexpectedly succeeded'
+[[ -s $SSH_LOG ]] || fail 'command-first reset did not reach reset transport dispatch'
 
-# TARGET reset must pass the positional parser and reach reset dispatch. The
-# fake transport intentionally prevents a real target mutation.
+# The old postfix form remains a compatibility alias.
 run_cli fixture-target reset
 (( CLI_RC != 0 )) || fail 'fake-transport reset unexpectedly succeeded'
 [[ $CLI_OUTPUT != *'Unexpected extra argument: reset'* ]] || fail 'TARGET reset was rejected as an extra positional argument'
@@ -72,7 +63,7 @@ run_cli fixture-target reset
 assert_reset_option_rejected() {
     local label=$1
     shift
-    run_cli fixture-target reset "$@"
+    run_cli reset fixture-target "$@"
     (( CLI_RC != 0 )) || fail "reset accepted $label"
     [[ ! -s $SSH_LOG ]] || fail "reset reached SSH after accepting $label"
     [[ $CLI_OUTPUT == *reset* || $CLI_OUTPUT == *Reset* ]] || fail "reset rejection for $label did not identify reset semantics"
@@ -93,9 +84,9 @@ assert_reset_option_rejected --reset --reset
 # stock policy. A readable identity fixture prevents a local option failure.
 IDENTITY_FILE="$TEST_ROOT/identity"
 printf 'fixture identity\n' > "$IDENTITY_FILE"
-run_cli fixture-target reset --output-dir "$TEST_ROOT/custom-output" --ssh-port 2222 --identity-file "$IDENTITY_FILE"
+run_cli reset fixture-target --output-dir "$TEST_ROOT/custom-output" --ssh-port 2222 --identity-file "$IDENTITY_FILE"
 (( CLI_RC != 0 )) || fail 'fake-transport reset with plumbing selectors unexpectedly succeeded'
-[[ $CLI_OUTPUT != *'is not valid with TARGET reset'* ]] ||
+[[ $CLI_OUTPUT != *'is not valid with reset TARGET'* ]] ||
     fail 'reset rejected an approved transport or artifact selector'
 [[ -s $SSH_LOG ]] || fail 'reset with approved selectors did not reach transport dispatch'
 
@@ -110,7 +101,7 @@ OLD_STATE_HASH=$(sha256sum "$OUTPUT_DIR/fixture-target-old.state" | awk 'NR == 1
 OLD_CANDIDATE_HASH=$(sha256sum "$OUTPUT_DIR/fixture-target-old-candidate.log" | awk 'NR == 1 {print $1}')
 sleep 30 &
 SENTINEL_PID=$!
-run_cli fixture-target reset
+run_cli reset fixture-target
 kill -0 "$SENTINEL_PID" 2>/dev/null || fail 'reset terminated an unrelated local process'
 [[ ! -s $PROCESS_LOG ]] || fail 'reset invoked a Byobu/tmux or process-wide kill command'
 [[ -f $OUTPUT_DIR/fixture-target-old.log && -f $OUTPUT_DIR/fixture-target-old.state && -f $OUTPUT_DIR/fixture-target-old-candidate.log ]] ||
@@ -122,9 +113,9 @@ kill "$SENTINEL_PID" >/dev/null 2>&1 || true
 wait "$SENTINEL_PID" 2>/dev/null || true
 SENTINEL_PID=''
 
-# Public/controller contract: postfix help, verified-stock completion, worker
+# Public/controller contract: command-first help, verified-stock completion, worker
 # data binding, and no terminal/session-process management.
-grep -Fq './autopioverclock TARGET reset' "$ROOT/autopioverclock" || fail 'usage does not document exact TARGET reset syntax'
+grep -Fq 'autopioverclock reset [TARGET]' "$ROOT/autopioverclock" || fail 'usage does not document target-optional reset syntax'
 grep -Rqs 'STOCK_VERIFIED' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller lacks the verified-stock completion checkpoint'
 grep -Rqs 'RESET_BACKUP' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not persist/report the reset backup'
 grep -Rqs 'reset-stock' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not dispatch stock reset'

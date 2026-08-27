@@ -20,6 +20,20 @@ Graphical discovery also captures the current default audio-sink identity automa
 
 `tools/build-batocera-bundle.sh` extracts ARM64 Debian packages without installing them. It includes the Wayland and DRM glmark2 executables, their shared data, and a private libjpeg compatibility library. It deliberately excludes glibc, Mesa, Wayland, DRM, and kernel components supplied by Batocera. Every file is verified from `MANIFEST.sha256` after upload, and a cached payload that lacks either executable is rebuilt.
 
-The supported `--install-missing` builder path uses an ARM64 Debian-family controller with `apt-get`, `dpkg-deb`, access to the configured Debian package repositories, `sha256sum`, and `tar`. Building the payload is a controller-side prerequisite; Batocera itself remains package-manager-free. Run read-only `prepare` first and use `--install-missing` only when its dependency evidence shows that the portable payload is required.
+`prepare` automatically builds and stages this payload when it is missing. The builder requires an ARM64 Debian-family controller with `apt-get`, `dpkg-deb`, access to its configured Debian package repositories, `sha256sum`, and `tar`; Batocera itself remains package-manager-free.
+
+## Watchdog preparation
+
+When Batocera does not already have a complete live recovery chain, `prepare` installs the packaged project-owned service and Python keeper. The installer:
+
+1. Requires clear tryboot state, a read-only `/boot`, a live watchdog device, one current IPv4 default gateway that answers ping, Python, ping, and EEPROM tooling.
+2. Preserves a no-clobber transaction backup under `/userdata/system/autopioverclock/backups`.
+3. Preserves existing `system.services` entries while adding `AutoPiOverclockWatchdog`.
+4. Installs `kernel_watchdog_timeout=180`, `watchdog.open_timeout=180`, a 60-second EEPROM boot watchdog, and a 15-second runtime device timeout.
+5. Reboots and accepts success only after discovery proves the active EEPROM, kernel handoff, watchdog device, runtime timeout, and current userspace owner.
+
+The liveness target is the single default gateway proven during preparation; no subnet or public address is hard-coded. The keeper feeds immediately, waits 180 seconds for ordinary network startup, then requires 180 seconds of continuous gateway loss before allowing hardware recovery. Persistent history limits that recovery to three consecutive watchdog reboots within 30 minutes; on the next boot it keeps feeding to prevent an endless outage loop, while continuing to test and clearing the history as soon as the gateway responds.
+
+Foreign files at the project-owned keeper/service paths, ambiguous routes, a changed plan hash, or failure to return `/boot` read-only stop preparation. Existing unrelated Batocera services and watchdog implementations are not deleted.
 
 Batocera follows the same token-bound tryboot ownership rules as the Debian backend. A live run refuses any pre-existing `tryboot.txt`. AutoPiOverclock records the fresh random token, completed and reservation hashes, and token-specific quarantine path before remounting `/boot`; creates with no-clobber semantics; restores and verifies the read-only mount; and re-verifies the exact completed file immediately before trigger. After verified normal recovery it briefly remounts read-write, moves only matching project evidence to the no-clobber quarantine path, revalidates it, removes it, and proves `/boot` read-only again. Changed or foreign evidence is preserved and stops the run.

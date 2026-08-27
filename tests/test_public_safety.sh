@@ -16,6 +16,7 @@ if grep -RInE --include='*.sh' -- '(^|[[:space:]])path=' "$ROOT"; then
 fi
 grep -q 'command ssh' "$ROOT/lib/ssh.sh"
 grep -q -- '-F /dev/null' "$ROOT/lib/ssh.sh"
+grep -q 'StrictHostKeyChecking=accept-new' "$ROOT/lib/ssh.sh"
 grep -q 'raspbian|debian|ubuntu' "$ROOT/lib/detect.sh"
 if grep -q 'ID_LIKE' "$ROOT/lib/detect.sh"; then
     echo 'generic Debian-derived operating systems were accepted through ID_LIKE' >&2
@@ -56,14 +57,19 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
     exit 1
 fi
 approved_options=$(printf '%s\n' \
-    --config --dry-run --edge-cpu-24h --help --identity-file --install-missing --mode --output-dir \
-    --redact --repair-watchdogs --run-id --ssh-port --version --yes | LC_ALL=C sort)
-documented_options=$(awk '/^Options:/{capture=1; next} /^USAGE$/{capture=0} capture' "$ROOT/autopioverclock" |
+    --edge-cpu-24h --help --identity-file --output-dir --ssh-port --version | LC_ALL=C sort)
+documented_options=$(awk '/^Options:/{capture=1; next} /^Advanced support commands/{capture=0} capture' "$ROOT/autopioverclock" |
     grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
-    printf 'documented CLI options differ from the approved whitelist\nexpected:\n%s\nactual:\n%s\n' "$approved_options" "$documented_options" >&2
+    printf 'primary CLI options differ from the simple-workflow whitelist\nexpected:\n%s\nactual:\n%s\n' "$approved_options" "$documented_options" >&2
     exit 1
 }
+for advanced_option in --config --dry-run --install-missing --mode --redact --repair-watchdogs --run-id --yes; do
+    grep -Fq -- "$advanced_option" "$ROOT/docs/cli.md" || {
+        echo "advanced option is implemented but missing from docs/cli.md: $advanced_option" >&2
+        exit 1
+    }
+done
 if "$ROOT/autopioverclock" prepare example-host --edge-cpu-24h --config fixture.conf >/dev/null 2>&1; then
     echo '--edge-cpu-24h accepted an explicit configuration' >&2
     exit 1

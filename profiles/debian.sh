@@ -57,7 +57,11 @@ apo_profile_repair_watchdogs() {
     apo_state_set WATCHDOG_REPAIR_OLD_HASH "$old_hash"
     apo_state_set WATCHDOG_REPAIR_EXPECTED_HASH "$expected_hash"
     apo_state_save
-    apo_confirm_exact "This preserves and updates the EEPROM config, appends a managed kernel-watchdog block, creates a systemd manager drop-in, and reboots ${APO_REMOTE_TARGET}." "$expected" || return 1
+    if (( ${APO_AUTO_PREPARE:-0} == 1 )); then
+        apo_info 'The explicit prepare command authorizes the planned Debian watchdog installation and verification.'
+    else
+        apo_confirm_exact "This preserves and updates the EEPROM config, appends a managed kernel-watchdog block, creates a systemd manager drop-in, and reboots ${APO_REMOTE_TARGET}." "$expected" || return 1
+    fi
     apo_state_set MUTATIONS_STARTED 1
     apo_state_set WATCHDOG_REPAIR_STATUS MUTATING
     apo_state_set SUBPHASE WATCHDOG_REPAIR_MUTATING
