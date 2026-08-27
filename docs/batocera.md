@@ -29,10 +29,12 @@ When Batocera does not already have a complete live recovery chain, `prepare` in
 1. Requires clear tryboot state, a read-only `/boot`, a live watchdog device, one current IPv4 default gateway that answers ping, Python, ping, and EEPROM tooling.
 2. Preserves a no-clobber transaction backup under `/userdata/system/autopioverclock/backups`.
 3. Preserves existing `system.services` entries while adding `AutoPiOverclockWatchdog`.
-4. Installs `kernel_watchdog_timeout=180`, `watchdog.open_timeout=180`, a 60-second EEPROM boot watchdog, and a 15-second runtime device timeout.
+4. Installs `kernel_watchdog_timeout=180`, `watchdog.open_timeout=180`, and a 15-second runtime device timeout. An already-positive EEPROM boot-watchdog timeout is preserved; only a missing or zero timeout requires scheduling the 60-second project default.
 5. Reboots and accepts success only after discovery proves the active EEPROM, kernel handoff, watchdog device, runtime timeout, and current userspace owner.
 
 The liveness target is the single default gateway proven during preparation; no subnet or public address is hard-coded. The keeper feeds immediately, waits 180 seconds for ordinary network startup, then requires 180 seconds of continuous gateway loss before allowing hardware recovery. Persistent history limits that recovery to three consecutive watchdog reboots within 30 minutes; on the next boot it keeps feeding to prevent an endless outage loop, while continuing to test and clearing the history as soon as the gateway responds.
+
+EEPROM planning is similarly state-bound. Preparation records the current timeout, effective timeout, whether an EEPROM update is actually required, and the rendered configuration hash. A positive current value satisfies the safety contract and skips `rpi-eeprom-config --apply`. If a missing or zero value requires scheduling and the updater fails, the complete updater output remains in the verified watchdog backup instead of being discarded.
 
 Foreign files at the project-owned keeper/service paths, ambiguous routes, a changed plan hash, or failure to return `/boot` read-only stop preparation. Existing unrelated Batocera services and watchdog implementations are not deleted.
 

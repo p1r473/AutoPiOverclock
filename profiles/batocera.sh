@@ -155,7 +155,8 @@ apo_profile_repair_watchdogs() {
     local remote_installer="${remote_asset_dir}/install_watchdog.sh" remote_keeper="${remote_asset_dir}/watchdog_keeper.py"
     local remote_service="${remote_asset_dir}/AutoPiOverclockWatchdog"
     local old_hash expected_hash target cmdline_old cmdline_new batocera_old batocera_new
-    local keeper_hash service_hash keeper_config_hash eeprom_hash repair_hash reported_target backup_file
+    local keeper_hash service_hash keeper_config_hash eeprom_hash eeprom_current_timeout eeprom_timeout eeprom_apply_required
+    local repair_hash reported_target backup_file
 
     [[ -r $local_installer && -r $local_keeper && -r $local_service ]] || {
         apo_event watchdog-repair ERROR PREFLIGHT_FAILURE 'The packaged Batocera watchdog assets are missing.'
@@ -178,11 +179,18 @@ apo_profile_repair_watchdogs() {
     service_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_SERVICE_HASH]:-}
     keeper_config_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_KEEPER_CONFIG_HASH]:-}
     eeprom_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_EEPROM_HASH]:-}
+    eeprom_current_timeout=${APO_WORKER_DATA[WATCHDOG_REPAIR_EEPROM_CURRENT_TIMEOUT]:-}
+    eeprom_timeout=${APO_WORKER_DATA[WATCHDOG_REPAIR_EEPROM_TIMEOUT]:-}
+    eeprom_apply_required=${APO_WORKER_DATA[WATCHDOG_REPAIR_EEPROM_APPLY_REQUIRED]:-}
     if [[ $old_hash != "$APO_PERMANENT_CONFIG_HASH" || ! $expected_hash =~ ^[0-9a-f]{64}$ ||
           ! $cmdline_old =~ ^[0-9a-f]{64}$ || ! $cmdline_new =~ ^[0-9a-f]{64}$ ||
           ! $batocera_old =~ ^[0-9a-f]{64}$ || ! $batocera_new =~ ^[0-9a-f]{64}$ ||
           ! $keeper_hash =~ ^[0-9a-f]{64}$ || ! $service_hash =~ ^[0-9a-f]{64}$ ||
-          ! $keeper_config_hash =~ ^[0-9a-f]{64}$ || ! $eeprom_hash =~ ^[0-9a-f]{64}$ || -z $target ]]; then
+          ! $keeper_config_hash =~ ^[0-9a-f]{64}$ || ! $eeprom_hash =~ ^[0-9a-f]{64}$ || -z $target ]] ||
+       ! apo_is_uint "$eeprom_current_timeout" || ! apo_is_uint "$eeprom_timeout" || (( eeprom_timeout == 0 )) ||
+       [[ $eeprom_apply_required != 0 && $eeprom_apply_required != 1 ]] ||
+       [[ $eeprom_apply_required == 0 && $eeprom_current_timeout != "$eeprom_timeout" ]] ||
+       [[ $eeprom_apply_required == 1 && $eeprom_current_timeout != 0 ]]; then
         apo_state_set WATCHDOG_REPAIR_STATUS PLAN_UNVERIFIED
         apo_state_save
         return 1
@@ -201,7 +209,15 @@ apo_profile_repair_watchdogs() {
     apo_state_set WATCHDOG_REPAIR_SERVICE_HASH "$service_hash"
     apo_state_set WATCHDOG_REPAIR_KEEPER_CONFIG_HASH "$keeper_config_hash"
     apo_state_set WATCHDOG_REPAIR_EEPROM_HASH "$eeprom_hash"
+    apo_state_set WATCHDOG_REPAIR_EEPROM_CURRENT_TIMEOUT "$eeprom_current_timeout"
+    apo_state_set WATCHDOG_REPAIR_EEPROM_TIMEOUT "$eeprom_timeout"
+    apo_state_set WATCHDOG_REPAIR_EEPROM_APPLY_REQUIRED "$eeprom_apply_required"
     apo_state_save
+    if [[ $eeprom_apply_required == 0 ]]; then
+        apo_info "The existing positive EEPROM boot-watchdog timeout (${eeprom_timeout}s) is already valid and will be preserved; no EEPROM update will be scheduled."
+    else
+        apo_info "The EEPROM boot watchdog is disabled; prepare will schedule a ${eeprom_timeout}s timeout and retain the updater diagnostics."
+    fi
     if (( ${APO_AUTO_PREPARE:-0} == 1 )); then
         apo_info "The explicit prepare command authorizes the planned Batocera watchdog installation for default gateway $target and its verification reboot."
     else
@@ -214,7 +230,8 @@ apo_profile_repair_watchdogs() {
     apo_run_worker_capture watchdog-repair repair-watchdogs \
         "$remote_installer" "$remote_keeper" "$remote_service" "$APO_RUN_ID" "$target" \
         "$old_hash" "$expected_hash" "$cmdline_old" "$cmdline_new" "$batocera_old" "$batocera_new" \
-        "$keeper_hash" "$service_hash" "$keeper_config_hash" "$eeprom_hash" || return 1
+        "$keeper_hash" "$service_hash" "$keeper_config_hash" "$eeprom_hash" \
+        "$eeprom_current_timeout" "$eeprom_timeout" "$eeprom_apply_required" || return 1
     apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
     repair_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_NEW_HASH]:-}
     reported_target=${APO_WORKER_DATA[WATCHDOG_REPAIR_TARGET]:-}

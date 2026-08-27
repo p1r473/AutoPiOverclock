@@ -3,10 +3,34 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
+fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 export APO_WATCHDOG_INSTALLER_LIBRARY_ONLY=1
 # shellcheck source=../assets/batocera/install_watchdog.sh
 source "$ROOT/assets/batocera/install_watchdog.sh"
+
+if grep -Eq '192[.]168[.]' "$ROOT/assets/batocera/install_watchdog.sh" "$ROOT/assets/batocera/watchdog_keeper.py"; then
+    fail 'Batocera watchdog implementation contains a hard-coded private subnet'
+fi
+mkdir "$TEMP_DIR/route-bin"
+cat > "$TEMP_DIR/route-bin/ip" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'default via 10.77.8.1 dev eth0'
+if [ "${MOCK_ROUTE_COUNT:-1}" = 2 ]; then
+    printf '%s\n' 'default via 10.77.9.1 dev eth1'
+fi
+EOF
+chmod +x "$TEMP_DIR/route-bin/ip"
+original_path=$PATH
+PATH="$TEMP_DIR/route-bin:$PATH"
+export MOCK_ROUTE_COUNT=1
+[[ $(default_gateway) == 10.77.8.1 ]]
+export MOCK_ROUTE_COUNT=2
+if default_gateway >/dev/null; then
+    fail 'multiple IPv4 default gateways were silently accepted'
+fi
+PATH=$original_path
+unset MOCK_ROUTE_COUNT
 
 cat > "$TEMP_DIR/config.txt" <<'EOF'
 [all]
@@ -62,6 +86,69 @@ grep -Fqx 'TARGET=10.42.0.1' "$TEMP_DIR/watchdog.conf"
 grep -Fqx 'STARTUP_GRACE_SECONDS=180' "$TEMP_DIR/watchdog.conf"
 grep -Fqx 'MAX_REBOOTS=3' "$TEMP_DIR/watchdog.conf"
 grep -Fqx 'REBOOT_WINDOW_SECONDS=1800' "$TEMP_DIR/watchdog.conf"
+
+cat > "$TEMP_DIR/eeprom-positive.conf" <<'EOF'
+BOOT_UART=0
+BOOT_WATCHDOG_TIMEOUT=30
+EOF
+plan_eeprom "$TEMP_DIR/eeprom-positive.conf" "$TEMP_DIR/eeprom-positive.rendered"
+cmp "$TEMP_DIR/eeprom-positive.conf" "$TEMP_DIR/eeprom-positive.rendered"
+[[ $PLAN_EEPROM_CURRENT_TIMEOUT == 30 ]]
+[[ $PLAN_EEPROM_EFFECTIVE_TIMEOUT == 30 ]]
+[[ $PLAN_EEPROM_APPLY_REQUIRED == 0 ]]
+
+cat > "$TEMP_DIR/eeprom-disabled.conf" <<'EOF'
+BOOT_UART=0
+BOOT_WATCHDOG_TIMEOUT=0
+EOF
+plan_eeprom "$TEMP_DIR/eeprom-disabled.conf" "$TEMP_DIR/eeprom-disabled.rendered"
+grep -Fqx 'BOOT_WATCHDOG_TIMEOUT=60' "$TEMP_DIR/eeprom-disabled.rendered"
+[[ $PLAN_EEPROM_CURRENT_TIMEOUT == 0 ]]
+[[ $PLAN_EEPROM_EFFECTIVE_TIMEOUT == 60 ]]
+[[ $PLAN_EEPROM_APPLY_REQUIRED == 1 ]]
+
+printf '%s\n' 'BOOT_UART=0' > "$TEMP_DIR/eeprom-missing.conf"
+plan_eeprom "$TEMP_DIR/eeprom-missing.conf" "$TEMP_DIR/eeprom-missing.rendered"
+grep -Fqx 'BOOT_WATCHDOG_TIMEOUT=60' "$TEMP_DIR/eeprom-missing.rendered"
+[[ $PLAN_EEPROM_APPLY_REQUIRED == 1 ]]
+
+printf '%s\n' 'BOOT_WATCHDOG_TIMEOUT=30' 'BOOT_WATCHDOG_TIMEOUT=60' > "$TEMP_DIR/eeprom-duplicate.conf"
+if plan_eeprom "$TEMP_DIR/eeprom-duplicate.conf" "$TEMP_DIR/eeprom-duplicate.rendered"; then
+    fail 'duplicate EEPROM watchdog settings were accepted'
+fi
+printf '%s\n' 'BOOT_WATCHDOG_TIMEOUT=invalid' > "$TEMP_DIR/eeprom-malformed.conf"
+if plan_eeprom "$TEMP_DIR/eeprom-malformed.conf" "$TEMP_DIR/eeprom-malformed.rendered"; then
+    fail 'malformed EEPROM watchdog setting was accepted'
+fi
+
+mkdir "$TEMP_DIR/mock-bin"
+cat > "$TEMP_DIR/mock-bin/rpi-eeprom-config" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$MOCK_EEPROM_CALL_LOG"
+printf '%s\n' 'fixture EEPROM apply failure' >&2
+exit 9
+EOF
+chmod +x "$TEMP_DIR/mock-bin/rpi-eeprom-config"
+export MOCK_EEPROM_CALL_LOG="$TEMP_DIR/eeprom-apply.called"
+PATH="$TEMP_DIR/mock-bin:$PATH" apply_eeprom_plan "$TEMP_DIR/eeprom-positive.rendered" 0 "$TEMP_DIR/eeprom-apply.skipped.log"
+[[ ! -e $MOCK_EEPROM_CALL_LOG && ! -e $TEMP_DIR/eeprom-apply.skipped.log ]]
+set +e
+PATH="$TEMP_DIR/mock-bin:$PATH" apply_eeprom_plan "$TEMP_DIR/eeprom-disabled.rendered" 1 "$TEMP_DIR/eeprom-apply.failed.log"
+apply_rc=$?
+set -e
+[[ $apply_rc == 9 ]]
+grep -Fqx -- '--apply '"$TEMP_DIR"'/eeprom-disabled.rendered' "$MOCK_EEPROM_CALL_LOG"
+grep -Fqx 'fixture EEPROM apply failure' "$TEMP_DIR/eeprom-apply.failed.log"
+
+for evidence_key in \
+    WATCHDOG_REPAIR_EEPROM_CURRENT_TIMEOUT \
+    WATCHDOG_REPAIR_EEPROM_TIMEOUT \
+    WATCHDOG_REPAIR_EEPROM_APPLY_REQUIRED; do
+    grep -Fq "$evidence_key" "$ROOT/profiles/batocera.sh" ||
+        fail "controller does not bind $evidence_key"
+done
+grep -Fq '[[ $# == 17 ]]' "$ROOT/assets/batocera/install_watchdog.sh" ||
+    fail 'watchdog installer apply contract does not require the complete EEPROM plan'
 
 python3 - "$ROOT/assets/batocera/watchdog_keeper.py" <<'PY'
 import importlib.util
