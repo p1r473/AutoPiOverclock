@@ -138,4 +138,23 @@ for retained_option in --config --mode --run-id --install-missing --repair-watch
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 
+for documented_command in prepare overclock reset run resume status recover apply report; do
+    documented_pattern=$(printf '| `%s TARGET` |' "$documented_command")
+    grep -Fq "$documented_pattern" "$ROOT/README.md"
+done
+
+for normal_command in prepare overclock reset; do
+    documented_pattern=$(printf '| `%s TARGET` |' "$normal_command")
+    grep -Fq "$documented_pattern" "$ROOT/docs/cli.md"
+done
+
+grep -Fq 'controller and target must be different machines' "$ROOT/README.md"
+grep -Fq 'Run every command on the controller/master Pi.' "$ROOT/docs/cli.md"
+grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
+grep -Fq 'ssh -o BatchMode=yes "$TARGET" true' "$ROOT/README.md"
+if grep -Fq 'command ssh' "$ROOT/README.md" || grep -Fq -- '-F /dev/null' "$ROOT/README.md"; then
+    echo 'README exposed the implementation-specific SSH invocation' >&2
+    exit 1
+fi
+
 printf 'test_simple_cli: PASS\n'
