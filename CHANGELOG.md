@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.19 — 2026-08-27
+
+- Made Batocera `prepare` preserve any already-positive `BOOT_WATCHDOG_TIMEOUT` instead of unnecessarily scheduling a fixed EEPROM replacement. A target such as Tron with an active 30-second EEPROM watchdog now skips EEPROM mutation while still installing and verifying the missing kernel/userspace chain.
+- Bound the detected current timeout, effective timeout, apply decision, and rendered EEPROM hash through the controller state and apply recheck so a route or EEPROM-state change cannot silently alter the approved plan.
+- Retained complete `rpi-eeprom-config --apply` diagnostics in the verified watchdog backup whenever a genuinely disabled EEPROM watchdog requires scheduling and the updater fails.
+- Added fixtures for positive-timeout preservation, disabled/missing timeout installation, malformed/duplicate rejection, EEPROM-apply skipping, and updater diagnostic retention.
+
 ## 0.1.0-alpha.18 — 2026-08-27
 
 - Added a three-action normal workflow—`autopioverclock prepare TARGET`, `autopioverclock overclock TARGET`, and `autopioverclock reset TARGET`—while retaining the full expert `run`, `resume`, `status`, `recover`, `apply`, `report`, and postfix `TARGET reset` interface. Every operational command requires an explicit target.

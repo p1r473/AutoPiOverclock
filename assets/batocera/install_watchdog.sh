@@ -266,6 +266,52 @@ render_eeprom() {
     ' "$source" > "$destination"
 }
 
+eeprom_watchdog_timeout() {
+    local source=$1
+    awk -F= '
+        /^[[:space:]]*#/ {next}
+        {
+            key=$1
+            gsub(/[[:space:]]/, "", key)
+            if (key != "BOOT_WATCHDOG_TIMEOUT") next
+            value=$0
+            sub(/^[^=]*=/, "", value)
+            gsub(/[[:space:]]/, "", value)
+            count++
+        }
+        END {
+            if (count == 0) {print 0; exit}
+            if (count != 1 || value !~ /^[0-9]+$/) exit 1
+            print value + 0
+        }
+    ' "$source"
+}
+
+plan_eeprom() {
+    local source=$1 destination=$2 current_timeout
+    current_timeout=$(eeprom_watchdog_timeout "$source") || return 1
+    [[ $current_timeout =~ ^[0-9]+$ ]] || return 1
+    PLAN_EEPROM_CURRENT_TIMEOUT=$current_timeout
+    if (( current_timeout > 0 )); then
+        cp -- "$source" "$destination" || return 1
+        PLAN_EEPROM_EFFECTIVE_TIMEOUT=$current_timeout
+        PLAN_EEPROM_APPLY_REQUIRED=0
+    else
+        render_eeprom "$source" "$destination" || return 1
+        PLAN_EEPROM_EFFECTIVE_TIMEOUT=$EEPROM_TIMEOUT
+        PLAN_EEPROM_APPLY_REQUIRED=1
+    fi
+}
+
+apply_eeprom_plan() {
+    local source=$1 apply_required=$2 diagnostic_file=$3
+    case $apply_required in
+        0) return 0 ;;
+        1) rpi-eeprom-config --apply "$source" > "$diagnostic_file" 2>&1 ;;
+        *) return 2 ;;
+    esac
+}
+
 atomic_install() {
     local source=$1 destination=$2 expected_old_hash=$3 expected_new_hash=$4 mode=$5 temporary current_hash installed_hash
     regular_file "$source" || return 1
@@ -327,7 +373,7 @@ plan_values() {
     render_batocera_config "$BATOCERA_CONFIG" "$plan_dir/batocera.conf" || return 1
     render_keeper_config "$plan_dir/watchdog.conf" "$PLAN_TARGET" || return 1
     rpi-eeprom-config > "$plan_dir/eeprom-current" || return 1
-    render_eeprom "$plan_dir/eeprom-current" "$plan_dir/eeprom-new" || return 1
+    plan_eeprom "$plan_dir/eeprom-current" "$plan_dir/eeprom-new" || return 1
     PLAN_BOOT_NEW_HASH=$(file_hash "$plan_dir/config.txt" || true)
     PLAN_CMDLINE_NEW_HASH=$(file_hash "$plan_dir/cmdline.txt" || true)
     PLAN_BATOCERA_NEW_HASH=$(file_hash "$plan_dir/batocera.conf" || true)
@@ -349,7 +395,9 @@ emit_plan() {
     emit_data WATCHDOG_REPAIR_SERVICE_HASH "$PLAN_SERVICE_HASH"
     emit_data WATCHDOG_REPAIR_KEEPER_CONFIG_HASH "$PLAN_KEEPER_CONFIG_HASH"
     emit_data WATCHDOG_REPAIR_EEPROM_HASH "$PLAN_EEPROM_NEW_HASH"
-    emit_data WATCHDOG_REPAIR_EEPROM_TIMEOUT "$EEPROM_TIMEOUT"
+    emit_data WATCHDOG_REPAIR_EEPROM_CURRENT_TIMEOUT "$PLAN_EEPROM_CURRENT_TIMEOUT"
+    emit_data WATCHDOG_REPAIR_EEPROM_TIMEOUT "$PLAN_EEPROM_EFFECTIVE_TIMEOUT"
+    emit_data WATCHDOG_REPAIR_EEPROM_APPLY_REQUIRED "$PLAN_EEPROM_APPLY_REQUIRED"
 }
 
 plan() {
@@ -416,6 +464,7 @@ apply_plan() {
     local keeper_source=$1 service_source=$2 run_id=$3 expected_target=$4 expected_boot_old=$5 expected_boot_new=$6
     local expected_cmd_old=$7 expected_cmd_new=$8 expected_bat_old=$9 expected_bat_new=${10}
     local expected_keeper_hash=${11} expected_service_hash=${12} expected_keeper_config_hash=${13} expected_eeprom_hash=${14}
+    local expected_eeprom_current_timeout=${15} expected_eeprom_timeout=${16} expected_eeprom_apply_required=${17}
     local plan_dir backup_dir timestamp eeprom_committed=0 boot_rw=0 failure_reason=''
     local old_keeper_hash=absent old_service_hash=absent old_live_config_hash=absent
 
@@ -438,7 +487,10 @@ apply_plan() {
           $PLAN_CMDLINE_OLD_HASH != "$expected_cmd_old" || $PLAN_CMDLINE_NEW_HASH != "$expected_cmd_new" ||
           $PLAN_BATOCERA_OLD_HASH != "$expected_bat_old" || $PLAN_BATOCERA_NEW_HASH != "$expected_bat_new" ||
           $PLAN_KEEPER_HASH != "$expected_keeper_hash" || $PLAN_SERVICE_HASH != "$expected_service_hash" ||
-          $PLAN_KEEPER_CONFIG_HASH != "$expected_keeper_config_hash" || $PLAN_EEPROM_NEW_HASH != "$expected_eeprom_hash" ]]; then
+          $PLAN_KEEPER_CONFIG_HASH != "$expected_keeper_config_hash" || $PLAN_EEPROM_NEW_HASH != "$expected_eeprom_hash" ||
+          $PLAN_EEPROM_CURRENT_TIMEOUT != "$expected_eeprom_current_timeout" ||
+          $PLAN_EEPROM_EFFECTIVE_TIMEOUT != "$expected_eeprom_timeout" ||
+          $PLAN_EEPROM_APPLY_REQUIRED != "$expected_eeprom_apply_required" ]]; then
         rm -rf -- "$plan_dir"
         emit_result RECOVERY_FAILURE 'Batocera watchdog plan evidence changed before the mutation boundary.'
         return 1
@@ -480,9 +532,10 @@ apply_plan() {
     fi
     [[ -n $failure_reason ]] || atomic_install "$plan_dir/config.txt" "$BOOT_CONFIG" "$PLAN_BOOT_OLD_HASH" "$PLAN_BOOT_NEW_HASH" 644 || failure_reason='Could not install the kernel watchdog handoff config.'
     [[ -n $failure_reason ]] || atomic_install "$plan_dir/cmdline.txt" "$CMDLINE_FILE" "$PLAN_CMDLINE_OLD_HASH" "$PLAN_CMDLINE_NEW_HASH" 644 || failure_reason='Could not install watchdog.open_timeout.'
-    if [[ -z $failure_reason ]]; then
+    if [[ -z $failure_reason && $PLAN_EEPROM_APPLY_REQUIRED == 1 ]]; then
         eeprom_committed=1
-        rpi-eeprom-config --apply "$plan_dir/eeprom-new" >/dev/null 2>&1 || failure_reason='EEPROM watchdog scheduling failed after the no-rollback boundary.'
+        apply_eeprom_plan "$plan_dir/eeprom-new" "$PLAN_EEPROM_APPLY_REQUIRED" "$backup_dir/eeprom-apply.log" ||
+            failure_reason="EEPROM watchdog scheduling failed after the no-rollback boundary; diagnostics were retained in $backup_dir/eeprom-apply.log."
     fi
     if (( boot_rw == 1 )); then
         if remount_boot ro; then
@@ -538,7 +591,7 @@ main() {
             plan "$@"
             ;;
         apply)
-            [[ $# == 14 ]] || { emit_result PREFLIGHT_FAILURE 'Batocera watchdog apply received invalid arguments.'; return 2; }
+            [[ $# == 17 ]] || { emit_result PREFLIGHT_FAILURE 'Batocera watchdog apply received invalid arguments.'; return 2; }
             apply_plan "$@"
             ;;
         *) emit_result PREFLIGHT_FAILURE 'Batocera watchdog installer action is required.'; return 2 ;;
