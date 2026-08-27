@@ -9,7 +9,7 @@
 > [!CAUTION]
 > Overclocking can crash the target, corrupt storage, damage data, and in unusual cases contribute to hardware damage. `tryboot` and watchdogs reduce risk; they do not eliminate it. Back up the target and do not use this alpha on a system whose outage or corruption you cannot tolerate.
 
-Run AutoPiOverclock from a separate Linux controller. The target must be a 64-bit ARM Raspberry Pi 5 with working SSH key authentication, adequate cooling, and a backup. `prepare` installs and proves the target-side prerequisites and recovery watchdog.
+Run AutoPiOverclock from a separate Linux controller. The controller and target must be different machines: self-hosted tuning is unsupported because a target crash or reboot would also remove the independent controller and recovery observer. The target must be a 64-bit ARM Raspberry Pi 5 with working SSH key authentication, adequate cooling, and a backup. `prepare` installs and proves the target-side prerequisites and recovery watchdog.
 
 For a new checkout:
 
@@ -147,7 +147,18 @@ Do not infer a production recommendation from a candidate pass, an active run, o
 - Remote `/bin/bash`.
 - A 64-bit ARM (`aarch64`/`arm64`) Raspberry Pi 5 target with tested power, cooling, backups, and a working normal boot.
 
-AutoPiOverclock runs `command ssh -F /dev/null`; user SSH aliases and wrappers are intentionally bypassed. SSH key authentication must already work without a password prompt. A new host key is accepted on first use and a changed key is rejected. If `user@` is omitted, the controller's current `id -un` value becomes the SSH username; the tool never silently assumes `pi` or `root`.
+SSH key authentication must already work without a password prompt. A new host key is accepted on first use and a changed key is rejected. If `user@` is omitted, the controller's current `id -un` value becomes the SSH username; the tool never silently assumes `pi` or `root`.
+
+Connect to the target and prove key-only SSH before using AutoPiOverclock:
+
+```bash
+# Replace this with the target's real SSH destination.
+TARGET=user@target-host
+
+# Review and accept the host key, then separately prove key-only SSH.
+ssh "$TARGET" true
+ssh -o BatchMode=yes "$TARGET" true
+```
 
 ## First hardware run
 

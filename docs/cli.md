@@ -8,13 +8,13 @@ autopioverclock overclock TARGET
 autopioverclock reset TARGET
 ```
 
-`TARGET` is always required and may be a hostname, IP address, `username@host`, or `username@IP`. If the username is omitted, the controller uses its current `id -un` username. AutoPiOverclock never guesses, prompts for, or remembers a target, so separate terminal tabs cannot silently redirect one another.
+Run every command on the controller/master Pi. `TARGET` always names a different target/slave Pi and may be a hostname, IP address, `username@host`, or `username@IP`. Self-hosted tuning is unsupported because a target crash or reboot would also terminate the controller and remove independent recovery observation. If the username is omitted, the controller uses its current `id -un` username. AutoPiOverclock never guesses, prompts for, or remembers a target, so separate terminal tabs cannot silently redirect one another.
 
-| Command | Complete behavior |
+| Controller command | Complete behavior |
 |---|---|
-| `prepare` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. On an already tuned host it completes setup, then directs the one required reset. |
-| `overclock` | Rediscover the stock baseline, prove tryboot recovery, sweep and refine candidates, select guarded clocks, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
-| `reset` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |
+| `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. On an already tuned host it completes setup, then directs the one required reset. |
+| `overclock TARGET` | Rediscover the stock baseline, prove tryboot recovery, sweep and refine candidates, select guarded clocks, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
+| `reset TARGET` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |
 
 The optional edge test is:
 
