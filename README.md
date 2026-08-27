@@ -123,14 +123,14 @@ Batocera is treated as Buildroot, not Arch Linux. AutoPiOverclock never attempts
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-08-27, `alpha.19` makes `prepare`, `overclock`, and `reset` the complete normal interface while retaining the existing fail-closed recovery engine underneath. It also preserves an already-positive Batocera EEPROM boot-watchdog timeout instead of scheduling an unnecessary replacement. Earlier Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
+As of 2026-08-27, `alpha.20` makes `prepare`, `overclock`, and `reset` the complete normal interface while retaining the existing fail-closed recovery engine underneath. It preserves an already-positive Batocera EEPROM boot-watchdog timeout instead of scheduling an unnecessary replacement, installs only the declared Batocera assets even when Python cache directories exist, and automatically binds Debian graphical validation to the active desktop sink or complete ALSA playback inventory. Earlier Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
 
 | Evidence | Current status |
 | --- | --- |
 | Bash fixture suite | 17 scripted suites cover the three-command interface, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | See the live badge for the current commit. |
-| Debian-family Raspberry Pi 5 run | Earlier autonomous normal recovery at the 3200 MHz candidate succeeded; a complete `alpha.19` run remains pending. |
-| Batocera Raspberry Pi 5 run | Recovery-mode boot returned; live `alpha.18` preparation exposed and preserved an unnecessary EEPROM-scheduling failure, and complete `alpha.19` validation remains pending. |
+| Debian-family Raspberry Pi 5 run | Earlier autonomous normal recovery at the 3200 MHz candidate succeeded; a complete `alpha.20` run remains pending. |
+| Batocera Raspberry Pi 5 run | Recovery-mode boot returned; live `alpha.18` preparation exposed and preserved an unnecessary EEPROM-scheduling failure, and complete `alpha.20` validation remains pending. |
 | Eight-hour production-floor validation | No public PASS claim until the retained run artifacts complete and are reviewed. |
 | Optional 24-hour CPU edge validation | No public PASS claim until the production floor passes first and the edge artifacts are reviewed. |
 
@@ -168,7 +168,7 @@ Prepare the target once:
 autopioverclock prepare pi-host
 ```
 
-`prepare` discovers the Raspberry Pi 5 and its boot layout, chooses graphical or headless validation, installs missing stress dependencies, installs or repairs the recovery watchdog when required, reboots when activation needs it, and finishes only after the active watchdog chain and normal stock baseline are proved. On Batocera it preserves existing services and any already-positive EEPROM boot-watchdog timeout, installs a project-owned keeper only when needed, requires the single current IPv4 default gateway to answer before binding network-loss detection to it, waits three minutes before judging startup connectivity, and stops rebooting after three consecutive recovery attempts within 30 minutes.
+`prepare` discovers the Raspberry Pi 5 and its boot layout, chooses graphical or headless validation, installs missing stress dependencies, installs or repairs the recovery watchdog when required, reboots when activation needs it, and finishes only after the active watchdog chain and normal stock baseline are proved. Debian graphical discovery automatically uses the active PipeWire/PulseAudio sink when available and otherwise binds validation to every detected ALSA playback device; no manual sink setting is needed. On Batocera it preserves existing services and any already-positive EEPROM boot-watchdog timeout, installs a project-owned keeper only when needed, requires the single current IPv4 default gateway to answer before binding network-loss detection to it, waits three minutes before judging startup connectivity, and stops rebooting after three consecutive recovery attempts within 30 minutes.
 
 Configuration-free automatic tuning requires the firmware-stock tuple: CPU 2400 MHz, V3D 800 or 960 MHz, and zero voltage delta, with no explicit clock/voltage override or unbound `include`. Preparation still installs and proves prerequisites on a currently tuned host; it then tells you to reset once before overclocking:
 
@@ -261,7 +261,7 @@ Custom configuration is an advanced `run TARGET --config FILE` interface retaine
 - Temperature remains below the configured ceiling.
 - No new filesystem, storage, USB-reset, GPU, kernel panic/internal error/Oops, RCU-stall, hung-task, or watchdog fault appears.
 - The stress process exits successfully and within its hard deadline.
-- Graphical runs always preserve the captured display baseline. Debian also preserves a default audio sink when discovery captured one or `audio_sink_pattern` requires one; Batocera graphical runs require and preserve both display and audio baselines.
+- Graphical runs always preserve the captured display and audio baselines. Debian automatically prefers the active PipeWire/PulseAudio sink and falls back to the complete ALSA playback-device inventory without guessing one output; Batocera requires its active default sink. `audio_sink_pattern` remains an optional additional expert constraint.
 - Required services and processes remain healthy.
 - Permanent configuration retains its original SHA-256 hash.
 - The following recovery boot clears `tryboot` and passes normal health checks.

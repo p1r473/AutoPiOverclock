@@ -177,14 +177,17 @@ graphical_audio_context() {
     )
 }
 
-graphical_audio_context debian '' '' >/dev/null
 graphical_audio_context debian fixture-audio '' >/dev/null
-if graphical_audio_context debian '' 'USB Audio' >/dev/null 2>&1; then
-    echo 'Debian accepted a configured audio sink requirement without a captured sink' >&2
+if graphical_audio_context debian '' '' >/dev/null 2>&1; then
+    echo 'Debian graphical mode accepted a missing automatic audio baseline' >&2
     exit 1
 fi
 if graphical_audio_context batocera '' '' >/dev/null 2>&1; then
     echo 'Batocera graphical mode accepted a missing audio baseline' >&2
+    exit 1
+fi
+if grep -Fq 'skip default-sink identity checks' "$ROOT/lib/detect.sh"; then
+    echo 'Debian graphical preparation still documents skipped audio validation' >&2
     exit 1
 fi
 printf 'test_public_safety: PASS\n'
