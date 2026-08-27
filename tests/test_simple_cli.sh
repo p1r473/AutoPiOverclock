@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
 # The fixture intentionally isolates repeated sourced-controller evaluations in subshells.
 # shellcheck disable=SC2030,SC2031
+set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
