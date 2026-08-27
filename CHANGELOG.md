@@ -2,10 +2,10 @@
 
 ## 0.1.0-alpha.18 — 2026-08-27
 
-- Replaced the ordinary multi-command workflow with three actions: `autopioverclock prepare`, `autopioverclock overclock`, and `autopioverclock reset`. The first successful preparation securely remembers its SSH target; an explicit target remains an override for multi-Pi controllers.
+- Added a three-action normal workflow—`autopioverclock prepare TARGET`, `autopioverclock overclock TARGET`, and `autopioverclock reset TARGET`—while retaining the full expert `run`, `resume`, `status`, `recover`, `apply`, `report`, and postfix `TARGET reset` interface. Every operational command requires an explicit target.
 - Made `prepare` install and verify missing workload dependencies and the complete watchdog recovery chain. Batocera now receives a project-owned keeper and service through hash-bound planning, verified backups, read-only `/boot` restoration, current-default-gateway liveness, startup grace, and bounded reboot-loop suppression.
 - Made `overclock` the complete automatic operation: it selects the fixed candidate policy, retains every tryboot/recovery and validation gate, safely continues its own latest resumable current-schema run when repeated, optionally runs the final `--edge-cpu-24h` test, displays the exact permanent diff, applies only a validated result, and verifies the post-apply reboot without a second ordinary prompt.
-- Made targetless `reset` the normal remembered-target action while retaining both command-first explicit-target and historical postfix forms, without weakening reset's protected-hash, watchdog, stock-clock, backup, or artifact-preservation gates.
+- Made command-first `reset TARGET` the normal spelling while retaining the historical postfix form, without weakening reset's protected-hash, watchdog, stock-clock, backup, or artifact-preservation gates.
 - Added simple-CLI and Batocera-watchdog installer fixtures and updated public documentation around the three-command contract.
 - Added a standard `make install` layout and a PATH entry-point test so public examples use the installed `autopioverclock` command instead of repository-relative paths.
 

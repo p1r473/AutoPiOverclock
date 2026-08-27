@@ -3,14 +3,12 @@
 ## Normal workflow
 
 ```bash
-autopioverclock prepare
-autopioverclock overclock
-autopioverclock reset
+autopioverclock prepare TARGET
+autopioverclock overclock TARGET
+autopioverclock reset TARGET
 ```
 
-The first targetless `prepare` asks for a hostname, IP address, or `username@host`. After preparation passes, the controller stores that exact SSH destination in `$XDG_CONFIG_HOME/autopioverclock/target` (or `$HOME/.config/autopioverclock/target`) as a regular mode-0600 data file. Later targetless commands reuse it. If the username is omitted, the controller records its current `id -un` username.
-
-One controller managing multiple Pis can still pass `TARGET` explicitly to any command. The first successfully prepared target becomes the remembered default. Preparing a different explicit target does not silently replace it; use explicit targets for that multi-Pi workflow. This prevents two concurrent terminal tabs from redirecting each other's targetless commands.
+`TARGET` is always required and may be a hostname, IP address, `username@host`, or `username@IP`. If the username is omitted, the controller uses its current `id -un` username. AutoPiOverclock never guesses, prompts for, or remembers a target, so separate terminal tabs cannot silently redirect one another.
 
 | Command | Complete behavior |
 |---|---|
@@ -21,16 +19,16 @@ One controller managing multiple Pis can still pass `TARGET` explicitly to any c
 The optional edge test is:
 
 ```bash
-autopioverclock overclock --edge-cpu-24h
+autopioverclock overclock TARGET --edge-cpu-24h
 ```
 
 It validates the ordinary production floor first, then tests CPU exactly 25 MHz higher through a fresh validation whose endurance phase lasts 24 hours. A safely recovered edge boot/stability rejection keeps the validated floor; harness or recovery uncertainty remains fatal.
 
 `prepare` and `overclock` are explicit authorization for the operations named by those commands. `prepare` may modify dependency/watchdog files and reboot. `overclock` may apply only the final result after current-schema validation and displays and retains the exact diff before applying it. Neither command overwrites unknown tryboot evidence or bypasses protected-hash checks.
 
-If its latest state is a current-schema `overclock` interrupted after preflight, rerunning the same `autopioverclock overclock` command safely recovers and continues that run. It also completes a validated application interrupted before or during reboot. Failed, old-schema, preflight-only, foreign, or ambiguous state is never silently adopted.
+If its latest state is a current-schema `overclock` interrupted after preflight, rerunning the same `autopioverclock overclock TARGET` command safely recovers and continues that run. It also completes a validated application interrupted before or during reboot. Failed, old-schema, preflight-only, foreign, or ambiguous state is never silently adopted.
 
-`reset` is noninteractive and rejects `--yes`, run selection, tuning-plan, dependency, watchdog, dry-run, edge, mode, and redaction flags. The older `TARGET reset` order remains a compatibility alias, and `reset TARGET` remains an explicit multi-target form.
+`reset` is noninteractive and rejects `--yes`, run selection, tuning-plan, dependency, watchdog, dry-run, edge, mode, and redaction flags. The older `TARGET reset` order remains a compatibility alias; `reset TARGET` is the normal form.
 
 ## Normal options
 
@@ -50,14 +48,16 @@ If its latest state is a current-schema `overclock` interrupted after preflight,
 The safety engine retains these commands so an interrupted or unusual run can be inspected and recovered without weakening ownership checks:
 
 ```bash
-autopioverclock status [TARGET] --run-id RUN_ID
-autopioverclock report [TARGET] --run-id RUN_ID
-autopioverclock resume [TARGET] --run-id RUN_ID
-autopioverclock recover [TARGET] --run-id RUN_ID
-autopioverclock apply [TARGET] --run-id RUN_ID
+autopioverclock run TARGET [OPTIONS]
+autopioverclock status TARGET --run-id RUN_ID
+autopioverclock report TARGET --run-id RUN_ID
+autopioverclock resume TARGET --run-id RUN_ID
+autopioverclock recover TARGET --run-id RUN_ID
+autopioverclock apply TARGET --run-id RUN_ID
+autopioverclock TARGET reset
 ```
 
-The legacy `run TARGET` command and strict `--config FILE` plans also remain for development and expert use. Advanced options include `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--run-id`, `--redact`, and `--yes`. These are not required by the normal three-command workflow. The explicit public `overclock` command starts without a second ordinary prompt; all safety, validation, and recovery gates remain mandatory.
+The `run TARGET` command and strict `--config FILE` plans remain for development and expert use. Advanced options include `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--run-id`, `--redact`, and `--yes`. `prepare TARGET --dry-run` retains read-only discovery and plan generation. These are not required by the normal three-command workflow. The explicit public `overclock` command starts without a second ordinary prompt; all safety, validation, and recovery gates remain mandatory.
 
 Standalone advanced `apply` still requires a current-schema `PASS`/`COMPLETE` result with at least 28,800 seconds of retained endurance evidence, displays the exact diff, and requires typed confirmation. `status` and `report` remain local; `resume`, `recover`, and `apply` fail closed when saved context is incomplete or stale.
 

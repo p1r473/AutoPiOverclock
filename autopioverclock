@@ -63,31 +63,42 @@ APO_REDACT=0
 APO_HAVE_REMOTE_CONTEXT=0
 APO_MUTATING_COMMAND=0
 APO_LOCK_FD=''
-APO_RESOLVED_TARGET=''
 
 usage() {
     cat <<'USAGE'
 AutoPiOverclock — recoverable Raspberry Pi 5 overclock validation
 
 Usage:
-  autopioverclock prepare [TARGET]
-  autopioverclock overclock [TARGET] [--edge-cpu-24h]
-  autopioverclock reset [TARGET]
+  autopioverclock prepare TARGET
+  autopioverclock overclock TARGET [--edge-cpu-24h]
+  autopioverclock reset TARGET
+  autopioverclock run TARGET [OPTIONS]
+  autopioverclock resume TARGET [--run-id RUN_ID]
+  autopioverclock status TARGET [--run-id RUN_ID] [--redact]
+  autopioverclock recover TARGET [--run-id RUN_ID]
+  autopioverclock apply TARGET [--run-id RUN_ID]
+  autopioverclock report TARGET [--run-id RUN_ID] [--redact]
+  autopioverclock TARGET reset
 
 Commands:
   prepare    Install and verify required dependencies and watchdog recovery
   overclock  Automatically tune, validate, and apply the safe result
   reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
+  run        Advanced tuning run with explicit plan/control options
+  resume     Recover when needed and continue a selected saved run
+  status     Show local state for a selected or latest run
+  recover    Return a selected run to verified permanent normal configuration
+  apply      Apply a selected fully validated result with typed confirmation
+  report     Generate a concise report for a selected or latest run
 
 The optional --edge-cpu-24h flag adds the final CPU +25 MHz/24-hour test.
-Advanced recovery and reporting commands remain available for support in the project documentation.
 
 Target:
   hostname | IP | username@hostname | username@IP
   Without username@, the current controller username from `id -un` is used.
-  TARGET is remembered after a successful prepare and may then be omitted.
+  TARGET is required for every operational command.
 
-Options:
+Common options:
   --edge-cpu-24h           Add the final CPU +25 MHz/24-hour test to overclock
   --output-dir DIR         Flat artifact directory (default: $HOME/overclock-results)
   --ssh-port PORT          SSH port (default: 22)
@@ -95,61 +106,18 @@ Options:
   --help                   Show help
   --version                Show version
 
-Advanced support commands and options are documented on the project website.
+Advanced options:
+  --config FILE            Strict tuning plan for run
+  --mode MODE              auto, graphical, or headless for run
+  --install-missing        Permit run to install missing workload dependencies
+  --repair-watchdogs       Permit run to repair a planned watchdog deficiency
+  --dry-run                Read-only discovery and plan generation
+  --run-id RUN_ID          Select a retained run for saved-run commands
+  --yes                    Skip the ordinary run confirmation; never apply confirmation
+  --redact                 Redact status or report output
+
+See docs/cli.md for exact option/command compatibility and safety gates.
 USAGE
-}
-
-apo_default_target_file() {
-    printf '%s/autopioverclock/target' "${XDG_CONFIG_HOME:-${HOME}/.config}"
-}
-
-apo_resolve_default_target() {
-    local target_file line
-    local -a target_lines=()
-    target_file=$(apo_default_target_file)
-    if [[ -e $target_file || -L $target_file ]]; then
-        [[ -f $target_file && ! -L $target_file ]] || apo_die "Saved target path is not a regular file: $target_file" "$APO_EXIT_USAGE"
-        mapfile -t target_lines < "$target_file"
-        (( ${#target_lines[@]} == 1 )) || apo_die "Saved target file is empty or malformed: $target_file" "$APO_EXIT_USAGE"
-        line=${target_lines[0]}
-        line=$(apo_trim "$line")
-        [[ -n $line ]] || apo_die "Saved target file is empty or malformed: $target_file" "$APO_EXIT_USAGE"
-        APO_RESOLVED_TARGET=$line
-        return 0
-    fi
-    [[ -t 0 ]] || apo_die 'No target was supplied and no prepared target is saved. Run autopioverclock prepare interactively once, or pass TARGET explicitly.' "$APO_EXIT_USAGE"
-    printf 'SSH target (hostname, IP, or username@host): ' >&2
-    IFS= read -r line || apo_die 'Could not read the SSH target.' "$APO_EXIT_USAGE"
-    line=$(apo_trim "$line")
-    [[ -n $line ]] || apo_die 'SSH target cannot be empty.' "$APO_EXIT_USAGE"
-    APO_RESOLVED_TARGET=$line
-}
-
-apo_save_default_target() {
-    local target_file target_directory temporary_file current_target save_rc
-    target_file=$(apo_default_target_file) || return 1
-    target_directory=${target_file%/*}
-    mkdir -p -- "$target_directory" || return 1
-    chmod 700 "$target_directory" || return 1
-    (
-        flock -x 9 || exit 1
-        if [[ -e $target_file || -L $target_file ]]; then
-            [[ -f $target_file && ! -L $target_file ]] || exit 1
-            IFS= read -r current_target < "$target_file" || exit 1
-            [[ $current_target == "$APO_REMOTE_TARGET" ]] || exit 2
-        fi
-        temporary_file=$(mktemp "${target_file}.new.XXXXXX") || exit 1
-        if ! printf '%s\n' "$APO_REMOTE_TARGET" > "$temporary_file" ||
-           ! chmod 600 "$temporary_file" ||
-           ! sync "$temporary_file" ||
-           ! mv -f -- "$temporary_file" "$target_file" ||
-           ! sync "$target_file"; then
-            rm -f -- "$temporary_file"
-            exit 1
-        fi
-    ) 9>"${target_directory}/.target.lock"
-    save_rc=$?
-    return "$save_rc"
 }
 
 apo_parse_cli() {
@@ -223,10 +191,7 @@ apo_parse_cli() {
             *) [[ -z $target ]] || apo_die "Unexpected extra argument: $token" "$APO_EXIT_USAGE"; target=$token; index=$((index + 1)) ;;
         esac
     done
-    if [[ -z $target ]]; then
-        apo_resolve_default_target
-        target=$APO_RESOLVED_TARGET
-    fi
+    [[ -n $target ]] || apo_die 'TARGET is required for every operational command.' "$APO_EXIT_USAGE"
     case $APO_MODE_REQUESTED in auto|graphical|headless) ;; *) apo_die '--mode must be auto, graphical, or headless.' "$APO_EXIT_USAGE" ;; esac
     apo_validate_uint_range "$APO_SSH_PORT" 1 65535 || apo_die '--ssh-port must be 1-65535.' "$APO_EXIT_USAGE"
     [[ -z $APO_SELECTED_RUN_ID ]] || apo_is_safe_run_id "$APO_SELECTED_RUN_ID" || apo_die 'Invalid --run-id.' "$APO_EXIT_USAGE"
@@ -341,7 +306,6 @@ apo_store_artifact_state() {
 }
 
 apo_start_new_run() {
-    local save_rc
     apo_config_load_for_new_run
     apo_init_artifacts
     apo_state_initialize
@@ -370,26 +334,16 @@ apo_start_new_run() {
     apo_prepare_target
     APO_HAVE_REMOTE_CONTEXT=1
     if [[ $APO_COMMAND == prepare ]]; then
-        if apo_save_default_target; then
-            apo_summary_line "Remembered target: $APO_REMOTE_TARGET"
-        else
-            save_rc=$?
-            if (( save_rc == 2 )); then
-                apo_warn 'Host preparation passed. A different default target is already remembered, so it was preserved; pass this target explicitly on a multi-Pi controller.'
-            else
-                apo_warn 'Host preparation passed, but the controller could not save this as the default target. Pass TARGET explicitly next time.'
-            fi
-        fi
         if apo_config_stock_auto_baseline_ready "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" \
             "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"; then
             apo_state_phase COMPLETE HOST_READY PASS
             apo_summary_line "HOST READY: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
-            apo_summary_line 'Next: autopioverclock overclock'
+            apo_summary_line "Next: autopioverclock overclock $APO_RAW_TARGET"
             apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. The stock host is ready to overclock.'
         else
             apo_state_phase COMPLETE HOST_PREPARED PASS
             apo_summary_line "HOST PREPARED: dependencies and watchdog recovery are ready; permanent clocks must be reset before tuning."
-            apo_summary_line 'Next: autopioverclock reset'
+            apo_summary_line "Next: autopioverclock reset $APO_RAW_TARGET"
             apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. Run reset once before overclocking this currently tuned host.'
         fi
         return 0
@@ -423,7 +377,7 @@ apo_load_selected_run() {
     apo_attach_artifacts_from_state
     case $APO_COMMAND in status|report) return 0 ;; esac
     if [[ $(apo_state_get ORIGIN_COMMAND '') == reset ]]; then
-        apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/report, or run autopioverclock reset again.' "$APO_EXIT_USAGE"
+        apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/report, or run autopioverclock reset TARGET again.' "$APO_EXIT_USAGE"
     fi
     stored_profile=$(apo_state_get PROFILE '')
     if [[ -z $stored_profile ]]; then

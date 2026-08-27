@@ -115,7 +115,7 @@ SENTINEL_PID=''
 
 # Public/controller contract: command-first help, verified-stock completion, worker
 # data binding, and no terminal/session-process management.
-grep -Fq 'autopioverclock reset [TARGET]' "$ROOT/autopioverclock" || fail 'usage does not document target-optional reset syntax'
+grep -Fq 'autopioverclock reset TARGET' "$ROOT/autopioverclock" || fail 'usage does not document mandatory-target reset syntax'
 grep -Rqs 'STOCK_VERIFIED' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller lacks the verified-stock completion checkpoint'
 grep -Rqs 'RESET_BACKUP' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not persist/report the reset backup'
 grep -Rqs 'reset-stock' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not dispatch stock reset'

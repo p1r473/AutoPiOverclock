@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+# The fixture intentionally isolates repeated sourced-controller evaluations in subshells.
+# shellcheck disable=SC2030,SC2031
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
@@ -96,38 +98,12 @@ ln -sfn "$(basename "$PREPARE_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
     [[ -z ${APO_STATE_FILE:-} ]]
 )
 
-SAVED_CONFIG="$TEMP_DIR/config"
-mkdir -p "$SAVED_CONFIG/autopioverclock"
-printf '%s\n' 'root@saved-target' > "$SAVED_CONFIG/autopioverclock/target"
-(
-    export APO_CLI_LIBRARY_ONLY=1 XDG_CONFIG_HOME=$SAVED_CONFIG
-    source "$ROOT/autopioverclock"
-    apo_parse_cli overclock
-    [[ $APO_RAW_TARGET == root@saved-target ]]
-    [[ $APO_REMOTE_TARGET == root@saved-target ]]
-)
-
-(
-    export APO_CLI_LIBRARY_ONLY=1 XDG_CONFIG_HOME="$TEMP_DIR/saved-by-prepare"
-    source "$ROOT/autopioverclock"
-    APO_REMOTE_TARGET=root@remembered-target
-    apo_save_default_target
-    [[ $(<"$XDG_CONFIG_HOME/autopioverclock/target") == root@remembered-target ]]
-    [[ $(stat -c '%a' "$XDG_CONFIG_HOME/autopioverclock/target") == 600 ]]
-    APO_REMOTE_TARGET=root@different-target
-    if apo_save_default_target; then
-        echo 'a different prepared target silently replaced the remembered target' >&2
+for missing_target_command in prepare overclock reset run resume status recover apply report; do
+    if "$ROOT/autopioverclock" "$missing_target_command" >/dev/null 2>&1; then
+        echo "$missing_target_command accepted a missing target" >&2
         exit 1
-    else
-        [[ $? == 2 ]]
     fi
-    [[ $(<"$XDG_CONFIG_HOME/autopioverclock/target") == root@remembered-target ]]
-)
-
-if XDG_CONFIG_HOME="$SAVED_CONFIG/empty" "$ROOT/autopioverclock" overclock </dev/null >/dev/null 2>&1; then
-    echo 'targetless overclock accepted an absent saved target noninteractively' >&2
-    exit 1
-fi
+done
 
 if "$ROOT/autopioverclock" overclock tron --config fixture.conf >/dev/null 2>&1; then
     echo 'simple overclock accepted an advanced custom plan' >&2
@@ -148,15 +124,18 @@ fi
 
 help_output=$("$ROOT/autopioverclock" --help)
 for command_line in \
-    'autopioverclock prepare [TARGET]' \
-    'autopioverclock overclock [TARGET]' \
-    'autopioverclock reset [TARGET]'; do
+    'autopioverclock prepare TARGET' \
+    'autopioverclock overclock TARGET' \
+    'autopioverclock reset TARGET'; do
     grep -Fq "$command_line" <<< "$help_output"
 done
 
-if grep -Eq -- '--(config|mode|run-id|install-missing|repair-watchdogs|dry-run|yes|redact)[[:space:]]' <<< "$help_output"; then
-    echo 'primary help exposed advanced workflow switches' >&2
-    exit 1
-fi
+for advanced_command in run resume status recover apply report; do
+    grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
+done
+
+for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact; do
+    grep -Fq -- "$retained_option" <<< "$help_output"
+done
 
 printf 'test_simple_cli: PASS\n'

@@ -32,7 +32,9 @@ printf '%s\n' 'console=serial0 rootwait watchdog.open_timeout=75 quiet' > "$TEMP
 render_cmdline "$TEMP_DIR/cmdline.txt" "$TEMP_DIR/cmdline.rendered"
 [[ $(grep -o 'watchdog.open_timeout=' "$TEMP_DIR/cmdline.rendered" | wc -l) == 1 ]]
 grep -Fq 'watchdog.open_timeout=180' "$TEMP_DIR/cmdline.rendered"
-! grep -Fq 'watchdog.open_timeout=75' "$TEMP_DIR/cmdline.rendered"
+if grep -Fq 'watchdog.open_timeout=75' "$TEMP_DIR/cmdline.rendered"; then
+    fail 'stale watchdog.open_timeout token survived rendering'
+fi
 render_cmdline "$TEMP_DIR/cmdline.rendered" "$TEMP_DIR/cmdline.rendered-again"
 cmp "$TEMP_DIR/cmdline.rendered" "$TEMP_DIR/cmdline.rendered-again"
 
