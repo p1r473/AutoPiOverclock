@@ -69,7 +69,7 @@ apo_state_initialize() {
     apo_state_set TARGET_HOST "$APO_TARGET_HOST"
     apo_state_set TARGET_SLUG "$APO_TARGET_SLUG"
     apo_state_set OUTPUT_DIR "$APO_OUTPUT_DIR"
-    apo_state_set ORIGIN_COMMAND "${APO_COMMAND:-run}"
+    apo_state_set ORIGIN_COMMAND "${APO_ORIGIN_COMMAND:-${APO_COMMAND:-run}}"
     apo_state_set READ_ONLY_RUN "${APO_DRY_RUN:-0}"
     apo_state_set STATUS PREPARING
     apo_state_set PHASE PREPARE
@@ -130,6 +130,7 @@ apo_state_initialize() {
     apo_state_set APPLY_BOOT_ID ''
     apo_state_set APPLY_RECOVERY_ACTION ''
     apo_state_set APPLY_FAILURE_REASON ''
+    apo_state_set OVERCLOCK_COMPLETE_RECORDED 0
     apo_state_set WATCHDOG_REPAIR_STATUS NOT_STARTED
     apo_state_set WATCHDOG_REPAIR_OLD_HASH ''
     apo_state_set WATCHDOG_REPAIR_EXPECTED_HASH ''

@@ -222,8 +222,9 @@ for worker_name in debian batocera; do
     '
 done
 
-# Controller evidence must be internally consistent. Read-only prepare may
-# report a collision, while a live run refuses every kind of pre-existing path.
+# Controller evidence must be internally consistent. An explicit dry-run may
+# report a collision, while mutating prepare and overclock refuse every kind of
+# pre-existing path.
 (
     APO_ROOT=$ROOT
     source "$ROOT/lib/common.sh"
@@ -233,9 +234,9 @@ done
     APO_MODE_EFFECTIVE=headless
 
     context_with_evidence() {
-        local exists=$1 type=$2 hash=$3 command_name=$4
+        local exists=$1 type=$2 hash=$3 command_name=$4 dry_run=${5:-0}
         APO_COMMAND=$command_name
-        APO_DRY_RUN=0
+        APO_DRY_RUN=$dry_run
         APO_DISCOVERY=(
             [BOOT_CONFIG]=/boot/config.txt
             [TRYBOOT_CONFIG]=/boot/tryboot.txt
@@ -254,16 +255,19 @@ done
 
     valid_hash=$(printf 'a%.0s' {1..64})
     context_with_evidence 0 absent unavailable prepare >/dev/null
-    context_with_evidence 1 regular "$valid_hash" prepare >/dev/null
-    context_with_evidence 1 symlink unavailable prepare >/dev/null
-    context_with_evidence 1 directory unavailable prepare >/dev/null
-    context_with_evidence 1 other unavailable prepare >/dev/null
+    context_with_evidence 1 regular "$valid_hash" prepare 1 >/dev/null
+    context_with_evidence 1 symlink unavailable prepare 1 >/dev/null
+    context_with_evidence 1 directory unavailable prepare 1 >/dev/null
+    context_with_evidence 1 other unavailable prepare 1 >/dev/null
 
     for type in regular symlink directory other; do
         hash=unavailable
         [[ $type == regular ]] && hash=$valid_hash
         if (context_with_evidence 1 "$type" "$hash" run) >/dev/null 2>&1; then
             fail "live run accepted pre-existing tryboot type $type"
+        fi
+        if (context_with_evidence 1 "$type" "$hash" prepare) >/dev/null 2>&1; then
+            fail "mutating prepare accepted pre-existing tryboot type $type"
         fi
     done
 
@@ -277,7 +281,7 @@ done
     )
     for malformed in "${malformed_cases[@]}"; do
         read -r exists type hash <<< "$malformed"
-        if (context_with_evidence "$exists" "$type" "$hash" prepare) >/dev/null 2>&1; then
+        if (context_with_evidence "$exists" "$type" "$hash" prepare 1) >/dev/null 2>&1; then
             fail "controller accepted inconsistent tryboot evidence: $malformed"
         fi
     done

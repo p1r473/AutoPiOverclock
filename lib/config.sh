@@ -67,14 +67,26 @@ apo_config_defaults() {
     APO_CFG[HEALTH_HOOK]=''
 }
 
+apo_config_stock_auto_baseline_ready() {
+    local cpu_mhz=$1 gpu_mhz=$2 voltage_uv=$3 provenance=${4:-missing} evidence=${5:-missing}
+    [[ $provenance == verified-default && $evidence == none &&
+       $cpu_mhz == "$APO_PI5_STOCK_CPU_MHZ" &&
+       ( $gpu_mhz == 800 || $gpu_mhz == 960 ) &&
+       $voltage_uv == "$APO_PI5_STOCK_VOLTAGE_UV" ]]
+}
+
 apo_config_require_stock_auto_baseline() {
     local cpu_mhz=$1 gpu_mhz=$2 voltage_uv=$3 provenance=${4:-missing} evidence=${5:-missing}
     if [[ $provenance != verified-default || $evidence != none ]]; then
+        if [[ ${APO_PUBLIC_COMMAND:-} == overclock ]]; then
+            apo_die "The target is not at a clean stock boot configuration. Run autopioverclock reset ${APO_RAW_TARGET}, then run autopioverclock overclock ${APO_RAW_TARGET}. Audit details: ${provenance:-missing}; evidence: ${evidence:-missing}." "$APO_EXIT_PREFLIGHT"
+        fi
         apo_die "Configuration-free auto mode requires proof that one protected permanent root-config snapshot contains no explicit clock or voltage control and no unbound include directive: audit=${provenance:-missing}, evidence=${evidence:-missing}; discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV. Remove or separately preserve and review arm_boost, force_turbo, initial_turbo, core_freq_fixed, every *_freq or *_freq_min assignment, every over_voltage* assignment, and any include directive, then reboot normally and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
     fi
-    [[ $cpu_mhz == "$APO_PI5_STOCK_CPU_MHZ" &&
-       ( $gpu_mhz == 800 || $gpu_mhz == 960 ) &&
-       $voltage_uv == "$APO_PI5_STOCK_VOLTAGE_UV" ]] && return 0
+    apo_config_stock_auto_baseline_ready "$cpu_mhz" "$gpu_mhz" "$voltage_uv" "$provenance" "$evidence" && return 0
+    if [[ ${APO_PUBLIC_COMMAND:-} == overclock ]]; then
+        apo_die "The target is not running stock Raspberry Pi 5 clocks (CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV). Run autopioverclock reset ${APO_RAW_TARGET}, then run autopioverclock overclock ${APO_RAW_TARGET}." "$APO_EXIT_PREFLIGHT"
+    fi
     apo_die "Configuration-free auto mode requires a verified stock Raspberry Pi 5 baseline before testing any overclock: discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV; expected CPU=${APO_PI5_STOCK_CPU_MHZ}MHz, V3D=800MHz or 960MHz according to the active firmware generation, and voltage-delta=${APO_PI5_STOCK_VOLTAGE_UV}uV. Restore and review the permanent boot configuration, reboot normally, and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
 }
 
@@ -207,7 +219,7 @@ apo_config_guided_candidates() {
 apo_config_load_for_new_run() {
     apo_config_defaults
     [[ -z ${APO_CONFIG_FILE:-} ]] || apo_config_read_file "$APO_CONFIG_FILE"
-    if [[ -z ${APO_CONFIG_FILE:-} && ${APO_MODE_REQUESTED:-auto} == auto && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
+    if [[ ${APO_COMMAND:-prepare} == run && -z ${APO_CONFIG_FILE:-} && ${APO_MODE_REQUESTED:-auto} == auto && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
         APO_AUTO_CANDIDATES_PENDING=1
         APO_AUTO_GENERATED_CANDIDATES=1
     fi

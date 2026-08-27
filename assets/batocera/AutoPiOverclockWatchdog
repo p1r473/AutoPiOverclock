@@ -1,0 +1,61 @@
+#!/bin/sh
+# AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG
+
+keeper=/userdata/system/autopioverclock/watchdog/watchdog_keeper.py
+config=/userdata/system/autopioverclock/watchdog/watchdog.conf
+pidfile=/run/autopioverclock-watchdog.pid
+log=/userdata/system/autopioverclock/watchdog/service.log
+
+keeper_pid_is_ours() {
+    candidate_pid=$1
+    case "$candidate_pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ -r "/proc/$candidate_pid/cmdline" ] || return 1
+    tr '\000' '\n' <"/proc/$candidate_pid/cmdline" 2>/dev/null | grep -Fqx -- "$keeper" || return 1
+    tr '\000' '\n' <"/proc/$candidate_pid/cmdline" 2>/dev/null | grep -Fqx -- "$config"
+}
+
+start_keeper() {
+    if [ -r "$pidfile" ]; then
+        old_pid=$(sed -n '1p' "$pidfile" 2>/dev/null)
+        keeper_pid_is_ours "$old_pid" && kill -0 "$old_pid" 2>/dev/null && return 0
+        rm -f -- "$pidfile"
+    fi
+    [ -x "$keeper" ] && [ -r "$config" ] && [ -x /usr/bin/python3 ] || return 1
+    mkdir -p -- "$(dirname "$log")" || return 1
+    nohup /usr/bin/python3 "$keeper" "$config" </dev/null >>"$log" 2>&1 &
+    keeper_pid=$!
+    if ! printf '%s\n' "$keeper_pid" >"${pidfile}.new" || ! mv -f -- "${pidfile}.new" "$pidfile"; then
+        rm -f -- "${pidfile}.new"
+        kill "$keeper_pid" 2>/dev/null || true
+        return 1
+    fi
+    sleep 2
+    if keeper_pid_is_ours "$keeper_pid" && kill -0 "$keeper_pid" 2>/dev/null; then
+        return 0
+    fi
+    rm -f -- "$pidfile"
+    return 1
+}
+
+stop_keeper() {
+    [ -r "$pidfile" ] || return 0
+    keeper_pid=$(sed -n '1p' "$pidfile" 2>/dev/null)
+    keeper_pid_is_ours "$keeper_pid" || { rm -f -- "$pidfile"; return 0; }
+    kill "$keeper_pid" 2>/dev/null || true
+    attempts=0
+    while kill -0 "$keeper_pid" 2>/dev/null && [ "$attempts" -lt 10 ]; do
+        sleep 1
+        attempts=$((attempts + 1))
+    done
+    kill -0 "$keeper_pid" 2>/dev/null && return 1
+    rm -f -- "$pidfile"
+}
+
+case "${1:-}" in
+    start) start_keeper ;;
+    stop) stop_keeper ;;
+    restart|reload) stop_keeper && start_keeper ;;
+    *) exit 2 ;;
+esac

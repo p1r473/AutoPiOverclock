@@ -2286,7 +2286,36 @@ cmd_restore_backup() {
     emit_data RESTORED_HASH "$expected_old_hash"; emit_result PASS 'Permanent config backup restored, verified, and /boot returned read-only.'
 }
 
-cmd_repair_watchdogs() { emit_result PREFLIGHT_FAILURE 'Batocera runtime-watchdog ownership is installation-specific. Automatic replacement is intentionally refused.'; return 1; }
+batocera_watchdog_asset_paths_ready() {
+    local installer=$1 keeper=$2 service=$3 installer_directory keeper_directory service_directory
+    [[ -f $installer && ! -L $installer && -x $installer ]] || return 1
+    [[ -f $keeper && ! -L $keeper && -f $service && ! -L $service ]] || return 1
+    installer_directory=$(readlink -f -- "$(dirname "$installer")" 2>/dev/null || true)
+    keeper_directory=$(readlink -f -- "$(dirname "$keeper")" 2>/dev/null || true)
+    service_directory=$(readlink -f -- "$(dirname "$service")" 2>/dev/null || true)
+    [[ -n $installer_directory && $installer_directory == "$keeper_directory" && $installer_directory == "$service_directory" ]] || return 1
+    [[ $installer_directory == "$PERSISTENT_ROOT"/runs/* ]] || return 1
+    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG' "$keeper" &&
+        grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG' "$service"
+}
+
+cmd_plan_watchdog_repair() {
+    local installer=${1:-} keeper=${2:-} service=${3:-} run_id=${4:-}
+    batocera_watchdog_asset_paths_ready "$installer" "$keeper" "$service" || {
+        emit_result PREFLIGHT_FAILURE 'Batocera watchdog plan received missing, foreign, or unsafe project assets.'
+        return 1
+    }
+    "$installer" plan "$keeper" "$service" "$run_id"
+}
+
+cmd_repair_watchdogs() {
+    local installer=${1:-} keeper=${2:-} service=${3:-}
+    batocera_watchdog_asset_paths_ready "$installer" "$keeper" "$service" || {
+        emit_result PREFLIGHT_FAILURE 'Batocera watchdog repair received missing, foreign, or unsafe project assets.'
+        return 1
+    }
+    "$installer" apply "$keeper" "$service" "${@:4}"
+}
 
 cmd_classify_kernel_log() {
     local log_file=$1 common_errors usb_errors
@@ -2318,7 +2347,8 @@ main() {
         verify-stock-reset) run_with_mutation_lock "reset-verify-${BASHPID}" RECOVERY_FAILURE cmd_verify_stock_reset "$@" ;;
         apply-permanent) run_with_mutation_lock "apply-${4:-}" APPLY_FAILURE cmd_apply_permanent "$@" ;;
         restore-backup) run_with_mutation_lock "restore-${2:-}" APPLY_FAILURE cmd_restore_backup "$@" ;;
-        repair-watchdogs) cmd_repair_watchdogs "$@" ;;
+        plan-watchdog-repair) cmd_plan_watchdog_repair "$@" ;;
+        repair-watchdogs) run_with_mutation_lock "watchdog-${4:-}" PREFLIGHT_FAILURE cmd_repair_watchdogs "$@" ;;
         classify-kernel-log) cmd_classify_kernel_log "$@" ;;
         *) emit_result HARNESS_FAILURE "Unknown worker command: $command_name"; return 2 ;;
     esac

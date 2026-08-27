@@ -148,8 +148,98 @@ apo_profile_watchdog_description() {
 }
 
 apo_profile_repair_watchdogs() {
-    apo_event watchdog-repair ERROR PREFLIGHT_FAILURE 'Batocera runtime-watchdog ownership is installation-specific; automatic replacement is intentionally refused.'
-    return 1
+    local expected="PREPARE-WATCHDOGS ${APO_TARGET_SLUG}" old_boot_id new_boot_id
+    local local_asset_dir="${APO_ROOT}/assets/batocera" remote_asset_dir="${APO_REMOTE_WORK_DIR}/watchdog-assets"
+    local local_installer="${local_asset_dir}/install_watchdog.sh" local_keeper="${local_asset_dir}/watchdog_keeper.py"
+    local local_service="${local_asset_dir}/AutoPiOverclockWatchdog"
+    local remote_installer="${remote_asset_dir}/install_watchdog.sh" remote_keeper="${remote_asset_dir}/watchdog_keeper.py"
+    local remote_service="${remote_asset_dir}/AutoPiOverclockWatchdog"
+    local old_hash expected_hash target cmdline_old cmdline_new batocera_old batocera_new
+    local keeper_hash service_hash keeper_config_hash eeprom_hash repair_hash reported_target backup_file
+
+    [[ -r $local_installer && -r $local_keeper && -r $local_service ]] || {
+        apo_event watchdog-repair ERROR PREFLIGHT_FAILURE 'The packaged Batocera watchdog assets are missing.'
+        return 1
+    }
+    apo_remote_upload_root "$local_installer" "$remote_installer" || return 1
+    apo_remote_upload_root "$local_keeper" "$remote_keeper" || return 1
+    apo_remote_upload_root "$local_service" "$remote_service" || return 1
+    apo_run_worker_capture watchdog-repair-plan plan-watchdog-repair \
+        "$remote_installer" "$remote_keeper" "$remote_service" "$APO_RUN_ID" || return 1
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    old_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_OLD_HASH]:-}
+    expected_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_EXPECTED_HASH]:-}
+    target=${APO_WORKER_DATA[WATCHDOG_REPAIR_TARGET]:-}
+    cmdline_old=${APO_WORKER_DATA[WATCHDOG_REPAIR_CMDLINE_OLD_HASH]:-}
+    cmdline_new=${APO_WORKER_DATA[WATCHDOG_REPAIR_CMDLINE_NEW_HASH]:-}
+    batocera_old=${APO_WORKER_DATA[WATCHDOG_REPAIR_BATOCERA_OLD_HASH]:-}
+    batocera_new=${APO_WORKER_DATA[WATCHDOG_REPAIR_BATOCERA_NEW_HASH]:-}
+    keeper_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_KEEPER_HASH]:-}
+    service_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_SERVICE_HASH]:-}
+    keeper_config_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_KEEPER_CONFIG_HASH]:-}
+    eeprom_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_EEPROM_HASH]:-}
+    if [[ $old_hash != "$APO_PERMANENT_CONFIG_HASH" || ! $expected_hash =~ ^[0-9a-f]{64}$ ||
+          ! $cmdline_old =~ ^[0-9a-f]{64}$ || ! $cmdline_new =~ ^[0-9a-f]{64}$ ||
+          ! $batocera_old =~ ^[0-9a-f]{64}$ || ! $batocera_new =~ ^[0-9a-f]{64}$ ||
+          ! $keeper_hash =~ ^[0-9a-f]{64}$ || ! $service_hash =~ ^[0-9a-f]{64}$ ||
+          ! $keeper_config_hash =~ ^[0-9a-f]{64}$ || ! $eeprom_hash =~ ^[0-9a-f]{64}$ || -z $target ]]; then
+        apo_state_set WATCHDOG_REPAIR_STATUS PLAN_UNVERIFIED
+        apo_state_save
+        return 1
+    fi
+    apo_state_set PHASE PREPARE
+    apo_state_set SUBPHASE WATCHDOG_REPAIR_PLANNED
+    apo_state_set WATCHDOG_REPAIR_STATUS PLANNED
+    apo_state_set WATCHDOG_REPAIR_OLD_HASH "$old_hash"
+    apo_state_set WATCHDOG_REPAIR_EXPECTED_HASH "$expected_hash"
+    apo_state_set WATCHDOG_REPAIR_TARGET "$target"
+    apo_state_set WATCHDOG_REPAIR_CMDLINE_OLD_HASH "$cmdline_old"
+    apo_state_set WATCHDOG_REPAIR_CMDLINE_NEW_HASH "$cmdline_new"
+    apo_state_set WATCHDOG_REPAIR_BATOCERA_OLD_HASH "$batocera_old"
+    apo_state_set WATCHDOG_REPAIR_BATOCERA_NEW_HASH "$batocera_new"
+    apo_state_set WATCHDOG_REPAIR_KEEPER_HASH "$keeper_hash"
+    apo_state_set WATCHDOG_REPAIR_SERVICE_HASH "$service_hash"
+    apo_state_set WATCHDOG_REPAIR_KEEPER_CONFIG_HASH "$keeper_config_hash"
+    apo_state_set WATCHDOG_REPAIR_EEPROM_HASH "$eeprom_hash"
+    apo_state_save
+    if (( ${APO_AUTO_PREPARE:-0} == 1 )); then
+        apo_info "The explicit prepare command authorizes the planned Batocera watchdog installation for default gateway $target and its verification reboot."
+    else
+        apo_confirm_exact "Prepare will install a project-owned Batocera watchdog, preserve verified backups, use the current default gateway $target as its liveness target, bound network-loss recovery to three reboots per 30 minutes, and reboot ${APO_REMOTE_TARGET}." "$expected" || return 1
+    fi
+    apo_state_set MUTATIONS_STARTED 1
+    apo_state_set WATCHDOG_REPAIR_STATUS MUTATING
+    apo_state_set SUBPHASE WATCHDOG_REPAIR_MUTATING
+    apo_state_save
+    apo_run_worker_capture watchdog-repair repair-watchdogs \
+        "$remote_installer" "$remote_keeper" "$remote_service" "$APO_RUN_ID" "$target" \
+        "$old_hash" "$expected_hash" "$cmdline_old" "$cmdline_new" "$batocera_old" "$batocera_new" \
+        "$keeper_hash" "$service_hash" "$keeper_config_hash" "$eeprom_hash" || return 1
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    repair_hash=${APO_WORKER_DATA[WATCHDOG_REPAIR_NEW_HASH]:-}
+    reported_target=${APO_WORKER_DATA[WATCHDOG_REPAIR_TARGET]:-}
+    backup_file=${APO_WORKER_DATA[WATCHDOG_CONFIG_BACKUP]:-}
+    if [[ $repair_hash != "$expected_hash" || $reported_target != "$target" || -z $backup_file ]]; then
+        apo_state_set WATCHDOG_REPAIR_STATUS RESULT_UNVERIFIED
+        apo_state_save
+        return 1
+    fi
+    apo_state_set WATCHDOG_REPAIR_STATUS STAGED
+    apo_state_set WATCHDOG_REPAIR_NEW_HASH "$repair_hash"
+    apo_state_set WATCHDOG_REPAIR_BACKUP "$backup_file"
+    apo_state_save
+    old_boot_id=$(apo_remote_boot_id) || return 1
+    apo_state_set WATCHDOG_REPAIR_STATUS REBOOTING
+    apo_state_set LAST_BOOT_ID "$old_boot_id"
+    apo_state_save
+    apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
+    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
+    [[ -n $new_boot_id ]] || return 1
+    apo_state_set WATCHDOG_REPAIR_STATUS REBOOTED
+    apo_state_set LAST_BOOT_ID "$new_boot_id"
+    apo_state_set NORMAL_BOOT_ID "$new_boot_id"
+    apo_state_save
+    sleep "$APO_BOOT_SETTLE_SECONDS"
 }
 
 apo_profile_cleanup_worker() { apo_remote_root "rm -rf $(apo_sh_quote "$APO_REMOTE_WORK_DIR")" >/dev/null 2>&1 || true; }

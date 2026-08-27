@@ -1132,7 +1132,11 @@ apo_final_validation() {
                 apo_summary_line ''
                 apo_summary_line 'FINAL VALIDATION: PASS'
                 apo_summary_line "Final validated clocks: over_voltage_delta=$APO_TEST_VOLTAGE, arm_freq=$recommended_cpu, $APO_GPU_KEY=$recommended_gpu"
-                apo_summary_line 'Permanent config was not modified. Use apply with the validated run for an exact diff and separate confirmation.'
+                if (( ${APO_AUTO_APPLY:-0} == 1 )); then
+                    apo_summary_line 'Permanent application is next in this overclock command; the exact diff will be retained and displayed.'
+                else
+                    apo_summary_line 'Permanent config was not modified. Use apply with the validated run for an exact diff and separate confirmation.'
+                fi
                 apo_event final-validation PASS '' "${endurance_duration}s endurance, post-stress health, ${final_boots} configured candidate boots, normal recovery, and permanent-config hash all passed."
                 return 0
                 ;;
