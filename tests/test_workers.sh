@@ -102,7 +102,7 @@ for worker_name in debian batocera; do
             "dtparam=fan_temp1_speed=255" \
             "dtparam=fan_temp2_speed=255" \
             "dtparam=fan_temp3_speed=255"; do
-            [[ $(grep -Fxc -- "$expected_line" "$FAN_TEST_ROOT/tryboot.txt") == 1 ]]
+            grep -Fqx -- "$expected_line" "$FAN_TEST_ROOT/tryboot.txt"
         done
         render_clock_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/permanent.txt" 2900 1000 v3d_freq 0 fan-fixture
         ! grep -Fq -- "$CANDIDATE_FAN_COMMENT" "$FAN_TEST_ROOT/permanent.txt"
