@@ -103,6 +103,9 @@ apo_state_initialize() {
     apo_state_set FLOOR_DURATION_S ''
     apo_state_set FLOOR_VALIDATION_SCHEMA ''
     apo_state_set FLOOR_VALIDATED 0
+    apo_state_set POST_FLOOR_EDGE 0
+    apo_state_set SOURCE_FLOOR_RUN_ID ''
+    apo_state_set SOURCE_FLOOR_PERMANENT_HASH ''
     apo_state_set EDGE_CPU_TARGET ''
     apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
     apo_state_set EDGE_CPU_FAILURE_CLASS ''

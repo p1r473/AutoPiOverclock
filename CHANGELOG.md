@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-alpha.22 — 2026-08-28
+
+- Allowed `autopioverclock overclock TARGET --edge-cpu-24h` to start a later CPU +25 MHz/24-hour edge validation directly from a retained, applied current-schema eight-hour floor; the completed floor endurance is not repeated.
+- Created a separate linked edge run with its own immutable artifacts and apply/rollback backup identity, preserving the original eight-hour result and its stock-config backup.
+- Re-proved the live applied-floor hash, clear tryboot state, normal clocks, watchdog health, and saved validation mode before the edge candidate can be staged; unknown or changed state fails closed.
+- Preserved automatic graphical or headless operation exactly from the source floor, including screenless targets, and added regressions for headless continuation and direct 86,400-second endurance.
+- Made repeated `overclock TARGET` calls idempotently reopen an already-applied result instead of attempting stock discovery against an intentionally tuned host.
+- Added a temporary maximum-cooling policy to every candidate and final-validation tryboot: Pi 5 fan level zero starts at 0C and all four PWM levels are set to 255, while permanent apply and normal recovery preserve the user's ordinary fan curve.
+- Added live `pwmfan` proof before candidate health/stress and throughout stress telemetry. A detected fan below PWM 255, malformed telemetry, or a zero tachometer aborts as harness uncertainty rather than becoming a false clock boundary; systems without a Linux PWM fan device are explicitly reported as `not-detected` and remain protected by temperature/throttle gates.
+- Kept reset compatible with both the earlier five-line managed tryboot block and the new exact max-fan block while rejecting any altered fan override as foreign evidence.
+
 ## 0.1.0-alpha.21 — 2026-08-27
 
 - Made configuration-free `overclock TARGET` treat a safely recovered stability failure during ordinary CPU-only or GPU-only final stress as a new production boundary: CPU steps down 50 MHz, GPU steps down 25 MHz, and the complete final validation restarts automatically.

@@ -253,6 +253,24 @@ for worker_file in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-work
             fail "$(basename "$worker_file") accepted foreign tryboot content"
         fi
 
+        candidate_owner=$(printf 'd%.0s' {1..64})
+        candidate_tryboot="$helper_root/candidate-with-max-fan.txt"
+        render_tryboot_config "$stock_config" "$candidate_tryboot" 2900 1000 v3d_freq 0 candidate-fan-run "$candidate_owner"
+        [[ $(reset_stock_tryboot_kind "$candidate_tryboot" "$candidate_owner") == complete ]] ||
+            fail "$(basename "$worker_file") did not recognize the new max-fan tryboot format"
+        sed 's/dtparam=fan_temp2_speed=255/dtparam=fan_temp2_speed=254/' "$candidate_tryboot" > "$helper_root/tampered-candidate.txt"
+        if reset_stock_tryboot_kind "$helper_root/tampered-candidate.txt" "$candidate_owner" >/dev/null 2>&1; then
+            fail "$(basename "$worker_file") accepted a tampered candidate fan override"
+        fi
+
+        legacy_owner=$(printf 'e%.0s' {1..64})
+        legacy_tryboot="$helper_root/legacy-candidate.txt"
+        render_tryboot_reservation legacy-run "$legacy_owner" > "$legacy_tryboot"
+        printf '\n%s\n# Run: legacy-run\n[all]\nover_voltage_delta=0\narm_freq=2800\nv3d_freq=1000\n%s\n# AUTOPIOVERCLOCK TRYBOOT COMPLETE: %s\n' \
+            "$CLOCK_MARKER_BEGIN" "$CLOCK_MARKER_END" "$legacy_owner" >> "$legacy_tryboot"
+        [[ $(reset_stock_tryboot_kind "$legacy_tryboot" "$legacy_owner") == complete ]] ||
+            fail "$(basename "$worker_file") lost compatibility with legacy owned tryboot evidence"
+
         reset_owner=$(printf 'c%.0s' {1..64})
         stranded_quarantine="$helper_root/.autopioverclock-stock-reset-old-reset-run-$reset_owner"
         render_tryboot_reservation old-candidate-run "$reset_owner" > "$stranded_quarantine"

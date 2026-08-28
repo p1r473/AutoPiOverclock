@@ -7,6 +7,7 @@ ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Interna
 USB_RESET_PATTERN='usb [0-9.-]+: reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)?[[:space:]]*USB device|reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)[[:space:]]+USB device'
 CLOCK_MARKER_BEGIN='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS'
 CLOCK_MARKER_END='# END AUTOPIOVERCLOCK MANAGED CLOCKS'
+CANDIDATE_FAN_COMMENT='# AUTOPIOVERCLOCK CANDIDATE COOLING: PI PWM FAN 100 PERCENT'
 TRYBOOT_RESERVATION_MARKER='# AUTOPIOVERCLOCK TRYBOOT RESERVATION'
 WATCHDOG_MARKER_BEGIN='# BEGIN AUTOPIOVERCLOCK WATCHDOG'
 WATCHDOG_MARKER_END='# END AUTOPIOVERCLOCK WATCHDOG'
@@ -300,6 +301,71 @@ recent_throttle() { vcgencmd get_throttled 0x10000 2>/dev/null || true; }
 current_throttle() { recent_throttle; }
 clock_mhz() { vcgencmd measure_clock "$1" 2>/dev/null | awk -F= '{printf "%d", $2/1000000}'; }
 
+FAN_PWM_LAST_COUNT=0
+FAN_PWM_LAST_STATUS=not-detected
+FAN_PWM_LAST_REASON=''
+
+fan_pwm_snapshot() {
+    local hwmon_root=${1:-/sys/class/hwmon} hwmon name pwm rpm details='' count=0 all_max=1 all_spinning=1
+    FAN_PWM_LAST_COUNT=0
+    FAN_PWM_LAST_STATUS=not-detected
+    FAN_PWM_LAST_REASON=''
+    for hwmon in "$hwmon_root"/hwmon*; do
+        [[ -r $hwmon/name && -r $hwmon/pwm1 ]] || continue
+        name=$(tr -d '\r\n' < "$hwmon/name" 2>/dev/null || true)
+        [[ $name == pwmfan ]] || continue
+        count=$((count + 1))
+        pwm=$(tr -d '[:space:]' < "$hwmon/pwm1" 2>/dev/null || true)
+        if [[ ! $pwm =~ ^[0-9]+$ ]] || (( pwm > 255 )); then
+            FAN_PWM_LAST_COUNT=$count
+            FAN_PWM_LAST_STATUS=invalid
+            FAN_PWM_LAST_REASON="Pi PWM fan telemetry is malformed at $hwmon/pwm1."
+            return 1
+        fi
+        (( pwm == 255 )) || all_max=0
+        rpm=unreported
+        if [[ -r $hwmon/fan1_input ]]; then
+            rpm=$(tr -d '[:space:]' < "$hwmon/fan1_input" 2>/dev/null || true)
+            if [[ ! $rpm =~ ^[0-9]+$ ]]; then
+                FAN_PWM_LAST_COUNT=$count
+                FAN_PWM_LAST_STATUS=invalid
+                FAN_PWM_LAST_REASON="Pi PWM fan tachometer telemetry is malformed at $hwmon/fan1_input."
+                return 1
+            fi
+            (( rpm > 0 )) || all_spinning=0
+        fi
+        details+="${details:+,}$(basename -- "$hwmon"):pwm=${pwm}:rpm=${rpm}"
+    done
+    FAN_PWM_LAST_COUNT=$count
+    if (( count == 0 )); then
+        FAN_PWM_LAST_STATUS=not-detected
+        return 0
+    fi
+    FAN_PWM_LAST_STATUS=$details
+    if (( all_max != 1 )); then
+        FAN_PWM_LAST_REASON="A detected Pi PWM fan is not at the required maximum setting (255): $details"
+        return 1
+    fi
+    if (( all_spinning != 1 )); then
+        FAN_PWM_LAST_REASON="A detected Pi PWM fan reports zero RPM at the required maximum setting: $details"
+        return 1
+    fi
+}
+
+candidate_fan_max_ready() {
+    fan_pwm_snapshot "${1:-/sys/class/hwmon}"
+}
+
+candidate_fan_max_wait() {
+    local wait_seconds=${1:-15} hwmon_root=${2:-/sys/class/hwmon} deadline
+    deadline=$((SECONDS + wait_seconds))
+    while :; do
+        candidate_fan_max_ready "$hwmon_root" && return 0
+        (( SECONDS >= deadline )) && return 1
+        sleep 1
+    done
+}
+
 throttle_word() {
     local reading=${1-} hex_value
     [[ $reading =~ ^throttled=0x([0-9A-Fa-f]+)$ ]] || return 1
@@ -342,8 +408,8 @@ render_tryboot_config() {
         $0==end {inside=0; next}
         !inside {print}
     ' "$source_file" >> "$destination_file" || return 1
-    printf '\n%s\n# Run: %s\n[all]\nover_voltage_delta=%s\narm_freq=%s\n%s=%s\n%s\n# AUTOPIOVERCLOCK TRYBOOT COMPLETE: %s\n' \
-        "$CLOCK_MARKER_BEGIN" "$run_id" "$voltage_uv" "$cpu_mhz" "$gpu_key" "$gpu_mhz" "$CLOCK_MARKER_END" "$ownership_token" >> "$destination_file"
+    printf '\n%s\n# Run: %s\n[all]\nover_voltage_delta=%s\narm_freq=%s\n%s=%s\n%s\ndtparam=fan_temp0=0\ndtparam=fan_temp0_speed=255\ndtparam=fan_temp1_speed=255\ndtparam=fan_temp2_speed=255\ndtparam=fan_temp3_speed=255\n%s\n# AUTOPIOVERCLOCK TRYBOOT COMPLETE: %s\n' \
+        "$CLOCK_MARKER_BEGIN" "$run_id" "$voltage_uv" "$cpu_mhz" "$gpu_key" "$gpu_mhz" "$CANDIDATE_FAN_COMMENT" "$CLOCK_MARKER_END" "$ownership_token" >> "$destination_file"
 }
 
 render_watchdog_config() {
@@ -636,6 +702,7 @@ cmd_discover() {
     stress_ng_binary=$(command -v stress-ng 2>/dev/null || true)
     stress_ng_gpu_available=$([[ -n $stress_ng_binary ]] && stress_ng_has_gpu && printf 1 || printf 0)
     render_node=$([[ -e /dev/dri/renderD128 ]] && printf /dev/dri/renderD128 || true)
+    fan_pwm_snapshot >/dev/null 2>&1 || true
 
     emit_data PROFILE debian
     emit_data MODEL "$model"
@@ -677,6 +744,7 @@ cmd_discover() {
     emit_data STRESS_NG_BINARY "$stress_ng_binary"
     emit_data STRESS_NG_GPU_AVAILABLE "$stress_ng_gpu_available"
     emit_data DRM_RENDER_NODE "$render_node"
+    emit_data FAN_PWM_STATUS "$FAN_PWM_LAST_STATUS"
     emit_data PERMANENT_HASH "$permanent_hash"
     emit_data STORAGE_LAYOUT "root=${root_device};boot=${boot_source}"
     emit_result PASS 'Discovery completed.'
@@ -800,7 +868,7 @@ emit_application_health_failure() {
 
 cmd_health() {
     local expected_cpu=$1 expected_gpu=$2 gpu_key=$3 expected_voltage=$4 max_temp=$5 mode=$6 baseline=$7
-    local required_processes=$8 required_services=$9 audio_match=${10} extra_ping=${11} health_hook=${12} expected_hash=${13} context=${14} throttle_baseline=${15:-throttled=0x0} audio_baseline=${16:-}
+    local required_processes=$8 required_services=$9 audio_match=${10} extra_ping=${11} health_hook=${12} expected_hash=${13} context=${14} throttle_baseline=${15:-throttled=0x0} audio_baseline=${16:-} fan_policy=${17:-normal}
     local boot_config active_cpu active_gpu active_voltage throttle temp errors permanent_hash test_file
     boot_config=$(find_boot_config) || { emit_result PREFLIGHT_FAILURE 'Boot config is missing.'; return 1; }
     permanent_hash=$(sha256sum "$boot_config" | awk '{print $1}')
@@ -813,6 +881,13 @@ cmd_health() {
     [[ $active_cpu == "$expected_cpu" ]] || { emit_result BOOT_FAILURE "CPU config mismatch in $context: expected $expected_cpu, found ${active_cpu:-missing}."; return 1; }
     [[ $active_gpu == "$expected_gpu" ]] || { emit_result BOOT_FAILURE "GPU config mismatch in $context: expected $expected_gpu, found ${active_gpu:-missing}."; return 1; }
     [[ $active_voltage == "$expected_voltage" ]] || { emit_result BOOT_FAILURE "Voltage delta mismatch in $context: expected $expected_voltage, found $active_voltage."; return 1; }
+    case $fan_policy in
+        normal) ;;
+        candidate-max)
+            candidate_fan_max_wait || { emit_result HARNESS_FAILURE "Candidate fan max-speed proof failed in $context: ${FAN_PWM_LAST_REASON:-unknown fan telemetry failure}"; return 1; }
+            ;;
+        *) emit_result HARNESS_FAILURE "Unknown fan policy in $context: $fan_policy"; return 1 ;;
+    esac
     watchdog_health_ready "$boot_config" || { emit_result BOOT_FAILURE "Watchdog recovery chain failed in $context: $WATCHDOG_LAST_REASON"; return 1; }
     throttle=$(current_throttle)
     throttle_word "$throttle" >/dev/null || { emit_result HARNESS_FAILURE "Malformed throttle telemetry in $context: ${throttle:-missing}"; return 1; }
@@ -837,6 +912,10 @@ cmd_health() {
     [[ -n $active_voltage ]] || { active_config_interface_ready && active_voltage=0; }
     [[ -n $active_cpu && -n $active_gpu && -n $active_voltage ]] || { emit_result HARNESS_FAILURE "Active CPU/GPU/voltage telemetry became unavailable after application readiness in $context."; return 1; }
     [[ $active_cpu == "$expected_cpu" && $active_gpu == "$expected_gpu" && $active_voltage == "$expected_voltage" ]] || { emit_result BOOT_FAILURE "Active clocks or voltage changed while application readiness was settling in $context."; return 1; }
+    if [[ $fan_policy == candidate-max ]] && ! candidate_fan_max_ready; then
+        emit_result HARNESS_FAILURE "Candidate fan max-speed proof failed after application readiness in $context: ${FAN_PWM_LAST_REASON:-unknown fan telemetry failure}"
+        return 1
+    fi
     watchdog_health_ready "$boot_config" || { emit_result BOOT_FAILURE "Watchdog recovery chain failed after application readiness in $context: $WATCHDOG_LAST_REASON"; return 1; }
     throttle=$(current_throttle)
     throttle_word "$throttle" >/dev/null || { emit_result HARNESS_FAILURE "Malformed throttle telemetry after application readiness in $context: ${throttle:-missing}"; return 1; }
@@ -854,6 +933,7 @@ cmd_health() {
     printf 'ACTIVE_CPU=%s\nACTIVE_GPU=%s\nACTIVE_VOLTAGE=%s\n%s\n' "$active_cpu" "$active_gpu" "$active_voltage" "$throttle"
     printf 'WATCHDOG_EEPROM=%s WATCHDOG_KERNEL=%s WATCHDOG_DEVICE=%s WATCHDOG_RUNTIME_TIMEOUT=%s WATCHDOG_OWNER=%s\n' \
         "$WATCHDOG_LAST_BOOT_TIMEOUT" "$WATCHDOG_LAST_KERNEL_TIMEOUT" "$WATCHDOG_LAST_DEVICE" "$WATCHDOG_LAST_RUNTIME_TIMEOUT" "$WATCHDOG_LAST_OWNER"
+    [[ $fan_policy != candidate-max ]] || printf 'FAN_COOLING_POLICY=candidate-max FAN_PWM_STATUS=%s\n' "$FAN_PWM_LAST_STATUS"
     vcgencmd measure_clock arm 2>/dev/null || true
     vcgencmd measure_clock v3d 2>/dev/null || true
     vcgencmd pmic_read_adc EXT5V_V 2>/dev/null || true
@@ -1087,13 +1167,22 @@ stress_signal_cleanup() {
 }
 
 cmd_stress() {
-    local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5}
+    local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
     local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors
     local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
-    local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0
+    local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy
+    : "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
+    case $fan_policy in
+        normal) ;;
+        candidate-max)
+            candidate_fan_max_wait || { emit_result HARNESS_FAILURE "Candidate fan max-speed proof failed before stress: ${FAN_PWM_LAST_REASON:-unknown fan telemetry failure}"; return 1; }
+            fan_status=$FAN_PWM_LAST_STATUS
+            ;;
+        *) emit_result HARNESS_FAILURE "Unknown fan policy for stress: $fan_policy"; return 1 ;;
+    esac
     command -v stress-ng >/dev/null 2>&1 || { emit_result HARNESS_FAILURE 'stress-ng is not installed.'; return 1; }
     stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_work_dir=''; stress_io_file=''
     stress_work_dir=$(mktemp -d /tmp/autopioverclock-stress.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create stress workspace.'; return 1; }
@@ -1166,7 +1255,11 @@ cmd_stress() {
             if [[ $stress_kind == gpu || $stress_kind == combined ]]; then [[ $gpu_sample =~ ^[0-9]+$ ]] && (( gpu_sample + clock_tolerance >= expected_gpu )) && gpu_clock_seen=1; fi
             new_errors=$(kernel_error_lines "$((kernel_lines + 1))" || true)
             if [[ -n $new_errors ]]; then printf '%s\n' "$new_errors"; failure_class=STABILITY_FAILURE; failure_reason='A new kernel, power, GPU, USB, storage, or filesystem error appeared during stress.'; fi
-            printf '%s temp=%sC arm=%sMHz v3d=%sMHz expected=%s/%s %s\n' "$(date '+%F %T')" "${temp:-unknown}" "$arm_sample" "$gpu_sample" "$expected_cpu" "$expected_gpu" "$throttle"
+            if [[ $fan_policy == candidate-max ]]; then
+                if candidate_fan_max_ready; then fan_status=$FAN_PWM_LAST_STATUS
+                else failure_class=HARNESS_FAILURE; failure_reason="Candidate fan max-speed proof failed during stress: ${FAN_PWM_LAST_REASON:-unknown fan telemetry failure}"; fi
+            fi
+            printf '%s temp=%sC arm=%sMHz v3d=%sMHz expected=%s/%s %s fan=%s\n' "$(date '+%F %T')" "${temp:-unknown}" "$arm_sample" "$gpu_sample" "$expected_cpu" "$expected_gpu" "$throttle" "$fan_status"
             next_log=$((now_seconds + telemetry_interval))
         fi
         if [[ -n $failure_class ]]; then break; fi
@@ -1329,7 +1422,7 @@ reset_stock_tryboot_kind() {
     complete_line="# AUTOPIOVERCLOCK TRYBOOT COMPLETE: $ownership_token"
     complete_count=$(grep -Fc -- '# AUTOPIOVERCLOCK TRYBOOT COMPLETE:' "$tryboot_file" 2>/dev/null || true)
     [[ $begin_count == 1 && $end_count == 1 && $run_count == 2 ]] || return 1
-    awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" -v run_line="# Run: $run_id" '
+    awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" -v run_line="# Run: $run_id" -v fan_comment="$CANDIDATE_FAN_COMMENT" '
         {
             line=$0; sub(/\r$/, "", line)
             if (line==begin) {if (inside || seen) exit 1; inside=1; seen=1; next}
@@ -1337,11 +1430,17 @@ reset_stock_tryboot_kind() {
             if (inside) {block[++count]=line}
         }
         END {
-            if (!seen || inside || !ended || count!=5) exit 1
+            if (!seen || inside || !ended || (count!=5 && count!=11)) exit 1
             if (block[1]!=run_line || block[2]!="[all]") exit 1
             if (block[3] !~ /^over_voltage_delta=-?[0-9]+$/) exit 1
             if (block[4] !~ /^arm_freq=[0-9]+$/) exit 1
             if (block[5] !~ /^(gpu_freq|v3d_freq)=[0-9]+$/) exit 1
+            if (count==11 && (block[6]!=fan_comment ||
+                              block[7]!="dtparam=fan_temp0=0" ||
+                              block[8]!="dtparam=fan_temp0_speed=255" ||
+                              block[9]!="dtparam=fan_temp1_speed=255" ||
+                              block[10]!="dtparam=fan_temp2_speed=255" ||
+                              block[11]!="dtparam=fan_temp3_speed=255")) exit 1
         }
     ' "$tryboot_file" || return 1
     if [[ $complete_count == 0 ]]; then
