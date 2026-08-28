@@ -165,8 +165,8 @@ apo_parse_cli() {
             ;;
         test)
             APO_COMMAND=run
-            APO_ORIGIN_COMMAND=test
-            APO_PUBLIC_COMMAND=test
+            APO_ORIGIN_COMMAND='test'
+            APO_PUBLIC_COMMAND='test'
             APO_MANUAL_TEST=1
             index=1
             ;;
