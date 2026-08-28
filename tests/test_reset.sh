@@ -340,7 +340,7 @@ done
     apo_discovery_capture() { RESET_ACTIONS+=(discovery); }
     apo_validate_pi5() { RESET_ACTIONS+=(validate-pi5); }
     apo_remote_boot_id() { printf boot-before; }
-    apo_post_reboot_handshake() { [[ $1 == boot-before && $2 == 30 && $3 == stock-reset ]]; RESET_ACTIONS+=(post-reboot-handshake); APO_REBOOT_BOOT_ID=boot-after; APO_REBOOT_HANDSHAKE_STAGE=complete; }
+    apo_post_reboot_handshake() { [[ $1 == boot-before && $2 == 30 && $3 == stock-reset ]]; RESET_ACTIONS+=(post-reboot-handshake); APO_REBOOT_BOOT_ID=boot-after; APO_REBOOT_HANDSHAKE_STAGE='complete'; }
     apo_remote_worker() { RESET_ACTIONS+=("remote-worker:$2"); return 0; }
     apo_run_worker_capture() { RESET_ACTIONS+=("worker:$2"); APO_LAST_WORKER_LOG=$1; return 0; }
     apo_parse_data_file() {

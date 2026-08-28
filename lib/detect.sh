@@ -98,17 +98,17 @@ apo_post_reboot_handshake() {
     local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot}
     local new_boot_id
     APO_REBOOT_BOOT_ID=''
-    APO_REBOOT_HANDSHAKE_STAGE=wait
+    APO_REBOOT_HANDSHAKE_STAGE='wait'
     new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$timeout_seconds" || true)
     [[ -n $new_boot_id && $new_boot_id != "$old_boot_id" ]] || {
         APO_LAST_CLASS=HARNESS_FAILURE
         APO_LAST_REASON="The target did not return with a new boot ID after $context."
         return 1
     }
-    APO_REBOOT_HANDSHAKE_STAGE=worker
+    APO_REBOOT_HANDSHAKE_STAGE='worker'
     apo_redeploy_worker_for_boot "$new_boot_id" "$context" || return 1
     APO_REBOOT_BOOT_ID=$new_boot_id
-    APO_REBOOT_HANDSHAKE_STAGE=complete
+    APO_REBOOT_HANDSHAKE_STAGE='complete'
 }
 
 apo_normalize_initial_boot() {

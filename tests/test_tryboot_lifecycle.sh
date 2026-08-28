@@ -679,7 +679,7 @@ HASH_MODE=valid CASE_ROOT="$TEMP_DIR/controller-valid" REPO_ROOT="$ROOT" bash -c
         trigger_calls=$((trigger_calls + 1))
     }
     apo_wait_for_new_boot() { printf candidate-boot; }
-    apo_post_reboot_handshake() { APO_REBOOT_HANDSHAKE_STAGE=complete; APO_REBOOT_BOOT_ID=$(apo_wait_for_new_boot "$1" "$2"); }
+    apo_post_reboot_handshake() { APO_REBOOT_HANDSHAKE_STAGE='complete'; APO_REBOOT_BOOT_ID=$(apo_wait_for_new_boot "$1" "$2"); }
     apo_remote_tryboot_flag() { printf 00000001; }
     apo_health_check() { return 0; }
     sleep() { :; }
