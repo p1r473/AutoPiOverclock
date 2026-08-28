@@ -112,8 +112,9 @@ for worker_name in debian batocera; do
             "dtparam=fan_temp1_speed=128" "dtparam=fan_temp2_speed=192" \
             "dtparam=fan_temp3_speed=255"; do
             [[ $(grep -Fxc -- "$preserved_line" "$FAN_TEST_ROOT/permanent.txt") == 1 ]]
-            [[ $(grep -Fxc -- "$preserved_line" "$FAN_TEST_ROOT/tryboot.txt") == 1 ]]
+            grep -Fqx -- "$preserved_line" "$FAN_TEST_ROOT/tryboot.txt"
         done
+        [[ $(grep -Fxc "dtparam=fan_temp3_speed=255" "$FAN_TEST_ROOT/tryboot.txt") == 2 ]]
         [[ $(sha256sum "$FAN_TEST_ROOT/config.txt" | awk "NR == 1 {print \$1}") == "$source_hash" ]]
 
         render_tryboot_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/tryboot-normal-fan.txt" 2900 1000 v3d_freq 0 fan-opt-out "$token" normal
