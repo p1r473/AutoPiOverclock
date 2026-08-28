@@ -126,6 +126,8 @@ apo_state_load "$TEMP_DIR/debian-auto.state"
 [[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
 [[ ${APO_STATE[CFG_AUTO_GENERATED_CANDIDATES]} == 1 ]]
 [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 0 ]]
+[[ ${APO_STATE[CFG_MAX_FAN]} == 1 ]]
+grep -Fq '# candidate_max_fan=enabled' "$TEMP_DIR/debian-auto.conf"
 grep -Fxq 'cpu_candidates_mhz=2500,2600,2700,2800,2900,3000,3100,3200' "$TEMP_DIR/debian-auto.conf"
 grep -Fxq 'gpu_candidates_mhz=1000,1050,1100,1150,1200' "$TEMP_DIR/debian-auto.conf"
 APO_COMMAND=run
@@ -142,6 +144,7 @@ resolve_discovered_auto_plan debian 2400 960 0
     APO_CONFIG_FILE=''
     APO_MODE_REQUESTED=auto
     APO_EDGE_CPU_24H=1
+    APO_MAX_FAN=0
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 2400 960 0
     [[ ${APO_CFG[FINAL_DURATION_S]} == 28800 ]]
@@ -149,7 +152,30 @@ resolve_discovered_auto_plan debian 2400 960 0
     APO_STATE=()
     apo_state_load "$TEMP_DIR/debian-edge-auto.state"
     [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 1 ]]
+    [[ ${APO_STATE[CFG_MAX_FAN]} == 0 ]]
+    grep -Fq '# candidate_max_fan=disabled' "$TEMP_DIR/debian-edge-auto.conf"
+    apo_config_restore_from_state
+    [[ $APO_MAX_FAN == 0 ]]
 )
+
+# States created before the fan-policy key default safely to maximum cooling.
+(
+    APO_STATE=()
+    APO_MAX_FAN=0
+    apo_config_restore_from_state
+    [[ $APO_MAX_FAN == 1 ]]
+)
+
+source "$ROOT/lib/health.sh"
+APO_STATE=()
+apo_state_set TRYBOOT_EXPECTED 1
+APO_MAX_FAN=1
+[[ $(apo_current_fan_policy) == candidate-max ]]
+APO_MAX_FAN=0
+[[ $(apo_current_fan_policy) == normal ]]
+apo_state_set TRYBOOT_EXPECTED 0
+APO_MAX_FAN=1
+[[ $(apo_current_fan_policy) == normal ]]
 
 APO_COMMAND=run
 APO_DRY_RUN=0

@@ -41,8 +41,22 @@ parse_fixture run overclock overclock overclock tron
     [[ $APO_AUTO_APPLY == 1 ]]
     [[ $APO_ASSUME_YES == 1 ]]
     [[ $APO_EDGE_CPU_24H == 1 ]]
+    [[ $APO_MAX_FAN == 1 ]]
     [[ $APO_MODE_REQUESTED == auto ]]
     [[ -z $APO_CONFIG_FILE ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --no-max-fan
+    [[ $APO_COMMAND == run ]]
+    [[ $APO_MAX_FAN == 0 && $APO_MAX_FAN_OPTION_SEEN == 1 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli run tron --no-max-fan --yes
+    [[ $APO_COMMAND == run && $APO_MAX_FAN == 0 ]]
 )
 
 parse_fixture reset reset reset reset tron
@@ -67,7 +81,7 @@ CONTINUATION_STATE="$CONTINUATION_OUTPUT/tron-${CONTINUATION_RUN}.state"
 write_state_fixture "$CONTINUATION_STATE" \
     FORMAT_VERSION 1 RUN_SCHEMA 8 RUN_ID "$CONTINUATION_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
-    STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED
+    STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED CFG_MAX_FAN 1
 ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
 (
     export APO_CLI_LIBRARY_ONLY=1
@@ -90,6 +104,17 @@ if (
     exit 1
 fi
 grep -Fq 'Finish it first, then repeat overclock TARGET --edge-cpu-24h' "$TEMP_DIR/active-edge-change.err"
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --no-max-fan
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+) 2>"$TEMP_DIR/active-fan-change.err"; then
+    echo 'an active run accepted a mid-run cooling-policy change' >&2
+    exit 1
+fi
+grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fan-change.err"
 
 # Repeating the one public command also adopts the exact recovered schema-7
 # final-stress boundary produced by alpha.20. It does not silently adopt an
@@ -162,7 +187,17 @@ ln -sfn "$(basename "$APPLIED_FLOOR_STATE")" "$CONTINUATION_OUTPUT/tron-latest.s
     [[ $APO_COMMAND == post-floor-edge ]]
     [[ $APO_POST_FLOOR_EDGE_SOURCE_STATE == "$APPLIED_FLOOR_STATE" ]]
     [[ $APO_EDGE_CPU_24H == 1 ]]
+    [[ $APO_POST_FLOOR_EDGE_MAX_FAN == 1 ]]
     [[ $(apo_state_get MODE_EFFECTIVE) == headless ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --edge-cpu-24h --no-max-fan
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == post-floor-edge ]]
+    [[ $APO_POST_FLOOR_EDGE_MAX_FAN == 0 ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
@@ -233,6 +268,18 @@ if "$ROOT/autopioverclock" prepare tron --edge-cpu-24h >/dev/null 2>&1; then
     echo 'prepare accepted the optional edge-tuning flag' >&2
     exit 1
 fi
+if "$ROOT/autopioverclock" prepare tron --no-max-fan >/dev/null 2>&1; then
+    echo 'prepare accepted a tuning-only fan option' >&2
+    exit 1
+fi
+if "$ROOT/autopioverclock" reset tron --no-max-fan >/dev/null 2>&1; then
+    echo 'reset accepted a tuning-only fan option' >&2
+    exit 1
+fi
+if "$ROOT/autopioverclock" resume tron --no-max-fan >/dev/null 2>&1; then
+    echo 'resume accepted a cooling-policy change outside saved state' >&2
+    exit 1
+fi
 if "$ROOT/autopioverclock" prepare tron --config fixture.conf >/dev/null 2>&1; then
     echo 'simple prepare accepted an advanced custom plan' >&2
     exit 1
@@ -254,7 +301,7 @@ for advanced_command in run resume status recover apply report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact; do
+for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 

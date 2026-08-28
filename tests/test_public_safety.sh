@@ -57,7 +57,7 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
     exit 1
 fi
 approved_options=$(printf '%s\n' \
-    --edge-cpu-24h --help --identity-file --output-dir --ssh-port --version | LC_ALL=C sort)
+    --edge-cpu-24h --help --identity-file --no-max-fan --output-dir --ssh-port --version | LC_ALL=C sort)
 documented_options=$(awk '/^Common options:/{capture=1; next} /^Advanced options:/{capture=0} capture' "$ROOT/autopioverclock" |
     grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
@@ -70,6 +70,10 @@ for advanced_option in --config --dry-run --install-missing --mode --redact --re
         exit 1
     }
 done
+if grep -RIn --include='*.sh' 'apo_wait_for_new_boot' "$ROOT/lib" "$ROOT/profiles" | grep -v 'lib/detect.sh' | grep -v 'lib/ssh.sh'; then
+    echo 'a production reboot path bypasses the shared worker-redeployment handshake' >&2
+    exit 1
+fi
 if "$ROOT/autopioverclock" prepare example-host --edge-cpu-24h --config fixture.conf >/dev/null 2>&1; then
     echo '--edge-cpu-24h accepted an explicit configuration' >&2
     exit 1

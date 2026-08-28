@@ -109,12 +109,16 @@ apo_apply_force_normal_boot_and_health() {
     apo_state_set LAST_BOOT_ID "$old_boot_id"
     apo_state_save
     apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
-    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
-    if [[ -z $new_boot_id ]]; then
+    if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" "$context"; then
         APO_LAST_CLASS=APPLY_FAILURE
-        APO_LAST_REASON="The verification reboot did not return to SSH before $context."
+        if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+            APO_LAST_REASON="The verification reboot returned before $context, but its transient worker could not be restored: $APO_LAST_REASON"
+        else
+            APO_LAST_REASON="The verification reboot did not return to SSH before $context."
+        fi
         return 1
     fi
+    new_boot_id=$APO_REBOOT_BOOT_ID
     tryboot_flag=$(apo_remote_tryboot_flag || true)
     if [[ $tryboot_flag != 00000000 ]]; then
         APO_LAST_CLASS=APPLY_FAILURE

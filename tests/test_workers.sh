@@ -82,16 +82,17 @@ for worker_name in debian batocera; do
     fi
 done
 
-# Every temporary overclock boot carries a Pi 5 PWM fan override at 255. The
-# permanent renderer never adopts that test-only cooling policy. When Linux
-# exposes the official pwm-fan hwmon device, the worker proves both maximum PWM
-# and a nonzero tachometer before accepting candidate health or stress.
+# The default temporary overclock boot carries a Pi 5 PWM fan override at 255;
+# the explicit opt-out retains the ordinary curve. The permanent renderer never
+# adopts the test-only policy. When Linux exposes the official pwm-fan hwmon
+# device, the worker proves maximum PWM and a live tachometer under that policy.
 for worker_name in debian batocera; do
     APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" FAN_TEST_ROOT="$TEMP_DIR/fan-$worker_name" bash -c '
         set -Eeuo pipefail
         source "$WORKER"
         mkdir -p "$FAN_TEST_ROOT/hwmon/hwmon0"
-        printf "[all]\ndtparam=audio=on\n" > "$FAN_TEST_ROOT/config.txt"
+        printf "[all]\ndtparam=audio=on\ndtparam=fan_temp0=50000\ndtparam=fan_temp0_hyst=5000\ndtparam=fan_temp0_speed=75\ndtparam=fan_temp1=60000\ndtparam=fan_temp1_hyst=5000\ndtparam=fan_temp1_speed=128\ndtparam=fan_temp2=67500\ndtparam=fan_temp2_hyst=5000\ndtparam=fan_temp2_speed=192\ndtparam=fan_temp3=75000\ndtparam=fan_temp3_hyst=5000\ndtparam=fan_temp3_speed=255\n" > "$FAN_TEST_ROOT/config.txt"
+        source_hash=$(sha256sum "$FAN_TEST_ROOT/config.txt" | awk "NR == 1 {print \$1}")
         token=$(printf "a%.0s" {1..64})
         render_tryboot_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/tryboot.txt" 2900 1000 v3d_freq 0 fan-fixture "$token"
         for expected_line in \
@@ -106,6 +107,20 @@ for worker_name in debian batocera; do
         render_clock_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/permanent.txt" 2900 1000 v3d_freq 0 fan-fixture
         ! grep -Fq -- "$CANDIDATE_FAN_COMMENT" "$FAN_TEST_ROOT/permanent.txt"
         ! grep -Fq "dtparam=fan_temp0=0" "$FAN_TEST_ROOT/permanent.txt"
+        for preserved_line in \
+            "dtparam=fan_temp0=50000" "dtparam=fan_temp0_speed=75" \
+            "dtparam=fan_temp1_speed=128" "dtparam=fan_temp2_speed=192" \
+            "dtparam=fan_temp3_speed=255"; do
+            [[ $(grep -Fxc -- "$preserved_line" "$FAN_TEST_ROOT/permanent.txt") == 1 ]]
+            [[ $(grep -Fxc -- "$preserved_line" "$FAN_TEST_ROOT/tryboot.txt") == 1 ]]
+        done
+        [[ $(sha256sum "$FAN_TEST_ROOT/config.txt" | awk "NR == 1 {print \$1}") == "$source_hash" ]]
+
+        render_tryboot_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/tryboot-normal-fan.txt" 2900 1000 v3d_freq 0 fan-opt-out "$token" normal
+        ! grep -Fq -- "$CANDIDATE_FAN_COMMENT" "$FAN_TEST_ROOT/tryboot-normal-fan.txt"
+        ! grep -Fq "dtparam=fan_temp0=0" "$FAN_TEST_ROOT/tryboot-normal-fan.txt"
+        [[ $(grep -Fxc "dtparam=fan_temp0_speed=75" "$FAN_TEST_ROOT/tryboot-normal-fan.txt") == 1 ]]
+        if render_tryboot_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/invalid.txt" 2900 1000 v3d_freq 0 fan-invalid "$token" invalid; then exit 1; fi
 
         printf "pwmfan\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/name"
         printf "255\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/pwm1"

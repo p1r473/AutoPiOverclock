@@ -311,6 +311,36 @@ BATOCERA_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 TEST_ROOT="$TEMP_DIR" WORKER="$ROOT/
 ' 2>&1)
 [[ $BATOCERA_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
 
+set +e
+WATCHDOG_CONTROLLER_OUTPUT=$(APO_ROOT="$ROOT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/lib/common.sh"
+    source "$APO_ROOT/lib/detect.sh"
+
+    APO_DRY_RUN=0
+    APO_REPAIR_WATCHDOGS=1
+    APO_RAW_TARGET=fixture
+    APO_LAST_CLASS=
+    APO_LAST_REASON=
+
+    apo_summary_line() { :; }
+    apo_store_discovery_state() { :; }
+    apo_reset_throttle_history() { :; }
+    apo_profile_watchdogs_ready() { return 1; }
+    apo_profile_watchdog_description() { printf fixture; }
+    apo_profile_repair_watchdogs() {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="structured watchdog recovery fixture"
+        return 1
+    }
+
+    apo_watchdog_preflight
+' 2>&1)
+WATCHDOG_CONTROLLER_RC=$?
+set -e
+[[ $WATCHDOG_CONTROLLER_RC -eq 24 ]]
+[[ $WATCHDOG_CONTROLLER_OUTPUT == *'structured watchdog recovery fixture'* ]]
+
 grep -q 'WATCHDOG_RUNTIME_TIMEOUT' "$ROOT/lib/detect.sh"
 grep -q 'atomic_replace_verified.*watchdog-config-install' "$ROOT/workers/debian-worker.sh"
 grep -q 'expected_old_hash=.*expected_new_hash=' "$ROOT/workers/debian-worker.sh"

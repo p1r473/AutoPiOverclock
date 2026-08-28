@@ -13,7 +13,7 @@ Run every command on the controller/master Pi. `TARGET` always names a different
 | Controller command | Complete behavior |
 |---|---|
 | `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. On an already tuned host it completes setup, then directs the one required reset. |
-| `overclock TARGET` | Rediscover the stock baseline, prove tryboot recovery, run every candidate with the Pi 5 PWM fan temporarily commanded to 100%, sweep and refine candidates, select guarded clocks, adapt downward after a recovered CPU-only/GPU-only final-stress boundary, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
+| `overclock TARGET` | Rediscover the stock baseline, prove tryboot recovery, run every candidate with maximum Pi 5 PWM fan cooling by default, sweep and refine candidates, select guarded clocks, adapt downward after a recovered CPU-only/GPU-only final-stress boundary, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
 | `reset TARGET` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |
 
 The optional edge test is:
@@ -24,19 +24,20 @@ autopioverclock overclock TARGET --edge-cpu-24h
 
 On a fresh run it validates the ordinary production floor first, then tests CPU exactly 25 MHz higher through a fresh validation whose endurance phase lasts 24 hours. If a normal `overclock TARGET` run has already completed and applied its current-schema eight-hour floor, running the flagged command later creates a separate linked edge run, re-proves the live floor, and starts directly at the edge validation. The eight-hour endurance phase is not repeated. The source run's automatically selected graphical or headless mode is retained exactly, so a target with no screen remains fully supported. A safely recovered edge boot/stability rejection keeps the validated floor; harness or recovery uncertainty remains fatal.
 
-Maximum cooling is automatic and temporary. Each candidate/final tryboot overrides the Pi 5 fan levels to PWM 255 from the first thermal level, verifies any detected Linux `pwmfan` device before and during load, and records its PWM/RPM telemetry. Normal recovery and permanent apply do not copy those fan overrides. A target with passive cooling or an externally controlled fan is reported as `not-detected` rather than falsely claimed as software-controlled; temperature and throttle limits remain mandatory.
+Maximum cooling is automatic and temporary. Each candidate/final tryboot overrides the Pi 5 fan levels to PWM 255 from the first thermal level, verifies any detected Linux `pwmfan` device before and during load, and records its PWM/RPM telemetry. The protected permanent config and all of its existing fan directives remain unchanged; normal recovery and permanent apply therefore restore the user's ordinary curve automatically. A target with passive cooling or an externally controlled fan is reported as `not-detected` rather than falsely claimed as software-controlled; temperature and throttle limits remain mandatory. `--no-max-fan` opts a new run out of the temporary override. A continuation always uses its saved cooling policy.
 
 `prepare` and `overclock` are explicit authorization for the operations named by those commands. `prepare` may modify dependency/watchdog files and reboot. `overclock` may apply only the final result after current-schema validation and displays and retains the exact diff before applying it. Neither command overwrites unknown tryboot evidence or bypasses protected-hash checks.
 
-If its latest state is a current-schema `overclock` interrupted after preflight, rerunning the same `autopioverclock overclock TARGET` command safely recovers and continues that run. It also completes a validated application interrupted before or during reboot. One narrow failed-state continuation is supported: a schema-7 automatic run whose ordinary CPU-only or GPU-only final stress recorded `STABILITY_FAILURE`, completed verified normal recovery, and cleared every owned tryboot field. The repeated command upgrades that evidence, lowers only the stressed domain by its production guard, and restarts complete final validation without trying the rejected clock again. Other failed, old-schema, preflight-only, foreign, or ambiguous state is never silently adopted.
+If its latest state is a current-schema `overclock` interrupted after preflight, rerunning the same `autopioverclock overclock TARGET` command safely recovers and continues that run with its recorded cooling policy. It also completes a validated application interrupted before or during reboot. One narrow failed-state continuation is supported: a schema-7 automatic run whose ordinary CPU-only or GPU-only final stress recorded `STABILITY_FAILURE`, completed verified normal recovery, and cleared every owned tryboot field. The repeated command upgrades that evidence, lowers only the stressed domain by its production guard, and restarts complete final validation without trying the rejected clock again. Other failed, old-schema, preflight-only, foreign, or ambiguous state is never silently adopted.
 
-`reset` is noninteractive and rejects `--yes`, run selection, tuning-plan, dependency, watchdog, dry-run, edge, mode, and redaction flags. The older `TARGET reset` order remains a compatibility alias; `reset TARGET` is the normal form.
+`reset` is noninteractive and rejects `--yes`, run selection, tuning-plan, dependency, watchdog, dry-run, edge, fan-policy, mode, and redaction flags. The older `TARGET reset` order remains a compatibility alias; `reset TARGET` is the normal form.
 
 ## Normal options
 
 | Option | Default | Meaning |
 |---|---:|---|
 | `--edge-cpu-24h` | off | Add the final CPU +25 MHz/24-hour validation to `overclock`. |
+| `--no-max-fan` | off | Use the target's ordinary fan policy instead of the temporary maximum-cooling tryboot override. Valid only for a new `overclock` or advanced `run`. |
 | `--output-dir DIR` | `$HOME/overclock-results` | Use another flat artifact directory. |
 | `--ssh-port PORT` | `22` | Use another SSH destination port. |
 | `--identity-file FILE` | normal SSH keys | Use one explicit SSH private key. |
@@ -59,7 +60,7 @@ autopioverclock apply TARGET --run-id RUN_ID
 autopioverclock TARGET reset
 ```
 
-The `run TARGET` command and strict `--config FILE` plans remain for development and expert use. Advanced options include `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--run-id`, `--redact`, and `--yes`. `prepare TARGET --dry-run` retains read-only discovery and plan generation. These are not required by the normal three-command workflow. The explicit public `overclock` command starts without a second ordinary prompt; all safety, validation, and recovery gates remain mandatory.
+The `run TARGET` command and strict `--config FILE` plans remain for development and expert use. Advanced options include `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--run-id`, `--redact`, and `--yes`; a new advanced run may also use `--no-max-fan`. `prepare TARGET --dry-run` retains read-only discovery and plan generation. These are not required by the normal three-command workflow. The explicit public `overclock` command starts without a second ordinary prompt; all safety, validation, and recovery gates remain mandatory.
 
 Standalone advanced `apply` still requires a current-schema `PASS`/`COMPLETE` result with at least 28,800 seconds of retained endurance evidence, displays the exact diff, and requires typed confirmation. `status` and `report` remain local; `resume`, `recover`, and `apply` fail closed when saved context is incomplete or stale.
 

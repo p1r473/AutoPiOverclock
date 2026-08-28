@@ -77,6 +77,7 @@ assert_reset_option_rejected --install-missing --install-missing
 assert_reset_option_rejected --repair-watchdogs --repair-watchdogs
 assert_reset_option_rejected --dry-run --dry-run
 assert_reset_option_rejected --edge-cpu-24h --edge-cpu-24h
+assert_reset_option_rejected --no-max-fan --no-max-fan
 assert_reset_option_rejected --redact --redact
 assert_reset_option_rejected --reset --reset
 
@@ -339,7 +340,7 @@ done
     apo_discovery_capture() { RESET_ACTIONS+=(discovery); }
     apo_validate_pi5() { RESET_ACTIONS+=(validate-pi5); }
     apo_remote_boot_id() { printf boot-before; }
-    apo_wait_for_new_boot() { [[ $1 == boot-before && $2 == 30 ]]; RESET_ACTIONS+=(wait-new-boot); printf boot-after; }
+    apo_post_reboot_handshake() { [[ $1 == boot-before && $2 == 30 && $3 == stock-reset ]]; RESET_ACTIONS+=(post-reboot-handshake); APO_REBOOT_BOOT_ID=boot-after; APO_REBOOT_HANDSHAKE_STAGE=complete; }
     apo_remote_worker() { RESET_ACTIONS+=("remote-worker:$2"); return 0; }
     apo_run_worker_capture() { RESET_ACTIONS+=("worker:$2"); APO_LAST_WORKER_LOG=$1; return 0; }
     apo_parse_data_file() {
@@ -380,6 +381,7 @@ done
     [[ ${APO_STATE[NORMAL_CPU]} == 2400 && ${APO_STATE[NORMAL_GPU]} == 960 && ${APO_STATE[NORMAL_VOLTAGE]} == 0 ]] || fail 'reset fixture retained stale pre-reset clocks'
     [[ " ${RESET_ACTIONS[*]} " == *' worker:reset-stock '* ]] || fail 'reset fixture skipped reset-stock'
     [[ " ${RESET_ACTIONS[*]} " == *' remote-worker:reboot-stock-reset '* ]] || fail 'reset fixture skipped permanent reboot'
+    [[ " ${RESET_ACTIONS[*]} " == *' post-reboot-handshake '* ]] || fail 'reset fixture skipped post-reboot worker restoration'
     [[ ${APO_STATE[LAST_BOOT_ID]} == boot-after && ${APO_STATE[NORMAL_BOOT_ID]} == boot-after ]] || fail 'reset fixture skipped changed-boot proof'
     [[ " ${RESET_ACTIONS[*]} " == *' worker:verify-stock-reset '* ]] || fail 'reset fixture skipped post-reboot stock verification'
     FINAL_RESET_EVENT=${RESET_EVENTS[-1]}

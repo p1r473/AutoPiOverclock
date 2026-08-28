@@ -61,6 +61,54 @@ apo_deploy_worker() {
     [[ -r $APO_LOCAL_WORKER ]] || apo_die "Missing local worker: $APO_LOCAL_WORKER" "$APO_EXIT_INTERNAL"
     apo_remote_upload_root "$APO_LOCAL_WORKER" "$APO_REMOTE_WORKER" || apo_die 'Could not deploy the target worker.' "$APO_EXIT_PREFLIGHT"
     APO_WORKER_DEPLOYED=1
+    APO_WORKER_BOOT_ID=$(apo_remote_boot_id || true)
+}
+
+apo_redeploy_worker_for_boot() {
+    local boot_id=$1 context=${2:-post-reboot}
+    [[ -n $boot_id ]] || {
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON="Could not identify the target boot before redeploying the transient worker for $context."
+        return 1
+    }
+    [[ -r $APO_LOCAL_WORKER ]] || {
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON="The local target worker is missing before $context: $APO_LOCAL_WORKER"
+        return 1
+    }
+    if ! apo_remote_upload_root "$APO_LOCAL_WORKER" "$APO_REMOTE_WORKER"; then
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON="The target returned after $context, but its run-isolated worker could not be redeployed."
+        return 1
+    fi
+    APO_WORKER_DEPLOYED=1
+    APO_WORKER_BOOT_ID=$boot_id
+}
+
+apo_ensure_worker_for_boot() {
+    local boot_id=$1 context=${2:-current-boot}
+    if [[ ${APO_WORKER_BOOT_ID:-} == "$boot_id" ]] &&
+       apo_remote_root "test -x $(apo_sh_quote "$APO_REMOTE_WORKER")" >/dev/null 2>&1; then
+        return 0
+    fi
+    apo_redeploy_worker_for_boot "$boot_id" "$context"
+}
+
+apo_post_reboot_handshake() {
+    local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot}
+    local new_boot_id
+    APO_REBOOT_BOOT_ID=''
+    APO_REBOOT_HANDSHAKE_STAGE=wait
+    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$timeout_seconds" || true)
+    [[ -n $new_boot_id && $new_boot_id != "$old_boot_id" ]] || {
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON="The target did not return with a new boot ID after $context."
+        return 1
+    }
+    APO_REBOOT_HANDSHAKE_STAGE=worker
+    apo_redeploy_worker_for_boot "$new_boot_id" "$context" || return 1
+    APO_REBOOT_BOOT_ID=$new_boot_id
+    APO_REBOOT_HANDSHAKE_STAGE=complete
 }
 
 apo_normalize_initial_boot() {
@@ -82,8 +130,13 @@ apo_normalize_initial_boot() {
             apo_state_save
             apo_event initial-recovery WARN '' 'Target entered the run already in tryboot; rebooting to permanent normal config before baseline discovery.'
             apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
-            new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
-            [[ -n $new_boot_id ]] || apo_die 'Initial tryboot recovery did not return to SSH before timeout.' "$APO_EXIT_RECOVERY"
+            if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" initial-tryboot-recovery; then
+                if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+                    apo_die "Initial tryboot recovery returned, but verification could not continue: $APO_LAST_REASON" "$APO_EXIT_RECOVERY"
+                fi
+                apo_die 'Initial tryboot recovery did not return to SSH before timeout.' "$APO_EXIT_RECOVERY"
+            fi
+            new_boot_id=$APO_REBOOT_BOOT_ID
             sleep "$APO_BOOT_SETTLE_SECONDS"
             tryboot_flag=$(apo_remote_tryboot_flag || true)
             [[ $tryboot_flag == 00000000 ]] || apo_die "Initial recovery still reports tryboot flag ${tryboot_flag:-missing}." "$APO_EXIT_RECOVERY"
@@ -296,7 +349,7 @@ apo_dependency_preflight() {
 }
 
 apo_watchdog_preflight() {
-    local expected_repair_hash
+    local expected_repair_hash repair_class repair_reason
     if apo_profile_watchdogs_ready; then
         apo_summary_line "Watchdogs: READY ($(apo_profile_watchdog_description))"
         return 0
@@ -308,7 +361,15 @@ apo_watchdog_preflight() {
     # confirmed repair path plans or changes any permanent target file.
     apo_store_discovery_state
     apo_reset_throttle_history watchdog-remediation-baseline || apo_die "$APO_LAST_REASON" "$APO_EXIT_PREFLIGHT"
-    apo_profile_repair_watchdogs || apo_die 'Watchdog remediation failed or was refused.' "$APO_EXIT_PREFLIGHT"
+    if ! apo_profile_repair_watchdogs; then
+        repair_class=${APO_LAST_CLASS:-PREFLIGHT_FAILURE}
+        repair_reason=${APO_LAST_REASON:-'Watchdog remediation failed or was refused.'}
+        case $repair_class in
+            PREFLIGHT_FAILURE|HARNESS_FAILURE|RECOVERY_FAILURE) ;;
+            *) repair_class=PREFLIGHT_FAILURE ;;
+        esac
+        apo_die "$repair_reason" "$(apo_class_exit_code "$repair_class")"
+    fi
     expected_repair_hash=$(apo_state_get WATCHDOG_REPAIR_EXPECTED_HASH '')
     apo_discovery_capture
     if [[ ! $expected_repair_hash =~ ^[0-9a-f]{64}$ || ${APO_DISCOVERY[PERMANENT_HASH]:-} != "$expected_repair_hash" ]]; then

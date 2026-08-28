@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-alpha.23 — 2026-08-28
+
+- Fixed the Debian `/tmp` worker lifecycle exposed by alpha.22: one shared post-reboot handshake now waits for a changed boot ID, re-uploads the exact run-isolated worker, and only then permits candidate, recovery, watchdog, reset, or apply verification. A target that clears `/tmp` during reboot no longer produces a false missing-worker harness failure.
+- Preserved the worker's structured watchdog failure class and exact reason through `prepare` instead of replacing a post-mutation `RECOVERY_FAILURE` with the generic `PREFLIGHT_FAILURE` message.
+- Added default-on, state-bound maximum cooling with an explicit `--no-max-fan` new-run opt-out. The selected policy is passed through candidate planning and installation, retained across resume, shown in configuration comments, summaries, status, and reports, and cannot change midway through a run.
+- Kept cooling changes strictly inside owned candidate/final tryboots. Existing permanent fan directives are preserved, normal recovery restores the user's ordinary curve automatically, and permanent apply never imports the test-only maximum-fan block.
+- Added regressions for post-reboot redeployment and deployment failure, default/opt-out rendering, custom fan-curve preservation, CLI compatibility, continuation immutability, later-edge policy selection, state compatibility, and report metadata.
+- Audited the README and supporting CLI, safety, architecture, and output documentation so the public three-command workflow remains the primary interface and advanced cooling/recovery details are accurate.
+
 ## 0.1.0-alpha.22 — 2026-08-28
 
 - Allowed `autopioverclock overclock TARGET --edge-cpu-24h` to start a later CPU +25 MHz/24-hour edge validation directly from a retained, applied current-schema eight-hour floor; the completed floor endurance is not repeated.
