@@ -254,7 +254,7 @@ apo_acquire_lock() {
 }
 
 apo_public_overclock_select_continuation() {
-    local state_file stored_run_id stored_target origin status phase apply_status
+    local state_file stored_run_id stored_target origin status phase apply_status state_schema
     [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
     state_file=$(apo_find_state_file '' || true)
     [[ -n $state_file ]] || return 0
@@ -265,14 +265,16 @@ apo_public_overclock_select_continuation() {
     status=$(apo_state_get STATUS '')
     phase=$(apo_state_get PHASE '')
     apply_status=$(apo_state_get APPLY_STATUS NOT_APPLIED)
+    state_schema=$(apo_state_get RUN_SCHEMA '')
     if apo_is_safe_run_id "$stored_run_id" &&
-       [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
-          $stored_target == "$APO_REMOTE_TARGET" && $origin == overclock ]] &&
-       { { [[ $status == RUNNING || $status == INTERRUPTED ]] &&
+       [[ $stored_target == "$APO_REMOTE_TARGET" && $origin == overclock ]] &&
+       { { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
            [[ $phase != PREPARE && $phase != PREPARED ]]; } ||
-         { [[ $status == PASS && $phase == COMPLETE ]] &&
+         { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $status == PASS && $phase == COMPLETE ]] &&
            [[ $apply_status == NOT_APPLIED || $apply_status == APPLYING ||
-              $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; }; }; then
+              $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; } ||
+         { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 7 ]] &&
+           apo_final_saved_failure_is_retryable "$state_schema"; }; }; then
         APO_SELECTED_RUN_ID=$stored_run_id
         APO_COMMAND=resume
         APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
@@ -448,7 +450,7 @@ apo_exit_from_saved_failure() {
 }
 
 main() {
-    local status
+    local status state_schema retry_saved_final=0 saved_failure_stage='' saved_failure_class='' saved_failure_reason=''
     apo_parse_cli "$@"
     apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync chmod mkdir mv readlink rm
     case $APO_COMMAND in run|prepare|resume|recover|reset|apply) apo_acquire_lock ;; esac
@@ -484,8 +486,14 @@ main() {
             if [[ $APO_PUBLIC_COMMAND == overclock ]]; then
                 apo_event overclock-resume INFO '' "Continuing interrupted overclock run $APO_RUN_ID through the same safety gates."
             fi
-            [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]] ||
-                apo_die 'This interrupted state predates the current safety/resume schema and cannot be resumed without bypassing required gates. Start a new run; status and report remain available.' "$APO_EXIT_USAGE"
+            state_schema=$(apo_state_get RUN_SCHEMA '')
+            if [[ $state_schema != "$APO_CURRENT_RUN_SCHEMA" ]]; then
+                if [[ $state_schema == 7 ]] && apo_final_migrate_legacy_retry_state "$state_schema"; then
+                    apo_event overclock-resume INFO '' 'Adopted the recovered final-stress boundary without repeating the failed clock.'
+                else
+                    apo_die 'This interrupted state predates the current safety/resume schema and cannot be resumed without bypassing required gates. Start a new run; status and report remain available.' "$APO_EXIT_USAGE"
+                fi
+            fi
             apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
             if [[ $(apo_state_get ORIGIN_COMMAND '') == prepare || $(apo_state_get READ_ONLY_RUN 0) == 1 ]]; then
                 apo_die 'A read-only prepare/dry-run state cannot be resumed into a mutating tuning run. Start a new run with an approved tuning plan.' "$APO_EXIT_USAGE"
@@ -524,12 +532,25 @@ main() {
                 apo_print_status
                 return 0
             fi
+            if apo_final_saved_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then
+                retry_saved_final=1
+                saved_failure_stage=$(apo_state_get FINAL_STAGE '')
+                saved_failure_class=$(apo_state_get FAILURE_CLASS '')
+                saved_failure_reason=$(apo_state_get FAILURE_REASON '')
+            fi
             apo_prepare_remote_for_saved_run
             apo_recover_normal resume-initial-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
-            apo_state_set STATUS RUNNING
-            apo_state_set FAILURE_CLASS ''
-            apo_state_set FAILURE_REASON ''
-            apo_state_save
+            if (( retry_saved_final == 1 )); then
+                if ! apo_final_schedule_stress_backoff "$saved_failure_stage" "$saved_failure_class" "$saved_failure_reason"; then
+                    apo_state_fail "$saved_failure_class" "$saved_failure_reason"
+                    return "$(apo_class_exit_code "$saved_failure_class")"
+                fi
+            else
+                apo_state_set STATUS RUNNING
+                apo_state_set FAILURE_CLASS ''
+                apo_state_set FAILURE_REASON ''
+                apo_state_save
+            fi
             apo_run_tuning
             apo_finish_public_overclock
             ;;

@@ -13,7 +13,7 @@ Run every command on the controller/master Pi. `TARGET` always names a different
 | Controller command | Complete behavior |
 |---|---|
 | `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. On an already tuned host it completes setup, then directs the one required reset. |
-| `overclock TARGET` | Rediscover the stock baseline, prove tryboot recovery, sweep and refine candidates, select guarded clocks, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
+| `overclock TARGET` | Rediscover the stock baseline, prove tryboot recovery, sweep and refine candidates, select guarded clocks, adapt downward after a recovered CPU-only/GPU-only final-stress boundary, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
 | `reset TARGET` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |
 
 The optional edge test is:
@@ -26,7 +26,7 @@ It validates the ordinary production floor first, then tests CPU exactly 25 MHz 
 
 `prepare` and `overclock` are explicit authorization for the operations named by those commands. `prepare` may modify dependency/watchdog files and reboot. `overclock` may apply only the final result after current-schema validation and displays and retains the exact diff before applying it. Neither command overwrites unknown tryboot evidence or bypasses protected-hash checks.
 
-If its latest state is a current-schema `overclock` interrupted after preflight, rerunning the same `autopioverclock overclock TARGET` command safely recovers and continues that run. It also completes a validated application interrupted before or during reboot. Failed, old-schema, preflight-only, foreign, or ambiguous state is never silently adopted.
+If its latest state is a current-schema `overclock` interrupted after preflight, rerunning the same `autopioverclock overclock TARGET` command safely recovers and continues that run. It also completes a validated application interrupted before or during reboot. One narrow failed-state continuation is supported: a schema-7 automatic run whose ordinary CPU-only or GPU-only final stress recorded `STABILITY_FAILURE`, completed verified normal recovery, and cleared every owned tryboot field. The repeated command upgrades that evidence, lowers only the stressed domain by its production guard, and restarts complete final validation without trying the rejected clock again. Other failed, old-schema, preflight-only, foreign, or ambiguous state is never silently adopted.
 
 `reset` is noninteractive and rejects `--yes`, run selection, tuning-plan, dependency, watchdog, dry-run, edge, mode, and redaction flags. The older `TARGET reset` order remains a compatibility alias; `reset TARGET` is the normal form.
 

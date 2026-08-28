@@ -3,7 +3,7 @@
 
 declare -Ag APO_STATE=()
 
-readonly APO_CURRENT_RUN_SCHEMA=7
+readonly APO_CURRENT_RUN_SCHEMA=8
 readonly APO_CURRENT_VALIDATION_SCHEMA=7
 
 apo_state_valid_key() { [[ ${1-} =~ ^[A-Z][A-Z0-9_]*$ ]]; }
@@ -123,6 +123,13 @@ apo_state_initialize() {
     apo_state_set FINAL_TARGET_CPU ''
     apo_state_set FINAL_TARGET_GPU ''
     apo_state_set FINAL_STAGE ''
+    apo_state_set FINAL_BACKOFF_COUNT 0
+    apo_state_set FINAL_BACKOFF_CPU ''
+    apo_state_set FINAL_BACKOFF_GPU ''
+    apo_state_set FINAL_BACKOFF_HISTORY ''
+    apo_state_set FINAL_BACKOFF_LAST_STAGE ''
+    apo_state_set FINAL_BACKOFF_LAST_CLASS ''
+    apo_state_set FINAL_BACKOFF_LAST_REASON ''
     apo_state_set APPLY_STATUS NOT_APPLIED
     apo_state_set APPLY_OLD_HASH ''
     apo_state_set APPLY_EXPECTED_HASH ''
