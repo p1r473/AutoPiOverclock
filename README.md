@@ -85,7 +85,7 @@ The tool deliberately records distinct result concepts instead of collapsing eve
 ## Safety invariants
 
 - Permanent `config.txt` is hashed and protected throughout testing.
-- Candidate values are written only to `tryboot.txt`.
+- Each candidate `tryboot.txt` is rendered from the complete protected `config.txt` and adds only an owned clock/cooling block, so required GPU drivers, overlays, display, audio, PCIe, and other unrelated boot settings remain present. Candidate values are written only to that temporary file.
 - By default, every candidate/final-validation tryboot sets the Pi 5 fan's first threshold to 0C and all four PWM levels to 255. A detected Linux `pwmfan` device must report PWM 255 and, when tachometer telemetry exists, nonzero RPM before and during load. A missing PWM device is reported honestly as `not-detected`; passive or externally controlled cooling still uses the strict temperature and throttle gates. `--no-max-fan` is an explicit new-run opt-out.
 - `prepare` and `overclock` refuse to overwrite any pre-existing `tryboot.txt` or unknown recovery file.
 - Every project-created `tryboot.txt` is bound to the current attempt by a fresh random ownership token and recorded SHA-256 evidence. Creation is no-clobber, trigger re-verifies the completed file, and cleanup quarantines then re-verifies it after a normal recovery before removal.
