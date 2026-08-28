@@ -57,7 +57,7 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
     exit 1
 fi
 approved_options=$(printf '%s\n' \
-    --edge-cpu-24h --help --identity-file --no-max-fan --output-dir --ssh-port --version | LC_ALL=C sort)
+    --cpu --edge-cpu-24h --gpu --help --identity-file --minutes --no-max-fan --output-dir --ssh-port --version | LC_ALL=C sort)
 documented_options=$(awk '/^Common options:/{capture=1; next} /^Advanced options:/{capture=0} capture' "$ROOT/autopioverclock" |
     grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
