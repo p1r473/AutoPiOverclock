@@ -249,6 +249,7 @@ apo_config_store_in_state() {
     done
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES "$APO_AUTO_GENERATED_CANDIDATES"
     apo_state_set CFG_EDGE_CPU_24H "${APO_EDGE_CPU_24H:-0}"
+    apo_state_set CFG_MAX_FAN "${APO_MAX_FAN:-1}"
 }
 
 apo_config_restore_from_state() {
@@ -264,6 +265,9 @@ apo_config_restore_from_state() {
     APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
     [[ $APO_EDGE_CPU_24H == 0 || $APO_EDGE_CPU_24H == 1 ]] ||
         apo_die 'Saved edge-CPU marker is malformed.' "$APO_EXIT_INTERNAL"
+    APO_MAX_FAN=$(apo_state_get CFG_MAX_FAN 1)
+    [[ $APO_MAX_FAN == 0 || $APO_MAX_FAN == 1 ]] ||
+        apo_die 'Saved maximum-fan policy is malformed.' "$APO_EXIT_INTERNAL"
     apo_config_validate
 }
 
@@ -271,6 +275,8 @@ apo_write_effective_config() {
     local destination=$1 config_key internal_key
     {
         printf '# AutoPiOverclock effective configuration for run %s\n' "${APO_RUN_ID:-unknown}"
+        printf '# candidate_max_fan=%s (controller policy; use --no-max-fan to opt out on a new run)\n' \
+            "$([[ ${APO_MAX_FAN:-1} == 1 ]] && printf enabled || printf disabled)"
         for config_key in "${APO_ALLOWED_CONFIG_KEYS[@]}"; do
             internal_key=$(apo_config_internal_key "$config_key")
             printf '%s=%s\n' "$config_key" "${APO_CFG[$internal_key]}"

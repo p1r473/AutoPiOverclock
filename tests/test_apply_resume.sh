@@ -66,6 +66,12 @@ reset_apply_fixture() {
 }
 
 apo_wait_for_ssh() { (( SSH_READY == 1 )); }
+apo_post_reboot_handshake() {
+    APO_REBOOT_HANDSHAKE_STAGE='wait'
+    APO_REBOOT_BOOT_ID=$(apo_wait_for_new_boot "$1" "$2" || true)
+    [[ -n $APO_REBOOT_BOOT_ID ]] || return 1
+    APO_REBOOT_HANDSHAKE_STAGE='complete'
+}
 apo_current_permanent_hash() { printf '%s' "$CURRENT_HASH"; }
 apo_remote_tryboot_flag() {
     [[ $LIVE_TRYBOOT_FLAG != unreadable ]] || return 1

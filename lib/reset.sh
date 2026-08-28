@@ -163,9 +163,13 @@ apo_reset_stock() {
     apo_state_save
     apo_event reset-reboot INFO '' 'Rebooting to activate the backed-up stock configuration.'
     apo_remote_worker "$APO_REMOTE_WORKER" reboot-stock-reset "$APO_PERMANENT_CONFIG_HASH" >/dev/null 2>&1 || true
-    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
-    [[ -n $new_boot_id ]] ||
+    if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" stock-reset; then
+        if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+            apo_die "Stock-reset reboot returned, but verification could not continue: $APO_LAST_REASON" "$APO_EXIT_RECOVERY"
+        fi
         apo_die "Stock-reset reboot did not return with a new boot ID within ${APO_BOOT_TIMEOUT}s." "$APO_EXIT_RECOVERY"
+    fi
+    new_boot_id=$APO_REBOOT_BOOT_ID
     apo_state_set LAST_BOOT_ID "$new_boot_id"
     apo_state_set NORMAL_BOOT_ID "$new_boot_id"
     apo_state_set RESET_STATUS VERIFYING
@@ -173,10 +177,6 @@ apo_reset_stock() {
     apo_state_save
     sleep "$APO_BOOT_SETTLE_SECONDS"
 
-    # The run-isolated worker normally survives reboot on both supported
-    # profiles. Upload it again so verification does not depend on /tmp
-    # retention policy or a target-side cleanup service.
-    apo_deploy_worker
     if ! apo_run_worker_capture verify-stock-reset verify-stock-reset "$APO_PERMANENT_CONFIG_HASH"; then
         apo_reset_abort_worker
     fi

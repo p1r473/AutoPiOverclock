@@ -12,6 +12,13 @@ apo_state_load "$ROOT/tests/fixtures/interrupted-tryboot.state"
 
 apo_state_save() { :; }
 apo_event() { :; }
+apo_ensure_worker_for_boot() { return 0; }
+apo_post_reboot_handshake() {
+    APO_REBOOT_HANDSHAKE_STAGE='wait'
+    APO_REBOOT_BOOT_ID=$(apo_wait_for_new_boot "$1" "$2" || true)
+    [[ -n $APO_REBOOT_BOOT_ID && $APO_REBOOT_BOOT_ID != "$1" ]] || return 1
+    APO_REBOOT_HANDSHAKE_STAGE='complete'
+}
 
 reset_recovery_fixture() {
     APO_STATE=()

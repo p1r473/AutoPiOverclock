@@ -17,7 +17,10 @@ test:
 
 lint:
 	@command -v shellcheck >/dev/null 2>&1 || { echo 'shellcheck is required for make lint' >&2; exit 1; }
-	shellcheck -x $(SHELLCHECK_FILES)
+	@for shell_file in $(SHELLCHECK_FILES); do \
+		printf 'shellcheck: %s\n' "$$shell_file"; \
+		shellcheck -x "$$shell_file" || exit $$?; \
+	done
 
 check: test lint
 

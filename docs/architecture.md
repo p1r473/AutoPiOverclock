@@ -9,7 +9,7 @@ The controller owns policy, state, logging, candidate order, recovery decisions,
 - `state.sh`: durable, atomic base64-encoded resume state with run and validation schema versions.
 - `logging.sh`: flat immutable run artifacts and latest symlinks.
 - `ssh.sh`: `command ssh -F /dev/null` transport and root/sudo wrapper.
-- `detect.sh`: OS/profile discovery, dependency preflight, and active watchdog-chain proof.
+- `detect.sh`: OS/profile discovery, dependency preflight, active watchdog-chain proof, and the shared post-reboot worker handshake.
 - `recovery.sh`: tryboot trigger, boot-ID tracking, and normal return.
 - `reset.sh`: standalone explicit-target reset orchestration, persistent-backup evidence, permanent reboot, and verified-stock completion.
 - `candidates.sh`: resumable candidate substages, edge handling, selection, and final-validation substages.
@@ -21,7 +21,7 @@ For `--mode auto` without an explicit configuration, each worker hashes the perm
 
 Debian uses `stress-ng`, systemd watchdog inspection, and normal writable boot configuration. Batocera uses OpenSSL for CPU load, a persistent portable glmark2 payload for GPU load, an OS-specific read-only `/boot` remount cycle, a reboot syscall for tryboot, and a project-owned network/hardware watchdog keeper installed by `prepare` when the active chain is incomplete.
 
-Each run receives a collision-resistant ID and its own target-side worker directory. Boot-critical mutations on a target—tryboot staging, triggering and cleanup; normal reboot; watchdog repair; permanent apply; and rollback—share one atomic target lock. A controller can therefore observe another active run, but it cannot overlap that run's recovery-sensitive operation.
+Each run receives a collision-resistant ID and its own target-side worker directory. Debian uses `/tmp` and never assumes that directory survives a reboot; the controller re-uploads the exact worker after every changed boot ID before collecting target-side evidence. Batocera uses persistent userdata but deliberately follows the same handshake. Boot-critical mutations on a target—tryboot staging, triggering and cleanup; normal reboot; watchdog repair; permanent apply; and rollback—share one atomic target lock. A controller can therefore observe another active run, but it cannot overlap that run's recovery-sensitive operation.
 
 Every candidate attempt also receives a fresh 256-bit ownership token. The controller durably checkpoints the token, reservation hash, completed-file hash, and quarantine path before the worker may create `tryboot.txt`. The worker uses no-clobber creation and held-descriptor checks, repeats exact verification immediately before reboot, and removes the file only after verified normal recovery through a no-clobber quarantine-and-revalidation step. Unknown or raced evidence is preserved and fails closed.
 
@@ -38,7 +38,7 @@ A later edge request imports only a fully validated and applied current-schema f
 
 Resume first returns an interrupted tryboot to normal. If a saved substage depended on evidence from that exact candidate boot, the controller safely repeats the required boot or stress rather than claiming that gate passed. Completed substages are not restarted merely because the controller process stopped.
 
-Controller policy passes `telemetry_interval_seconds` and the current normal/candidate cooling context to each target worker. Candidate tryboot rendering adds a test-only Pi 5 maximum-fan block; workers sample and log temperature, throttle state, active clocks, detected `pwmfan` PWM/RPM state, new kernel errors, and supervised stress processes at the bounded cadence while retaining an independent hard shutdown deadline. A detected fan that is not at PWM 255 aborts as harness uncertainty. Normal and permanent clock rendering never imports the candidate fan block.
+Controller policy passes `telemetry_interval_seconds` and the saved normal/candidate cooling context to each target worker. Candidate tryboot rendering adds a test-only Pi 5 maximum-fan block by default; `--no-max-fan` selects the normal context for a new run and is then immutable across resume. Workers sample and log temperature, throttle state, active clocks, detected `pwmfan` PWM/RPM state, new kernel errors, and supervised stress processes at the bounded cadence while retaining an independent hard shutdown deadline. Under the default policy, a detected fan that is not at PWM 255 aborts as harness uncertainty. Normal and permanent clock rendering never imports the candidate fan block, so pre-existing fan directives return automatically after every normal boot and remain in the applied result.
 
 An interrupted `PREPARE` is different: dependency or watchdog remediation may have only partially changed the target. Its state remains available to `status` and `report`, but mutating resume is refused so the controller cannot silently adopt an unverified permanent configuration as its new baseline.
 

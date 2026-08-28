@@ -107,4 +107,15 @@ for profile_name in debian batocera; do
     [[ ${cleanup_commands[0]} != *"$first_remote_dir"* ]]
     [[ ${cleanup_commands[0]} != *'*'* ]]
 done
+
+source "$ROOT/lib/report.sh"
+APO_VERSION=fixture
+APO_REDACT=0
+apo_state_set CFG_MAX_FAN 0
+status_output=$(apo_print_status)
+grep -Fq 'Max fan tuning: disabled' <<< "$status_output"
+APO_RUN_PREFIX="$TEMP_DIR/fixture-report"
+report_output=$(apo_generate_report)
+grep -Fq 'Maximum fan cooling during tuning: disabled' "$TEMP_DIR/fixture-report-report.txt"
+grep -Fq 'Report file:' <<< "$report_output"
 printf 'test_state_logging: PASS\n'

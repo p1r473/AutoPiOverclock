@@ -59,11 +59,17 @@ APO_REPAIR_WATCHDOGS=0
 APO_DRY_RUN=0
 APO_ASSUME_YES=0
 APO_EDGE_CPU_24H=0
+APO_MAX_FAN=1
+APO_MAX_FAN_OPTION_SEEN=0
 APO_REDACT=0
 APO_HAVE_REMOTE_CONTEXT=0
 APO_MUTATING_COMMAND=0
 APO_LOCK_FD=''
 APO_POST_FLOOR_EDGE_SOURCE_STATE=''
+APO_POST_FLOOR_EDGE_MAX_FAN=1
+APO_WORKER_BOOT_ID=''
+APO_REBOOT_BOOT_ID=''
+APO_REBOOT_HANDSHAKE_STAGE=''
 
 usage() {
     cat <<'USAGE'
@@ -71,7 +77,7 @@ AutoPiOverclock — recoverable Raspberry Pi 5 overclock validation
 
 Usage:
   autopioverclock prepare TARGET
-  autopioverclock overclock TARGET [--edge-cpu-24h]
+  autopioverclock overclock TARGET [--edge-cpu-24h] [--no-max-fan]
   autopioverclock reset TARGET
   autopioverclock run TARGET [OPTIONS]
   autopioverclock resume TARGET [--run-id RUN_ID]
@@ -101,6 +107,7 @@ Target:
 
 Common options:
   --edge-cpu-24h           Add the final CPU +25 MHz/24-hour test to overclock
+  --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning
   --output-dir DIR         Flat artifact directory (default: $HOME/overclock-results)
   --ssh-port PORT          SSH port (default: 22)
   --identity-file FILE     SSH private key; otherwise use agent/default keys
@@ -184,6 +191,7 @@ apo_parse_cli() {
             --repair-watchdogs) APO_REPAIR_WATCHDOGS=1; index=$((index + 1)) ;;
             --dry-run) APO_DRY_RUN=1; index=$((index + 1)) ;;
             --edge-cpu-24h) APO_EDGE_CPU_24H=1; index=$((index + 1)) ;;
+            --no-max-fan) APO_MAX_FAN=0; APO_MAX_FAN_OPTION_SEEN=1; index=$((index + 1)) ;;
             --yes) APO_ASSUME_YES=1; index=$((index + 1)) ;;
             --redact) APO_REDACT=1; index=$((index + 1)) ;;
             --help) usage; exit 0 ;;
@@ -205,6 +213,7 @@ apo_parse_cli() {
         (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+        (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_ASSUME_YES == 0 )) || apo_die '--yes is not valid with reset TARGET; reset does not prompt.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with reset TARGET.' "$APO_EXIT_USAGE"
     fi
@@ -213,6 +222,7 @@ apo_parse_cli() {
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'prepare TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
         (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h belongs on overclock TARGET, not prepare TARGET.' "$APO_EXIT_USAGE"
+        (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan belongs on overclock TARGET or the advanced run command, not prepare TARGET.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
         APO_INSTALL_MISSING=1
         APO_REPAIR_WATCHDOGS=1
@@ -235,7 +245,8 @@ apo_parse_cli() {
             [[ $APO_MODE_REQUESTED == auto ]] || apo_die '--mode is valid only with run or prepare; saved runs use their recorded mode.' "$APO_EXIT_USAGE"
             (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is valid only with run or prepare.' "$APO_EXIT_USAGE"
             (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is valid only with run or prepare.' "$APO_EXIT_USAGE"
-            (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is valid only with run or prepare.' "$APO_EXIT_USAGE"
+            (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is valid only with a new run or overclock TARGET.' "$APO_EXIT_USAGE"
+            (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan is valid only with a new run or overclock TARGET.' "$APO_EXIT_USAGE"
             ;;
     esac
     if (( APO_EDGE_CPU_24H == 1 )); then
@@ -256,10 +267,13 @@ apo_acquire_lock() {
 
 apo_public_overclock_select_continuation() {
     local state_file stored_run_id stored_target origin status phase apply_status state_schema saved_edge requested_edge
+    local saved_max_fan requested_max_fan requested_max_fan_seen
     local -a state_files=()
     local state_index
     [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
     requested_edge=$APO_EDGE_CPU_24H
+    requested_max_fan=$APO_MAX_FAN
+    requested_max_fan_seen=$APO_MAX_FAN_OPTION_SEEN
     state_file=$(apo_find_state_file '' || true)
     [[ -n $state_file ]] || return 0
     apo_state_load "$state_file"
@@ -271,6 +285,7 @@ apo_public_overclock_select_continuation() {
     apply_status=$(apo_state_get APPLY_STATUS NOT_APPLIED)
     state_schema=$(apo_state_get RUN_SCHEMA '')
     saved_edge=$(apo_state_get CFG_EDGE_CPU_24H 0)
+    saved_max_fan=$(apo_state_get CFG_MAX_FAN 1)
     if apo_is_safe_run_id "$stored_run_id" &&
        [[ $stored_target == "$APO_REMOTE_TARGET" && $origin == overclock ]] &&
        { { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
@@ -278,14 +293,19 @@ apo_public_overclock_select_continuation() {
          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $status == PASS && $phase == COMPLETE ]] &&
            [[ $apply_status == NOT_APPLIED || $apply_status == APPLYING ||
               $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; } ||
-         { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 7 ]] &&
-           apo_final_saved_failure_is_retryable "$state_schema"; }; }; then
+          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 7 ]] &&
+            apo_final_saved_failure_is_retryable "$state_schema"; }; }; then
+        [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] || apo_die 'The active run has a malformed saved maximum-fan policy.' "$APO_EXIT_INTERNAL"
+        if (( requested_max_fan_seen == 1 )) && [[ $requested_max_fan != "$saved_max_fan" ]]; then
+            apo_die 'The active run was created with maximum-fan cooling. Its cooling policy cannot change during continuation; reset and start a fresh run to use --no-max-fan.' "$APO_EXIT_USAGE"
+        fi
         if (( requested_edge == 1 && saved_edge == 0 )); then
             apo_die 'The active run was created without --edge-cpu-24h. Finish it first, then repeat overclock TARGET --edge-cpu-24h against the applied 8-hour floor.' "$APO_EXIT_USAGE"
         fi
         APO_SELECTED_RUN_ID=$stored_run_id
         APO_COMMAND=resume
         APO_EDGE_CPU_24H=$saved_edge
+        APO_MAX_FAN=$saved_max_fan
         return 0
     fi
     if [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $stored_target == "$APO_REMOTE_TARGET" &&
@@ -300,6 +320,7 @@ apo_public_overclock_select_continuation() {
                 apo_post_floor_edge_source_is_eligible ||
                 apo_die 'The explicit retained state for the applied floor failed later-edge eligibility checks.' "$APO_EXIT_USAGE"
             APO_POST_FLOOR_EDGE_SOURCE_STATE=$state_file
+            APO_POST_FLOOR_EDGE_MAX_FAN=$requested_max_fan
             APO_COMMAND=post-floor-edge
             APO_EDGE_CPU_24H=1
             return 0
@@ -307,6 +328,8 @@ apo_public_overclock_select_continuation() {
         APO_SELECTED_RUN_ID=$stored_run_id
         APO_COMMAND=resume
         APO_EDGE_CPU_24H=$saved_edge
+        [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] || apo_die 'The completed run has a malformed saved maximum-fan policy.' "$APO_EXIT_INTERNAL"
+        APO_MAX_FAN=$saved_max_fan
         return 0
     fi
     # A later prepare audit may own the latest link even though it left an
@@ -323,6 +346,7 @@ apo_public_overclock_select_continuation() {
             [[ $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" ]] || continue
             if apo_post_floor_edge_source_is_eligible; then
                 APO_POST_FLOOR_EDGE_SOURCE_STATE=$state_file
+                APO_POST_FLOOR_EDGE_MAX_FAN=$requested_max_fan
                 APO_COMMAND=post-floor-edge
                 APO_EDGE_CPU_24H=1
                 return 0
@@ -349,6 +373,7 @@ apo_post_floor_edge_reset_child_state() {
     apo_state_set ORIGIN_COMMAND overclock
     apo_state_set READ_ONLY_RUN 0
     apo_state_set CFG_EDGE_CPU_24H 1
+    apo_state_set CFG_MAX_FAN "${APO_MAX_FAN:-1}"
     apo_state_set POST_FLOOR_EDGE 1
     apo_state_set SOURCE_FLOOR_RUN_ID "$source_run_id"
     apo_state_set SOURCE_FLOOR_PERMANENT_HASH "$source_hash"
@@ -429,6 +454,7 @@ apo_start_post_floor_edge() {
     for key in "${!APO_STATE[@]}"; do source_state["$key"]=${APO_STATE[$key]}; done
 
     APO_EDGE_CPU_24H=1
+    APO_MAX_FAN=$APO_POST_FLOOR_EDGE_MAX_FAN
     edge_target=$((floor_cpu + APO_AUTO_REFINE_STEP_MHZ))
     apo_init_artifacts
     APO_STATE=()
@@ -451,6 +477,7 @@ apo_start_post_floor_edge() {
     apo_summary_line "Retained mode: $APO_MODE_EFFECTIVE"
     apo_summary_line "Applied production floor: CPU $floor_cpu MHz / GPU $floor_gpu MHz"
     apo_summary_line "24-hour edge target: CPU $edge_target MHz / GPU $floor_gpu MHz"
+    apo_summary_line "Maximum fan cooling during tuning: $([[ $APO_MAX_FAN == 1 ]] && printf enabled || printf disabled)"
     apo_summary_line 'The retained 8-hour endurance phase will not be repeated.'
     apo_summary_line ''
     apo_event run-start INFO '' "command=overclock-post-floor-edge version=$APO_VERSION source-run=$source_run_id mode=$APO_MODE_EFFECTIVE"
@@ -532,6 +559,7 @@ apo_start_new_run() {
     apo_summary_line "Candidate boot cycles: ${APO_CFG[CANDIDATE_BOOTS]}"
     apo_summary_line "Final post-stress boot cycles: ${APO_CFG[FINAL_BOOTS]}"
     apo_summary_line "Backoff steps: ${APO_CFG[BACKOFF_STEPS]}"
+    apo_summary_line "Maximum fan cooling during tuning: $([[ $APO_MAX_FAN == 1 ]] && printf enabled || printf disabled)"
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
         apo_summary_line "Automatic refinement: ${APO_AUTO_REFINE_STEP_MHZ}MHz"
         apo_summary_line "Automatic production guard: CPU ${APO_AUTO_CPU_GUARD_MHZ}MHz / GPU ${APO_AUTO_GPU_GUARD_MHZ}MHz"

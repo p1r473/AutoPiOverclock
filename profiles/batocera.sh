@@ -250,8 +250,16 @@ apo_profile_repair_watchdogs() {
     apo_state_set LAST_BOOT_ID "$old_boot_id"
     apo_state_save
     apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
-    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
-    [[ -n $new_boot_id ]] || return 1
+    if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" watchdog-repair; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+            APO_LAST_REASON="The watchdog verification reboot returned, but its transient worker could not be restored: $APO_LAST_REASON"
+        else
+            APO_LAST_REASON='The watchdog verification reboot did not return to SSH.'
+        fi
+        return 1
+    fi
+    new_boot_id=$APO_REBOOT_BOOT_ID
     apo_state_set WATCHDOG_REPAIR_STATUS REBOOTED
     apo_state_set LAST_BOOT_ID "$new_boot_id"
     apo_state_set NORMAL_BOOT_ID "$new_boot_id"

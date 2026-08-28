@@ -402,14 +402,21 @@ render_clock_config() {
 
 render_tryboot_config() {
     local source_file=$1 destination_file=$2 cpu_mhz=$3 gpu_mhz=$4 gpu_key=$5 voltage_uv=$6 run_id=$7 ownership_token=$8
+    local fan_policy=${9:-candidate-max}
+    [[ $fan_policy == candidate-max || $fan_policy == normal ]] || return 1
     render_tryboot_reservation "$run_id" "$ownership_token" > "$destination_file" || return 1
     awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" '
         $0==begin {inside=1; next}
         $0==end {inside=0; next}
         !inside {print}
     ' "$source_file" >> "$destination_file" || return 1
-    printf '\n%s\n# Run: %s\n[all]\nover_voltage_delta=%s\narm_freq=%s\n%s=%s\n%s\ndtparam=fan_temp0=0\ndtparam=fan_temp0_speed=255\ndtparam=fan_temp1_speed=255\ndtparam=fan_temp2_speed=255\ndtparam=fan_temp3_speed=255\n%s\n# AUTOPIOVERCLOCK TRYBOOT COMPLETE: %s\n' \
-        "$CLOCK_MARKER_BEGIN" "$run_id" "$voltage_uv" "$cpu_mhz" "$gpu_key" "$gpu_mhz" "$CANDIDATE_FAN_COMMENT" "$CLOCK_MARKER_END" "$ownership_token" >> "$destination_file"
+    printf '\n%s\n# Run: %s\n[all]\nover_voltage_delta=%s\narm_freq=%s\n%s=%s\n' \
+        "$CLOCK_MARKER_BEGIN" "$run_id" "$voltage_uv" "$cpu_mhz" "$gpu_key" "$gpu_mhz" >> "$destination_file" || return 1
+    if [[ $fan_policy == candidate-max ]]; then
+        printf '%s\ndtparam=fan_temp0=0\ndtparam=fan_temp0_speed=255\ndtparam=fan_temp1_speed=255\ndtparam=fan_temp2_speed=255\ndtparam=fan_temp3_speed=255\n' \
+            "$CANDIDATE_FAN_COMMENT" >> "$destination_file" || return 1
+    fi
+    printf '%s\n# AUTOPIOVERCLOCK TRYBOOT COMPLETE: %s\n' "$CLOCK_MARKER_END" "$ownership_token" >> "$destination_file"
 }
 
 render_watchdog_config() {
@@ -942,16 +949,18 @@ cmd_health() {
 
 cmd_plan_candidate() {
     local boot_config=$1 tryboot_config=$2 gpu_key=$3 cpu_mhz=$4 gpu_mhz=$5 voltage_uv=$6 expected_hash=$7 run_id=$8 ownership_token=$9
+    local fan_policy=${10:-candidate-max}
     local current_hash temporary_file rendered_hash reservation_file reservation_hash quarantine_path
     tryboot_path_allowed "$boot_config" "$tryboot_config" || { emit_result RECOVERY_FAILURE 'The requested tryboot path is outside the permitted boot-config directory.'; return 1; }
     [[ $ownership_token =~ ^[0-9a-f]{64}$ ]] || { emit_result HARNESS_FAILURE 'Candidate planning lacks a valid random ownership token.'; return 1; }
+    [[ $fan_policy == candidate-max || $fan_policy == normal ]] || { emit_result HARNESS_FAILURE 'Candidate planning contains an invalid fan policy.'; return 1; }
     quarantine_path=$(tryboot_quarantine_path "$tryboot_config" "$ownership_token")
     [[ ! -e $quarantine_path && ! -L $quarantine_path ]] || { emit_result RECOVERY_FAILURE 'The token-specific tryboot quarantine path is already occupied.'; return 1; }
     current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
     [[ $current_hash == "$expected_hash" ]] || { emit_result RECOVERY_FAILURE 'Permanent config hash changed before candidate planning.'; return 1; }
     temporary_file=$(mktemp /tmp/autopioverclock-plan.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create candidate-plan temporary file.'; return 1; }
     reservation_file=$(mktemp /tmp/autopioverclock-reservation.XXXXXX) || { rm -f -- "$temporary_file"; emit_result HARNESS_FAILURE 'Could not create reservation-plan temporary file.'; return 1; }
-    if ! render_tryboot_config "$boot_config" "$temporary_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" "$ownership_token" \
+    if ! render_tryboot_config "$boot_config" "$temporary_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" "$ownership_token" "$fan_policy" \
         || ! rendered_hash=$(sha256sum "$temporary_file" 2>/dev/null | awk 'NR == 1 {print $1}') \
         || [[ ! $rendered_hash =~ ^[0-9a-f]{64}$ ]] \
         || ! render_tryboot_reservation "$run_id" "$ownership_token" > "$reservation_file" \
@@ -973,9 +982,11 @@ cmd_plan_candidate() {
 cmd_prepare_candidate() {
     local boot_config=$1 tryboot_config=$2 gpu_key=$3 cpu_mhz=$4 gpu_mhz=$5 voltage_uv=$6 expected_hash=$7 run_id=$8
     local expected_tryboot_hash=$9 expected_reservation_hash=${10} ownership_token=${11} quarantine_path=${12}
+    local fan_policy=${13:-candidate-max}
     local current_hash temporary_file rendered_hash installed_hash installed_path_hash reservation_hash tryboot_exists tryboot_type tryboot_hash tryboot_fd
     tryboot_path_allowed "$boot_config" "$tryboot_config" || { emit_result RECOVERY_FAILURE 'The requested tryboot path is outside the permitted boot-config directory.'; return 1; }
     [[ $expected_tryboot_hash =~ ^[0-9a-f]{64}$ && $expected_reservation_hash =~ ^[0-9a-f]{64}$ && $ownership_token =~ ^[0-9a-f]{64}$ ]] || { emit_result HARNESS_FAILURE 'Candidate preparation lacks valid ownership evidence.'; return 1; }
+    [[ $fan_policy == candidate-max || $fan_policy == normal ]] || { emit_result HARNESS_FAILURE 'Candidate preparation contains an invalid fan policy.'; return 1; }
     [[ $quarantine_path == "$(tryboot_quarantine_path "$tryboot_config" "$ownership_token")" && ! -e $quarantine_path && ! -L $quarantine_path ]] || { emit_result RECOVERY_FAILURE 'The tryboot quarantine path is invalid or occupied.'; return 1; }
     inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
     [[ $tryboot_exists == 0 ]] || { emit_result RECOVERY_FAILURE "The tryboot path became occupied ($tryboot_type, hash $tryboot_hash); refusing to overwrite it."; return 1; }
@@ -983,7 +994,7 @@ cmd_prepare_candidate() {
     current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
     [[ $current_hash == "$expected_hash" ]] || { emit_result RECOVERY_FAILURE 'Permanent config hash changed before candidate preparation.'; return 1; }
     temporary_file=$(mktemp /tmp/autopioverclock-tryboot.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create tryboot temporary file.'; return 1; }
-    render_tryboot_config "$boot_config" "$temporary_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" "$ownership_token" || { rm -f -- "$temporary_file"; emit_result HARNESS_FAILURE 'Could not render tryboot config.'; return 1; }
+    render_tryboot_config "$boot_config" "$temporary_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" "$ownership_token" "$fan_policy" || { rm -f -- "$temporary_file"; emit_result HARNESS_FAILURE 'Could not render tryboot config.'; return 1; }
     rendered_hash=$(sha256sum "$temporary_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
     [[ $rendered_hash == "$expected_tryboot_hash" ]] || { rm -f -- "$temporary_file"; emit_result RECOVERY_FAILURE 'Rendered tryboot config does not match the persisted ownership plan.'; return 1; }
     sync "$temporary_file" || { rm -f -- "$temporary_file"; emit_result HARNESS_FAILURE 'Could not durably stage rendered tryboot config.'; return 1; }

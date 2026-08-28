@@ -18,6 +18,14 @@ apo_report_state_value() {
     printf '%s' "${value:-$fallback}"
 }
 
+apo_report_fan_policy() {
+    case $(apo_state_get CFG_MAX_FAN 1) in
+        1) printf enabled ;;
+        0) printf disabled ;;
+        *) printf invalid ;;
+    esac
+}
+
 apo_print_status() {
     cat <<EOF_STATUS
 AutoPiOverclock ${APO_VERSION}
@@ -39,6 +47,7 @@ Final backoffs: $(apo_state_get FINAL_BACKOFF_COUNT 0) ($(apo_report_state_value
 Validated floor: CPU $(apo_report_state_value FLOOR_CPU pending) MHz / GPU $(apo_report_state_value FLOOR_GPU pending) MHz ($(apo_state_get FLOOR_VALIDATED 0))
 Edge CPU 24h:   $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) target=$(apo_report_state_value EDGE_CPU_TARGET none)MHz
 Edge source:    run=$(apo_report_state_value SOURCE_FLOOR_RUN_ID none) post-floor=$(apo_state_get POST_FLOOR_EDGE 0)
+Max fan tuning: $(apo_report_fan_policy)
 Final clocks:   CPU $(apo_report_state_value FINAL_CPU pending) MHz / GPU $(apo_report_state_value FINAL_GPU pending) MHz
 Validated:      $(apo_state_get VALIDATED 0)
 Endurance proof: $(apo_report_state_value VALIDATION_DURATION_S pending)s
@@ -86,6 +95,8 @@ apo_generate_report() {
         printf 'Post-floor edge source: enabled=%s, run=%s, permanent-hash=%s\n' \
             "$(apo_state_get POST_FLOOR_EDGE 0)" "$(apo_report_state_value SOURCE_FLOOR_RUN_ID none)" \
             "$(apo_report_state_value SOURCE_FLOOR_PERMANENT_HASH none)"
+        printf 'Maximum fan cooling during tuning: %s\n' \
+            "$(apo_report_fan_policy)"
         printf 'Optional edge failure: class=%s, reason=%s\n' \
             "$(apo_report_state_value EDGE_CPU_FAILURE_CLASS none)" "$(apo_report_value "$(apo_report_state_value EDGE_CPU_FAILURE_REASON none)")"
         printf 'Final validated clocks: CPU %s MHz, GPU %s MHz\n' "$(apo_report_state_value FINAL_CPU pending)" "$(apo_report_state_value FINAL_GPU pending)"

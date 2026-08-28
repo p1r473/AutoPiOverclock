@@ -21,12 +21,16 @@ apo_verify_permanent_hash() {
     fi
 }
 
+apo_candidate_fan_policy() {
+    if [[ ${APO_MAX_FAN:-1} == 1 ]]; then printf candidate-max; else printf normal; fi
+}
+
 apo_current_fan_policy() {
     if [[ $(apo_state_get TRYBOOT_EXPECTED 0) == 1 ]]; then
-        printf candidate-max
-    else
-        printf normal
+        apo_candidate_fan_policy
+        return
     fi
+    printf normal
 }
 
 apo_health_check() {

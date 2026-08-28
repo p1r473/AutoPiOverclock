@@ -577,6 +577,7 @@ EDGE_RECOVERY_REBOOTS=0
 source "$ROOT/lib/recovery.sh"
 apo_wait_for_ssh() { return 0; }
 apo_remote_boot_id() { printf edge-watchdog-normal-boot; }
+apo_ensure_worker_for_boot() { return 0; }
 apo_remote_tryboot_flag() { printf 00000000; }
 apo_remote_worker() { EDGE_RECOVERY_REBOOTS=$((EDGE_RECOVERY_REBOOTS + 1)); }
 apo_health_check() { return 0; }

@@ -146,6 +146,40 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     [[ $(wc -c < "$BOOT_ID_ATTEMPT_FILE") == 1 ]]
 )
 
+# Reboots invalidate a Debian worker stored under /tmp. The shared reboot
+# handshake must not expose a returned boot until the exact local worker has
+# been uploaded again for that boot.
+(
+    source "$ROOT/lib/detect.sh"
+    HANDSHAKE_ROOT=$(mktemp -d)
+    trap 'rm -rf "$HANDSHAKE_ROOT"' EXIT
+    APO_LOCAL_WORKER="$HANDSHAKE_ROOT/local-worker.sh"
+    APO_REMOTE_WORKER=/tmp/autopioverclock-fixture/worker.sh
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$APO_LOCAL_WORKER"
+    UPLOADS=0
+    apo_wait_for_new_boot() {
+        [[ $2 == 30 ]]
+        case $1 in old-boot) printf new-boot ;; new-boot) printf newer-boot ;; *) return 1 ;; esac
+    }
+    apo_remote_upload_root() {
+        [[ $1 == "$APO_LOCAL_WORKER" && $2 == "$APO_REMOTE_WORKER" ]]
+        UPLOADS=$((UPLOADS + 1))
+    }
+    apo_post_reboot_handshake old-boot 30 candidate-boot
+    [[ $APO_REBOOT_BOOT_ID == new-boot ]]
+    [[ $APO_REBOOT_HANDSHAKE_STAGE == complete ]]
+    [[ $APO_WORKER_BOOT_ID == new-boot && $UPLOADS == 1 ]]
+
+    apo_remote_upload_root() { return 1; }
+    if apo_post_reboot_handshake new-boot 30 normal-recovery; then
+        echo 'post-reboot handshake accepted a missing worker deployment' >&2
+        exit 1
+    fi
+    [[ $APO_REBOOT_HANDSHAKE_STAGE == worker ]]
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    [[ $APO_LAST_REASON == *'run-isolated worker could not be redeployed'* ]]
+)
+
 if (apo_parse_target 'bad user@example-host' >/dev/null 2>&1); then
     echo 'unsafe username was accepted' >&2
     exit 1

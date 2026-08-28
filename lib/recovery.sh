@@ -27,7 +27,7 @@ apo_stress_reboot_scope_is_active() {
 
 apo_prepare_candidate() {
     local cpu_mhz=$1 gpu_mhz=$2 label=$3 tryboot_hash reservation_hash installed_hash
-    local ownership_token quarantine_path expected_quarantine
+    local ownership_token quarantine_path expected_quarantine fan_policy
     if [[ -n $(apo_state_get TRYBOOT_OWNED_HASH '') || -n $(apo_state_get TRYBOOT_RESERVATION_HASH '') ||
           -n $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') || -n $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ||
           $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 1 ]]; then
@@ -45,9 +45,10 @@ apo_prepare_candidate() {
         APO_LAST_REASON='The generated tryboot ownership token is malformed.'
         return 1
     fi
+    if [[ ${APO_MAX_FAN:-1} == 1 ]]; then fan_policy=candidate-max; else fan_policy=normal; fi
     apo_run_worker_capture "${label}-plan" plan-candidate \
         "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_GPU_KEY" "$cpu_mhz" "$gpu_mhz" \
-        "$APO_TEST_VOLTAGE" "$APO_PERMANENT_CONFIG_HASH" "$APO_RUN_ID" "$ownership_token" || return 1
+        "$APO_TEST_VOLTAGE" "$APO_PERMANENT_CONFIG_HASH" "$APO_RUN_ID" "$ownership_token" "$fan_policy" || return 1
     apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
     tryboot_hash=${APO_WORKER_DATA[TRYBOOT_HASH]:-}
     reservation_hash=${APO_WORKER_DATA[TRYBOOT_RESERVATION_HASH]:-}
@@ -70,7 +71,7 @@ apo_prepare_candidate() {
     apo_run_worker_capture "${label}-prepare" prepare-candidate \
         "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_GPU_KEY" "$cpu_mhz" "$gpu_mhz" \
         "$APO_TEST_VOLTAGE" "$APO_PERMANENT_CONFIG_HASH" "$APO_RUN_ID" \
-        "$tryboot_hash" "$reservation_hash" "$ownership_token" "$quarantine_path" || return 1
+        "$tryboot_hash" "$reservation_hash" "$ownership_token" "$quarantine_path" "$fan_policy" || return 1
     apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
     installed_hash=${APO_WORKER_DATA[TRYBOOT_HASH]:-}
     if [[ $installed_hash != "$tryboot_hash" ]]; then
@@ -137,8 +138,16 @@ apo_boot_candidate() {
     apo_remote_worker "$APO_REMOTE_WORKER" trigger-tryboot \
         "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_PERMANENT_CONFIG_HASH" \
         "$expected_tryboot_hash" "$APO_RUN_ID" "$ownership_token" >/dev/null 2>&1 || true
-    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
-    if [[ -z $new_boot_id ]]; then APO_LAST_CLASS=BOOT_FAILURE; APO_LAST_REASON="No reboot/recovery reached SSH within ${APO_BOOT_TIMEOUT}s for $context."; return 1; fi
+    if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" "$context"; then
+        if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+            APO_LAST_CLASS=HARNESS_FAILURE
+        else
+            APO_LAST_CLASS=BOOT_FAILURE
+            APO_LAST_REASON="No reboot/recovery reached SSH within ${APO_BOOT_TIMEOUT}s for $context."
+        fi
+        return 1
+    fi
+    new_boot_id=$APO_REBOOT_BOOT_ID
     tryboot_flag=$(apo_remote_tryboot_flag || true)
     if [[ $tryboot_flag != 00000001 ]]; then
         APO_LAST_CLASS=BOOT_FAILURE
@@ -199,6 +208,12 @@ apo_return_normal() {
         if ! apo_wait_for_ssh "$APO_BOOT_TIMEOUT"; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="SSH is unavailable for normal recovery after ${APO_BOOT_TIMEOUT}s."; return 1; fi
         current_boot_id=$(apo_remote_boot_id || true)
         if [[ -z $current_boot_id ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Could not read the boot ID during normal recovery.'; return 1; fi
+        if ! apo_ensure_worker_for_boot "$current_boot_id" "$context"; then
+            APO_RECOVERY_IN_PROGRESS=0
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON="Normal recovery reached SSH, but its transient worker could not be restored: $APO_LAST_REASON"
+            return 1
+        fi
         tryboot_flag=$(apo_remote_tryboot_flag || true)
         if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )) && [[ $tryboot_flag != 00000000 ]]; then
             APO_RECOVERY_IN_PROGRESS=0
@@ -257,8 +272,17 @@ apo_return_normal() {
         else
             apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
         fi
-        new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$APO_BOOT_TIMEOUT" || true)
-        if [[ -z $new_boot_id ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Normal recovery reboot did not return to SSH.'; return 1; fi
+        if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" "$context"; then
+            APO_RECOVERY_IN_PROGRESS=0
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+                APO_LAST_REASON="Normal recovery reboot returned, but verification could not continue: $APO_LAST_REASON"
+            else
+                APO_LAST_REASON='Normal recovery reboot did not return to SSH.'
+            fi
+            return 1
+        fi
+        new_boot_id=$APO_REBOOT_BOOT_ID
         sleep "$APO_BOOT_SETTLE_SECONDS"
         if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )); then
             forced_normal_reboot_done=1

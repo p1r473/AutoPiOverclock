@@ -492,6 +492,7 @@ for hash_mode in plan-final-missing plan-reservation-missing plan-quarantine-mis
         APO_REMOTE_WORKER=/tmp/fixture-worker
         APO_BOOT_TIMEOUT=10
         APO_BOOT_SETTLE_SECONDS=0
+        APO_MAX_FAN=1
         plan_calls=0
         prepare_calls=0
         verify_calls=0
@@ -511,6 +512,7 @@ for hash_mode in plan-final-missing plan-reservation-missing plan-quarantine-mis
                 plan-candidate)
                     plan_calls=$((plan_calls + 1))
                     fixture_token_seen=${11}
+                    [[ ${12} == candidate-max ]]
                     [[ $fixture_token_seen =~ ^[0-9a-f]{64}$ ]]
                     fixture_quarantine="/boot/.autopioverclock-remove-$fixture_token_seen"
                     case $HASH_MODE in
@@ -551,6 +553,7 @@ for hash_mode in plan-final-missing plan-reservation-missing plan-quarantine-mis
                 prepare-candidate)
                     prepare_calls=$((prepare_calls + 1))
                     [[ ${13} == "$fixture_token_seen" && ${14} == "$fixture_quarantine" ]]
+                    [[ ${15} == candidate-max ]]
                     case $HASH_MODE in
                         prepare-final-missing) : ;;
                         prepare-final-mismatch) encode_record TRYBOOT_HASH "$(printf "d%.0s" {1..64})" > "$APO_LAST_WORKER_LOG" ;;
@@ -627,6 +630,7 @@ HASH_MODE=valid CASE_ROOT="$TEMP_DIR/controller-valid" REPO_ROOT="$ROOT" bash -c
     APO_REMOTE_WORKER=/tmp/fixture-worker
     APO_BOOT_TIMEOUT=10
     APO_BOOT_SETTLE_SECONDS=0
+    APO_MAX_FAN=1
     plan_calls=0
     prepare_calls=0
     verify_calls=0
@@ -645,6 +649,7 @@ HASH_MODE=valid CASE_ROOT="$TEMP_DIR/controller-valid" REPO_ROOT="$ROOT" bash -c
             plan-candidate)
                 plan_calls=$((plan_calls + 1))
                 fixture_token_seen=${11}
+                [[ ${12} == candidate-max ]]
                 fixture_quarantine="/boot/.autopioverclock-remove-$fixture_token_seen"
                 {
                     encode_record TRYBOOT_HASH "$fixture_planned_hash"
@@ -655,6 +660,7 @@ HASH_MODE=valid CASE_ROOT="$TEMP_DIR/controller-valid" REPO_ROOT="$ROOT" bash -c
             prepare-candidate)
                 prepare_calls=$((prepare_calls + 1))
                 [[ ${13} == "$fixture_token_seen" && ${14} == "$fixture_quarantine" ]]
+                [[ ${15} == candidate-max ]]
                 encode_record TRYBOOT_HASH "$fixture_planned_hash" > "$APO_LAST_WORKER_LOG"
                 ;;
             verify-tryboot)
@@ -673,6 +679,7 @@ HASH_MODE=valid CASE_ROOT="$TEMP_DIR/controller-valid" REPO_ROOT="$ROOT" bash -c
         trigger_calls=$((trigger_calls + 1))
     }
     apo_wait_for_new_boot() { printf candidate-boot; }
+    apo_post_reboot_handshake() { APO_REBOOT_HANDSHAKE_STAGE="complete"; APO_REBOOT_BOOT_ID=$(apo_wait_for_new_boot "$1" "$2"); }
     apo_remote_tryboot_flag() { printf 00000001; }
     apo_health_check() { return 0; }
     sleep() { :; }
