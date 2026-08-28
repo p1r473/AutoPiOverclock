@@ -98,6 +98,7 @@ apo_wait_for_ssh() {
     local timeout_seconds=$1 deadline remaining
     deadline=$((SECONDS + timeout_seconds))
     while (( SECONDS < deadline )); do
+        if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
         if apo_ssh_exec true >/dev/null 2>&1; then return 0; fi
         remaining=$((deadline - SECONDS))
         (( remaining > 0 )) || break
@@ -110,6 +111,7 @@ apo_wait_for_new_boot() {
     local old_boot_id=$1 timeout_seconds=$2 deadline remaining current=''
     deadline=$((SECONDS + timeout_seconds))
     while (( SECONDS < deadline )); do
+        if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
         current=$(apo_remote_boot_id 2>/dev/null || true)
         if [[ -n $current && $current != "$old_boot_id" ]]; then printf '%s' "$current"; return 0; fi
         remaining=$((deadline - SECONDS))

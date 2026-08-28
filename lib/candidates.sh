@@ -166,6 +166,39 @@ apo_auto_state_invalid() {
     return 1
 }
 
+apo_run_manual_test() {
+    local label="manual-cpu-${APO_MANUAL_CPU}_gpu-${APO_MANUAL_GPU}"
+    apo_state_phase MANUAL_TEST "$label" RUNNING
+    apo_state_set MANUAL_TEST_STATUS RUNNING
+    apo_state_set MANUAL_CPU "$APO_MANUAL_CPU"
+    apo_state_set MANUAL_GPU "$APO_MANUAL_GPU"
+    apo_state_set MANUAL_MINUTES "$APO_MANUAL_MINUTES"
+    apo_state_set MANUAL_DURATION_S "$APO_MANUAL_DURATION_S"
+    apo_state_save
+    apo_event manual-test INFO '' "Testing exact clocks CPU=$APO_MANUAL_CPU GPU=$APO_MANUAL_GPU for $APO_MANUAL_MINUTES timed stress minutes; normal recovery and configured boot cycles remain mandatory."
+    if ! apo_test_candidate "$APO_MANUAL_CPU" "$APO_MANUAL_GPU" "$label" combined; then
+        apo_state_set MANUAL_TEST_STATUS FAILED
+        apo_state_save
+        apo_state_fail "${APO_LAST_CLASS:-HARNESS_FAILURE}" "${APO_LAST_REASON:-The manual stability test failed without a classified result.}"
+        return 1
+    fi
+    apo_state_set MANUAL_TEST_STATUS PASS
+    apo_state_set STATUS PASS
+    apo_state_set PHASE COMPLETE
+    apo_state_set SUBPHASE MANUAL_TEST_PASSED
+    apo_state_set VALIDATED 0
+    apo_state_set VALIDATION_SCHEMA ''
+    apo_state_set VALIDATION_DURATION_S ''
+    apo_state_set APPLY_STATUS NOT_APPLIED
+    apo_state_save
+    apo_summary_line 'MANUAL STABILITY TEST: PASS'
+    apo_summary_line "Exact tested clocks: CPU $APO_MANUAL_CPU MHz / GPU $APO_MANUAL_GPU MHz"
+    apo_summary_line "Timed combined stress: $APO_MANUAL_MINUTES minutes ($APO_MANUAL_DURATION_S seconds)"
+    apo_summary_line "Maximum observed temperature: $(apo_state_get RUN_MAX_TEMP unknown)C"
+    apo_summary_line 'Permanent config was not modified. This short/manual result is not a validated recommendation and cannot be applied.'
+    apo_event manual-test PASS '' "CPU=$APO_MANUAL_CPU GPU=$APO_MANUAL_GPU passed $APO_MANUAL_MINUTES timed stress minutes, post-stress health, configured tryboot/normal cycles, and final normal recovery; permanent config remained unchanged."
+}
+
 apo_post_floor_edge_source_is_eligible() {
     local run_id final_cpu final_gpu permanent_hash mode
     run_id=$(apo_state_get RUN_ID '')
@@ -1531,11 +1564,21 @@ apo_run_tuning() {
         case $phase in
             TRYBOOT_PROOF)
                 apo_prove_tryboot_recovery || return 1
-                if (( APO_REQUIRE_GPU_STRESS == 1 )); then apo_state_phase GPU_SMOKE READY RUNNING; else apo_state_phase CPU_SWEEP READY RUNNING; fi
+                if (( APO_REQUIRE_GPU_STRESS == 1 )); then
+                    apo_state_phase GPU_SMOKE READY RUNNING
+                elif (( ${APO_MANUAL_TEST:-0} == 1 )); then
+                    apo_state_phase MANUAL_TEST READY RUNNING
+                else
+                    apo_state_phase CPU_SWEEP READY RUNNING
+                fi
                 ;;
             GPU_SMOKE)
                 apo_gpu_harness_smoke || return 1
-                apo_state_phase CPU_SWEEP READY RUNNING
+                if (( ${APO_MANUAL_TEST:-0} == 1 )); then apo_state_phase MANUAL_TEST READY RUNNING
+                else apo_state_phase CPU_SWEEP READY RUNNING; fi
+                ;;
+            MANUAL_TEST)
+                apo_run_manual_test || return 1
                 ;;
             CPU_SWEEP)
                 apo_sweep_cpu || return 1

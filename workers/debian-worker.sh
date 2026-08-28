@@ -1182,7 +1182,7 @@ cmd_stress() {
     local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors
     local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
-    local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy
+    local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
     : "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
@@ -1270,7 +1270,9 @@ cmd_stress() {
                 if candidate_fan_max_ready; then fan_status=$FAN_PWM_LAST_STATUS
                 else failure_class=HARNESS_FAILURE; failure_reason="Candidate fan max-speed proof failed during stress: ${FAN_PWM_LAST_REASON:-unknown fan telemetry failure}"; fi
             fi
-            printf '%s temp=%sC arm=%sMHz v3d=%sMHz expected=%s/%s %s fan=%s\n' "$(date '+%F %T')" "${temp:-unknown}" "$arm_sample" "$gpu_sample" "$expected_cpu" "$expected_gpu" "$throttle" "$fan_status"
+            elapsed_sample=$((now_seconds - start_seconds))
+            (( elapsed_sample > duration )) && elapsed_sample=$duration
+            printf '%s temp=%sC arm=%sMHz v3d=%sMHz expected=%s/%s %s fan=%s elapsed=%s/%ss\n' "$(date '+%F %T')" "${temp:-unknown}" "$arm_sample" "$gpu_sample" "$expected_cpu" "$expected_gpu" "$throttle" "$fan_status" "$elapsed_sample" "$duration"
             next_log=$((now_seconds + telemetry_interval))
         fi
         if [[ -n $failure_class ]]; then break; fi

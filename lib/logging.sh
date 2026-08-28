@@ -58,7 +58,9 @@ apo_log() {
     shift
     local message=$* rendered
     rendered="$(date '+%F %T') [${severity}] ${message}"
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     printf '%s\n' "$rendered" | tee -a "$APO_LOG_FILE" >&2
+    if declare -F apo_progress_after_output >/dev/null 2>&1; then apo_progress_after_output; fi
 }
 
 apo_info() { apo_log INFO "$*"; }

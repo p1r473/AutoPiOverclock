@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-alpha.24 — 2026-08-28
+
+- Added a controller-side interactive whole-workflow progress bar with target identity, active clocks, current/run-maximum temperature, throttle state, activity, dynamically replanned approximate percentage/ETA, and approximate tests remaining.
+- Added a worker-elapsed current-stress countdown while preserving every unmodified telemetry line in retained candidate/main logs; redirected and noninteractive execution keeps ordinary newline-delimited telemetry without terminal control updates.
+- Added `autopioverclock test TARGET --cpu MHZ --gpu MHZ --minutes MINUTES` for one exact CPU/GPU stability test through the existing tryboot ownership, watchdog, maximum-cooling, repeated boot/recovery, health, protected-hash, and final normal-recovery gates.
+- Kept manual test results evidence-only: they record exact clocks, duration, classification, and maximum temperature with `VALIDATED=0`, create no recommendation, never modify permanent clocks, and are explicitly rejected by `apply` regardless of duration.
+- Made repeating an identical interrupted manual command recover and continue its saved plan while refusing clock, duration, or cooling-policy changes mid-test.
+- Added CLI, configuration/state, lifecycle, apply-refusal, telemetry parsing, progress-estimate, countdown, and terminal-width regressions, plus public documentation for both features and their validation limits.
+
 ## 0.1.0-alpha.23 — 2026-08-28
 
 - Fixed the Debian `/tmp` worker lifecycle exposed by alpha.22: one shared post-reboot handshake now waits for a changed boot ID, re-uploads the exact run-isolated worker, and only then permits candidate, recovery, watchdog, reset, or apply verification. A target that clears `/tmp` during reboot no longer produces a false missing-worker harness failure.

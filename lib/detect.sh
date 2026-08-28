@@ -285,12 +285,21 @@ apo_context_from_discovery() {
         APO_AUTO_BASELINE_EVIDENCE=''
     fi
     local candidate
-    for candidate in "${APO_CPU_CANDIDATES[@]}"; do
-        (( candidate > APO_NORMAL_CPU )) || apo_die "CPU candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_CPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"
-    done
-    for candidate in "${APO_GPU_CANDIDATES[@]}"; do
-        (( candidate > APO_NORMAL_GPU )) || apo_die "GPU/V3D candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_GPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"
-    done
+    if (( ${APO_MANUAL_TEST:-0} == 1 )); then
+        (( APO_MANUAL_CPU >= APO_NORMAL_CPU )) ||
+            apo_die "Manual CPU clock $APO_MANUAL_CPU MHz is below the protected normal clock $APO_NORMAL_CPU MHz; test accepts a normal-or-higher clock, not an underclock." "$APO_EXIT_USAGE"
+        (( APO_MANUAL_GPU >= APO_NORMAL_GPU )) ||
+            apo_die "Manual GPU/V3D clock $APO_MANUAL_GPU MHz is below the protected normal clock $APO_NORMAL_GPU MHz; test accepts a normal-or-higher clock, not an underclock." "$APO_EXIT_USAGE"
+        (( APO_MANUAL_CPU > APO_NORMAL_CPU || APO_MANUAL_GPU > APO_NORMAL_GPU )) ||
+            apo_die 'Manual test clocks exactly match the protected normal clocks; raise at least one clock to test an overclock.' "$APO_EXIT_USAGE"
+    else
+        for candidate in "${APO_CPU_CANDIDATES[@]}"; do
+            (( candidate > APO_NORMAL_CPU )) || apo_die "CPU candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_CPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"
+        done
+        for candidate in "${APO_GPU_CANDIDATES[@]}"; do
+            (( candidate > APO_NORMAL_GPU )) || apo_die "GPU/V3D candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_GPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"
+        done
+    fi
     if [[ $APO_MODE_EFFECTIVE == graphical && -z $APO_AUDIO_BASELINE ]]; then
         case $APO_PROFILE in
             debian) apo_die 'Debian graphical mode requires a healthy audio-output baseline, but neither a default PipeWire/PulseAudio sink nor ALSA playback hardware could be captured.' "$APO_EXIT_HARNESS" ;;

@@ -3,6 +3,8 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TESTS=(
     test_simple_cli.sh
+    test_manual_test.sh
+    test_progress.sh
     test_install.sh
     test_batocera_watchdog_install.sh
     test_common.sh

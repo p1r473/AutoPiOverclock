@@ -51,13 +51,29 @@ That is the normal interface. The optional final CPU +25 MHz test is the main tu
 autopioverclock overclock pi-host --edge-cpu-24h
 ```
 
-Maximum Pi PWM fan cooling is automatic during tuning. Most users should leave it enabled. `autopioverclock overclock pi-host --no-max-fan` is available for an externally controlled cooling system or when intentionally testing with the target's own fan curve.
+If you already have exact clocks in mind and only want to stability-test them, use one bounded manual test:
+
+```bash
+autopioverclock test pi-host --cpu 3100 --gpu 1150 --minutes 90
+```
+
+`test` still uses owned `tryboot.txt`, the watchdog chain, maximum cooling, repeated candidate/normal boots, combined stress, health checks, protected-config hashing, and final normal recovery. The requested minutes cover the timed stress workload; safety boots and checks add wall time. A pass is retained as manual evidence only: it is not a conservative recommendation, does not satisfy the eight-hour validation contract, cannot be passed to `apply`, and never changes permanent clocks. Repeat the identical command to continue an interrupted current-schema manual test. Use `--no-max-fan` only when you intentionally want that test to use the target's ordinary or externally controlled cooling policy.
+
+During an interactive run, the controller displays a live whole-workflow line similar to:
+
+```text
+pi-host [########------------] ~42% ETA ~6h12m | current 7m32s left | tests ~11 left | 3100/1150MHz | 64.2C max=65.0C | final endurance | throttled=0x0 | fan=pwm:255,rpm:5200
+```
+
+The whole-run percentage, ETA, and number of tests remaining are best-effort estimates and dynamically re-plan when a stability boundary adds refinement or removes higher candidates. The current timed-stress countdown comes from the worker's actual elapsed counter. Host, active clocks, current/run-maximum temperature, throttle state, and activity are shown when terminal width permits. Redirected/noninteractive output keeps ordinary line-by-line telemetry instead of terminal control characters, and all raw worker telemetry remains in the retained logs.
+
+Maximum Pi PWM fan cooling is automatic during tuning and manual stability tests. Most users should leave it enabled. `--no-max-fan` is available for an externally controlled cooling system or when intentionally testing with the target's own fan curve.
 
 > **Cooling is part of the test condition.** Reducing fan speed does not directly lower the configured clock, but the higher temperature can cause throttling, reduce sustained performance, or expose instability; if the Pi was never thermally limited, it may make little difference. Default results are maximum-cooling results. AutoPiOverclock restores the original fan curve after tuning, so that curve still needs enough capacity for the applied clocks. To validate against the everyday fan curve instead, use `--no-max-fan` from the beginning; cooling policy cannot change during resume.
 
 Every operational command requires a target hostname, IP address, or `username@host`. AutoPiOverclock never guesses or remembers a target, so commands in different terminal tabs cannot be redirected to the wrong Pi. New SSH host keys are accepted on first use, but changed keys are refused.
 
-`prepare` may install packages, stage the Batocera GPU payload, install or repair watchdog recovery, preserve verified backups, and reboot to prove the result. `overclock` can reboot or crash the target and takes many hours; it keeps candidate clocks in `tryboot.txt`, requests maximum Pi 5 PWM fan cooling by default, validates a guarded result for eight hours, displays and retains the exact permanent diff, then applies and verifies that result. The maximum-fan override exists only in candidate tryboots. The protected permanent config—including every pre-existing custom fan line—is not rewritten for cooling, so each normal recovery and the eventual permanent result automatically return to the user's ordinary fan policy. `--no-max-fan` disables the temporary override for a new run while leaving the temperature and throttle gates active. `--edge-cpu-24h` adds a fresh 24-hour validation at CPU 25 MHz above the validated floor. It can be supplied on the original run or run later against the retained applied floor without repeating the eight-hour phase. `reset` is standalone and noninteractive; it backs up the boot config, removes permanent tuning, reboots, and verifies stock clocks while retaining every prior run artifact.
+`prepare` may install packages, stage the Batocera GPU payload, install or repair watchdog recovery, preserve verified backups, and reboot to prove the result. `overclock` can reboot or crash the target and takes many hours; it keeps candidate clocks in `tryboot.txt`, requests maximum Pi 5 PWM fan cooling by default, validates a guarded result for eight hours, displays and retains the exact permanent diff, then applies and verifies that result. `test` exercises one explicit CPU/GPU pair for the requested minutes but deliberately stops short of validation or application. The maximum-fan override exists only in candidate tryboots. The protected permanent config—including every pre-existing custom fan line—is not rewritten for cooling, so each normal recovery and the eventual permanent result automatically return to the user's ordinary fan policy. `--no-max-fan` disables the temporary override for a new tuning/manual run while leaving the temperature and throttle gates active. `--edge-cpu-24h` adds a fresh 24-hour validation at CPU 25 MHz above the validated floor. It can be supplied on the original run or run later against the retained applied floor without repeating the eight-hour phase. `reset` is standalone and noninteractive; it backs up the boot config, removes permanent tuning, reboots, and verifies stock clocks while retaining every prior run artifact.
 
 If `prepare` reports an existing unknown `tryboot.txt`, a dirty or ambiguous boot configuration, a foreign watchdog owner, an unhealthy target, or a missing controller-side Batocera bundle prerequisite, it stops without overwriting that evidence. Results are retained under `$HOME/overclock-results`.
 
@@ -129,14 +145,14 @@ Batocera is treated as Buildroot, not Arch Linux. AutoPiOverclock never attempts
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-08-28, `alpha.23` keeps `prepare`, `overclock`, and `reset` as the complete normal interface while retaining the fail-closed recovery engine underneath. It restores the transient worker automatically after every reboot, requests temporary maximum fan cooling by default without changing the permanent fan curve, preserves an already-positive Batocera EEPROM boot-watchdog timeout, automatically binds Debian graphical validation to working audio evidence, and steps down after a recovered CPU-only or GPU-only final-stress boundary instead of making the user restart the search. Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
+As of 2026-08-28, `alpha.24` keeps `prepare`, `overclock`, and `reset` as the complete normal interface while retaining the fail-closed recovery engine underneath. It adds an advisory live whole-workflow display and a bounded exact-clock `test` command without turning short/manual evidence into a recommendation. It also restores the transient worker automatically after every reboot, requests temporary maximum fan cooling by default without changing the permanent fan curve, preserves an already-positive Batocera EEPROM boot-watchdog timeout, automatically binds Debian graphical validation to working audio evidence, and steps down after a recovered CPU-only or GPU-only final-stress boundary instead of making the user restart the search. Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
 
 | Evidence | Current status |
 | --- | --- |
-| Bash fixture suite | 17 scripted suites cover the three-command interface, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
+| Bash fixture suite | 19 scripted suites cover the three-command/manual-test interface, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | See the live badge for the current commit. |
-| Debian-family Raspberry Pi 5 run | Autonomous final-stress recovery has been observed, but a complete `alpha.23` run remains pending. |
-| Batocera Raspberry Pi 5 run | Recovery-mode boot and watchdog preparation have been exercised, but complete `alpha.23` validation remains pending. |
+| Debian-family Raspberry Pi 5 run | Autonomous final-stress recovery has been observed, but a complete `alpha.24` run remains pending. |
+| Batocera Raspberry Pi 5 run | Recovery-mode boot and watchdog preparation have been exercised, but complete `alpha.24` validation remains pending. |
 | Eight-hour production-floor validation | No public PASS claim until the retained run artifacts complete and are reviewed. |
 | Optional 24-hour CPU edge validation | No public PASS claim until the production floor passes first and the edge artifacts are reviewed. |
 
@@ -207,6 +223,7 @@ The controller preserves the internal recovery proof, token/hash-owned `tryboot.
 | --- | --- |
 | `prepare TARGET` | Install and verify dependencies and watchdog recovery. Add `--dry-run` for read-only discovery and plan generation. |
 | `overclock TARGET` | Automatically tune, validate, apply, reboot, and verify the target. |
+| `test TARGET` | Test one exact `--cpu`/`--gpu` pair for `--minutes`; recover normally and retain evidence without applying it. |
 | `reset TARGET` | Back up the boot config, remove tuning, reboot, and verify stock clocks. |
 | `run TARGET` | Use the advanced prepare, recovery-proof, sweep, selection, and validation interface. |
 | `resume TARGET` | Recover when necessary and continue saved progress. |
@@ -216,7 +233,7 @@ The controller preserves the internal recovery proof, token/hash-owned `tryboot.
 | `report TARGET` | Generate a concise run report; supports redaction. |
 | `TARGET reset` | Historical postfix spelling retained for compatibility. |
 
-`--edge-cpu-24h` is the optional final CPU edge test. Maximum cooling is the default; `--no-max-fan` opts a new tuning run out while preserving every normal thermal/throttle gate. Transport/output options and the retained expert recovery/reporting interface are documented in [`docs/cli.md`](docs/cli.md); they are not part of the normal three-command workflow.
+`--edge-cpu-24h` is the optional final CPU edge test. Maximum cooling is the default; `--no-max-fan` opts a new tuning or manual-test run out while preserving every normal thermal/throttle gate. Transport/output options and the retained expert recovery/reporting interface are documented in [`docs/cli.md`](docs/cli.md); they are not part of the normal three-command workflow.
 
 ## Configuration
 
@@ -334,7 +351,7 @@ See [`docs/output.md`](docs/output.md) for artifact fields and failure classific
 
 `autopioverclock overclock TARGET` includes application: candidate clocks remain isolated in `tryboot.txt`; after the guarded result completes the current validation schema and at least eight hours of endurance, the same command displays and retains the exact permanent diff, writes the validated clocks, reboots, and proves the result. A failed or incomplete validation is never applied.
 
-The standalone `apply TARGET --run-id RUN_ID` command remains available only for expert recovery of a previously completed, unapplied run. It retains the separate typed confirmation and cannot apply a reset audit or stale validation schema.
+The standalone `apply TARGET --run-id RUN_ID` command remains available only for expert recovery of a previously completed, unapplied fully validated run. It retains the separate typed confirmation and cannot apply a reset audit, manual `test` result, or stale validation schema.
 
 ## Repository layout
 

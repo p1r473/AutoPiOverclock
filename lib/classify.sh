@@ -59,10 +59,18 @@ apo_run_worker_capture() {
     output_file=$(apo_candidate_log_file "$phase")
     APO_LAST_WORKER_LOG=$output_file
     set +e
-    apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
-    remote_rc=${PIPESTATUS[0]}
+    if declare -F apo_progress_capture_worker_stream >/dev/null 2>&1; then
+        apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" 2>&1 | apo_progress_capture_worker_stream "$output_file"
+        remote_rc=${PIPESTATUS[0]}
+    else
+        apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
+        remote_rc=${PIPESTATUS[0]}
+    fi
     set -e
     apo_classify_output "$output_file" "$phase"
+    if declare -F apo_progress_record_worker_result >/dev/null 2>&1; then
+        apo_progress_record_worker_result "$output_file" "$APO_LAST_MAX_TEMP"
+    fi
     apo_state_set LAST_FAILURE_CLASS "$([[ $APO_LAST_CLASS == PASS ]] && printf '' || printf '%s' "$APO_LAST_CLASS")"
     apo_state_set LAST_FAILURE_REASON "$([[ $APO_LAST_CLASS == PASS ]] && printf '' || printf '%s' "$APO_LAST_REASON")"
     apo_state_save

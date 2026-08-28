@@ -52,6 +52,7 @@ apo_run_stress() {
     [[ -n $expected_gpu ]] || expected_gpu=$APO_NORMAL_GPU
     fan_policy=$(apo_current_fan_policy)
     apo_verify_permanent_hash "${label}-pre-stress" || return 1
+    if declare -F apo_progress_begin_stress >/dev/null 2>&1; then apo_progress_begin_stress "$duration" "$label"; fi
     apo_run_worker_capture "$label" stress "$stress_kind" "$duration" "${APO_CFG[MAX_TEMP_C]}" "$APO_MODE_EFFECTIVE" "$APO_DISPLAY_BASELINE" "$io_check" "$expected_cpu" "$expected_gpu" "$APO_THROTTLE_RUNTIME_BASELINE" "${APO_CFG[TELEMETRY_INTERVAL_S]}" "${APO_AUDIO_BASELINE:-}" "$fan_policy" || {
         stress_rc=$?
         stress_class=${APO_LAST_CLASS:-HARNESS_FAILURE}
@@ -59,6 +60,7 @@ apo_run_stress() {
     }
     apo_verify_permanent_hash "${label}-post-stress" || {
         hash_rc=$?
+        if declare -F apo_progress_finish_stress >/dev/null 2>&1; then apo_progress_finish_stress; fi
         if (( stress_rc != 0 && hash_rc == 2 )); then
             # Unavailable or malformed hash evidence cannot prove either a
             # match or a mutation.
@@ -70,6 +72,7 @@ apo_run_stress() {
         fi
         return 1
     }
+    if declare -F apo_progress_finish_stress >/dev/null 2>&1; then apo_progress_finish_stress; fi
     return "$stress_rc"
 }
 
