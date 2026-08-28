@@ -174,7 +174,7 @@ apo_reset_stock() {
     sleep "$APO_BOOT_SETTLE_SECONDS"
 
     # The run-isolated worker normally survives reboot on both supported
-    # profiles. Upload it again so verification does not depend on /var/tmp
+    # profiles. Upload it again so verification does not depend on /tmp
     # retention policy or a target-side cleanup service.
     apo_deploy_worker
     if ! apo_run_worker_capture verify-stock-reset verify-stock-reset "$APO_PERMANENT_CONFIG_HASH"; then

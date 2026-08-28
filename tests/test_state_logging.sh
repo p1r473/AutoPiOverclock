@@ -80,7 +80,7 @@ SECOND_RUN=$APO_RUN_ID
 # parent or wildcard that could remove another run still in progress.
 for profile_name in debian batocera; do
     case $profile_name in
-        debian) expected_base=/var/tmp/autopioverclock- ;;
+        debian) expected_base=/tmp/autopioverclock- ;;
         batocera) expected_base=/userdata/system/autopioverclock/runs/ ;;
     esac
     APO_RUN_ID=$FIRST_RUN

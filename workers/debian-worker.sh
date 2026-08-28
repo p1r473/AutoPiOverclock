@@ -897,7 +897,7 @@ cmd_health() {
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling in $context." "$temp"; return 1; }
     errors=$(kernel_error_lines 1 | tail -40 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "Current-boot kernel, power, GPU, USB, storage, or filesystem error in $context." "$temp"; return 1; fi
-    test_file=/var/tmp/autopioverclock-write-test-$$
+    test_file=/tmp/autopioverclock-write-test-$$
     printf test > "$test_file" && sync "$test_file" && rm -f "$test_file" || { emit_result STABILITY_FAILURE "Filesystem write test failed in $context." "$temp"; return 1; }
     if [[ -n $extra_ping ]]; then ping -c 2 -W 2 "$extra_ping" >/dev/null 2>&1 || { emit_result BOOT_FAILURE "Configured ping target is unreachable in $context." "$temp"; return 1; }; fi
     if ! wait_application_health "$mode" "$baseline" "$required_processes" "$required_services" "$audio_match" "$audio_baseline"; then
@@ -1186,7 +1186,7 @@ cmd_stress() {
     command -v stress-ng >/dev/null 2>&1 || { emit_result HARNESS_FAILURE 'stress-ng is not installed.'; return 1; }
     stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_work_dir=''; stress_io_file=''
     stress_work_dir=$(mktemp -d /tmp/autopioverclock-stress.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create stress workspace.'; return 1; }
-    cpu_output="$stress_work_dir/cpu.log"; gpu_output="$stress_work_dir/gpu.log"; stress_io_file=/var/tmp/autopioverclock-io-$$
+    cpu_output="$stress_work_dir/cpu.log"; gpu_output="$stress_work_dir/gpu.log"; stress_io_file=/tmp/autopioverclock-io-$$
     trap cleanup_stress EXIT
     trap 'stress_signal_cleanup 130' INT
     trap 'stress_signal_cleanup 143' TERM

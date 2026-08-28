@@ -10,6 +10,7 @@
 - Added a temporary maximum-cooling policy to every candidate and final-validation tryboot: Pi 5 fan level zero starts at 0C and all four PWM levels are set to 255, while permanent apply and normal recovery preserve the user's ordinary fan curve.
 - Added live `pwmfan` proof before candidate health/stress and throughout stress telemetry. A detected fan below PWM 255, malformed telemetry, or a zero tachometer aborts as harness uncertainty rather than becoming a false clock boundary; systems without a Linux PWM fan device are explicitly reported as `not-detected` and remain protected by temperature/throttle gates.
 - Kept reset compatible with both the earlier five-line managed tryboot block and the new exact max-fan block while rejecting any altered fan override as foreign evidence.
+- Standardized Debian's per-run worker directory, write probe, and stress I/O probe under `/tmp`; run IDs still isolate every controller and cleanup remains exact-path scoped.
 
 ## 0.1.0-alpha.21 — 2026-08-27
 

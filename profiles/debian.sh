@@ -3,7 +3,7 @@
 
 APO_PROFILE=debian
 APO_LOCAL_WORKER="${APO_ROOT}/workers/debian-worker.sh"
-APO_REMOTE_WORK_DIR="/var/tmp/autopioverclock-${APO_RUN_ID}"
+APO_REMOTE_WORK_DIR="/tmp/autopioverclock-${APO_RUN_ID}"
 APO_REMOTE_WORKER="${APO_REMOTE_WORK_DIR}/worker.sh"
 APO_BOOT_TIMEOUT=240
 APO_BOOT_SETTLE_SECONDS=15
