@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.21 — 2026-08-27
+
+- Made configuration-free `overclock TARGET` treat a safely recovered stability failure during ordinary CPU-only or GPU-only final stress as a new production boundary: CPU steps down 50 MHz, GPU steps down 25 MHz, and the complete final validation restarts automatically.
+- Kept combined-endurance, boot, harness, and recovery uncertainty fatal instead of guessing which clock caused it; a backoff is allowed only after verified normal recovery has cleared all owned tryboot evidence.
+- Persisted a bounded, ordered final-backoff history and bound the eventual production floor, optional CPU edge, resume, and apply identities to the reduced clocks.
+- Allowed repeating the same public `overclock TARGET` command to adopt the exact recovered schema-7 final-stress failure produced by alpha.20, upgrade only that narrow state to schema 8, and continue without retesting the rejected clock.
+- Added regressions for GPU and CPU backoff size, complete final-validation restart, malformed-history rejection, legacy failed-run continuation, and refusal to reinterpret harness or combined-stress uncertainty.
+
 ## 0.1.0-alpha.20 — 2026-08-27
 
 - Made `make install` copy an explicit manifest of the three Batocera watchdog assets instead of expanding `assets/batocera/*`, so an ignored Python `__pycache__` directory can never be passed to `install` as a file.

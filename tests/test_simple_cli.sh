@@ -65,7 +65,7 @@ mkdir -p "$CONTINUATION_OUTPUT"
 CONTINUATION_RUN=20260827-010203-abcdef0123456789
 CONTINUATION_STATE="$CONTINUATION_OUTPUT/tron-${CONTINUATION_RUN}.state"
 write_state_fixture "$CONTINUATION_STATE" \
-    FORMAT_VERSION 1 RUN_SCHEMA 7 RUN_ID "$CONTINUATION_RUN" \
+    FORMAT_VERSION 1 RUN_SCHEMA 8 RUN_ID "$CONTINUATION_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
     STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED
 ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
@@ -78,6 +78,51 @@ ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
     [[ $APO_COMMAND == resume ]]
     [[ $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
     [[ $APO_AUTO_APPLY == 1 ]]
+)
+
+# Repeating the one public command also adopts the exact recovered schema-7
+# final-stress boundary produced by alpha.20. It does not silently adopt an
+# arbitrary failed run.
+FAILED_FINAL_RUN=20260827-010203-fedcba9876543210
+FAILED_FINAL_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_FINAL_RUN}.state"
+write_state_fixture "$FAILED_FINAL_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 7 RUN_ID "$FAILED_FINAL_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 STATUS FAILED PHASE FINAL_VALIDATION \
+    FAILURE_CLASS STABILITY_FAILURE FAILURE_REASON 'verified autonomous GPU stress reboot' \
+    FINAL_STAGE GPU_STRESS RECOMMENDED_CPU 3000 RECOMMENDED_GPU 1175 \
+    FINAL_TARGET_CPU 3000 FINAL_TARGET_GPU 1175 EDGE_CPU_STATUS NOT_REQUESTED \
+    FLOOR_VALIDATED 0 TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 APPLY_STATUS NOT_APPLIED
+ln -sfn "$(basename "$FAILED_FINAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$FAILED_FINAL_RUN" ]]
+)
+
+apo_failed_harness_run=20260827-010203-1111111111111111
+apo_failed_harness_state="$CONTINUATION_OUTPUT/tron-${apo_failed_harness_run}.state"
+write_state_fixture "$apo_failed_harness_state" \
+    FORMAT_VERSION 1 RUN_SCHEMA 7 RUN_ID "$apo_failed_harness_run" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 STATUS FAILED PHASE FINAL_VALIDATION \
+    FAILURE_CLASS HARNESS_FAILURE FAILURE_REASON 'same-boot transport loss' \
+    FINAL_STAGE GPU_STRESS RECOMMENDED_CPU 3000 RECOMMENDED_GPU 1175 \
+    FINAL_TARGET_CPU 3000 FINAL_TARGET_GPU 1175 EDGE_CPU_STATUS NOT_REQUESTED \
+    FLOOR_VALIDATED 0 TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 APPLY_STATUS NOT_APPLIED
+ln -sfn "$(basename "$apo_failed_harness_state")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == run ]]
+    [[ -z $APO_SELECTED_RUN_ID ]]
 )
 
 PREPARE_RUN=20260827-010204-abcdef0123456789

@@ -123,14 +123,14 @@ Batocera is treated as Buildroot, not Arch Linux. AutoPiOverclock never attempts
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-08-27, `alpha.20` makes `prepare`, `overclock`, and `reset` the complete normal interface while retaining the existing fail-closed recovery engine underneath. It preserves an already-positive Batocera EEPROM boot-watchdog timeout instead of scheduling an unnecessary replacement, installs only the declared Batocera assets even when Python cache directories exist, and automatically binds Debian graphical validation to the active desktop sink or complete ALSA playback inventory. Earlier Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
+As of 2026-08-27, `alpha.21` makes `prepare`, `overclock`, and `reset` the complete normal interface while retaining the existing fail-closed recovery engine underneath. It preserves an already-positive Batocera EEPROM boot-watchdog timeout, installs only the declared Batocera assets, automatically binds Debian graphical validation to working audio evidence, and steps down after a recovered CPU-only or GPU-only final-stress boundary instead of making the user restart the search. Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
 
 | Evidence | Current status |
 | --- | --- |
 | Bash fixture suite | 17 scripted suites cover the three-command interface, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | See the live badge for the current commit. |
-| Debian-family Raspberry Pi 5 run | Earlier autonomous normal recovery at the 3200 MHz candidate succeeded; a complete `alpha.20` run remains pending. |
-| Batocera Raspberry Pi 5 run | Recovery-mode boot returned; live `alpha.18` preparation exposed and preserved an unnecessary EEPROM-scheduling failure, and complete `alpha.20` validation remains pending. |
+| Debian-family Raspberry Pi 5 run | Autonomous final-stress recovery has been observed, but a complete `alpha.21` run remains pending. |
+| Batocera Raspberry Pi 5 run | Recovery-mode boot and watchdog preparation have been exercised, but complete `alpha.21` validation remains pending. |
 | Eight-hour production-floor validation | No public PASS claim until the retained run artifacts complete and are reviewed. |
 | Optional 24-hour CPU edge validation | No public PASS claim until the production floor passes first and the edge artifacts are reviewed. |
 
@@ -193,7 +193,7 @@ autopioverclock overclock pi-host --edge-cpu-24h
 
 That first validates the ordinary guarded floor, then tests CPU exactly 25 MHz higher through a separate 24-hour validation. A safely recovered edge boot/stability failure keeps and applies the already-validated floor; harness or recovery uncertainty still stops the run.
 
-The controller preserves the internal recovery proof, token/hash-owned `tryboot.txt` lifecycle, candidate/normal boot cycles, GPU harness, telemetry, artifacts, and resumable state. Rerunning `autopioverclock overclock pi-host` continues its own latest safely resumable current-version run and completes application; failed or ambiguous evidence still stops. Ordinary users do not have to assemble a chain of `run`, dependency, watchdog, `resume`, and `apply` commands.
+The controller preserves the internal recovery proof, token/hash-owned `tryboot.txt` lifecycle, candidate/normal boot cycles, GPU harness, telemetry, artifacts, and resumable state. If final CPU-only or GPU-only stress proves a real stability boundary and normal recovery succeeds, it automatically lowers that one clock by 50 MHz or 25 MHz and restarts complete validation; ambiguous combined, harness, or recovery failures still stop. Rerunning `autopioverclock overclock pi-host` continues its own latest safely resumable run and completes application. Ordinary users do not have to assemble a chain of `run`, dependency, watchdog, `resume`, and `apply` commands.
 
 ## Commands
 
