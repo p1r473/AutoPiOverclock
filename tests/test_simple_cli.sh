@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The fixture intentionally isolates repeated sourced-controller evaluations in subshells.
-# shellcheck disable=SC2030,SC2031
+# The controller is linted directly; do not recursively re-analyze it for each
+# isolated source in this execution fixture.
+# shellcheck disable=SC1090,SC2030,SC2031
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TEMP_DIR=$(mktemp -d)
@@ -11,7 +13,6 @@ parse_fixture() {
     shift 3
     (
         export APO_CLI_LIBRARY_ONLY=1
-        # shellcheck source=../autopioverclock
         source "$ROOT/autopioverclock"
         apo_parse_cli "$@"
         [[ $APO_COMMAND == "$expected_command" ]]
