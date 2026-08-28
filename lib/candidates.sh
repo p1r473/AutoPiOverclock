@@ -158,9 +158,53 @@ apo_auto_state_invalid() {
     local reason=$1
     APO_LAST_CLASS=HARNESS_FAILURE
     APO_LAST_REASON=$reason
+    if (( ${APO_STATE_VALIDATION_READ_ONLY:-0} == 1 )); then
+        return 1
+    fi
     apo_state_clear_final_validation
     apo_state_fail HARNESS_FAILURE "$reason"
     return 1
+}
+
+apo_post_floor_edge_source_is_eligible() {
+    local run_id final_cpu final_gpu permanent_hash mode
+    run_id=$(apo_state_get RUN_ID '')
+    final_cpu=$(apo_state_get FINAL_CPU '')
+    final_gpu=$(apo_state_get FINAL_GPU '')
+    permanent_hash=$(apo_state_get PERMANENT_HASH '')
+    mode=$(apo_state_get MODE_EFFECTIVE '')
+    apo_is_safe_run_id "$run_id" || return 1
+    [[ $(apo_state_get FORMAT_VERSION '') == 1 &&
+       $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
+       $(apo_state_get ORIGIN_COMMAND '') == overclock &&
+       $(apo_state_get READ_ONLY_RUN 0) == 0 &&
+       $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
+       $(apo_state_get CFG_EDGE_CPU_24H 0) == 0 &&
+       $(apo_state_get STATUS '') == PASS &&
+       $(apo_state_get PHASE '') == COMPLETE &&
+       $(apo_state_get FINAL_STAGE '') == COMPLETE &&
+       $(apo_state_get VALIDATED 0) == 1 &&
+       $(apo_state_get VALIDATION_SCHEMA '') == "$APO_CURRENT_VALIDATION_SCHEMA" &&
+       $(apo_state_get VALIDATION_DURATION_S '') == 28800 &&
+       $(apo_state_get APPLY_STATUS '') == APPLIED &&
+       $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED &&
+       $(apo_state_get FLOOR_VALIDATED 0) == 0 &&
+       $(apo_state_get POST_FLOOR_EDGE 0) == 0 &&
+       $(apo_state_get TRYBOOT_EXPECTED 0) == 0 &&
+       $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 0 &&
+       -z $(apo_state_get TRYBOOT_OWNED_HASH '') &&
+       -z $(apo_state_get TRYBOOT_RESERVATION_HASH '') &&
+       -z $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') &&
+       -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') &&
+       ( $mode == graphical || $mode == headless ) ]] || return 1
+    [[ $final_cpu =~ ^[0-9]+$ && $final_gpu =~ ^[0-9]+$ &&
+       $(apo_state_get RECOMMENDED_CPU '') == "$final_cpu" &&
+       $(apo_state_get RECOMMENDED_GPU '') == "$final_gpu" &&
+       $(apo_state_get FINAL_TARGET_CPU '') == "$final_cpu" &&
+       $(apo_state_get FINAL_TARGET_GPU '') == "$final_gpu" &&
+       $(apo_state_get NORMAL_CPU '') == "$final_cpu" &&
+       $(apo_state_get NORMAL_GPU '') == "$final_gpu" &&
+       $permanent_hash =~ ^[0-9a-f]{64}$ ]]
 }
 
 apo_auto_uint_in_range() {
@@ -679,9 +723,26 @@ apo_auto_validate_non_auto_state() {
 apo_validate_auto_resume_state() {
     local auto_marker=${APO_AUTO_GENERATED_CANDIDATES:-0} edge_marker=${APO_EDGE_CPU_24H:-0}
     local expected_cpu_csv expected_gpu_csv apply_status final_cpu final_gpu
+    local post_floor_edge source_floor_run_id source_floor_hash floor_cpu floor_gpu permanent_hash edge_status
     APO_AUTO_VALIDATION_REASON=''
     apo_auto_validate_boolean 'automatic-candidate' "$auto_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_auto_validate_boolean 'edge CPU option' "$edge_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    post_floor_edge=$(apo_state_get POST_FLOOR_EDGE 0)
+    source_floor_run_id=$(apo_state_get SOURCE_FLOOR_RUN_ID '')
+    source_floor_hash=$(apo_state_get SOURCE_FLOOR_PERMANENT_HASH '')
+    apo_auto_validate_boolean 'post-floor edge continuation' "$post_floor_edge" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    if (( post_floor_edge == 0 )); then
+        if [[ -n $source_floor_run_id || -n $source_floor_hash ]]; then
+            apo_auto_state_invalid 'Saved source-floor identity exists outside a post-floor edge continuation.'
+            return 1
+        fi
+    elif (( auto_marker != 1 || edge_marker != 1 )); then
+        apo_auto_state_invalid 'Post-floor edge continuation is saved on a non-auto or non-edge run.'
+        return 1
+    elif ! apo_is_safe_run_id "$source_floor_run_id" || [[ $source_floor_run_id == $(apo_state_get RUN_ID '') || ! $source_floor_hash =~ ^[0-9a-f]{64}$ ]]; then
+        apo_auto_state_invalid 'Saved post-floor edge continuation has an invalid source run or permanent-config hash.'
+        return 1
+    fi
     if (( auto_marker == 1 )); then
         if [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} != verified-default || ${APO_AUTO_BASELINE_EVIDENCE:-missing} != none ||
               ${APO_AUTO_BASELINE_CPU:-missing} != "$APO_PI5_STOCK_CPU_MHZ" ||
@@ -714,6 +775,16 @@ apo_validate_auto_resume_state() {
                 apo_auto_state_invalid 'Applied automatic state does not bind its current normal clocks to the validated final clocks.'
                 return 1
             fi
+        elif (( post_floor_edge == 1 )); then
+            floor_cpu=$(apo_state_get FLOOR_CPU '')
+            floor_gpu=$(apo_state_get FLOOR_GPU '')
+            permanent_hash=$(apo_state_get PERMANENT_HASH '')
+            if [[ $(apo_state_get FLOOR_VALIDATED 0) != 1 || $APO_NORMAL_CPU != "$floor_cpu" ||
+                  $APO_NORMAL_GPU != "$floor_gpu" || $APO_NORMAL_VOLTAGE != "$APO_TEST_VOLTAGE" ||
+                  $permanent_hash != "$source_floor_hash" ]]; then
+                apo_auto_state_invalid 'Unapplied post-floor edge state is not bound to its already-applied validated floor.'
+                return 1
+            fi
         elif [[ $APO_NORMAL_CPU != "$APO_AUTO_BASELINE_CPU" || $APO_NORMAL_GPU != "$APO_AUTO_BASELINE_GPU" ||
                 $APO_NORMAL_VOLTAGE != "$APO_AUTO_BASELINE_VOLTAGE" ]]; then
             apo_auto_state_invalid 'Unapplied automatic state no longer matches its immutable stock baseline.'
@@ -731,6 +802,28 @@ apo_validate_auto_resume_state() {
     apo_auto_validate_edge_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     if (( auto_marker == 1 )); then
         apo_auto_validate_final_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    fi
+    if [[ $post_floor_edge == 1 && $apply_status == APPLIED ]]; then
+        permanent_hash=$(apo_state_get PERMANENT_HASH '')
+        edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
+        case $edge_status in
+            PASS)
+                [[ $permanent_hash =~ ^[0-9a-f]{64}$ && $permanent_hash != "$source_floor_hash" ]] || {
+                    apo_auto_state_invalid 'Applied post-floor edge result did not advance beyond its source-floor config hash.'
+                    return 1
+                }
+                ;;
+            REJECTED|SKIPPED_KNOWN_BOUNDARY)
+                [[ $permanent_hash == "$source_floor_hash" ]] || {
+                    apo_auto_state_invalid 'Retained post-floor result no longer matches its source-floor config hash.'
+                    return 1
+                }
+                ;;
+            *)
+                apo_auto_state_invalid 'Applied post-floor edge state has no completed edge disposition.'
+                return 1
+                ;;
+        esac
     fi
 }
 

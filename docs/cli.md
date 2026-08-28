@@ -13,7 +13,7 @@ Run every command on the controller/master Pi. `TARGET` always names a different
 | Controller command | Complete behavior |
 |---|---|
 | `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. On an already tuned host it completes setup, then directs the one required reset. |
-| `overclock TARGET` | Rediscover the stock baseline, prove tryboot recovery, sweep and refine candidates, select guarded clocks, adapt downward after a recovered CPU-only/GPU-only final-stress boundary, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
+| `overclock TARGET` | Rediscover the stock baseline, prove tryboot recovery, run every candidate with the Pi 5 PWM fan temporarily commanded to 100%, sweep and refine candidates, select guarded clocks, adapt downward after a recovered CPU-only/GPU-only final-stress boundary, validate for at least eight hours, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. |
 | `reset TARGET` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |
 
 The optional edge test is:
@@ -22,7 +22,9 @@ The optional edge test is:
 autopioverclock overclock TARGET --edge-cpu-24h
 ```
 
-It validates the ordinary production floor first, then tests CPU exactly 25 MHz higher through a fresh validation whose endurance phase lasts 24 hours. A safely recovered edge boot/stability rejection keeps the validated floor; harness or recovery uncertainty remains fatal.
+On a fresh run it validates the ordinary production floor first, then tests CPU exactly 25 MHz higher through a fresh validation whose endurance phase lasts 24 hours. If a normal `overclock TARGET` run has already completed and applied its current-schema eight-hour floor, running the flagged command later creates a separate linked edge run, re-proves the live floor, and starts directly at the edge validation. The eight-hour endurance phase is not repeated. The source run's automatically selected graphical or headless mode is retained exactly, so a target with no screen remains fully supported. A safely recovered edge boot/stability rejection keeps the validated floor; harness or recovery uncertainty remains fatal.
+
+Maximum cooling is automatic and temporary. Each candidate/final tryboot overrides the Pi 5 fan levels to PWM 255 from the first thermal level, verifies any detected Linux `pwmfan` device before and during load, and records its PWM/RPM telemetry. Normal recovery and permanent apply do not copy those fan overrides. A target with passive cooling or an externally controlled fan is reported as `not-detected` rather than falsely claimed as software-controlled; temperature and throttle limits remain mandatory.
 
 `prepare` and `overclock` are explicit authorization for the operations named by those commands. `prepare` may modify dependency/watchdog files and reboot. `overclock` may apply only the final result after current-schema validation and displays and retains the exact diff before applying it. Neither command overwrites unknown tryboot evidence or bypasses protected-hash checks.
 
@@ -41,7 +43,7 @@ If its latest state is a current-schema `overclock` interrupted after preflight,
 | `--help` | n/a | Show help. |
 | `--version` | n/a | Show the version. |
 
-`overclock` is intentionally configuration-free and automatically chooses graphical or headless validation. It accepts no custom clock plan. Automatic tuning requires active firmware-stock clocks—CPU 2400 MHz, V3D 800 or 960 MHz, and zero voltage delta—and a stable permanent root config with no explicit clock/voltage controls or unbound `include`.
+`overclock` is intentionally configuration-free and automatically chooses graphical validation for a healthy attached display/session or headless validation when no display is present. It accepts no custom clock plan. Automatic tuning requires active firmware-stock clocks—CPU 2400 MHz, V3D 800 or 960 MHz, and zero voltage delta—and a stable permanent root config with no explicit clock/voltage controls or unbound `include`. The one exception to stock discovery is the bounded later edge continuation above, which requires an exact retained applied-floor identity and does not rediscover arbitrary tuned clocks as a baseline.
 
 ## Advanced support interface
 

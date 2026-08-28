@@ -53,7 +53,7 @@ autopioverclock overclock pi-host --edge-cpu-24h
 
 Every operational command requires a target hostname, IP address, or `username@host`. AutoPiOverclock never guesses or remembers a target, so commands in different terminal tabs cannot be redirected to the wrong Pi. New SSH host keys are accepted on first use, but changed keys are refused.
 
-`prepare` may install packages, stage the Batocera GPU payload, install or repair watchdog recovery, preserve verified backups, and reboot to prove the result. `overclock` can reboot or crash the target and takes many hours; it keeps candidate clocks in `tryboot.txt`, validates a guarded result for eight hours, displays and retains the exact permanent diff, then applies and verifies that result. `--edge-cpu-24h` adds a fresh 24-hour validation at CPU 25 MHz above the validated floor. `reset` is standalone and noninteractive; it backs up the boot config, removes permanent tuning, reboots, and verifies stock clocks while retaining every prior run artifact.
+`prepare` may install packages, stage the Batocera GPU payload, install or repair watchdog recovery, preserve verified backups, and reboot to prove the result. `overclock` can reboot or crash the target and takes many hours; it keeps candidate clocks in `tryboot.txt`, temporarily commands every detected Pi 5 PWM fan to 100%, validates a guarded result for eight hours, displays and retains the exact permanent diff, then applies and verifies that result. The maximum-fan override exists only in candidate tryboots, so each normal recovery and the eventual permanent result retain the user's ordinary fan curve. `--edge-cpu-24h` adds a fresh 24-hour validation at CPU 25 MHz above the validated floor. It can be supplied on the original run or run later against the retained applied floor without repeating the eight-hour phase. `reset` is standalone and noninteractive; it backs up the boot config, removes permanent tuning, reboots, and verifies stock clocks while retaining every prior run artifact.
 
 If `prepare` reports an existing unknown `tryboot.txt`, a dirty or ambiguous boot configuration, a foreign watchdog owner, an unhealthy target, or a missing controller-side Batocera bundle prerequisite, it stops without overwriting that evidence. Results are retained under `$HOME/overclock-results`.
 
@@ -84,6 +84,7 @@ The tool deliberately records distinct result concepts instead of collapsing eve
 
 - Permanent `config.txt` is hashed and protected throughout testing.
 - Candidate values are written only to `tryboot.txt`.
+- Every candidate/final-validation tryboot sets the Pi 5 fan's first threshold to 0C and all four PWM levels to 255. A detected Linux `pwmfan` device must report PWM 255 and, when tachometer telemetry exists, nonzero RPM before and during load. No PWM device is reported honestly as `not-detected`; passive or externally controlled cooling still uses the strict temperature and throttle gates.
 - `prepare` and `overclock` refuse to overwrite any pre-existing `tryboot.txt` or unknown recovery file.
 - Every project-created `tryboot.txt` is bound to the current attempt by a fresh random ownership token and recorded SHA-256 evidence. Creation is no-clobber, trigger re-verifies the completed file, and cleanup quarantines then re-verifies it after a normal recovery before removal.
 - Candidate clock values remain confined to `tryboot.txt`. Only the final fully validated result is written to permanent configuration at the end of `overclock`; `prepare` may change only required dependency and watchdog configuration.
@@ -168,7 +169,7 @@ Prepare the target once:
 autopioverclock prepare pi-host
 ```
 
-`prepare` discovers the Raspberry Pi 5 and its boot layout, chooses graphical or headless validation, installs missing stress dependencies, installs or repairs the recovery watchdog when required, reboots when activation needs it, and finishes only after the active watchdog chain and normal stock baseline are proved. Debian graphical discovery automatically uses the active PipeWire/PulseAudio sink when available and otherwise binds validation to every detected ALSA playback device; no manual sink setting is needed. On Batocera it preserves existing services and any already-positive EEPROM boot-watchdog timeout, installs a project-owned keeper only when needed, requires the single current IPv4 default gateway to answer before binding network-loss detection to it, waits three minutes before judging startup connectivity, and stops rebooting after three consecutive recovery attempts within 30 minutes.
+`prepare` discovers the Raspberry Pi 5 and its boot layout, chooses graphical validation when a healthy screen/session exists and headless validation when no screen is present, installs missing stress dependencies, installs or repairs the recovery watchdog when required, reboots when activation needs it, and finishes only after the active watchdog chain and normal stock baseline are proved. A physically present but unhealthy display is not silently treated as headless. Debian graphical discovery automatically uses the active PipeWire/PulseAudio sink when available and otherwise binds validation to every detected ALSA playback device; no manual sink setting is needed. On Batocera it preserves existing services and any already-positive EEPROM boot-watchdog timeout, installs a project-owned keeper only when needed, requires the single current IPv4 default gateway to answer before binding network-loss detection to it, waits three minutes before judging startup connectivity, and stops rebooting after three consecutive recovery attempts within 30 minutes.
 
 Configuration-free automatic tuning requires the firmware-stock tuple: CPU 2400 MHz, V3D 800 or 960 MHz, and zero voltage delta, with no explicit clock/voltage override or unbound `include`. Preparation still installs and proves prerequisites on a currently tuned host; it then tells you to reset once before overclocking:
 
@@ -191,7 +192,7 @@ To add the optional final edge test:
 autopioverclock overclock pi-host --edge-cpu-24h
 ```
 
-That first validates the ordinary guarded floor, then tests CPU exactly 25 MHz higher through a separate 24-hour validation. A safely recovered edge boot/stability failure keeps and applies the already-validated floor; harness or recovery uncertainty still stops the run.
+On a fresh run, that first validates the ordinary guarded floor, then tests CPU exactly 25 MHz higher through a separate 24-hour validation. If the ordinary eight-hour result was already completed and applied without the flag, run the same command later: AutoPiOverclock links a new edge record to that retained floor, re-proves its live hash/health/tryboot state, and begins the 24-hour edge validation directly. It does not repeat the eight-hour endurance phase. The later edge run retains the source run's graphical or headless mode and uses a separate apply/rollback backup. A safely recovered edge boot/stability failure keeps the already-applied floor; harness or recovery uncertainty still stops the run.
 
 The controller preserves the internal recovery proof, token/hash-owned `tryboot.txt` lifecycle, candidate/normal boot cycles, GPU harness, telemetry, artifacts, and resumable state. If final CPU-only or GPU-only stress proves a real stability boundary and normal recovery succeeds, it automatically lowers that one clock by 50 MHz or 25 MHz and restarts complete validation; ambiguous combined, harness, or recovery failures still stop. Rerunning `autopioverclock overclock pi-host` continues its own latest safely resumable run and completes application. Ordinary users do not have to assemble a chain of `run`, dependency, watchdog, `resume`, and `apply` commands.
 
@@ -257,6 +258,7 @@ Custom configuration is an advanced `run TARGET --config FILE` interface retaine
 - SSH returns after the expected boot.
 - The firmware reports an active `tryboot` candidate.
 - Requested clocks are observed under load within tolerance.
+- Any detected Pi 5 PWM fan remains at setting 255 (100%) with a live tachometer when exposed; losing that test condition aborts without being labeled a CPU/GPU boundary.
 - Current/new throttle and undervoltage evidence remains clean.
 - Temperature remains below the configured ceiling.
 - No new filesystem, storage, USB-reset, GPU, kernel panic/internal error/Oops, RCU-stall, hung-task, or watchdog fault appears.

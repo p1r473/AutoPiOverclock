@@ -636,6 +636,61 @@ if apo_validate_auto_resume_state; then
 fi
 [[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
 
+# A later, separately recorded edge run starts from the already-applied floor,
+# retains headless mode, and executes 86,400-second edge endurance directly.
+# It never repeats the source run's 28,800-second endurance phase.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+APO_MODE_EFFECTIVE=headless
+APO_REQUIRE_GPU_STRESS=1
+APO_NORMAL_CPU=3000
+APO_NORMAL_GPU=900
+APO_NORMAL_VOLTAGE=0
+apo_state_set RUN_ID 20260828-010203-3333333333333333
+apo_state_set POST_FLOOR_EDGE 1
+apo_state_set SOURCE_FLOOR_RUN_ID 20260827-010203-2222222222222222
+apo_state_set SOURCE_FLOOR_PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+apo_state_set PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+apo_state_set FLOOR_CPU 3000
+apo_state_set FLOOR_GPU 900
+apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+apo_state_set FLOOR_VALIDATED 1
+apo_state_set EDGE_CPU_TARGET 3025
+apo_state_set EDGE_CPU_STATUS RUNNING
+apo_state_set RECOMMENDED_CPU 3025
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3025
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE PRE_STRESS_BOOT
+apo_state_set STATUS RUNNING
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set VALIDATED 0
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_boot_candidate() {
+    ACTIONS+=("boot:$3")
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$1"
+    apo_state_set CURRENT_GPU "$2"
+}
+apo_return_normal() {
+    ACTIONS+=("normal:$1")
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+}
+apo_run_stress() { ACTIONS+=("stress:$1:$2:$3"); }
+apo_health_check() { ACTIONS+=("health:$4"); }
+apo_verify_permanent_hash() { ACTIONS+=("hash:$1"); }
+apo_validate_auto_resume_state
+apo_final_validation
+[[ $APO_MODE_EFFECTIVE == headless ]]
+[[ $(apo_state_get EDGE_CPU_STATUS) == PASS ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == 86400 ]]
+[[ " ${ACTIONS[*]} " == *' stress:combined:86400:final-endurance '* ]]
+[[ " ${ACTIONS[*]} " != *':28800:'* ]]
+
 # Old automatic states without immutable provenance fail closed; explicit-plan
 # states do not inherit the configuration-free stock gate.
 APO_STATE=()

@@ -63,6 +63,7 @@ APO_REDACT=0
 APO_HAVE_REMOTE_CONTEXT=0
 APO_MUTATING_COMMAND=0
 APO_LOCK_FD=''
+APO_POST_FLOOR_EDGE_SOURCE_STATE=''
 
 usage() {
     cat <<'USAGE'
@@ -254,8 +255,11 @@ apo_acquire_lock() {
 }
 
 apo_public_overclock_select_continuation() {
-    local state_file stored_run_id stored_target origin status phase apply_status state_schema
+    local state_file stored_run_id stored_target origin status phase apply_status state_schema saved_edge requested_edge
+    local -a state_files=()
+    local state_index
     [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
+    requested_edge=$APO_EDGE_CPU_24H
     state_file=$(apo_find_state_file '' || true)
     [[ -n $state_file ]] || return 0
     apo_state_load "$state_file"
@@ -266,6 +270,7 @@ apo_public_overclock_select_continuation() {
     phase=$(apo_state_get PHASE '')
     apply_status=$(apo_state_get APPLY_STATUS NOT_APPLIED)
     state_schema=$(apo_state_get RUN_SCHEMA '')
+    saved_edge=$(apo_state_get CFG_EDGE_CPU_24H 0)
     if apo_is_safe_run_id "$stored_run_id" &&
        [[ $stored_target == "$APO_REMOTE_TARGET" && $origin == overclock ]] &&
        { { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
@@ -275,13 +280,215 @@ apo_public_overclock_select_continuation() {
               $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; } ||
          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 7 ]] &&
            apo_final_saved_failure_is_retryable "$state_schema"; }; }; then
+        if (( requested_edge == 1 && saved_edge == 0 )); then
+            apo_die 'The active run was created without --edge-cpu-24h. Finish it first, then repeat overclock TARGET --edge-cpu-24h against the applied 8-hour floor.' "$APO_EXIT_USAGE"
+        fi
         APO_SELECTED_RUN_ID=$stored_run_id
         APO_COMMAND=resume
-        APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
+        APO_EDGE_CPU_24H=$saved_edge
         return 0
+    fi
+    if [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $stored_target == "$APO_REMOTE_TARGET" &&
+          $origin == overclock && $status == PASS && $phase == COMPLETE && $apply_status == APPLIED ]]; then
+        if (( requested_edge == 1 && saved_edge == 0 )); then
+            apo_post_floor_edge_source_is_eligible ||
+                apo_die 'Later --edge-cpu-24h requires a retained, applied current-schema automatic 8-hour floor with unchanged ownership evidence.' "$APO_EXIT_USAGE"
+            state_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${stored_run_id}.state"
+            [[ -f $state_file ]] || apo_die 'The applied floor selected for later edge validation has no explicit retained state file.' "$APO_EXIT_USAGE"
+            apo_state_load "$state_file"
+            [[ $(apo_state_get RUN_ID '') == "$stored_run_id" && $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" ]] &&
+                apo_post_floor_edge_source_is_eligible ||
+                apo_die 'The explicit retained state for the applied floor failed later-edge eligibility checks.' "$APO_EXIT_USAGE"
+            APO_POST_FLOOR_EDGE_SOURCE_STATE=$state_file
+            APO_COMMAND=post-floor-edge
+            APO_EDGE_CPU_24H=1
+            return 0
+        fi
+        APO_SELECTED_RUN_ID=$stored_run_id
+        APO_COMMAND=resume
+        APO_EDGE_CPU_24H=$saved_edge
+        return 0
+    fi
+    # A later prepare audit may own the latest link even though it left an
+    # already-applied floor unchanged. Search retained tuning states only in
+    # that benign case; reset or failed tuning state must never be skipped.
+    if (( requested_edge == 1 )) && [[ $origin == prepare && $status == PASS && $phase == COMPLETE ]]; then
+        shopt -s nullglob
+        state_files=("${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"*.state)
+        shopt -u nullglob
+        for ((state_index=${#state_files[@]} - 1; state_index >= 0; state_index--)); do
+            state_file=${state_files[$state_index]}
+            [[ $state_file != "${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-latest.state" && -f $state_file ]] || continue
+            apo_state_load "$state_file"
+            [[ $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" ]] || continue
+            if apo_post_floor_edge_source_is_eligible; then
+                APO_POST_FLOOR_EDGE_SOURCE_STATE=$state_file
+                APO_COMMAND=post-floor-edge
+                APO_EDGE_CPU_24H=1
+                return 0
+            fi
+        done
     fi
     APO_STATE=()
     APO_STATE_FILE=''
+}
+
+apo_post_floor_edge_reset_child_state() {
+    local source_run_id=$1 source_hash=$2 floor_cpu=$3 floor_gpu=$4 edge_target=$5
+    local key
+    apo_state_set FORMAT_VERSION 1
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set APP_VERSION "$APO_VERSION"
+    apo_state_set RUN_ID "$APO_RUN_ID"
+    apo_state_set CREATED_AT "$(apo_now_iso)"
+    apo_state_set RAW_TARGET "$APO_RAW_TARGET"
+    apo_state_set REMOTE_TARGET "$APO_REMOTE_TARGET"
+    apo_state_set TARGET_HOST "$APO_TARGET_HOST"
+    apo_state_set TARGET_SLUG "$APO_TARGET_SLUG"
+    apo_state_set OUTPUT_DIR "$APO_OUTPUT_DIR"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set READ_ONLY_RUN 0
+    apo_state_set CFG_EDGE_CPU_24H 1
+    apo_state_set POST_FLOOR_EDGE 1
+    apo_state_set SOURCE_FLOOR_RUN_ID "$source_run_id"
+    apo_state_set SOURCE_FLOOR_PERMANENT_HASH "$source_hash"
+    apo_state_set STATUS RUNNING
+    apo_state_set PHASE FINAL_VALIDATION
+    apo_state_set SUBPHASE POST_FLOOR_EDGE_BASELINE
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+    apo_state_set FLOOR_CPU "$floor_cpu"
+    apo_state_set FLOOR_GPU "$floor_gpu"
+    apo_state_set FLOOR_DURATION_S 28800
+    apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+    apo_state_set FLOOR_VALIDATED 1
+    apo_state_set EDGE_CPU_TARGET "$edge_target"
+    apo_state_set EDGE_CPU_STATUS RUNNING
+    apo_state_set EDGE_CPU_FAILURE_CLASS ''
+    apo_state_set EDGE_CPU_FAILURE_REASON ''
+    apo_state_set RECOMMENDED_CPU "$edge_target"
+    apo_state_set RECOMMENDED_GPU "$floor_gpu"
+    apo_state_set FINAL_TARGET_CPU "$edge_target"
+    apo_state_set FINAL_TARGET_GPU "$floor_gpu"
+    apo_state_set FINAL_STAGE PRE_STRESS_BOOT
+    apo_state_clear_final_validation
+    apo_state_set CANDIDATE_LABEL ''
+    apo_state_set CANDIDATE_CPU ''
+    apo_state_set CANDIDATE_GPU ''
+    apo_state_set CANDIDATE_STAGE ''
+    apo_state_set APPLY_STATUS NOT_APPLIED
+    for key in APPLY_OLD_HASH APPLY_EXPECTED_HASH APPLY_BACKUP APPLY_BOOT_ID APPLY_RECOVERY_ACTION APPLY_FAILURE_REASON; do
+        apo_state_set "$key" ''
+    done
+    unset 'APO_STATE[APPLIED_AT]'
+    apo_state_set OVERCLOCK_COMPLETE_RECORDED 0
+    apo_state_set WATCHDOG_REPAIR_STATUS NOT_STARTED
+    for key in WATCHDOG_REPAIR_OLD_HASH WATCHDOG_REPAIR_EXPECTED_HASH WATCHDOG_REPAIR_NEW_HASH WATCHDOG_REPAIR_BACKUP; do
+        apo_state_set "$key" ''
+    done
+    for key in FAILURE_CLASS FAILURE_REASON LAST_FAILURE_CLASS LAST_FAILURE_REASON TRYBOOT_OWNED_HASH \
+               TRYBOOT_RESERVATION_HASH TRYBOOT_OWNERSHIP_TOKEN TRYBOOT_QUARANTINE_PATH TRYBOOT_LAST_HASH \
+               BASELINE_BOOT_ID LAST_BOOT_ID CANDIDATE_BOOT_ID NORMAL_BOOT_ID; do
+        apo_state_set "$key" ''
+    done
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+    apo_state_set MUTATIONS_STARTED 0
+}
+
+apo_start_post_floor_edge() {
+    local source_state_file=$APO_POST_FLOOR_EDGE_SOURCE_STATE source_run_id source_hash floor_cpu floor_gpu edge_target
+    local validation_reason source_mode source_gpu_requirement key cpu_boundary baseline_boot_id
+    local -A source_state=()
+    [[ -n $source_state_file && -f $source_state_file ]] ||
+        apo_die 'The retained production-floor state selected for the 24-hour edge run is unavailable.' "$APO_EXIT_USAGE"
+    apo_state_load "$source_state_file"
+    [[ $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" ]] ||
+        apo_die 'The retained production-floor state belongs to another target.' "$APO_EXIT_USAGE"
+    apo_post_floor_edge_source_is_eligible ||
+        apo_die 'The retained run is not an applied current-schema 8-hour automatic floor with clear tryboot ownership.' "$APO_EXIT_USAGE"
+    source_run_id=$(apo_state_get RUN_ID '')
+    source_hash=$(apo_state_get PERMANENT_HASH '')
+    floor_cpu=$(apo_state_get FINAL_CPU '')
+    floor_gpu=$(apo_state_get FINAL_GPU '')
+    source_mode=$(apo_state_get MODE_EFFECTIVE '')
+    source_gpu_requirement=$(apo_state_get REQUIRE_GPU_STRESS '')
+    APO_RUN_ID=$source_run_id
+    apo_restore_context_from_state
+    APO_STATE_VALIDATION_READ_ONLY=1
+    if ! apo_validate_auto_resume_state; then
+        validation_reason=${APO_LAST_REASON:-'retained state validation failed'}
+        APO_STATE_VALIDATION_READ_ONLY=0
+        APO_STATE=()
+        APO_STATE_FILE=''
+        apo_die "The retained 8-hour floor failed read-only safety validation: $validation_reason" "$APO_EXIT_HARNESS"
+    fi
+    APO_STATE_VALIDATION_READ_ONLY=0
+    [[ $APO_MODE_EFFECTIVE == "$source_mode" && $APO_REQUIRE_GPU_STRESS == "$source_gpu_requirement" ]] ||
+        apo_die 'The retained graphical/headless validation mode could not be reconstructed exactly.' "$APO_EXIT_HARNESS"
+    for key in "${!APO_STATE[@]}"; do source_state["$key"]=${APO_STATE[$key]}; done
+
+    APO_EDGE_CPU_24H=1
+    edge_target=$((floor_cpu + APO_AUTO_REFINE_STEP_MHZ))
+    apo_init_artifacts
+    APO_STATE=()
+    for key in "${!source_state[@]}"; do APO_STATE["$key"]=${source_state[$key]}; done
+    apo_post_floor_edge_reset_child_state "$source_run_id" "$source_hash" "$floor_cpu" "$floor_gpu" "$edge_target"
+    apo_load_profile "$APO_PROFILE"
+    apo_store_artifact_state
+    apo_write_effective_config "$APO_EFFECTIVE_CONFIG_FILE"
+    {
+        printf 'SourceFloorRunID=%s\nSourceFloorState=%s\nSourceFloorPermanentHash=%s\n' \
+            "$source_run_id" "$source_state_file" "$source_hash"
+        printf 'Profile=%s\nMode=%s\nGPUStressRequired=%s\nFloorCPU=%s\nFloorGPU=%s\nEdgeCPU=%s\n' \
+            "$APO_PROFILE" "$APO_MODE_EFFECTIVE" "$APO_REQUIRE_GPU_STRESS" "$floor_cpu" "$floor_gpu" "$edge_target"
+    } > "$APO_DISCOVERY_FILE"
+    chmod 600 "$APO_DISCOVERY_FILE"
+    apo_summary_line "AutoPiOverclock post-floor CPU edge validation"
+    apo_summary_line "Run ID: $APO_RUN_ID"
+    apo_summary_line "Source 8-hour floor run: $source_run_id"
+    apo_summary_line "Target: $APO_REMOTE_TARGET"
+    apo_summary_line "Retained mode: $APO_MODE_EFFECTIVE"
+    apo_summary_line "Applied production floor: CPU $floor_cpu MHz / GPU $floor_gpu MHz"
+    apo_summary_line "24-hour edge target: CPU $edge_target MHz / GPU $floor_gpu MHz"
+    apo_summary_line 'The retained 8-hour endurance phase will not be repeated.'
+    apo_summary_line ''
+    apo_event run-start INFO '' "command=overclock-post-floor-edge version=$APO_VERSION source-run=$source_run_id mode=$APO_MODE_EFFECTIVE"
+
+    apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
+    apo_prepare_remote_for_saved_run
+    if ! apo_apply_assert_tryboot_clear; then
+        apo_state_fail RECOVERY_FAILURE "Post-floor edge baseline has uncleared tryboot evidence: $APO_LAST_REASON"
+        return "$APO_EXIT_RECOVERY"
+    fi
+    if ! apo_verify_permanent_hash post-floor-edge-baseline-hash; then
+        apo_state_fail RECOVERY_FAILURE "The applied production-floor config no longer matches source run $source_run_id: $APO_LAST_REASON"
+        return "$APO_EXIT_RECOVERY"
+    fi
+    if ! apo_recover_normal post-floor-edge-baseline-health; then
+        apo_state_fail RECOVERY_FAILURE "The applied production floor did not pass current normal-health proof: $APO_LAST_REASON"
+        return "$APO_EXIT_RECOVERY"
+    fi
+    baseline_boot_id=$(apo_state_get NORMAL_BOOT_ID '')
+    apo_state_set BASELINE_BOOT_ID "$baseline_boot_id"
+    apo_state_set SUBPHASE EDGE_CPU_24H_PRE_STRESS_BOOT
+    apo_state_save
+
+    cpu_boundary=$(apo_state_get CPU_FAILURE_BOUNDARY '')
+    if (( edge_target > APO_AUTO_CPU_MAX_MHZ )) ||
+       { [[ -n $cpu_boundary ]] && (( edge_target >= cpu_boundary )); }; then
+        apo_state_set EDGE_CPU_STATUS SKIPPED_KNOWN_BOUNDARY
+        apo_state_set RECOMMENDED_CPU "$floor_cpu"
+        apo_state_set RECOMMENDED_GPU "$floor_gpu"
+        apo_state_set FINAL_TARGET_CPU "$floor_cpu"
+        apo_state_set FINAL_TARGET_GPU "$floor_gpu"
+        apo_state_complete "$floor_cpu" "$floor_gpu" 28800
+        apo_summary_line "OPTIONAL EDGE CPU: SKIPPED — ${edge_target} MHz meets or exceeds the retained failure/ceiling boundary; kept the applied production floor."
+        apo_event edge-cpu-24h WARN STABILITY_FAILURE "Skipped known unsafe edge CPU target $edge_target MHz; retained applied floor CPU=$floor_cpu GPU=$floor_gpu"
+        return 0
+    fi
+    apo_event post-floor-edge PASS '' "Applied 8-hour floor and headless/graphical mode were re-proved; starting only the CPU +25 MHz/24-hour edge validation."
+    apo_final_validation
 }
 
 apo_finish_public_overclock() {
@@ -463,6 +670,11 @@ main() {
         run|prepare)
             APO_MUTATING_COMMAND=$([[ $APO_DRY_RUN == 0 ]] && printf 1 || printf 0)
             apo_start_new_run
+            apo_finish_public_overclock
+            ;;
+        post-floor-edge)
+            APO_MUTATING_COMMAND=1
+            apo_start_post_floor_edge
             apo_finish_public_overclock
             ;;
         reset)

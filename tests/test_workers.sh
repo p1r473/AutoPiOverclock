@@ -82,6 +82,62 @@ for worker_name in debian batocera; do
     fi
 done
 
+# Every temporary overclock boot carries a Pi 5 PWM fan override at 255. The
+# permanent renderer never adopts that test-only cooling policy. When Linux
+# exposes the official pwm-fan hwmon device, the worker proves both maximum PWM
+# and a nonzero tachometer before accepting candidate health or stress.
+for worker_name in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" FAN_TEST_ROOT="$TEMP_DIR/fan-$worker_name" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        mkdir -p "$FAN_TEST_ROOT/hwmon/hwmon0"
+        printf "[all]\ndtparam=audio=on\n" > "$FAN_TEST_ROOT/config.txt"
+        token=$(printf "a%.0s" {1..64})
+        render_tryboot_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/tryboot.txt" 2900 1000 v3d_freq 0 fan-fixture "$token"
+        for expected_line in \
+            "$CANDIDATE_FAN_COMMENT" \
+            "dtparam=fan_temp0=0" \
+            "dtparam=fan_temp0_speed=255" \
+            "dtparam=fan_temp1_speed=255" \
+            "dtparam=fan_temp2_speed=255" \
+            "dtparam=fan_temp3_speed=255"; do
+            [[ $(grep -Fxc -- "$expected_line" "$FAN_TEST_ROOT/tryboot.txt") == 1 ]]
+        done
+        render_clock_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/permanent.txt" 2900 1000 v3d_freq 0 fan-fixture
+        ! grep -Fq -- "$CANDIDATE_FAN_COMMENT" "$FAN_TEST_ROOT/permanent.txt"
+        ! grep -Fq "dtparam=fan_temp0=0" "$FAN_TEST_ROOT/permanent.txt"
+
+        printf "pwmfan\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/name"
+        printf "255\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/pwm1"
+        printf "4100\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/fan1_input"
+        candidate_fan_max_ready "$FAN_TEST_ROOT/hwmon"
+        [[ $FAN_PWM_LAST_COUNT == 1 && $FAN_PWM_LAST_STATUS == *pwm=255:rpm=4100* ]]
+
+        printf "128\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/pwm1"
+        if candidate_fan_max_ready "$FAN_TEST_ROOT/hwmon"; then exit 1; fi
+        [[ $FAN_PWM_LAST_REASON == *"not at the required maximum"* ]]
+
+        fan_retry_count=0
+        sleep() {
+            fan_retry_count=$((fan_retry_count + 1))
+            printf "255\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/pwm1"
+            printf "4100\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/fan1_input"
+            SECONDS=$((SECONDS + 1))
+        }
+        candidate_fan_max_wait 2 "$FAN_TEST_ROOT/hwmon"
+        [[ $fan_retry_count == 1 && $FAN_PWM_LAST_STATUS == *pwm=255:rpm=4100* ]]
+
+        printf "255\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/pwm1"
+        printf "0\n" > "$FAN_TEST_ROOT/hwmon/hwmon0/fan1_input"
+        if candidate_fan_max_ready "$FAN_TEST_ROOT/hwmon"; then exit 1; fi
+        [[ $FAN_PWM_LAST_REASON == *"zero RPM"* ]]
+
+        rm -rf "$FAN_TEST_ROOT/hwmon/hwmon0"
+        candidate_fan_max_ready "$FAN_TEST_ROOT/hwmon"
+        [[ $FAN_PWM_LAST_COUNT == 0 && $FAN_PWM_LAST_STATUS == not-detected ]]
+    '
+done
+
 # Configuration-free auto mode may accept 800/960 MHz V3D only when the
 # permanent config proves that those values came from firmware defaults. Both
 # workers must report every explicit clock/voltage directive in the protected
@@ -625,6 +681,7 @@ done
         case $1 in
             CURRENT_CPU) printf 3000 ;;
             CURRENT_GPU) printf 900 ;;
+            TRYBOOT_EXPECTED) printf 1 ;;
             *) printf '%s' "${2:-}" ;;
         esac
     }
@@ -637,6 +694,7 @@ done
     [[ ${CAPTURED_WORKER_ARGS[9]} == 900 ]]
     [[ ${CAPTURED_WORKER_ARGS[11]} == 7 ]]
     [[ ${CAPTURED_WORKER_ARGS[12]} == fixture-audio ]]
+    [[ ${CAPTURED_WORKER_ARGS[13]} == candidate-max ]]
 )
 
 # Workload supervision is intentionally independent of the configured

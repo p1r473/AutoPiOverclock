@@ -427,7 +427,7 @@ apo_restore_context_from_state() {
     APO_STORAGE_LAYOUT=$(apo_state_get STORAGE_LAYOUT)
     apo_config_restore_from_state
     case ${APO_COMMAND:-} in
-        resume|apply)
+        resume|apply|post-floor-edge)
             if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
                 apo_config_require_stock_auto_baseline "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_BASELINE_GPU" "$APO_AUTO_BASELINE_VOLTAGE" \
                     "$APO_AUTO_BASELINE_PROVENANCE" "$APO_AUTO_BASELINE_EVIDENCE"
