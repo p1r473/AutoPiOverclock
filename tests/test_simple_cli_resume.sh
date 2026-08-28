@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1090,SC2030,SC2031
+set -Eeuo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+write_state_fixture() {
+    local destination=$1 key value
+    shift
+    : > "$destination"
+    while (( $# > 0 )); do
+        key=$1
+        value=$2
+        shift 2
+        printf '%s\t%s\n' "$key" "$(printf '%s' "$value" | base64 | tr -d '\n')" >> "$destination"
+    done
+}
+
+CONTINUATION_OUTPUT="$TEMP_DIR/continuation-output"
+mkdir -p "$CONTINUATION_OUTPUT"
+CONTINUATION_RUN=20260827-010203-abcdef0123456789
+CONTINUATION_STATE="$CONTINUATION_OUTPUT/tron-${CONTINUATION_RUN}.state"
+write_state_fixture "$CONTINUATION_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 8 RUN_ID "$CONTINUATION_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED CFG_MAX_FAN 1
+ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
+    [[ $APO_AUTO_APPLY == 1 ]]
+)
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --edge-cpu-24h
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+) 2>"$TEMP_DIR/active-edge-change.err"; then
+    echo 'an active ordinary run accepted a late immutable edge-plan change' >&2
+    exit 1
+fi
+grep -Fq 'Finish it first, then repeat overclock TARGET --edge-cpu-24h' "$TEMP_DIR/active-edge-change.err"
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --no-max-fan
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+) 2>"$TEMP_DIR/active-fan-change.err"; then
+    echo 'an active run accepted a mid-run cooling-policy change' >&2
+    exit 1
+fi
+grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fan-change.err"
+
+# Repeating the public command adopts only the exact recovered schema-7
+# final-stress boundary produced by alpha.20, not an arbitrary failed run.
+FAILED_FINAL_RUN=20260827-010203-fedcba9876543210
+FAILED_FINAL_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_FINAL_RUN}.state"
+write_state_fixture "$FAILED_FINAL_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 7 RUN_ID "$FAILED_FINAL_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 STATUS FAILED PHASE FINAL_VALIDATION \
+    FAILURE_CLASS STABILITY_FAILURE FAILURE_REASON 'verified autonomous GPU stress reboot' \
+    FINAL_STAGE GPU_STRESS RECOMMENDED_CPU 3000 RECOMMENDED_GPU 1175 \
+    FINAL_TARGET_CPU 3000 FINAL_TARGET_GPU 1175 EDGE_CPU_STATUS NOT_REQUESTED \
+    FLOOR_VALIDATED 0 TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 APPLY_STATUS NOT_APPLIED
+ln -sfn "$(basename "$FAILED_FINAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$FAILED_FINAL_RUN" ]]
+)
+
+apo_failed_harness_run=20260827-010203-1111111111111111
+apo_failed_harness_state="$CONTINUATION_OUTPUT/tron-${apo_failed_harness_run}.state"
+write_state_fixture "$apo_failed_harness_state" \
+    FORMAT_VERSION 1 RUN_SCHEMA 7 RUN_ID "$apo_failed_harness_run" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 STATUS FAILED PHASE FINAL_VALIDATION \
+    FAILURE_CLASS HARNESS_FAILURE FAILURE_REASON 'same-boot transport loss' \
+    FINAL_STAGE GPU_STRESS RECOMMENDED_CPU 3000 RECOMMENDED_GPU 1175 \
+    FINAL_TARGET_CPU 3000 FINAL_TARGET_GPU 1175 EDGE_CPU_STATUS NOT_REQUESTED \
+    FLOOR_VALIDATED 0 TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 APPLY_STATUS NOT_APPLIED
+ln -sfn "$(basename "$apo_failed_harness_state")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == run ]]
+    [[ -z $APO_SELECTED_RUN_ID ]]
+)

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1090,SC2030,SC2031
+set -Eeuo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+
+parse_fixture() {
+    local expected_command=$1 expected_origin=$2 expected_public=$3
+    shift 3
+    (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        apo_parse_cli "$@"
+        [[ $APO_COMMAND == "$expected_command" ]]
+        [[ $APO_ORIGIN_COMMAND == "$expected_origin" ]]
+        [[ $APO_PUBLIC_COMMAND == "$expected_public" ]]
+        [[ $APO_REMOTE_TARGET == "$(id -un)@tron" ]]
+    )
+}
+
+parse_fixture prepare prepare prepare prepare tron
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli prepare tron
+    [[ $APO_INSTALL_MISSING == 1 ]]
+    [[ $APO_REPAIR_WATCHDOGS == 1 ]]
+    [[ $APO_AUTO_PREPARE == 1 ]]
+    [[ $APO_AUTO_APPLY == 0 ]]
+)
+
+parse_fixture run overclock overclock overclock tron
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --edge-cpu-24h
+    [[ $APO_COMMAND == run ]]
+    [[ $APO_AUTO_APPLY == 1 ]]
+    [[ $APO_ASSUME_YES == 1 ]]
+    [[ $APO_EDGE_CPU_24H == 1 ]]
+    [[ $APO_MAX_FAN == 1 ]]
+    [[ $APO_MODE_REQUESTED == auto ]]
+    [[ -z $APO_CONFIG_FILE ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --no-max-fan
+    [[ $APO_COMMAND == run ]]
+    [[ $APO_MAX_FAN == 0 && $APO_MAX_FAN_OPTION_SEEN == 1 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli run tron --no-max-fan --yes
+    [[ $APO_COMMAND == run && $APO_MAX_FAN == 0 ]]
+)
+
+parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --minutes 90 --no-max-fan
+    [[ $APO_COMMAND == run && $APO_ORIGIN_COMMAND == test && $APO_PUBLIC_COMMAND == test ]]
+    [[ $APO_MANUAL_TEST == 1 && $APO_MANUAL_CPU == 3100 && $APO_MANUAL_GPU == 1150 ]]
+    [[ $APO_MANUAL_MINUTES == 90 && $APO_MANUAL_DURATION_S == 5400 ]]
+    [[ $APO_ASSUME_YES == 1 && $APO_AUTO_APPLY == 0 && $APO_MAX_FAN == 0 ]]
+)
+
+parse_fixture reset reset reset reset tron
+parse_fixture reset reset '' tron reset

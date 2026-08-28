@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 SHELLCHECK_FILES := autopioverclock $(wildcard lib/*.sh profiles/*.sh workers/*.sh tools/*.sh examples/*.sh tests/*.sh assets/batocera/*.sh) assets/batocera/AutoPiOverclockWatchdog
-SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli.sh
+SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh
 BATOCERA_ASSETS := \
 	assets/batocera/AutoPiOverclockWatchdog \
 	assets/batocera/install_watchdog.sh \
