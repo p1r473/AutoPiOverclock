@@ -821,7 +821,7 @@ done
 # has not elapsed since the initial sample.
 FINAL_SAMPLE_FILE="$TEMP_DIR/final-telemetry-samples"
 : > "$FINAL_SAMPLE_FILE"
-APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" SAMPLE_FILE="$FINAL_SAMPLE_FILE" bash -c '
+FINAL_SAMPLE_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" SAMPLE_FILE="$FINAL_SAMPLE_FILE" bash -c '
     set -u -o pipefail
     source "$WORKER"
     current_temp() { printf "sample\n" >> "$SAMPLE_FILE"; printf 50; }
@@ -832,8 +832,12 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" SAMPLE_FILE="$
     stress-ng() { command /bin/sleep 0.5; printf "completed output\n"; }
     sleep() { command /bin/sleep 0.7; SECONDS=$((SECONDS + 20)); }
     cmd_stress cpu 20 75 headless "" 0 2400 800 throttled=0x0 60
-' >/dev/null 2>&1
+' 2>&1)
 [[ $(wc -l < "$FINAL_SAMPLE_FILE") -eq 2 ]]
+[[ $FINAL_SAMPLE_OUTPUT == *'elapsed=20/20s'* ]]
+for elapsed_worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do
+    grep -Fq 'elapsed=%s/%ss' "$elapsed_worker"
+done
 
 # The endurance IO companion is polled every second as an independent safety
 # workload rather than only when temperature/clock telemetry is due.

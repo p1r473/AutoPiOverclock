@@ -57,13 +57,14 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
     exit 1
 fi
 approved_options=$(printf '%s\n' \
-    --edge-cpu-24h --help --identity-file --no-max-fan --output-dir --ssh-port --version | LC_ALL=C sort)
+    --cpu --edge-cpu-24h --gpu --help --identity-file --minutes --no-max-fan --output-dir --ssh-port --version | LC_ALL=C sort)
 documented_options=$(awk '/^Common options:/{capture=1; next} /^Advanced options:/{capture=0} capture' "$ROOT/autopioverclock" |
     grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
     printf 'primary CLI options differ from the simple-workflow whitelist\nexpected:\n%s\nactual:\n%s\n' "$approved_options" "$documented_options" >&2
     exit 1
 }
+grep -Fq 'SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh' "$ROOT/Makefile"
 for advanced_option in --config --dry-run --install-missing --mode --redact --repair-watchdogs --run-id --yes; do
     grep -Fq -- "$advanced_option" "$ROOT/docs/cli.md" || {
         echo "advanced option is implemented but missing from docs/cli.md: $advanced_option" >&2

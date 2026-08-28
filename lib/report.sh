@@ -30,6 +30,7 @@ apo_print_status() {
     cat <<EOF_STATUS
 AutoPiOverclock ${APO_VERSION}
 Run ID:         $(apo_state_get RUN_ID)
+Command:        $(apo_report_state_value ORIGIN_COMMAND unknown)
 Target:         $(apo_report_value "$(apo_state_get REMOTE_TARGET)")
 Profile:        $(apo_report_state_value PROFILE unknown)
 Mode:           $(apo_report_state_value MODE_EFFECTIVE unknown)
@@ -48,6 +49,8 @@ Validated floor: CPU $(apo_report_state_value FLOOR_CPU pending) MHz / GPU $(apo
 Edge CPU 24h:   $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) target=$(apo_report_state_value EDGE_CPU_TARGET none)MHz
 Edge source:    run=$(apo_report_state_value SOURCE_FLOOR_RUN_ID none) post-floor=$(apo_state_get POST_FLOOR_EDGE 0)
 Max fan tuning: $(apo_report_fan_policy)
+Manual test:    $(apo_state_get MANUAL_TEST_STATUS NOT_REQUESTED) CPU=$(apo_report_state_value MANUAL_CPU n/a)MHz GPU=$(apo_report_state_value MANUAL_GPU n/a)MHz duration=$(apo_report_state_value MANUAL_MINUTES n/a)min
+Run max temp:   $(apo_report_state_value RUN_MAX_TEMP pending)C
 Final clocks:   CPU $(apo_report_state_value FINAL_CPU pending) MHz / GPU $(apo_report_state_value FINAL_GPU pending) MHz
 Validated:      $(apo_state_get VALIDATED 0)
 Endurance proof: $(apo_report_state_value VALIDATION_DURATION_S pending)s
@@ -69,6 +72,7 @@ apo_generate_report() {
         printf '==========================\n'
         printf 'Version: %s\n' "$APO_VERSION"
         printf 'Run ID: %s\n' "$(apo_state_get RUN_ID)"
+        printf 'Command: %s\n' "$(apo_report_state_value ORIGIN_COMMAND unknown)"
         printf 'Target: %s\n' "$(apo_report_value "$(apo_state_get REMOTE_TARGET)")"
         printf 'Profile: %s\n' "$(apo_report_state_value PROFILE unknown)"
         printf 'Mode: %s\n' "$(apo_report_state_value MODE_EFFECTIVE unknown)"
@@ -97,6 +101,10 @@ apo_generate_report() {
             "$(apo_report_state_value SOURCE_FLOOR_PERMANENT_HASH none)"
         printf 'Maximum fan cooling during tuning: %s\n' \
             "$(apo_report_fan_policy)"
+        printf 'Manual stability test: status=%s, CPU=%s MHz, GPU=%s MHz, duration=%s minutes\n' \
+            "$(apo_state_get MANUAL_TEST_STATUS NOT_REQUESTED)" "$(apo_report_state_value MANUAL_CPU n/a)" \
+            "$(apo_report_state_value MANUAL_GPU n/a)" "$(apo_report_state_value MANUAL_MINUTES n/a)"
+        printf 'Maximum observed run temperature: %sC\n' "$(apo_report_state_value RUN_MAX_TEMP pending)"
         printf 'Optional edge failure: class=%s, reason=%s\n' \
             "$(apo_report_state_value EDGE_CPU_FAILURE_CLASS none)" "$(apo_report_value "$(apo_report_state_value EDGE_CPU_FAILURE_REASON none)")"
         printf 'Final validated clocks: CPU %s MHz, GPU %s MHz\n' "$(apo_report_state_value FINAL_CPU pending)" "$(apo_report_state_value FINAL_GPU pending)"

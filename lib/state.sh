@@ -27,6 +27,7 @@ apo_state_get() {
 apo_state_save() {
     local temporary_file state_key encoded_value
     [[ -n ${APO_STATE_FILE:-} ]] || apo_die 'Internal error: state filename is unset.' "$APO_EXIT_INTERNAL"
+    if declare -F apo_progress_checkpoint_state >/dev/null 2>&1; then apo_progress_checkpoint_state; fi
     apo_state_set UPDATED_AT "$(apo_now_iso)"
     temporary_file=$(mktemp "${APO_STATE_FILE}.tmp.XXXXXX") || apo_die 'Could not create a temporary state checkpoint.' "$APO_EXIT_INTERNAL"
     chmod 600 "$temporary_file" || { rm -f -- "$temporary_file"; apo_die 'Could not protect the temporary state checkpoint.' "$APO_EXIT_INTERNAL"; }
@@ -162,6 +163,22 @@ apo_state_initialize() {
     apo_state_set LAST_BOOT_ID ''
     apo_state_set CANDIDATE_BOOT_ID ''
     apo_state_set NORMAL_BOOT_ID ''
+    apo_state_set MANUAL_TEST "${APO_MANUAL_TEST:-0}"
+    apo_state_set MANUAL_CPU "${APO_MANUAL_CPU:-}"
+    apo_state_set MANUAL_GPU "${APO_MANUAL_GPU:-}"
+    apo_state_set MANUAL_MINUTES "${APO_MANUAL_MINUTES:-}"
+    apo_state_set MANUAL_DURATION_S "${APO_MANUAL_DURATION_S:-}"
+    apo_state_set MANUAL_TEST_STATUS "$([[ ${APO_MANUAL_TEST:-0} == 1 ]] && printf READY || printf NOT_REQUESTED)"
+    apo_state_set PROGRESS_ACTIVE_SECONDS 0
+    apo_state_set PROGRESS_LAST_TEMP ''
+    apo_state_set PROGRESS_LAST_CPU ''
+    apo_state_set PROGRESS_LAST_GPU ''
+    apo_state_set PROGRESS_LAST_THROTTLE ''
+    apo_state_set PROGRESS_LAST_FAN ''
+    apo_state_set PROGRESS_STRESS_LABEL ''
+    apo_state_set PROGRESS_STRESS_ELAPSED 0
+    apo_state_set PROGRESS_STRESS_DURATION 0
+    apo_state_set RUN_MAX_TEMP ''
     apo_state_save
 }
 
@@ -170,6 +187,7 @@ apo_state_phase() {
     apo_state_set SUBPHASE "${2:-}"
     apo_state_set STATUS "${3:-RUNNING}"
     apo_state_save
+    if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
 }
 
 apo_state_fail() {

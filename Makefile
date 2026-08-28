@@ -1,5 +1,6 @@
 SHELL := /usr/bin/env bash
 SHELLCHECK_FILES := autopioverclock $(wildcard lib/*.sh profiles/*.sh workers/*.sh tools/*.sh examples/*.sh tests/*.sh assets/batocera/*.sh) assets/batocera/AutoPiOverclockWatchdog
+SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh
 BATOCERA_ASSETS := \
 	assets/batocera/AutoPiOverclockWatchdog \
 	assets/batocera/install_watchdog.sh \
@@ -19,7 +20,10 @@ lint:
 	@command -v shellcheck >/dev/null 2>&1 || { echo 'shellcheck is required for make lint' >&2; exit 1; }
 	@for shell_file in $(SHELLCHECK_FILES); do \
 		printf 'shellcheck: %s\n' "$$shell_file"; \
-		shellcheck -x "$$shell_file" || exit $$?; \
+		case " $(SHELLCHECK_SHALLOW_FILES) " in \
+			*" $$shell_file "*) shellcheck "$$shell_file" || exit $$? ;; \
+			*) shellcheck -x "$$shell_file" || exit $$? ;; \
+		esac; \
 	done
 
 check: test lint

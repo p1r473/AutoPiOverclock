@@ -218,7 +218,14 @@ apo_config_guided_candidates() {
 
 apo_config_load_for_new_run() {
     apo_config_defaults
-    [[ -z ${APO_CONFIG_FILE:-} ]] || apo_config_read_file "$APO_CONFIG_FILE"
+    if (( ${APO_MANUAL_TEST:-0} == 1 )); then
+        APO_CFG[CPU_CANDIDATES]=$APO_MANUAL_CPU
+        APO_CFG[GPU_CANDIDATES]=$APO_MANUAL_GPU
+        APO_CFG[CANDIDATE_DURATION_S]=$APO_MANUAL_DURATION_S
+        APO_CFG[BACKOFF_STEPS]=0
+    else
+        [[ -z ${APO_CONFIG_FILE:-} ]] || apo_config_read_file "$APO_CONFIG_FILE"
+    fi
     if [[ ${APO_COMMAND:-prepare} == run && -z ${APO_CONFIG_FILE:-} && ${APO_MODE_REQUESTED:-auto} == auto && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
         APO_AUTO_CANDIDATES_PENDING=1
         APO_AUTO_GENERATED_CANDIDATES=1
@@ -250,6 +257,11 @@ apo_config_store_in_state() {
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES "$APO_AUTO_GENERATED_CANDIDATES"
     apo_state_set CFG_EDGE_CPU_24H "${APO_EDGE_CPU_24H:-0}"
     apo_state_set CFG_MAX_FAN "${APO_MAX_FAN:-1}"
+    apo_state_set CFG_MANUAL_TEST "${APO_MANUAL_TEST:-0}"
+    apo_state_set CFG_MANUAL_CPU "${APO_MANUAL_CPU:-}"
+    apo_state_set CFG_MANUAL_GPU "${APO_MANUAL_GPU:-}"
+    apo_state_set CFG_MANUAL_MINUTES "${APO_MANUAL_MINUTES:-}"
+    apo_state_set CFG_MANUAL_DURATION_S "${APO_MANUAL_DURATION_S:-}"
 }
 
 apo_config_restore_from_state() {
@@ -268,6 +280,22 @@ apo_config_restore_from_state() {
     APO_MAX_FAN=$(apo_state_get CFG_MAX_FAN 1)
     [[ $APO_MAX_FAN == 0 || $APO_MAX_FAN == 1 ]] ||
         apo_die 'Saved maximum-fan policy is malformed.' "$APO_EXIT_INTERNAL"
+    APO_MANUAL_TEST=$(apo_state_get CFG_MANUAL_TEST "$(apo_state_get MANUAL_TEST 0)")
+    [[ $APO_MANUAL_TEST == 0 || $APO_MANUAL_TEST == 1 ]] ||
+        apo_die 'Saved manual-test marker is malformed.' "$APO_EXIT_INTERNAL"
+    APO_MANUAL_CPU=$(apo_state_get CFG_MANUAL_CPU "$(apo_state_get MANUAL_CPU '')")
+    APO_MANUAL_GPU=$(apo_state_get CFG_MANUAL_GPU "$(apo_state_get MANUAL_GPU '')")
+    APO_MANUAL_MINUTES=$(apo_state_get CFG_MANUAL_MINUTES "$(apo_state_get MANUAL_MINUTES '')")
+    APO_MANUAL_DURATION_S=$(apo_state_get CFG_MANUAL_DURATION_S "$(apo_state_get MANUAL_DURATION_S '')")
+    if (( APO_MANUAL_TEST == 1 )); then
+        apo_validate_uint_range "$APO_MANUAL_CPU" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" ||
+            apo_die 'Saved manual CPU clock is malformed.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$APO_MANUAL_GPU" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" ||
+            apo_die 'Saved manual GPU clock is malformed.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 1440 || apo_die 'Saved manual duration is malformed.' "$APO_EXIT_INTERNAL"
+        [[ $APO_MANUAL_DURATION_S == $((APO_MANUAL_MINUTES * 60)) ]] ||
+            apo_die 'Saved manual duration fields disagree.' "$APO_EXIT_INTERNAL"
+    fi
     apo_config_validate
 }
 
@@ -277,6 +305,10 @@ apo_write_effective_config() {
         printf '# AutoPiOverclock effective configuration for run %s\n' "${APO_RUN_ID:-unknown}"
         printf '# candidate_max_fan=%s (controller policy; use --no-max-fan to opt out on a new run)\n' \
             "$([[ ${APO_MAX_FAN:-1} == 1 ]] && printf enabled || printf disabled)"
+        if (( ${APO_MANUAL_TEST:-0} == 1 )); then
+            printf '# manual_stability_test=CPU:%sMHz GPU:%sMHz duration:%smin; never eligible for permanent apply\n' \
+                "$APO_MANUAL_CPU" "$APO_MANUAL_GPU" "$APO_MANUAL_MINUTES"
+        fi
         for config_key in "${APO_ALLOWED_CONFIG_KEYS[@]}"; do
             internal_key=$(apo_config_internal_key "$config_key")
             printf '%s=%s\n' "$config_key" "${APO_CFG[$internal_key]}"
