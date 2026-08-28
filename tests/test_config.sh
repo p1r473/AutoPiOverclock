@@ -159,9 +159,9 @@ resolve_discovered_auto_plan debian 2400 960 0
 )
 
 # States created before the fan-policy key default safely to maximum cooling.
+APO_MAX_FAN=0
 (
     APO_STATE=()
-    APO_MAX_FAN=0
     apo_config_restore_from_state
     [[ $APO_MAX_FAN == 1 ]]
 )
