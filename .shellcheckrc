@@ -1,3 +1,5 @@
 shell=bash
-external-sources=true
+# Makefile passes -x for production files. The explicitly listed CLI fixtures
+# stay shallow so ShellCheck does not recursively analyze the full controller
+# once for every source statement in every fixture.
 disable=SC1090,SC1091,SC2015,SC2016,SC2034,SC2094,SC2119,SC2120,SC2154,SC2155,SC2312,SC2317,SC2329

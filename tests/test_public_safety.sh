@@ -66,6 +66,10 @@ documented_options=$(awk '/^Common options:/{capture=1; next} /^Advanced options
     exit 1
 }
 grep -Fq 'SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh' "$ROOT/Makefile"
+if grep -Eq '^[[:space:]]*external-sources=true' "$ROOT/.shellcheckrc"; then
+    echo 'the global ShellCheck config defeats the bounded CLI-fixture lint policy' >&2
+    exit 1
+fi
 for advanced_option in --config --dry-run --install-missing --mode --redact --repair-watchdogs --run-id --yes; do
     grep -Fq -- "$advanced_option" "$ROOT/docs/cli.md" || {
         echo "advanced option is implemented but missing from docs/cli.md: $advanced_option" >&2
