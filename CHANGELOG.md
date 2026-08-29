@@ -2,8 +2,8 @@
 
 ## 0.1.0-alpha.28 — 2026-08-29
 
-- Fixed interactive progress updates stacking after a Byobu/tmux pane or mobile terminal resize. Each repaint now reads the controlling terminal's live width instead of trusting a stale `COLUMNS` snapshot, leaves the wrapping final column unused, and bounds stale-line cleanup to the current pane width.
-- Added narrow-pane rendering and resized-pane cleanup regressions so a live update remains one replace-in-place terminal row.
+- Fixed interactive progress updates stacking in Byobu/tmux and mobile terminals. Each repaint now reads the controlling terminal's live width instead of trusting a stale `COLUMNS` snapshot, explicitly returns to column one and erases the existing row, emits no newline, and leaves the wrapping final column unused.
+- Added narrow-pane rendering, exact cursor-control, and shutdown-cleanup regressions so a live update remains one replace-in-place terminal row.
 
 ## 0.1.0-alpha.27 — 2026-08-29
 

@@ -75,11 +75,14 @@ progress_line=$(apo_progress_render 150 600 2>&1)
 
 COLUMNS=60
 compact_line=$(apo_progress_render 150 600 2>&1)
-# The leading carriage return plus at most COLUMNS-1 printable cells must fit
-# inside the pane without ever entering its wrapping final column.
-(( ${#compact_line} <= COLUMNS ))
+# Every repaint explicitly selects column one, erases that row, and prints at
+# most COLUMNS-1 cells without emitting a newline.
+progress_control=$'\033[1G\033[2K'
+[[ $compact_line == "$progress_control"* ]]
+compact_payload=${compact_line#"$progress_control"}
+(( ${#compact_payload} <= COLUMNS - 1 ))
 [[ $compact_line != *$'\n'* ]]
-[[ ${compact_line:0:1} == $'\r' ]]
+[[ $compact_line != *$'\r'* ]]
 
 # Signal/exit cleanup clears the active line once and disables every later
 # logging callback from repainting it during potentially long normal recovery.
@@ -98,7 +101,7 @@ if grep -Fq monkeebutt "$SHUTDOWN_OUTPUT"; then
     exit 1
 fi
 shutdown_bytes=$(wc -c < "$SHUTDOWN_OUTPUT")
-(( shutdown_bytes <= COLUMNS + 1 ))
+(( shutdown_bytes == ${#progress_control} ))
 rm -f "$SHUTDOWN_OUTPUT"
 
 if apo_progress_line_is_telemetry 'ordinary worker output without elapsed'; then

@@ -500,23 +500,19 @@ apo_progress_render() {
     else
         line="$target [$bar] ~${percent}% $eta | ~$tests tests | $phase"
     fi
-    # Never touch the final terminal column. Some terminals wrap immediately
-    # there, and a later carriage return can only clear the wrapped final row.
+    # Repaint the existing row explicitly. A bare carriage return plus padding
+    # is not reliably replace-in-place through every SSH/mobile terminal path.
+    # Keeping the final cell unused also prevents an implicit autowrap.
     render_width=$((columns - 1))
     (( ${#line} > render_width )) && line=${line:0:render_width}
-    printf '\r%-*s' "$render_width" "$line" >&2
+    printf '\033[1G\033[2K%s' "$line" >&2
     APO_PROGRESS_LINE_ACTIVE=1
-    APO_PROGRESS_LINE_WIDTH=$render_width
+    APO_PROGRESS_LINE_WIDTH=${#line}
 }
 
 apo_progress_clear_line() {
-    local columns live_width
     (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
-    columns=${APO_PROGRESS_LINE_WIDTH:-0}
-    live_width=$(apo_progress_terminal_columns)
-    live_width=$((live_width - 1))
-    if [[ ! $columns =~ ^[0-9]+$ ]] || (( columns <= 0 || columns > live_width )); then columns=$live_width; fi
-    printf '\r%*s\r' "$columns" '' >&2
+    printf '\033[1G\033[2K' >&2
     APO_PROGRESS_LINE_ACTIVE=0
     APO_PROGRESS_LINE_WIDTH=0
 }
