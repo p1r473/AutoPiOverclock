@@ -85,6 +85,11 @@ apo_progress_candidate_cost() {
     printf '%s' "$((duration + ((boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S)))"
 }
 
+apo_progress_qualification_cost() {
+    local boots=${APO_CFG[CANDIDATE_BOOTS]:-2}
+    printf '%s' "$((APO_DOMAIN_QUALIFICATION_DURATION_S + (boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S))"
+}
+
 apo_progress_domain_remaining_count() {
     local domain=$1 phase=${2:-} index boundary refine_csv refine_index refine_complete guard_verified coarse_count remaining=0
     local candidates_name
@@ -140,14 +145,12 @@ apo_progress_domain_remaining_count() {
 }
 
 apo_progress_final_full_cost() {
-    local endurance=$1 stress_count=1 final_boots=${APO_CFG[FINAL_BOOTS]:-3}
-    (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )) && stress_count=2
-    printf '%s' "$((endurance + stress_count * ${APO_CFG[CANDIDATE_DURATION_S]:-600} + (final_boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S))"
+    local endurance=$1 final_boots=${APO_CFG[FINAL_BOOTS]:-3}
+    printf '%s' "$((endurance + (final_boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S))"
 }
 
 apo_progress_final_remaining() {
-    local elapsed=${1:-0} stage edge_status endurance candidate_duration final_boots remaining=0 boot_number normal_number
-    candidate_duration=${APO_CFG[CANDIDATE_DURATION_S]:-600}
+    local elapsed=${1:-0} stage edge_status endurance final_boots remaining=0 boot_number normal_number
     final_boots=${APO_CFG[FINAL_BOOTS]:-3}
     stage=$(apo_state_get FINAL_STAGE PRE_STRESS_BOOT)
     edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
@@ -156,13 +159,6 @@ apo_progress_final_remaining() {
     case $stage in
         ''|PRE_STRESS_BOOT)
             remaining=$(apo_progress_final_full_cost "$endurance")
-            ;;
-        CPU_STRESS)
-            remaining=$((candidate_duration - elapsed + endurance + (final_boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S))
-            (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )) && remaining=$((remaining + candidate_duration))
-            ;;
-        GPU_STRESS)
-            remaining=$((candidate_duration - elapsed + endurance + (final_boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S))
             ;;
         ENDURANCE)
             remaining=$((endurance - elapsed + (final_boots * 2 + 1) * APO_PROGRESS_BOOT_ESTIMATE_S))
@@ -208,9 +204,10 @@ apo_progress_estimate_remaining_tests() {
             if (( ${APO_MANUAL_TEST:-0} == 1 )); then count=2
             else
                 count=$(apo_progress_domain_remaining_count CPU BEFORE)
+                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
                 if (( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
+                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 ) )) && count=$((count + 1))
                 count=$((count + $(apo_progress_future_validation_tests)))
-                (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )) && count=$((count + 1))
             fi
             ;;
         GPU_SMOKE)
@@ -218,22 +215,45 @@ apo_progress_estimate_remaining_tests() {
             if (( ${APO_MANUAL_TEST:-0} == 1 )); then count=$((count + 1))
             else
                 count=$((count + $(apo_progress_domain_remaining_count CPU BEFORE)))
+                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
                 if (( ${APO_NEED_GPU:-0} == 1 )); then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
+                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_NEED_GPU:-0} == 1 )) && count=$((count + 1))
                 count=$((count + $(apo_progress_future_validation_tests)))
             fi
             ;;
         CPU_SWEEP)
             count=$(apo_progress_domain_remaining_count CPU CURRENT)
+            (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
             if (( ${APO_NEED_GPU:-0} == 1 )); then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
+            (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_NEED_GPU:-0} == 1 )) && count=$((count + 1))
+            count=$((count + $(apo_progress_future_validation_tests)))
+            ;;
+        CPU_QUALIFICATION)
+            count=1
+            if (( ${APO_NEED_GPU:-0} == 1 )); then
+                if [[ $(apo_state_get GPU_GUARD_VERIFIED 0) != 1 ]]; then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
+                count=$((count + 1))
+            fi
             count=$((count + $(apo_progress_future_validation_tests)))
             ;;
         GPU_SWEEP)
             count=$(apo_progress_domain_remaining_count GPU CURRENT)
+            (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
             count=$((count + $(apo_progress_future_validation_tests)))
             ;;
         SELECTION)
-            if [[ $subphase == CPU && ${APO_NEED_GPU:-0} == 1 ]]; then count=$(apo_progress_domain_remaining_count GPU BEFORE); fi
+            if [[ $subphase == CPU && ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 ]]; then
+                count=$((count + 1))
+                if (( ${APO_NEED_GPU:-0} == 1 )); then
+                    count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE) + 1))
+                fi
+            elif (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
+                count=$((count + 1))
+            fi
             count=$((count + $(apo_progress_future_validation_tests)))
+            ;;
+        GPU_QUALIFICATION)
+            count=$((1 + $(apo_progress_future_validation_tests)))
             ;;
         FINAL_VALIDATION)
             edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
@@ -254,17 +274,19 @@ apo_progress_estimate_remaining_tests() {
 }
 
 apo_progress_future_tuning_cost() {
-    local from_phase=$1 candidate_cost cpu_count=0 gpu_count=0 remaining=0
+    local from_phase=$1 candidate_cost qualification_cost cpu_count=0 gpu_count=0 remaining=0
     candidate_cost=$(apo_progress_candidate_cost)
+    qualification_cost=$(apo_progress_qualification_cost)
+    (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) || qualification_cost=0
     case $from_phase in
         CPU)
             cpu_count=$(apo_progress_domain_remaining_count CPU BEFORE)
-            remaining=$((remaining + cpu_count * candidate_cost))
+            remaining=$((remaining + cpu_count * candidate_cost + qualification_cost))
             ;;
     esac
     if (( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && [[ $from_phase != FINAL ]]; then
         gpu_count=$(apo_progress_domain_remaining_count GPU BEFORE)
-        remaining=$((remaining + gpu_count * candidate_cost))
+        remaining=$((remaining + gpu_count * candidate_cost + qualification_cost))
     fi
     remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-28800}")))
     if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
@@ -274,10 +296,12 @@ apo_progress_future_tuning_cost() {
 }
 
 apo_progress_estimate_remaining_seconds() {
-    local elapsed=${1:-0} duration=${2:-0} phase subphase candidate_cost count remaining=0
+    local elapsed=${1:-0} duration=${2:-0} phase subphase candidate_cost qualification_cost count remaining=0
     phase=$(apo_state_get PHASE PREPARE)
     subphase=$(apo_state_get SUBPHASE '')
     candidate_cost=$(apo_progress_candidate_cost)
+    qualification_cost=$(apo_progress_qualification_cost)
+    (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) || qualification_cost=0
     case $phase in
         PREPARE|PREPARED)
             if (( ${APO_MANUAL_TEST:-0} == 1 )); then
@@ -306,9 +330,23 @@ apo_progress_estimate_remaining_seconds() {
             count=$(apo_progress_domain_remaining_count CPU CURRENT)
             remaining=$((count * candidate_cost - elapsed))
             (( remaining < 0 )) && remaining=0
+            remaining=$((remaining + qualification_cost))
             if (( ${APO_NEED_GPU:-0} == 1 )); then
                 count=$(apo_progress_domain_remaining_count GPU BEFORE)
-                remaining=$((remaining + count * candidate_cost))
+                remaining=$((remaining + count * candidate_cost + qualification_cost))
+            fi
+            remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-28800}")))
+            (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost 86400)))
+            ;;
+        CPU_QUALIFICATION)
+            remaining=$((qualification_cost - elapsed))
+            (( remaining < 0 )) && remaining=0
+            if (( ${APO_NEED_GPU:-0} == 1 )); then
+                if [[ $(apo_state_get GPU_GUARD_VERIFIED 0) != 1 ]]; then
+                    count=$(apo_progress_domain_remaining_count GPU BEFORE)
+                    remaining=$((remaining + count * candidate_cost))
+                fi
+                remaining=$((remaining + qualification_cost))
             fi
             remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-28800}")))
             (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost 86400)))
@@ -317,14 +355,26 @@ apo_progress_estimate_remaining_seconds() {
             count=$(apo_progress_domain_remaining_count GPU CURRENT)
             remaining=$((count * candidate_cost - elapsed))
             (( remaining < 0 )) && remaining=0
+            remaining=$((remaining + qualification_cost))
             remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-28800}")))
             (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost 86400)))
             ;;
         SELECTION)
-            if [[ $subphase == CPU && ${APO_NEED_GPU:-0} == 1 ]]; then
-                count=$(apo_progress_domain_remaining_count GPU BEFORE)
-                remaining=$((count * candidate_cost))
+            if [[ $subphase == CPU ]]; then
+                remaining=$qualification_cost
+                if (( ${APO_NEED_GPU:-0} == 1 )); then
+                    count=$(apo_progress_domain_remaining_count GPU BEFORE)
+                    remaining=$((remaining + count * candidate_cost + qualification_cost))
+                fi
+            elif (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
+                remaining=$qualification_cost
             fi
+            remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-28800}")))
+            (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost 86400)))
+            ;;
+        GPU_QUALIFICATION)
+            remaining=$((qualification_cost - elapsed))
+            (( remaining < 0 )) && remaining=0
             remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-28800}")))
             (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost 86400)))
             ;;

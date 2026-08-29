@@ -43,8 +43,10 @@ Passed CPUs:    $(apo_report_state_value PASSED_CPUS none)
 Passed GPUs:    $(apo_report_state_value PASSED_GPUS none)
 CPU boundary:   $(apo_report_state_value CPU_FAILURE_BOUNDARY none)
 GPU boundary:   $(apo_report_state_value GPU_FAILURE_BOUNDARY none)
+CPU qualify 2h: $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value CPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)MHz
+GPU qualify 2h: $(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value GPU_QUALIFICATION_CPU pending)/$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value GPU_QUALIFIED_CPU pending)/$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)MHz
 Recommended:    CPU $(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)") MHz / GPU $(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)") MHz
-Final backoffs: $(apo_state_get FINAL_BACKOFF_COUNT 0) ($(apo_report_state_value FINAL_BACKOFF_HISTORY none))
+Auto backoffs:  $(apo_state_get FINAL_BACKOFF_COUNT 0) ($(apo_report_state_value FINAL_BACKOFF_HISTORY none))
 Validated floor: CPU $(apo_report_state_value FLOOR_CPU pending) MHz / GPU $(apo_report_state_value FLOOR_GPU pending) MHz ($(apo_state_get FLOOR_VALIDATED 0))
 Edge CPU 24h:   $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) target=$(apo_report_state_value EDGE_CPU_TARGET none)MHz
 Edge source:    run=$(apo_report_state_value SOURCE_FLOOR_RUN_ID none) post-floor=$(apo_state_get POST_FLOOR_EDGE 0)
@@ -57,6 +59,7 @@ Endurance proof: $(apo_report_state_value VALIDATION_DURATION_S pending)s
 Apply status:   $(apo_state_get APPLY_STATUS NOT_APPLIED)
 Watchdog repair: $(apo_state_get WATCHDOG_REPAIR_STATUS NOT_STARTED)
 Watchdog hashes: old=$(apo_report_state_value WATCHDOG_REPAIR_OLD_HASH none) expected=$(apo_report_state_value WATCHDOG_REPAIR_EXPECTED_HASH none) new=$(apo_report_state_value WATCHDOG_REPAIR_NEW_HASH none)
+SSH recovery:   $(apo_state_get RECOVERY_WAIT_STATUS IDLE) context=$(apo_report_state_value RECOVERY_WAIT_CONTEXT none) extended-waits=$(apo_state_get RECOVERY_WAIT_TIMEOUTS 0)
 Failure class:  $(apo_state_get FAILURE_CLASS none)
 Failure reason: $(apo_report_value "$(apo_state_get FAILURE_REASON none)")
 State file:     $(apo_report_value "$APO_STATE_FILE")
@@ -84,11 +87,18 @@ apo_generate_report() {
         printf 'Maximum observed GPU passes: %s\n' "$(apo_report_state_value PASSED_GPUS none)"
         printf 'CPU failure boundary: %s MHz\n' "$(apo_report_state_value CPU_FAILURE_BOUNDARY none)"
         printf 'GPU failure boundary: %s MHz\n' "$(apo_report_state_value GPU_FAILURE_BOUNDARY none)"
+        printf 'CPU qualification: status=%s, target=%s MHz, qualified=%s MHz, duration=%ss\n' \
+            "$(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED)" "$(apo_report_state_value CPU_QUALIFICATION_TARGET pending)" \
+            "$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)" "$APO_DOMAIN_QUALIFICATION_DURATION_S"
+        printf 'GPU qualification: status=%s, target=%s/%s MHz, qualified=%s/%s MHz, duration=%ss\n' \
+            "$(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED)" "$(apo_report_state_value GPU_QUALIFICATION_CPU pending)" \
+            "$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)" "$(apo_report_state_value GPU_QUALIFIED_CPU pending)" \
+            "$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)" "$APO_DOMAIN_QUALIFICATION_DURATION_S"
         printf 'Conservative recommendation: CPU %s MHz, GPU %s MHz\n' "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
-        printf 'Final-stress backoffs: count=%s, target=%s/%s MHz, history=%s\n' \
+        printf 'Automatic qualification/final backoffs: count=%s, target=%s/%s MHz, history=%s\n' \
             "$(apo_state_get FINAL_BACKOFF_COUNT 0)" "$(apo_report_state_value FINAL_BACKOFF_CPU none)" \
             "$(apo_report_state_value FINAL_BACKOFF_GPU none)" "$(apo_report_state_value FINAL_BACKOFF_HISTORY none)"
-        printf 'Last final-stress boundary: stage=%s, class=%s, reason=%s\n' \
+        printf 'Last automatic backoff boundary: stage=%s, class=%s, reason=%s\n' \
             "$(apo_report_state_value FINAL_BACKOFF_LAST_STAGE none)" "$(apo_report_state_value FINAL_BACKOFF_LAST_CLASS none)" \
             "$(apo_report_value "$(apo_report_state_value FINAL_BACKOFF_LAST_REASON none)")"
         printf 'Validated production floor: CPU %s MHz, GPU %s MHz (validated=%s, duration=%ss)\n' \
@@ -115,6 +125,8 @@ apo_generate_report() {
         printf 'Watchdog repair: %s\n' "$(apo_state_get WATCHDOG_REPAIR_STATUS NOT_STARTED)"
         printf 'Watchdog repair hashes: old=%s, expected=%s, new=%s\n' \
             "$(apo_report_state_value WATCHDOG_REPAIR_OLD_HASH none)" "$(apo_report_state_value WATCHDOG_REPAIR_EXPECTED_HASH none)" "$(apo_report_state_value WATCHDOG_REPAIR_NEW_HASH none)"
+        printf 'Extended SSH recovery: status=%s, context=%s, waits=%s\n' \
+            "$(apo_state_get RECOVERY_WAIT_STATUS IDLE)" "$(apo_report_state_value RECOVERY_WAIT_CONTEXT none)" "$(apo_state_get RECOVERY_WAIT_TIMEOUTS 0)"
         printf 'Failure class: %s\n' "$(apo_state_get FAILURE_CLASS none)"
         printf 'Failure reason: %s\n' "$(apo_report_value "$(apo_state_get FAILURE_REASON none)")"
         printf 'Storage layout: %s\n' "$(apo_report_value "$(apo_state_get STORAGE_LAYOUT unknown)")"

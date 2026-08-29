@@ -95,6 +95,21 @@ seed_valid_guarded_auto_floor_plan() {
     apo_state_set GPU_GUARD_TARGET 900
     apo_state_set GPU_GUARD_VERIFIED 1
     apo_state_set SAFE_GPU 900
+    apo_state_set CPU_QUALIFICATION_STATUS PASS
+    apo_state_set CPU_QUALIFICATION_TARGET 3000
+    apo_state_set CPU_QUALIFIED_CLOCK 3000
+    apo_state_set CPU_QUALIFICATION_HISTORY ''
+    apo_state_set CPU_QUALIFICATION_LAST_CLASS ''
+    apo_state_set CPU_QUALIFICATION_LAST_REASON ''
+    apo_state_set GPU_QUALIFICATION_STATUS PASS
+    apo_state_set GPU_QUALIFICATION_CPU 3000
+    apo_state_set GPU_QUALIFICATION_TARGET 900
+    apo_state_set GPU_QUALIFIED_CPU 3000
+    apo_state_set GPU_QUALIFIED_CLOCK 900
+    apo_state_set RECOVERY_WAIT_STATUS IDLE
+    apo_state_set RECOVERY_WAIT_CONTEXT ''
+    apo_state_set RECOVERY_WAIT_STARTED_AT ''
+    apo_state_set RECOVERY_WAIT_TIMEOUTS 0
 }
 
 # Only a Batocera graphical smoke failure that explicitly reports failed
@@ -315,59 +330,106 @@ apo_final_validation
 [[ $(apo_state_get VALIDATED) == 1 ]]
 [[ $(apo_state_get VALIDATION_DURATION_S) == 28800 ]]
 
-# A recovered stability boundary during ordinary GPU-only final stress lowers
-# only GPU by 25 MHz and restarts the complete final validation. The lower
-# result, not the failed clock, is the only result that can become validated.
+# A recovered boundary during the isolated two-hour GPU qualification lowers
+# only GPU by 25 MHz and repeats that qualification at the lower clock.
 APO_STATE=()
 ACTIONS=()
 seed_valid_guarded_auto_floor_plan
 APO_EDGE_CPU_24H=0
-apo_boot_candidate() {
-    ACTIONS+=("boot:$3")
-    apo_state_set TRYBOOT_EXPECTED 1
-    apo_state_set CURRENT_CPU "$1"
-    apo_state_set CURRENT_GPU "$2"
-}
 apo_state_set RECOMMENDED_CPU 3000
 apo_state_set RECOMMENDED_GPU 900
 apo_state_set FINAL_TARGET_CPU 3000
 apo_state_set FINAL_TARGET_GPU 900
-apo_state_set FINAL_STAGE GPU_STRESS
-apo_state_set PHASE FINAL_VALIDATION
+apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+apo_state_set GPU_QUALIFICATION_CPU 3000
+apo_state_set GPU_QUALIFICATION_TARGET 900
+apo_state_set GPU_QUALIFIED_CPU ''
+apo_state_set GPU_QUALIFIED_CLOCK ''
+apo_state_set PHASE GPU_QUALIFICATION
 apo_state_set STATUS RUNNING
-GPU_FINAL_FAILURES=0
-apo_recover_stress_failure() {
-    ACTIONS+=("recover:$1")
-    APO_LAST_CLASS=$2
-    APO_LAST_REASON=$3
-    apo_return_normal "$1"
-}
-apo_run_stress() {
-    ACTIONS+=("stress:$1:$3")
-    if [[ $3 == final-gpu-only && $GPU_FINAL_FAILURES == 0 ]]; then
-        GPU_FINAL_FAILURES=1
+GPU_QUALIFICATION_FAILURES=0
+apo_test_candidate() {
+    ACTIONS+=("qualify:$4:$1/$2:$5")
+    if (( GPU_QUALIFICATION_FAILURES == 0 )); then
+        GPU_QUALIFICATION_FAILURES=1
         APO_LAST_CLASS=STABILITY_FAILURE
-        APO_LAST_REASON='GPU final fixture rebooted autonomously'
-        APO_LAST_RESULT_STRUCTURED=0
+        APO_LAST_REASON='GPU qualification fixture rebooted autonomously'
         return 1
     fi
-    APO_LAST_RESULT_STRUCTURED=1
+    APO_LAST_CLASS=PASS
+    APO_LAST_REASON='qualification passed'
 }
-apo_final_validation
-[[ $GPU_FINAL_FAILURES == 1 ]]
+apo_qualify_gpu
+[[ $GPU_QUALIFICATION_FAILURES == 1 ]]
 [[ $(apo_state_get FINAL_BACKOFF_COUNT) == 1 ]]
 [[ $(apo_state_get FINAL_BACKOFF_CPU) == 3000 ]]
 [[ $(apo_state_get FINAL_BACKOFF_GPU) == 875 ]]
 [[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'GPU:900>875' ]]
-[[ $(apo_state_get FINAL_BACKOFF_LAST_STAGE) == GPU_STRESS ]]
-[[ $(apo_state_get FINAL_CPU) == 3000 && $(apo_state_get FINAL_GPU) == 875 ]]
-[[ $(apo_state_get STATUS) == PASS && $(apo_state_get PHASE) == COMPLETE ]]
-[[ " ${ACTIONS[*]} " == *' recover:final-gpu-recovery '* ]]
-[[ " ${ACTIONS[*]} " == *' boot:final-pre-stress-boot '* ]]
-[[ " ${ACTIONS[*]} " == *' stress:combined:final-endurance '* ]]
+[[ $(apo_state_get FINAL_BACKOFF_LAST_STAGE) == GPU_QUALIFICATION ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == PASS ]]
+[[ $(apo_state_get GPU_QUALIFIED_CPU) == 3000 && $(apo_state_get GPU_QUALIFIED_CLOCK) == 875 ]]
+[[ " ${ACTIONS[*]} " == *' qualify:gpu:3000/900:7200 '* ]]
+[[ " ${ACTIONS[*]} " == *' qualify:gpu:3000/875:7200 '* ]]
 apo_validate_auto_resume_state
 
-# CPU-only final stress uses the wider 50 MHz CPU production guard. A proven
+# The first CPU qualification happens before a final GPU guard can be bound to
+# its backoff history. A recovered failure lowers CPU by 50 MHz, repeats the
+# full two-hour CPU qualification, and remains valid when GPU search begins.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_CPU_24H=0
+apo_state_set GPU_INDEX 0
+apo_state_set PASSED_GPUS ''
+apo_state_set GPU_FAILURE_BOUNDARY ''
+apo_state_set GPU_REFINE_CANDIDATES ''
+apo_state_set GPU_REFINE_INDEX 0
+apo_state_set GPU_REFINE_COMPLETE 0
+apo_state_set GPU_GUARD_TARGET ''
+apo_state_set GPU_GUARD_VERIFIED 0
+apo_state_set SAFE_GPU ''
+apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+apo_state_set CPU_QUALIFICATION_TARGET 3000
+apo_state_set CPU_QUALIFIED_CLOCK ''
+apo_state_set CPU_QUALIFICATION_HISTORY ''
+apo_state_set CPU_QUALIFICATION_LAST_CLASS ''
+apo_state_set CPU_QUALIFICATION_LAST_REASON ''
+apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+apo_state_set GPU_QUALIFICATION_CPU ''
+apo_state_set GPU_QUALIFICATION_TARGET ''
+apo_state_set GPU_QUALIFIED_CPU ''
+apo_state_set GPU_QUALIFIED_CLOCK ''
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU ''
+apo_state_set FINAL_TARGET_CPU ''
+apo_state_set FINAL_TARGET_GPU ''
+apo_state_set PHASE CPU_QUALIFICATION
+apo_state_set SUBPHASE READY
+CPU_QUALIFICATION_FAILURES=0
+apo_test_candidate() {
+    ACTIONS+=("qualify:$4:$1/$2:$5")
+    if (( CPU_QUALIFICATION_FAILURES == 0 )); then
+        CPU_QUALIFICATION_FAILURES=1
+        APO_LAST_CLASS=BOOT_FAILURE
+        APO_LAST_REASON='CPU qualification fixture failed its candidate boot'
+        return 1
+    fi
+    APO_LAST_CLASS=PASS
+    APO_LAST_REASON='qualification passed'
+}
+apo_qualify_cpu
+[[ $CPU_QUALIFICATION_FAILURES == 1 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == PASS ]]
+[[ $(apo_state_get CPU_QUALIFIED_CLOCK) == 2950 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_HISTORY) == 'CPU:3000>2950' ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 0 ]]
+[[ " ${ACTIONS[*]} " == *' qualify:cpu:3000/800:7200 '* ]]
+[[ " ${ACTIONS[*]} " == *' qualify:cpu:2950/800:7200 '* ]]
+apo_state_set PHASE GPU_SWEEP
+apo_state_set SUBPHASE READY
+apo_validate_auto_resume_state
+
+# CPU qualification uses the wider 50 MHz CPU production guard. A proven
 # combined-endurance failure cannot identify one domain, so it lowers every
 # still-overclocked domain by its guard in one recorded paired step.
 APO_STATE=()
@@ -377,20 +439,20 @@ apo_state_set RECOMMENDED_CPU 3000
 apo_state_set RECOMMENDED_GPU 900
 apo_state_set FINAL_TARGET_CPU 3000
 apo_state_set FINAL_TARGET_GPU 900
-apo_state_set FINAL_STAGE CPU_STRESS
-apo_final_schedule_stress_backoff CPU_STRESS STABILITY_FAILURE 'CPU final fixture failed'
+apo_state_set FINAL_STAGE ''
+apo_final_schedule_stress_backoff CPU_QUALIFICATION STABILITY_FAILURE 'CPU qualification fixture failed'
 [[ $(apo_state_get RECOMMENDED_CPU) == 2950 ]]
 [[ $(apo_state_get RECOMMENDED_GPU) == 900 ]]
 [[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'CPU:3000>2950' ]]
 apo_validate_auto_resume_state
-apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'combined pair failed'
+apo_final_schedule_stress_backoff ENDURANCE BOOT_FAILURE 'combined pair failed during a required boot'
 [[ $(apo_state_get RECOMMENDED_CPU) == 2900 ]]
 [[ $(apo_state_get RECOMMENDED_GPU) == 875 ]]
 [[ $(apo_state_get FINAL_BACKOFF_COUNT) == 2 ]]
 [[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'CPU:3000>2950,PAIR:2950/900>2900/875' ]]
 [[ $(apo_state_get FINAL_BACKOFF_LAST_STAGE) == ENDURANCE ]]
 apo_validate_auto_resume_state
-if apo_final_schedule_stress_backoff CPU_STRESS HARNESS_FAILURE 'unproved workload'; then
+if apo_final_schedule_stress_backoff CPU_QUALIFICATION HARNESS_FAILURE 'unproved workload'; then
     echo 'final harness failure was incorrectly converted into a clock backoff' >&2
     exit 1
 fi
@@ -433,7 +495,18 @@ apo_run_stress() {
     fi
     APO_LAST_RESULT_STRUCTURED=1
 }
-apo_final_validation
+if apo_final_validation; then
+    echo 'combined endurance failure did not request automatic qualification backoff' >&2
+    exit 1
+else
+    [[ $? == 2 ]]
+fi
+apo_test_candidate() {
+    ACTIONS+=("qualify:$4:$1/$2:$5")
+    APO_LAST_CLASS=PASS
+    APO_LAST_REASON='qualification passed'
+}
+apo_run_tuning
 [[ $ENDURANCE_FAILURES == 1 ]]
 [[ $(apo_state_get FINAL_BACKOFF_COUNT) == 1 ]]
 [[ $(apo_state_get FINAL_BACKOFF_CPU) == 2950 ]]
@@ -443,9 +516,11 @@ apo_final_validation
 [[ $(apo_state_get FINAL_CPU) == 2950 && $(apo_state_get FINAL_GPU) == 875 ]]
 [[ $(apo_state_get STATUS) == PASS && $(apo_state_get PHASE) == COMPLETE ]]
 [[ " ${ACTIONS[*]} " == *' recover:final-endurance-recovery '* ]]
-[[ " ${ACTIONS[*]} " == *' stress:cpu:final-cpu-only '* ]]
-[[ " ${ACTIONS[*]} " == *' stress:gpu:final-gpu-only '* ]]
 [[ " ${ACTIONS[*]} " == *' stress:combined:final-endurance '* ]]
+[[ " ${ACTIONS[*]} " != *' final-cpu-only '* ]]
+[[ " ${ACTIONS[*]} " != *' final-gpu-only '* ]]
+[[ " ${ACTIONS[*]} " == *' qualify:cpu:2950/800:7200 '* ]]
+[[ " ${ACTIONS[*]} " == *' qualify:gpu:2950/875:7200 '* ]]
 apo_validate_auto_resume_state
 
 # Ordered history is safety evidence, not a free-form recommendation override.
@@ -456,9 +531,8 @@ if apo_validate_auto_resume_state; then
 fi
 [[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
 
-# The narrowly eligible recovered schema-7 final-stress failure can be upgraded
-# in place, preserving its run ID and avoiding another attempt at the failed
-# clock. Other older states remain non-resumable.
+# A recovered schema-7 domain-specific final-stress failure is upgraded in
+# place and immediately backed off without repeating the failed clock.
 APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 APO_EDGE_CPU_24H=0
@@ -478,14 +552,15 @@ apo_state_set TRYBOOT_EXPECTED 0
 apo_state_set TRYBOOT_FILE_MAY_EXIST 0
 apo_final_migrate_legacy_retry_state 7
 [[ $(apo_state_get RUN_SCHEMA) == "$APO_CURRENT_RUN_SCHEMA" ]]
-[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 0 ]]
-apo_final_schedule_stress_backoff GPU_STRESS "$(apo_state_get FAILURE_CLASS)" "$(apo_state_get FAILURE_REASON)"
+[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 1 ]]
 [[ $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+[[ $(apo_state_get FAILURE_CLASS) == '' ]]
 apo_validate_auto_resume_state
 
-# The schema-7 compatibility bridge stays limited to the domain-specific
-# failures it originally encoded. It must not reinterpret a legacy combined
-# failure under the newer paired-backoff policy.
+# A recovered schema-7 combined-endurance failure also has enough retained
+# domain ambiguity to use the conservative paired backoff: both still-raised
+# clocks are lowered and both qualifications restart.
 APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 APO_EDGE_CPU_24H=0
@@ -503,10 +578,40 @@ apo_state_set FINAL_TARGET_GPU 900
 apo_state_set FINAL_STAGE ENDURANCE
 apo_state_set TRYBOOT_EXPECTED 0
 apo_state_set TRYBOOT_FILE_MAY_EXIST 0
-if apo_final_migrate_legacy_retry_state 7; then
-    echo 'legacy combined-endurance failure was incorrectly upgraded for paired backoff' >&2
-    exit 1
-fi
+apo_final_migrate_legacy_retry_state 7
+[[ $(apo_state_get RUN_SCHEMA) == "$APO_CURRENT_RUN_SCHEMA" ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 1 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'PAIR:3000/900>2950/875' ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 2950 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+apo_validate_auto_resume_state
+
+# An interrupted schema-8 combined-validation checkpoint is not trusted as a
+# qualification pass. It keeps its search evidence but restarts with isolated
+# CPU qualification under schema 9 before any GPU or combined validation.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_CPU_24H=0
+apo_state_set RUN_SCHEMA 8
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set ORIGIN_COMMAND overclock
+apo_state_set STATUS INTERRUPTED
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set SUBPHASE ENDURANCE
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_migrate_active_automatic_state 8
+[[ $(apo_state_get RUN_SCHEMA) == "$APO_CURRENT_RUN_SCHEMA" ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == NOT_STARTED ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == NOT_STARTED ]]
+[[ $(apo_state_get FINAL_STAGE) == '' ]]
+apo_validate_auto_resume_state
 
 # A valid mid-refinement checkpoint is resumable, but malformed clock-bearing
 # state is rejected before any candidate action or arithmetic can occur.

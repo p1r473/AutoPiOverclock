@@ -661,10 +661,53 @@ stress_ng_has_gpu() {
             grep -E -- '(^|[[:space:]])--gpu([[:space:]]|$)' >/dev/null
 }
 
+stress_ng_has_gpu_devnode() {
+    command -v stress-ng >/dev/null 2>&1 &&
+        stress-ng --help 2>&1 |
+            grep -E -- '(^|[[:space:]])--gpu-devnode([[:space:]]|$)' >/dev/null
+}
+
+v3d_render_node() {
+    local dri_root=${1:-/dev/dri} drm_class_root=${2:-/sys/class/drm}
+    local node node_name driver_path driver_name uevent_file
+    for node in "$dri_root"/renderD*; do
+        [[ -e $node ]] || continue
+        node_name=${node##*/}
+        driver_path=$(readlink -f "$drm_class_root/${node_name}/device/driver" 2>/dev/null || true)
+        driver_name=${driver_path##*/}
+        uevent_file="$drm_class_root/${node_name}/device/uevent"
+        if [[ $driver_name == v3d ]] || { [[ -r $uevent_file ]] && grep -qx 'DRIVER=v3d' "$uevent_file"; }; then
+            printf '%s' "$node"
+            return 0
+        fi
+    done
+    return 1
+}
+
+stress_ng_gpu_strategy() {
+    local render_node=$1 dri_root=${2:-/dev/dri} node only_node='' node_count=0
+    stress_ng_has_gpu || return 1
+    [[ -n $render_node && -e $render_node ]] || return 1
+    if stress_ng_has_gpu_devnode; then
+        printf 'explicit-v3d-device'
+        return 0
+    fi
+    for node in "$dri_root"/renderD*; do
+        [[ -e $node ]] || continue
+        node_count=$((node_count + 1))
+        only_node=$node
+    done
+    if (( node_count == 1 )) && [[ $only_node == "$render_node" ]]; then
+        printf 'single-v3d-default'
+        return 0
+    fi
+    return 1
+}
+
 cmd_discover() {
     local boot_config tryboot_config boot_mount model compatible os_id os_version gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
     local boot_watchdog kernel_watchdog runtime_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source display_baseline display_present audio_baseline permanent_hash
-    local stress_ng_binary stress_ng_gpu_available render_node tryboot_exists tryboot_type tryboot_hash
+    local stress_ng_binary stress_ng_gpu_available stress_ng_gpu_strategy_value render_node tryboot_exists tryboot_type tryboot_hash
     boot_config=$(find_boot_config) || { emit_result PREFLIGHT_FAILURE 'Raspberry Pi boot config was not found.'; return 1; }
     audit_permanent_tuning_config "$boot_config"
     tryboot_config="$(dirname "$boot_config")/tryboot.txt"
@@ -707,8 +750,9 @@ cmd_discover() {
         PERMANENT_TUNING_EVIDENCE='permanent-config-changed-after-audit'
     fi
     stress_ng_binary=$(command -v stress-ng 2>/dev/null || true)
-    stress_ng_gpu_available=$([[ -n $stress_ng_binary ]] && stress_ng_has_gpu && printf 1 || printf 0)
-    render_node=$([[ -e /dev/dri/renderD128 ]] && printf /dev/dri/renderD128 || true)
+    render_node=$(v3d_render_node || true)
+    stress_ng_gpu_strategy_value=$([[ -n $stress_ng_binary && -n $render_node ]] && stress_ng_gpu_strategy "$render_node" || true)
+    stress_ng_gpu_available=$([[ -n $stress_ng_gpu_strategy_value ]] && printf 1 || printf 0)
     fan_pwm_snapshot >/dev/null 2>&1 || true
 
     emit_data PROFILE debian
@@ -750,6 +794,7 @@ cmd_discover() {
     emit_data GPU_STRESS_AVAILABLE "$([[ $stress_ng_gpu_available == 1 && -n $render_node ]] && printf 1 || printf 0)"
     emit_data STRESS_NG_BINARY "$stress_ng_binary"
     emit_data STRESS_NG_GPU_AVAILABLE "$stress_ng_gpu_available"
+    emit_data STRESS_NG_GPU_STRATEGY "$stress_ng_gpu_strategy_value"
     emit_data DRM_RENDER_NODE "$render_node"
     emit_data FAN_PWM_STATUS "$FAN_PWM_LAST_STATUS"
     emit_data PERMANENT_HASH "$permanent_hash"
@@ -1180,7 +1225,7 @@ stress_signal_cleanup() {
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
     local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors
-    local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output
+    local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
     : "$audio_baseline"
@@ -1208,8 +1253,22 @@ cmd_stress() {
     case $stress_kind in
         gpu|combined)
             stress_ng_has_gpu || { emit_result HARNESS_FAILURE 'Installed stress-ng does not provide the GPU stressor.'; return 1; }
-            [[ -e /dev/dri/renderD128 ]] || { emit_result HARNESS_FAILURE '/dev/dri/renderD128 is unavailable.'; return 1; }
-            stress-ng --gpu 1 --gpu-devnode /dev/dri/renderD128 --verify --timeout "${duration}s" --metrics-brief >"$gpu_output" 2>&1 & stress_gpu_pid=$!
+            render_node=$(v3d_render_node || true)
+            [[ -n $render_node ]] || { emit_result HARNESS_FAILURE 'No V3D DRM render node is available.'; return 1; }
+            gpu_strategy=$(stress_ng_gpu_strategy "$render_node" || true)
+            case $gpu_strategy in
+                explicit-v3d-device)
+                    { printf 'GPU_STRESS_STRATEGY=%s\n' "$gpu_strategy"; stress-ng --gpu 1 --gpu-devnode "$render_node" --verify --timeout "${duration}s" --metrics-brief; } >"$gpu_output" 2>&1 &
+                    ;;
+                single-v3d-default)
+                    { printf 'GPU_STRESS_STRATEGY=%s\n' "$gpu_strategy"; stress-ng --gpu 1 --verify --timeout "${duration}s" --metrics-brief; } >"$gpu_output" 2>&1 &
+                    ;;
+                *)
+                    emit_result HARNESS_FAILURE 'The installed stress-ng cannot select the V3D node and more than one DRM render node exists.'
+                    return 1
+                    ;;
+            esac
+            stress_gpu_pid=$!
             ;;
     esac
     [[ -n $stress_cpu_pid || -n $stress_gpu_pid ]] || { emit_result HARNESS_FAILURE "Unknown stress kind: $stress_kind"; return 1; }

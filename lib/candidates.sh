@@ -50,7 +50,7 @@ apo_candidate_boot_or_preserve_failure() {
 }
 
 apo_test_candidate() {
-    local cpu_mhz=$1 gpu_mhz=$2 label=$3 stress_kind=$4 stage failure_class failure_reason boot_number normal_number
+    local cpu_mhz=$1 gpu_mhz=$2 label=$3 stress_kind=$4 stress_duration=${5:-${APO_CFG[CANDIDATE_DURATION_S]}} stage failure_class failure_reason boot_number normal_number
     local candidate_boots=${APO_CFG[CANDIDATE_BOOTS]} stress_result_structured
     if ! apo_candidate_identity_matches "$label" "$cpu_mhz" "$gpu_mhz"; then
         apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" BOOT_1
@@ -103,7 +103,7 @@ apo_test_candidate() {
                     apo_candidate_boot_or_preserve_failure "$cpu_mhz" "$gpu_mhz" "${label}-stress-resume-boot" "${label}-stress-resume-recovery" || return 1
                 fi
                 APO_LAST_RESULT_STRUCTURED=0
-                if ! apo_run_stress "$stress_kind" "${APO_CFG[CANDIDATE_DURATION_S]}" "${label}-candidate" 0; then
+                if ! apo_run_stress "$stress_kind" "$stress_duration" "${label}-candidate" 0; then
                     failure_class=$APO_LAST_CLASS
                     failure_reason=$APO_LAST_REASON
                     stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
@@ -134,7 +134,7 @@ apo_test_candidate() {
                 ;;
             COMPLETE)
                 APO_LAST_CLASS=PASS
-                APO_LAST_REASON="Candidate passed ${candidate_boots} configured boot/normal cycles, overlapping stress, post-stress health, and final normal recovery."
+                APO_LAST_REASON="Candidate passed ${candidate_boots} configured boot/normal cycles, ${stress_duration}s stress, post-stress health, and final normal recovery."
                 apo_event "$label" PASS '' "$APO_LAST_REASON"
                 return 0
                 ;;
@@ -409,18 +409,188 @@ apo_auto_validate_final_backoff_state() {
         return 1
     }
     case $last_stage in
-        CPU_STRESS) [[ ${entries[-1]} == CPU:* ]] ;;
-        GPU_STRESS) [[ ${entries[-1]} == GPU:* ]] ;;
-        ENDURANCE) [[ ${entries[-1]} == PAIR:* ]] ;;
+        CPU_QUALIFICATION|CPU_STRESS) [[ ${entries[-1]} == CPU:* ]] ;;
+        GPU_QUALIFICATION|GPU_STRESS) [[ ${entries[-1]} == GPU:* ]] ;;
+        ENDURANCE|PRE_STRESS_BOOT|BOOT_*) [[ ${entries[-1]} == PAIR:* ]] ;;
         *) false ;;
     esac || {
         APO_AUTO_VALIDATION_REASON='Saved final backoff stage does not match the last history entry'
         return 1
     }
-    [[ $last_class == STABILITY_FAILURE && -n $last_reason ]] || {
-        APO_AUTO_VALIDATION_REASON='Saved final backoff lacks its proven stability-failure evidence'
+    apo_class_is_edge_failure "$last_class" && [[ -n $last_reason ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved final backoff lacks its recovered boot/stability-failure evidence'
         return 1
     }
+}
+
+apo_auto_validate_qualification_state() {
+    local phase subphase edge_status cpu_status cpu_target cpu_qualified cpu_history cpu_last_class cpu_last_reason
+    local gpu_status gpu_cpu gpu_target gpu_qualified_cpu gpu_qualified_clock safe_cpu safe_gpu
+    local expected_cpu expected_gpu entry domain from_clock to_clock extra history_end
+    local -a history_entries=()
+    phase=$(apo_state_get PHASE '')
+    subphase=$(apo_state_get SUBPHASE '')
+    edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
+    cpu_status=$(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED)
+    cpu_target=$(apo_state_get CPU_QUALIFICATION_TARGET '')
+    cpu_qualified=$(apo_state_get CPU_QUALIFIED_CLOCK '')
+    cpu_history=$(apo_state_get CPU_QUALIFICATION_HISTORY '')
+    cpu_last_class=$(apo_state_get CPU_QUALIFICATION_LAST_CLASS '')
+    cpu_last_reason=$(apo_state_get CPU_QUALIFICATION_LAST_REASON '')
+    gpu_status=$(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED)
+    gpu_cpu=$(apo_state_get GPU_QUALIFICATION_CPU '')
+    gpu_target=$(apo_state_get GPU_QUALIFICATION_TARGET '')
+    gpu_qualified_cpu=$(apo_state_get GPU_QUALIFIED_CPU '')
+    gpu_qualified_clock=$(apo_state_get GPU_QUALIFIED_CLOCK '')
+    safe_cpu=$(apo_state_get SAFE_CPU '')
+    safe_gpu=$(apo_state_get SAFE_GPU '')
+
+    case $cpu_status in NOT_STARTED|RUNNING|PASS) ;; *) APO_AUTO_VALIDATION_REASON="Saved CPU qualification status is malformed: ${cpu_status:-missing}"; return 1 ;; esac
+    case $gpu_status in NOT_STARTED|RUNNING|PASS) ;; *) APO_AUTO_VALIDATION_REASON="Saved GPU qualification status is malformed: ${gpu_status:-missing}"; return 1 ;; esac
+
+    if [[ -n $cpu_target ]]; then
+        apo_auto_uint_in_range "$cpu_target" "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_CPU_MAX_MHZ" || {
+            APO_AUTO_VALIDATION_REASON="Saved CPU qualification target is malformed: $cpu_target"
+            return 1
+        }
+        [[ -n $safe_cpu ]] && (( cpu_target <= safe_cpu )) || {
+            APO_AUTO_VALIDATION_REASON='Saved CPU qualification target is not bounded by a verified CPU guard'
+            return 1
+        }
+    fi
+    case $cpu_status in
+        NOT_STARTED|RUNNING)
+            [[ -z $cpu_qualified ]] || { APO_AUTO_VALIDATION_REASON='Incomplete CPU qualification already claims a qualified clock'; return 1; }
+            [[ $cpu_status == NOT_STARTED || -n $cpu_target ]] || { APO_AUTO_VALIDATION_REASON='Running CPU qualification has no target'; return 1; }
+            ;;
+        PASS)
+            [[ -n $cpu_target && $cpu_qualified == "$cpu_target" ]] || {
+                APO_AUTO_VALIDATION_REASON='Passed CPU qualification is not bound to its exact target'
+                return 1
+            }
+            ;;
+    esac
+    if [[ -n $cpu_history ]]; then
+        [[ -n $safe_cpu ]] || { APO_AUTO_VALIDATION_REASON='CPU qualification backoff history has no guarded origin'; return 1; }
+        IFS=',' read -r -a history_entries <<< "$cpu_history"
+        history_end=$safe_cpu
+        for entry in "${history_entries[@]}"; do
+            domain=''; from_clock=''; to_clock=''; extra=''
+            IFS=':>' read -r domain from_clock to_clock extra <<< "$entry"
+            [[ $domain == CPU && $from_clock == "$history_end" && $to_clock =~ ^[0-9]+$ && -z $extra ]] || {
+                APO_AUTO_VALIDATION_REASON="Saved CPU qualification backoff entry is malformed or unordered: $entry"
+                return 1
+            }
+            expected_cpu=$((from_clock - APO_AUTO_CPU_GUARD_MHZ))
+            (( expected_cpu < APO_AUTO_BASELINE_CPU )) && expected_cpu=$APO_AUTO_BASELINE_CPU
+            (( to_clock == expected_cpu && to_clock < from_clock )) || {
+                APO_AUTO_VALIDATION_REASON="Saved CPU qualification backoff is not one ${APO_AUTO_CPU_GUARD_MHZ} MHz step: $entry"
+                return 1
+            }
+            history_end=$to_clock
+        done
+        [[ -n $cpu_target ]] && (( cpu_target <= history_end )) || {
+            APO_AUTO_VALIDATION_REASON='Saved CPU qualification target is inconsistent with its backoff history'
+            return 1
+        }
+        apo_class_is_edge_failure "$cpu_last_class" && [[ -n $cpu_last_reason ]] || {
+            APO_AUTO_VALIDATION_REASON='CPU qualification backoff history lacks recovered boot/stability evidence'
+            return 1
+        }
+    elif [[ -n $cpu_last_class || -n $cpu_last_reason ]]; then
+        APO_AUTO_VALIDATION_REASON='CPU qualification failure evidence exists without a backoff history'
+        return 1
+    fi
+
+    if [[ -n $gpu_cpu || -n $gpu_target ]]; then
+        [[ $gpu_cpu =~ ^[0-9]+$ && $gpu_target =~ ^[0-9]+$ && -n $safe_cpu && -n $safe_gpu ]] || {
+            APO_AUTO_VALIDATION_REASON='Saved GPU qualification identity is incomplete or lacks verified guards'
+            return 1
+        }
+        (( gpu_cpu >= APO_AUTO_BASELINE_CPU && gpu_cpu <= safe_cpu &&
+           gpu_target >= APO_AUTO_BASELINE_GPU && gpu_target <= safe_gpu )) || {
+            APO_AUTO_VALIDATION_REASON='Saved GPU qualification identity exceeds its verified production guards'
+            return 1
+        }
+    fi
+    case $gpu_status in
+        NOT_STARTED|RUNNING)
+            [[ -z $gpu_qualified_cpu && -z $gpu_qualified_clock ]] || {
+                APO_AUTO_VALIDATION_REASON='Incomplete GPU qualification already claims qualified clocks'
+                return 1
+            }
+            [[ $gpu_status == NOT_STARTED || ( -n $gpu_cpu && -n $gpu_target ) ]] || {
+                APO_AUTO_VALIDATION_REASON='Running GPU qualification has no exact CPU/GPU target'
+                return 1
+            }
+            ;;
+        PASS)
+            [[ -n $gpu_cpu && -n $gpu_target && $gpu_qualified_cpu == "$gpu_cpu" && $gpu_qualified_clock == "$gpu_target" ]] || {
+                APO_AUTO_VALIDATION_REASON='Passed GPU qualification is not bound to its exact CPU/GPU target'
+                return 1
+            }
+            ;;
+    esac
+
+    case $phase in
+        GPU_SWEEP)
+            [[ $cpu_status == PASS ]] || { APO_AUTO_VALIDATION_REASON='GPU sweep started before CPU qualification passed'; return 1; }
+            ;;
+        SELECTION)
+            if [[ $subphase == GPU ]]; then
+                [[ $cpu_status == PASS ]] || { APO_AUTO_VALIDATION_REASON='GPU selection started before CPU qualification passed'; return 1; }
+            fi
+            ;;
+        GPU_QUALIFICATION)
+            expected_cpu=$(apo_state_get RECOMMENDED_CPU '')
+            expected_gpu=$(apo_state_get RECOMMENDED_GPU '')
+            [[ $cpu_status == PASS && $cpu_qualified == "$expected_cpu" &&
+               $gpu_cpu == "$expected_cpu" && $gpu_target == "$expected_gpu" ]] || {
+                APO_AUTO_VALIDATION_REASON='GPU qualification is not bound to the qualified CPU and current GPU target'
+                return 1
+            }
+            ;;
+        FINAL_VALIDATION|COMPLETE)
+            if [[ $edge_status == RUNNING || $edge_status == PASS || $edge_status == REJECTED || $edge_status == SKIPPED_KNOWN_BOUNDARY ]]; then
+                expected_cpu=$(apo_state_get FLOOR_CPU '')
+                expected_gpu=$(apo_state_get FLOOR_GPU '')
+            else
+                expected_cpu=$(apo_state_get RECOMMENDED_CPU '')
+                expected_gpu=$(apo_state_get RECOMMENDED_GPU '')
+            fi
+            [[ $cpu_status == PASS && $cpu_qualified == "$expected_cpu" ]] || {
+                APO_AUTO_VALIDATION_REASON='Final validation is missing exact CPU qualification for its production floor'
+                return 1
+            }
+            if (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
+                [[ $gpu_status == PASS && $gpu_qualified_cpu == "$expected_cpu" && $gpu_qualified_clock == "$expected_gpu" ]] || {
+                    APO_AUTO_VALIDATION_REASON='Final validation is missing exact GPU qualification for its production floor'
+                    return 1
+                }
+            fi
+            ;;
+    esac
+}
+
+apo_validate_recovery_wait_state() {
+    local wait_status wait_context wait_started wait_timeouts
+    wait_status=$(apo_state_get RECOVERY_WAIT_STATUS IDLE)
+    wait_context=$(apo_state_get RECOVERY_WAIT_CONTEXT '')
+    wait_started=$(apo_state_get RECOVERY_WAIT_STARTED_AT '')
+    wait_timeouts=$(apo_state_get RECOVERY_WAIT_TIMEOUTS 0)
+    [[ $wait_timeouts =~ ^[0-9]+$ ]] || { APO_AUTO_VALIDATION_REASON='Saved extended SSH recovery count is malformed'; return 1; }
+    case $wait_status in
+        IDLE)
+            [[ -z $wait_started ]] || { APO_AUTO_VALIDATION_REASON='Idle SSH recovery state retains an active wait timestamp'; return 1; }
+            ;;
+        WAITING)
+            [[ -n $wait_context && -n $wait_started ]] || { APO_AUTO_VALIDATION_REASON='Active SSH recovery state lacks context or start time'; return 1; }
+            ;;
+        RETURNED)
+            [[ -n $wait_context && -z $wait_started ]] || { APO_AUTO_VALIDATION_REASON='Returned SSH recovery state is incomplete'; return 1; }
+            ;;
+        *) APO_AUTO_VALIDATION_REASON="Saved SSH recovery status is malformed: ${wait_status:-missing}"; return 1 ;;
+    esac
 }
 
 apo_auto_parse_clock_csv() {
@@ -683,7 +853,7 @@ apo_auto_validate_edge_state() {
 
 apo_auto_validate_final_state() {
     local edge_status stage duration validated validation_schema status phase expected_cpu expected_gpu expected_duration
-    local final_cpu final_gpu recommended_cpu recommended_gpu target_cpu target_gpu completion_claimed=0 backoff_count
+    local final_cpu final_gpu recommended_cpu recommended_gpu target_cpu target_gpu completion_claimed=0 backoff_count qualification_target
     edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
     stage=$(apo_state_get FINAL_STAGE '')
     duration=$(apo_state_get VALIDATION_DURATION_S '')
@@ -705,6 +875,25 @@ apo_auto_validate_final_state() {
         expected_cpu=$(apo_state_get SAFE_CPU '')
         expected_gpu=$(apo_state_get SAFE_GPU '')
     fi
+    # Before the GPU guard exists, an isolated CPU qualification may have
+    # safely backed the CPU below the short-search guard. That backoff cannot
+    # be materialized into the final paired history until GPU selection has a
+    # verified guard of its own. Bind these intermediate phases to the exact
+    # qualification target instead of incorrectly demanding the old CPU guard.
+    if (( backoff_count == 0 )); then
+        case $phase in
+            CPU_QUALIFICATION|GPU_SWEEP)
+                qualification_target=$(apo_state_get CPU_QUALIFICATION_TARGET '')
+                [[ -z $qualification_target ]] || expected_cpu=$qualification_target
+                ;;
+            SELECTION)
+                if [[ $(apo_state_get SUBPHASE '') == GPU ]]; then
+                    qualification_target=$(apo_state_get CPU_QUALIFICATION_TARGET '')
+                    [[ -z $qualification_target ]] || expected_cpu=$qualification_target
+                fi
+                ;;
+        esac
+    fi
     expected_duration=28800
     case $edge_status in
         RUNNING|PASS)
@@ -718,9 +907,15 @@ apo_auto_validate_final_state() {
             ;;
     esac
     if [[ $edge_status == NOT_REQUESTED ]]; then
-        if [[ -n $recommended_cpu || -n $recommended_gpu ]]; then
+        if [[ -n $recommended_cpu && -n $recommended_gpu ]]; then
             [[ -n $expected_cpu && -n $expected_gpu && $recommended_cpu == "$expected_cpu" && $recommended_gpu == "$expected_gpu" ]] || {
                 APO_AUTO_VALIDATION_REASON='Saved automatic recommendation does not match its verified production guards'
+                return 1
+            }
+        elif [[ -n $recommended_cpu || -n $recommended_gpu ]]; then
+            [[ $recommended_cpu == "$expected_cpu" && -z $recommended_gpu &&
+               ( $phase == CPU_QUALIFICATION || $phase == GPU_SWEEP || ( $phase == SELECTION && $(apo_state_get SUBPHASE '') == GPU ) ) ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved partial automatic recommendation exists outside CPU qualification or GPU planning'
                 return 1
             }
         fi
@@ -733,7 +928,7 @@ apo_auto_validate_final_state() {
     fi
     case $stage in
         '') [[ -z $duration ]] || { APO_AUTO_VALIDATION_REASON='Saved final duration exists before final validation starts'; return 1; } ;;
-        PRE_STRESS_BOOT|CPU_STRESS|GPU_STRESS|ENDURANCE)
+        PRE_STRESS_BOOT|ENDURANCE)
             [[ -z $duration ]] || { APO_AUTO_VALIDATION_REASON="Saved final duration exists before endurance completed at stage $stage"; return 1; }
             ;;
         RETURN_NORMAL|VERIFY|COMPLETE)
@@ -777,7 +972,9 @@ apo_auto_validate_non_auto_state() {
     for key in CPU_REFINE_CANDIDATES GPU_REFINE_CANDIDATES CPU_GUARD_TARGET GPU_GUARD_TARGET \
                FLOOR_CPU FLOOR_GPU FLOOR_DURATION_S FLOOR_VALIDATION_SCHEMA EDGE_CPU_TARGET \
                EDGE_CPU_FAILURE_CLASS EDGE_CPU_FAILURE_REASON FINAL_BACKOFF_CPU FINAL_BACKOFF_GPU \
-               FINAL_BACKOFF_HISTORY FINAL_BACKOFF_LAST_STAGE FINAL_BACKOFF_LAST_CLASS FINAL_BACKOFF_LAST_REASON; do
+               FINAL_BACKOFF_HISTORY FINAL_BACKOFF_LAST_STAGE FINAL_BACKOFF_LAST_CLASS FINAL_BACKOFF_LAST_REASON \
+               CPU_QUALIFICATION_TARGET CPU_QUALIFIED_CLOCK CPU_QUALIFICATION_HISTORY CPU_QUALIFICATION_LAST_CLASS \
+               CPU_QUALIFICATION_LAST_REASON GPU_QUALIFICATION_CPU GPU_QUALIFICATION_TARGET GPU_QUALIFIED_CPU GPU_QUALIFIED_CLOCK; do
         value=$(apo_state_get "$key" '')
         [[ -z $value ]] || {
             APO_AUTO_VALIDATION_REASON="Saved non-auto run retains automatic state in $key"
@@ -796,6 +993,11 @@ apo_auto_validate_non_auto_state() {
         APO_AUTO_VALIDATION_REASON='Saved non-auto run retains an automatic edge CPU disposition'
         return 1
     }
+    [[ $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) == NOT_STARTED &&
+       $(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED) == NOT_STARTED ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved non-auto run retains automatic qualification status'
+        return 1
+    }
 }
 
 apo_validate_auto_resume_state() {
@@ -803,6 +1005,7 @@ apo_validate_auto_resume_state() {
     local expected_cpu_csv expected_gpu_csv apply_status final_cpu final_gpu
     local post_floor_edge source_floor_run_id source_floor_hash floor_cpu floor_gpu permanent_hash edge_status
     APO_AUTO_VALIDATION_REASON=''
+    apo_validate_recovery_wait_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_auto_validate_boolean 'automatic-candidate' "$auto_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_auto_validate_boolean 'edge CPU option' "$edge_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     post_floor_edge=$(apo_state_get POST_FLOOR_EDGE 0)
@@ -871,6 +1074,7 @@ apo_validate_auto_resume_state() {
         apo_auto_validate_domain_state CPU || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
         apo_auto_validate_domain_state GPU || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
         apo_auto_validate_final_backoff_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+        apo_auto_validate_qualification_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     elif (( edge_marker == 1 )); then
         apo_auto_state_invalid 'Edge CPU validation is saved on a non-auto run.'
         return 1
@@ -1132,7 +1336,7 @@ apo_sweep_gpu() {
     apo_validate_auto_resume_state || return 1
     index=$(apo_state_get GPU_INDEX 0)
     passed_csv=$(apo_state_get PASSED_GPUS '')
-    safe_cpu=$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")
+    safe_cpu=$(apo_state_get CPU_QUALIFIED_CLOCK "$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")")
     boundary=$(apo_state_get GPU_FAILURE_BOUNDARY '')
     for (( ; index < ${#APO_GPU_CANDIDATES[@]} && ${#boundary} == 0; index++ )); do
         candidate=${APO_GPU_CANDIDATES[$index]}
@@ -1165,13 +1369,161 @@ apo_sweep_gpu() {
     fi
 }
 
+apo_clear_candidate_checkpoint() {
+    apo_state_set CANDIDATE_LABEL ''
+    apo_state_set CANDIDATE_CPU ''
+    apo_state_set CANDIDATE_GPU ''
+    apo_state_set CANDIDATE_STAGE ''
+}
+
+apo_cpu_qualification_schedule_backoff() {
+    local failure_class=$1 failure_reason=$2 current_cpu next_cpu history entry
+    apo_class_is_edge_failure "$failure_class" || return 1
+    if [[ $(apo_state_get FINAL_BACKOFF_COUNT 0) =~ ^[1-9][0-9]*$ ]] &&
+       apo_final_schedule_stress_backoff CPU_QUALIFICATION "$failure_class" "$failure_reason"; then
+        return 0
+    fi
+    current_cpu=$(apo_state_get CPU_QUALIFICATION_TARGET '')
+    [[ $current_cpu =~ ^[0-9]+$ ]] || return 1
+    (( current_cpu > APO_AUTO_BASELINE_CPU )) || return 1
+    next_cpu=$((current_cpu - APO_AUTO_CPU_GUARD_MHZ))
+    (( next_cpu < APO_AUTO_BASELINE_CPU )) && next_cpu=$APO_AUTO_BASELINE_CPU
+    entry="CPU:${current_cpu}>${next_cpu}"
+    history=$(apo_state_get CPU_QUALIFICATION_HISTORY '')
+    history=$(apo_append_csv "$history" "$entry")
+    apo_state_set CPU_QUALIFICATION_STATUS RUNNING
+    apo_state_set CPU_QUALIFICATION_TARGET "$next_cpu"
+    apo_state_set CPU_QUALIFIED_CLOCK ''
+    apo_state_set CPU_QUALIFICATION_HISTORY "$history"
+    apo_state_set CPU_QUALIFICATION_LAST_CLASS "$failure_class"
+    apo_state_set CPU_QUALIFICATION_LAST_REASON "$failure_reason"
+    apo_state_set RECOMMENDED_CPU "$next_cpu"
+    apo_state_set FAILURE_CLASS ''
+    apo_state_set FAILURE_REASON ''
+    apo_clear_candidate_checkpoint
+    apo_state_phase CPU_QUALIFICATION READY RUNNING
+    apo_summary_line "CPU QUALIFICATION BACKOFF: $entry after verified normal recovery; repeating the ${APO_DOMAIN_QUALIFICATION_DURATION_S}s CPU qualification at stock GPU"
+    apo_event cpu-qualification-backoff WARN "$failure_class" "CPU qualification rejected ${current_cpu} MHz: $failure_reason; reduced CPU by ${APO_AUTO_CPU_GUARD_MHZ} MHz and will repeat at ${next_cpu} MHz with stock GPU"
+}
+
+apo_qualify_cpu() {
+    local target_cpu failure_class failure_reason label
+    target_cpu=$(apo_state_get CPU_QUALIFICATION_TARGET '')
+    if [[ -z $target_cpu ]]; then
+        target_cpu=$(apo_state_get RECOMMENDED_CPU "$(apo_state_get SAFE_CPU '')")
+        apo_state_set CPU_QUALIFICATION_TARGET "$target_cpu"
+        apo_state_set CPU_QUALIFICATION_STATUS RUNNING
+        apo_state_save
+    fi
+    [[ $target_cpu =~ ^[0-9]+$ ]] || {
+        apo_state_fail HARNESS_FAILURE 'CPU qualification has no valid guarded CPU target.'
+        return 1
+    }
+    if [[ $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) == PASS &&
+          $(apo_state_get CPU_QUALIFIED_CLOCK '') == "$target_cpu" ]]; then
+        return 0
+    fi
+    while :; do
+        target_cpu=$(apo_state_get CPU_QUALIFICATION_TARGET '')
+        apo_state_phase CPU_QUALIFICATION "CPU_${target_cpu}_GPU_${APO_NORMAL_GPU}" RUNNING
+        label="cpu-qualification-${target_cpu}_gpu-${APO_NORMAL_GPU}"
+        apo_event cpu-qualification INFO '' "Qualifying CPU=$target_cpu MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s with GPU held at stock ${APO_NORMAL_GPU} MHz."
+        if apo_test_candidate "$target_cpu" "$APO_NORMAL_GPU" "$label" cpu "$APO_DOMAIN_QUALIFICATION_DURATION_S"; then
+            apo_state_set CPU_QUALIFICATION_STATUS PASS
+            apo_state_set CPU_QUALIFIED_CLOCK "$target_cpu"
+            apo_state_set RECOMMENDED_CPU "$target_cpu"
+            apo_state_save
+            apo_summary_line "CPU QUALIFICATION: PASS — CPU $target_cpu MHz / stock GPU $APO_NORMAL_GPU MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s"
+            apo_event cpu-qualification PASS '' "CPU=$target_cpu passed isolated ${APO_DOMAIN_QUALIFICATION_DURATION_S}s qualification at stock GPU=$APO_NORMAL_GPU."
+            return 0
+        fi
+        failure_class=${APO_LAST_CLASS:-HARNESS_FAILURE}
+        failure_reason=${APO_LAST_REASON:-CPU qualification failed without a classified reason.}
+        if (( APO_AUTO_GENERATED_CANDIDATES == 1 )) &&
+           apo_cpu_qualification_schedule_backoff "$failure_class" "$failure_reason"; then
+            continue
+        fi
+        apo_state_fail "$failure_class" "$failure_reason"
+        return 1
+    done
+}
+
+apo_materialize_cpu_qualification_backoff() {
+    local history count qualified_cpu safe_gpu
+    local -a history_entries=()
+    history=$(apo_state_get CPU_QUALIFICATION_HISTORY '')
+    qualified_cpu=$(apo_state_get CPU_QUALIFIED_CLOCK '')
+    safe_gpu=$(apo_state_get SAFE_GPU '')
+    if [[ -n $history ]]; then IFS=',' read -r -a history_entries <<< "$history"; fi
+    count=${#history_entries[@]}
+    apo_state_set FINAL_BACKOFF_COUNT "$count"
+    if (( count == 0 )); then
+        apo_state_set FINAL_BACKOFF_CPU ''
+        apo_state_set FINAL_BACKOFF_GPU ''
+        apo_state_set FINAL_BACKOFF_HISTORY ''
+        apo_state_set FINAL_BACKOFF_LAST_STAGE ''
+        apo_state_set FINAL_BACKOFF_LAST_CLASS ''
+        apo_state_set FINAL_BACKOFF_LAST_REASON ''
+        return 0
+    fi
+    [[ $qualified_cpu =~ ^[0-9]+$ && $safe_gpu =~ ^[0-9]+$ ]] || return 1
+    apo_state_set FINAL_BACKOFF_CPU "$qualified_cpu"
+    apo_state_set FINAL_BACKOFF_GPU "$safe_gpu"
+    apo_state_set FINAL_BACKOFF_HISTORY "$history"
+    apo_state_set FINAL_BACKOFF_LAST_STAGE CPU_QUALIFICATION
+    apo_state_set FINAL_BACKOFF_LAST_CLASS "$(apo_state_get CPU_QUALIFICATION_LAST_CLASS '')"
+    apo_state_set FINAL_BACKOFF_LAST_REASON "$(apo_state_get CPU_QUALIFICATION_LAST_REASON '')"
+}
+
+apo_qualify_gpu() {
+    local target_cpu target_gpu failure_class failure_reason label
+    target_cpu=$(apo_state_get RECOMMENDED_CPU '')
+    target_gpu=$(apo_state_get RECOMMENDED_GPU '')
+    [[ $target_cpu =~ ^[0-9]+$ && $target_gpu =~ ^[0-9]+$ ]] || {
+        apo_state_fail HARNESS_FAILURE 'GPU qualification has no valid CPU/GPU production target.'
+        return 1
+    }
+    if [[ $(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED) == PASS &&
+          $(apo_state_get GPU_QUALIFIED_CPU '') == "$target_cpu" &&
+          $(apo_state_get GPU_QUALIFIED_CLOCK '') == "$target_gpu" ]]; then
+        return 0
+    fi
+    while :; do
+        target_cpu=$(apo_state_get RECOMMENDED_CPU '')
+        target_gpu=$(apo_state_get RECOMMENDED_GPU '')
+        apo_state_set GPU_QUALIFICATION_STATUS RUNNING
+        apo_state_set GPU_QUALIFICATION_CPU "$target_cpu"
+        apo_state_set GPU_QUALIFICATION_TARGET "$target_gpu"
+        apo_state_phase GPU_QUALIFICATION "CPU_${target_cpu}_GPU_${target_gpu}" RUNNING
+        label="gpu-qualification-${target_cpu}_gpu-${target_gpu}"
+        apo_event gpu-qualification INFO '' "Qualifying GPU=$target_gpu MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s at qualified CPU=$target_cpu MHz."
+        if apo_test_candidate "$target_cpu" "$target_gpu" "$label" gpu "$APO_DOMAIN_QUALIFICATION_DURATION_S"; then
+            apo_state_set GPU_QUALIFICATION_STATUS PASS
+            apo_state_set GPU_QUALIFIED_CPU "$target_cpu"
+            apo_state_set GPU_QUALIFIED_CLOCK "$target_gpu"
+            apo_state_save
+            apo_summary_line "GPU QUALIFICATION: PASS — CPU $target_cpu MHz / GPU $target_gpu MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s"
+            apo_event gpu-qualification PASS '' "GPU=$target_gpu passed isolated ${APO_DOMAIN_QUALIFICATION_DURATION_S}s qualification at qualified CPU=$target_cpu."
+            return 0
+        fi
+        failure_class=${APO_LAST_CLASS:-HARNESS_FAILURE}
+        failure_reason=${APO_LAST_REASON:-GPU qualification failed without a classified reason.}
+        if (( APO_AUTO_GENERATED_CANDIDATES == 1 )) &&
+           apo_final_schedule_stress_backoff GPU_QUALIFICATION "$failure_class" "$failure_reason"; then
+            continue
+        fi
+        apo_state_fail "$failure_class" "$failure_reason"
+        return 1
+    done
+}
+
 apo_select_conservative_clocks() {
     local passed_cpu passed_gpu recommended_cpu recommended_gpu
     apo_validate_auto_resume_state || return 1
     passed_cpu=$(apo_state_get PASSED_CPUS '')
     passed_gpu=$(apo_state_get PASSED_GPUS '')
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
-        recommended_cpu=$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")
+        recommended_cpu=$(apo_state_get CPU_QUALIFIED_CLOCK "$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")")
         recommended_gpu=$(apo_state_get SAFE_GPU "$APO_NORMAL_GPU")
     else
         if [[ -n $passed_cpu ]]; then recommended_cpu=$(apo_select_with_backoff "$passed_cpu" "${APO_CFG[BACKOFF_STEPS]}" "$APO_NORMAL_CPU"); else recommended_cpu=$APO_NORMAL_CPU; fi
@@ -1181,20 +1533,37 @@ apo_select_conservative_clocks() {
         apo_state_fail STABILITY_FAILURE 'Automatic refinement found no buffered overclock above the verified stock baseline.'
         return 1
     fi
-    apo_state_set SAFE_CPU "$recommended_cpu"
-    apo_state_set SAFE_GPU "$recommended_gpu"
+    if (( APO_AUTO_GENERATED_CANDIDATES == 0 )); then
+        apo_state_set SAFE_CPU "$recommended_cpu"
+        apo_state_set SAFE_GPU "$recommended_gpu"
+    fi
     apo_state_set RECOMMENDED_CPU "$recommended_cpu"
     apo_state_set RECOMMENDED_GPU "$recommended_gpu"
-    apo_state_set FINAL_BACKOFF_COUNT 0
-    apo_state_set FINAL_BACKOFF_CPU ''
-    apo_state_set FINAL_BACKOFF_GPU ''
-    apo_state_set FINAL_BACKOFF_HISTORY ''
-    apo_state_set FINAL_BACKOFF_LAST_STAGE ''
-    apo_state_set FINAL_BACKOFF_LAST_CLASS ''
-    apo_state_set FINAL_BACKOFF_LAST_REASON ''
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+        apo_materialize_cpu_qualification_backoff || {
+            apo_state_fail HARNESS_FAILURE 'CPU qualification backoff evidence could not be bound to the selected GPU guard.'
+            return 1
+        }
+    else
+        apo_state_set FINAL_BACKOFF_COUNT 0
+        apo_state_set FINAL_BACKOFF_CPU ''
+        apo_state_set FINAL_BACKOFF_GPU ''
+        apo_state_set FINAL_BACKOFF_HISTORY ''
+        apo_state_set FINAL_BACKOFF_LAST_STAGE ''
+        apo_state_set FINAL_BACKOFF_LAST_CLASS ''
+        apo_state_set FINAL_BACKOFF_LAST_REASON ''
+    fi
+    if [[ $(apo_state_get GPU_QUALIFIED_CPU '') != "$recommended_cpu" ||
+          $(apo_state_get GPU_QUALIFIED_CLOCK '') != "$recommended_gpu" ]]; then
+        apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+        apo_state_set GPU_QUALIFICATION_CPU "$recommended_cpu"
+        apo_state_set GPU_QUALIFICATION_TARGET "$recommended_gpu"
+        apo_state_set GPU_QUALIFIED_CPU ''
+        apo_state_set GPU_QUALIFIED_CLOCK ''
+    fi
     apo_state_clear_final_validation
-    apo_state_set FINAL_TARGET_CPU ''
-    apo_state_set FINAL_TARGET_GPU ''
+    apo_state_set FINAL_TARGET_CPU "$recommended_cpu"
+    apo_state_set FINAL_TARGET_GPU "$recommended_gpu"
     apo_state_set FINAL_STAGE ''
     apo_state_save
     apo_summary_line ''
@@ -1231,7 +1600,7 @@ apo_final_saved_failure_is_retryable() {
        $(apo_state_get ORIGIN_COMMAND '') == overclock &&
        $(apo_state_get STATUS '') == FAILED &&
        $(apo_state_get PHASE '') == FINAL_VALIDATION &&
-       $(apo_state_get FAILURE_CLASS '') == STABILITY_FAILURE &&
+       ( $(apo_state_get FAILURE_CLASS '') == BOOT_FAILURE || $(apo_state_get FAILURE_CLASS '') == STABILITY_FAILURE ) &&
        -n $(apo_state_get FAILURE_REASON '') &&
        $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED &&
        $(apo_state_get FLOOR_VALIDATED 0) == 0 &&
@@ -1244,8 +1613,8 @@ apo_final_saved_failure_is_retryable() {
        $(apo_state_get RECOMMENDED_CPU '') == "$(apo_state_get FINAL_TARGET_CPU '')" &&
        $(apo_state_get RECOMMENDED_GPU '') == "$(apo_state_get FINAL_TARGET_GPU '')" ]] || return 1
     case $(apo_state_get FINAL_STAGE '') in
-        CPU_STRESS|GPU_STRESS) return 0 ;;
-        ENDURANCE) [[ $run_schema == "$APO_CURRENT_RUN_SCHEMA" ]] ;;
+        CPU_STRESS|GPU_STRESS) (( run_schema < APO_CURRENT_RUN_SCHEMA )) ;;
+        PRE_STRESS_BOOT|ENDURANCE|BOOT_*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1259,21 +1628,134 @@ apo_final_initialize_backoff_state() {
     [[ -v APO_STATE[FINAL_BACKOFF_COUNT] ]] || apo_state_set FINAL_BACKOFF_COUNT 0
 }
 
+apo_initialize_current_qualification_state() {
+    local key
+    for key in CPU_QUALIFICATION_TARGET CPU_QUALIFIED_CLOCK CPU_QUALIFICATION_HISTORY \
+               CPU_QUALIFICATION_LAST_CLASS CPU_QUALIFICATION_LAST_REASON GPU_QUALIFICATION_CPU \
+               GPU_QUALIFICATION_TARGET GPU_QUALIFIED_CPU GPU_QUALIFIED_CLOCK \
+               RECOVERY_WAIT_CONTEXT RECOVERY_WAIT_STARTED_AT; do
+        [[ -v APO_STATE[$key] ]] || apo_state_set "$key" ''
+    done
+    [[ -v APO_STATE[CPU_QUALIFICATION_STATUS] ]] || apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+    [[ -v APO_STATE[GPU_QUALIFICATION_STATUS] ]] || apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+    [[ -v APO_STATE[RECOVERY_WAIT_STATUS] ]] || apo_state_set RECOVERY_WAIT_STATUS IDLE
+    [[ -v APO_STATE[RECOVERY_WAIT_TIMEOUTS] ]] || apo_state_set RECOVERY_WAIT_TIMEOUTS 0
+}
+
+apo_migrate_active_automatic_state() {
+    local legacy_schema=$1 status phase failed_stage='' failure_class='' failure_reason=''
+    local expected_cpu_csv expected_gpu_csv target_cpu target_gpu
+    [[ $legacy_schema == 7 || $legacy_schema == 8 ]] || return 1
+    [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 &&
+       $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
+       $(apo_state_get ORIGIN_COMMAND '') == overclock &&
+       $(apo_state_get APPLY_STATUS NOT_APPLIED) != APPLIED &&
+       $(apo_state_get FLOOR_VALIDATED 0) == 0 &&
+       $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED ]] || return 1
+    status=$(apo_state_get STATUS '')
+    phase=$(apo_state_get PHASE '')
+    [[ $status == RUNNING || $status == INTERRUPTED ]] || {
+        apo_final_saved_failure_is_retryable "$legacy_schema" || return 1
+        failed_stage=$(apo_state_get FINAL_STAGE '')
+        failure_class=$(apo_state_get FAILURE_CLASS '')
+        failure_reason=$(apo_state_get FAILURE_REASON '')
+    }
+    [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} == verified-default &&
+       ${APO_AUTO_BASELINE_EVIDENCE:-missing} == none &&
+       ${APO_AUTO_BASELINE_CPU:-missing} == "$APO_PI5_STOCK_CPU_MHZ" &&
+       ( ${APO_AUTO_BASELINE_GPU:-missing} == 800 || ${APO_AUTO_BASELINE_GPU:-missing} == 960 ) &&
+       ${APO_AUTO_BASELINE_VOLTAGE:-missing} == "$APO_PI5_STOCK_VOLTAGE_UV" ]] || return 1
+    expected_cpu_csv=$(apo_config_auto_ladder "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") || return 1
+    expected_gpu_csv=$(apo_config_auto_ladder "$APO_AUTO_BASELINE_GPU" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") || return 1
+    [[ ${APO_CFG[CPU_CANDIDATES]:-} == "$expected_cpu_csv" &&
+       ${APO_CFG[GPU_CANDIDATES]:-} == "$expected_gpu_csv" &&
+       ${APO_CFG[BACKOFF_STEPS]:-missing} == 0 &&
+       ${APO_CFG[VOLTAGE_DELTA_UV]:-missing} == existing &&
+       ${APO_CFG[FINAL_DURATION_S]:-missing} == 28800 &&
+       ${APO_TEST_VOLTAGE:-missing} == "$APO_PI5_STOCK_VOLTAGE_UV" ]] || return 1
+    apo_auto_validate_domain_state CPU || return 1
+    apo_auto_validate_domain_state GPU || return 1
+    apo_final_initialize_backoff_state
+    apo_initialize_current_qualification_state
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
+
+    if [[ -n $failed_stage ]]; then
+        apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason" || return 1
+    else
+        case $phase in
+            TRYBOOT_PROOF|GPU_SMOKE|CPU_SWEEP)
+                ;;
+            SELECTION)
+                if [[ $(apo_state_get SUBPHASE '') != CPU ]]; then
+                    target_cpu=$(apo_state_get SAFE_CPU '')
+                    target_gpu=$(apo_state_get SAFE_GPU '')
+                    [[ $target_cpu =~ ^[0-9]+$ ]] || return 1
+                    apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+                    apo_state_set CPU_QUALIFICATION_TARGET "$target_cpu"
+                    apo_state_set CPU_QUALIFIED_CLOCK ''
+                    apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+                    apo_state_set GPU_QUALIFICATION_CPU "$target_cpu"
+                    apo_state_set GPU_QUALIFICATION_TARGET "$target_gpu"
+                    apo_state_set GPU_QUALIFIED_CPU ''
+                    apo_state_set GPU_QUALIFIED_CLOCK ''
+                    apo_state_set RECOMMENDED_CPU "$target_cpu"
+                    apo_state_set RECOMMENDED_GPU "$target_gpu"
+                    apo_state_set PHASE CPU_QUALIFICATION
+                    apo_state_set SUBPHASE READY
+                fi
+                ;;
+            CPU_QUALIFICATION)
+                target_cpu=$(apo_state_get SAFE_CPU '')
+                [[ $target_cpu =~ ^[0-9]+$ ]] || return 1
+                apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+                apo_state_set CPU_QUALIFICATION_TARGET "$target_cpu"
+                apo_state_set CPU_QUALIFIED_CLOCK ''
+                apo_state_set RECOMMENDED_CPU "$target_cpu"
+                ;;
+            GPU_SWEEP|GPU_QUALIFICATION|FINAL_VALIDATION)
+                target_cpu=$(apo_state_get RECOMMENDED_CPU "$(apo_state_get SAFE_CPU '')")
+                target_gpu=$(apo_state_get RECOMMENDED_GPU "$(apo_state_get SAFE_GPU '')")
+                [[ $target_cpu =~ ^[0-9]+$ ]] || return 1
+                apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+                apo_state_set CPU_QUALIFICATION_TARGET "$target_cpu"
+                apo_state_set CPU_QUALIFIED_CLOCK ''
+                apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+                apo_state_set GPU_QUALIFICATION_CPU "$target_cpu"
+                apo_state_set GPU_QUALIFICATION_TARGET "$target_gpu"
+                apo_state_set GPU_QUALIFIED_CPU ''
+                apo_state_set GPU_QUALIFIED_CLOCK ''
+                apo_state_set RECOMMENDED_CPU "$target_cpu"
+                apo_state_set RECOMMENDED_GPU "$target_gpu"
+                apo_state_clear_final_validation
+                apo_state_set FINAL_STAGE ''
+                apo_state_set FINAL_TARGET_CPU "$target_cpu"
+                apo_state_set FINAL_TARGET_GPU "$target_gpu"
+                apo_clear_candidate_checkpoint
+                apo_state_set PHASE CPU_QUALIFICATION
+                apo_state_set SUBPHASE READY
+                ;;
+            *) return 1 ;;
+        esac
+        apo_state_set STATUS RUNNING
+        apo_state_set FAILURE_CLASS ''
+        apo_state_set FAILURE_REASON ''
+        apo_state_save
+    fi
+    apo_event overclock-state-upgrade INFO '' "Upgraded active automatic run schema $legacy_schema to $APO_CURRENT_RUN_SCHEMA; the new isolated CPU/GPU qualifications will run before combined production validation."
+}
+
 apo_final_migrate_legacy_retry_state() {
     local legacy_schema=$1
-    [[ $legacy_schema =~ ^[0-9]+$ && $legacy_schema -lt $APO_CURRENT_RUN_SCHEMA ]] || return 1
-    apo_final_saved_failure_is_retryable "$legacy_schema" || return 1
-    apo_final_initialize_backoff_state
-    apo_validate_auto_resume_state || return 1
-    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
-    apo_state_save
-    apo_event overclock-state-upgrade INFO '' "Upgraded the recovered final-stress failure from run schema $legacy_schema to $APO_CURRENT_RUN_SCHEMA for bounded automatic backoff."
+    apo_migrate_active_automatic_state "$legacy_schema"
 }
 
 apo_final_schedule_stress_backoff() {
     local failed_stage=$1 failure_class=$2 failure_reason=$3
-    local current_cpu current_gpu next_cpu next_gpu domain step count history entry
-    [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && $failure_class == STABILITY_FAILURE && -n $failure_reason &&
+    local current_cpu current_gpu next_cpu next_gpu domain step count history entry next_phase
+    [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && -n $failure_reason ]] || return 1
+    apo_class_is_edge_failure "$failure_class" || return 1
+    [[
        $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED &&
        $(apo_state_get FLOOR_VALIDATED 0) == 0 &&
        $(apo_state_get TRYBOOT_EXPECTED 0) == 0 &&
@@ -1281,7 +1763,7 @@ apo_final_schedule_stress_backoff() {
        -z $(apo_state_get TRYBOOT_OWNED_HASH '') &&
        -z $(apo_state_get TRYBOOT_RESERVATION_HASH '') &&
        -z $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') &&
-       -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]] || return 1
+        -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]] || return 1
     current_cpu=$(apo_state_get RECOMMENDED_CPU '')
     current_gpu=$(apo_state_get RECOMMENDED_GPU '')
     [[ $current_cpu =~ ^[0-9]+$ && $current_gpu =~ ^[0-9]+$ &&
@@ -1290,24 +1772,27 @@ apo_final_schedule_stress_backoff() {
     next_cpu=$current_cpu
     next_gpu=$current_gpu
     case $failed_stage in
-        CPU_STRESS)
+        CPU_QUALIFICATION|CPU_STRESS)
             domain=CPU
+            next_phase=CPU_QUALIFICATION
             step=$APO_AUTO_CPU_GUARD_MHZ
             (( current_cpu > APO_AUTO_BASELINE_CPU )) || return 1
             next_cpu=$((current_cpu - step))
             (( next_cpu < APO_AUTO_BASELINE_CPU )) && next_cpu=$APO_AUTO_BASELINE_CPU
             entry="CPU:${current_cpu}>${next_cpu}"
             ;;
-        GPU_STRESS)
+        GPU_QUALIFICATION|GPU_STRESS)
             domain=GPU
+            next_phase=GPU_QUALIFICATION
             step=$APO_AUTO_GPU_GUARD_MHZ
             (( current_gpu > APO_AUTO_BASELINE_GPU )) || return 1
             next_gpu=$((current_gpu - step))
             (( next_gpu < APO_AUTO_BASELINE_GPU )) && next_gpu=$APO_AUTO_BASELINE_GPU
             entry="GPU:${current_gpu}>${next_gpu}"
             ;;
-        ENDURANCE)
+        ENDURANCE|PRE_STRESS_BOOT|BOOT_*)
             domain=PAIR
+            next_phase=CPU_QUALIFICATION
             (( current_cpu > APO_AUTO_BASELINE_CPU || current_gpu > APO_AUTO_BASELINE_GPU )) || return 1
             if (( current_cpu > APO_AUTO_BASELINE_CPU )); then
                 next_cpu=$((current_cpu - APO_AUTO_CPU_GUARD_MHZ))
@@ -1340,13 +1825,37 @@ apo_final_schedule_stress_backoff() {
     apo_state_set FAILURE_CLASS ''
     apo_state_set FAILURE_REASON ''
     apo_state_clear_final_validation
-    apo_final_checkpoint "$next_cpu" "$next_gpu" PRE_STRESS_BOOT
+    apo_state_set FINAL_TARGET_CPU "$next_cpu"
+    apo_state_set FINAL_TARGET_GPU "$next_gpu"
+    apo_state_set FINAL_STAGE ''
+    apo_clear_candidate_checkpoint
+    case $next_phase in
+        CPU_QUALIFICATION)
+            apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+            apo_state_set CPU_QUALIFICATION_TARGET "$next_cpu"
+            apo_state_set CPU_QUALIFIED_CLOCK ''
+            apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+            apo_state_set GPU_QUALIFICATION_CPU "$next_cpu"
+            apo_state_set GPU_QUALIFICATION_TARGET "$next_gpu"
+            apo_state_set GPU_QUALIFIED_CPU ''
+            apo_state_set GPU_QUALIFIED_CLOCK ''
+            apo_state_phase CPU_QUALIFICATION READY RUNNING
+            ;;
+        GPU_QUALIFICATION)
+            apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+            apo_state_set GPU_QUALIFICATION_CPU "$next_cpu"
+            apo_state_set GPU_QUALIFICATION_TARGET "$next_gpu"
+            apo_state_set GPU_QUALIFIED_CPU ''
+            apo_state_set GPU_QUALIFIED_CLOCK ''
+            apo_state_phase GPU_QUALIFICATION READY RUNNING
+            ;;
+    esac
     if [[ $domain == PAIR ]]; then
-        apo_summary_line "FINAL BACKOFF PAIR: $entry after verified normal recovery; combined endurance did not identify one failing domain, so every still-overclocked domain was reduced by its production guard before restarting complete final validation"
-        apo_event final-backoff WARN "$failure_class" "Final combined endurance rejected CPU=$current_cpu GPU=$current_gpu without identifying one failing domain: $failure_reason; conservatively reduced the pair to CPU=$next_cpu GPU=$next_gpu and restarted complete final validation"
+        apo_summary_line "FINAL BACKOFF PAIR: $entry after verified normal recovery; pair-level evidence did not identify one failing domain, so every still-overclocked domain was reduced before CPU and GPU qualification restart"
+        apo_event final-backoff WARN "$failure_class" "Pair-level validation rejected CPU=$current_cpu GPU=$current_gpu without identifying one failing domain: $failure_reason; conservatively reduced the pair to CPU=$next_cpu GPU=$next_gpu and restarted both domain qualifications"
     else
-        apo_summary_line "FINAL BACKOFF $domain: $entry after verified normal recovery; restarting complete final validation at CPU $next_cpu MHz / GPU $next_gpu MHz"
-        apo_event final-backoff WARN "$failure_class" "Final $domain-only stress rejected CPU=$current_cpu GPU=$current_gpu: $failure_reason; reduced $domain by $step MHz and restarted complete final validation at CPU=$next_cpu GPU=$next_gpu"
+        apo_summary_line "QUALIFICATION BACKOFF $domain: $entry after verified normal recovery; repeating $domain qualification at CPU $next_cpu MHz / GPU $next_gpu MHz"
+        apo_event qualification-backoff WARN "$failure_class" "$domain qualification rejected CPU=$current_cpu GPU=$current_gpu: $failure_reason; reduced $domain by $step MHz and will repeat at CPU=$next_cpu GPU=$next_gpu"
     fi
 }
 
@@ -1394,7 +1903,7 @@ apo_final_record_failure() {
         apo_event edge-cpu-24h WARN "$failure_class" "Optional edge CPU clock was rejected: $failure_reason; retained validated production floor CPU=$floor_cpu GPU=$floor_gpu"
         return 0
     fi
-    if [[ -n $stress_result_structured ]] && apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason"; then
+    if apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason"; then
         return 2
     fi
     apo_state_clear_final_validation
@@ -1417,7 +1926,14 @@ apo_final_validation() {
     [[ -n $recommended_cpu && -n $recommended_gpu ]] || { apo_state_clear_final_validation; apo_state_fail HARNESS_FAILURE 'Final validation has no saved conservative recommendation.'; return 1; }
     final_kind=$([[ $APO_REQUIRE_GPU_STRESS == 1 ]] && printf combined || printf cpu)
     endurance_duration=${APO_CFG[FINAL_DURATION_S]}
-    [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == RUNNING ]] && endurance_duration=86400
+    if [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == RUNNING ]]; then
+        endurance_duration=86400
+        [[ $APO_REQUIRE_GPU_STRESS == 1 ]] || {
+            apo_state_fail HARNESS_FAILURE 'The optional 24-hour CPU edge requires the qualified GPU workload; CPU-only edge validation is refused.'
+            return 1
+        }
+        final_kind=combined
+    fi
     if ! apo_final_identity_matches "$recommended_cpu" "$recommended_gpu" || [[ -z $(apo_state_get FINAL_STAGE '') ]]; then
         apo_state_clear_final_validation
         apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" PRE_STRESS_BOOT
@@ -1428,63 +1944,8 @@ apo_final_validation() {
             PRE_STRESS_BOOT)
                 if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-pre-stress-boot; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure final-pre-stress-recovery "$failure_class" "$failure_reason"; then return 0; fi
-                    return 1
-                fi
-                apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" CPU_STRESS
-                ;;
-            CPU_STRESS)
-                if ! apo_candidate_tryboot_active_in_state "$recommended_cpu" "$recommended_gpu"; then
-                    if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-cpu-resume-boot; then
-                        failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                        if apo_final_record_failure final-cpu-resume-recovery "$failure_class" "$failure_reason"; then return 0; fi
-                        return 1
-                    fi
-                fi
-                APO_LAST_RESULT_STRUCTURED=0
-                if ! apo_run_stress cpu "${APO_CFG[CANDIDATE_DURATION_S]}" final-cpu-only 0; then
-                    failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
-                    if apo_final_record_failure final-cpu-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then
-                        return 0
-                    else
-                        failure_action_rc=$?
-                    fi
-                    if (( failure_action_rc == 2 )); then
-                        recommended_cpu=$(apo_state_get RECOMMENDED_CPU '')
-                        recommended_gpu=$(apo_state_get RECOMMENDED_GPU '')
-                        continue
-                    fi
-                    return 1
-                fi
-                if (( APO_REQUIRE_GPU_STRESS == 1 )); then
-                    apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" GPU_STRESS
-                else
-                    apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" ENDURANCE
-                fi
-                ;;
-            GPU_STRESS)
-                if ! apo_candidate_tryboot_active_in_state "$recommended_cpu" "$recommended_gpu"; then
-                    if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-gpu-resume-boot; then
-                        failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                        if apo_final_record_failure final-gpu-resume-recovery "$failure_class" "$failure_reason"; then return 0; fi
-                        return 1
-                    fi
-                fi
-                APO_LAST_RESULT_STRUCTURED=0
-                if ! apo_run_stress gpu "${APO_CFG[CANDIDATE_DURATION_S]}" final-gpu-only 0; then
-                    failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
-                    if apo_final_record_failure final-gpu-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then
-                        return 0
-                    else
-                        failure_action_rc=$?
-                    fi
-                    if (( failure_action_rc == 2 )); then
-                        recommended_cpu=$(apo_state_get RECOMMENDED_CPU '')
-                        recommended_gpu=$(apo_state_get RECOMMENDED_GPU '')
-                        continue
-                    fi
+                    if apo_final_record_failure final-pre-stress-recovery "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                    (( failure_action_rc == 2 )) && return 2
                     return 1
                 fi
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" ENDURANCE
@@ -1493,7 +1954,8 @@ apo_final_validation() {
                 if ! apo_candidate_tryboot_active_in_state "$recommended_cpu" "$recommended_gpu"; then
                     if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-endurance-resume-boot; then
                         failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                        if apo_final_record_failure final-endurance-resume-recovery "$failure_class" "$failure_reason"; then return 0; fi
+                        if apo_final_record_failure final-endurance-resume-recovery "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                        (( failure_action_rc == 2 )) && return 2
                         return 1
                     fi
                 fi
@@ -1506,16 +1968,13 @@ apo_final_validation() {
                     else
                         failure_action_rc=$?
                     fi
-                    if (( failure_action_rc == 2 )); then
-                        recommended_cpu=$(apo_state_get RECOMMENDED_CPU '')
-                        recommended_gpu=$(apo_state_get RECOMMENDED_GPU '')
-                        continue
-                    fi
+                    (( failure_action_rc == 2 )) && return 2
                     return 1
                 fi
                 if ! apo_health_check "$recommended_cpu" "$recommended_gpu" "$APO_TEST_VOLTAGE" final-post-endurance-health; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure final-health-recovery "$failure_class" "$failure_reason"; then return 0; fi
+                    if apo_final_record_failure final-health-recovery "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                    (( failure_action_rc == 2 )) && return 2
                     return 1
                 fi
                 apo_state_set VALIDATION_DURATION_S "$endurance_duration"
@@ -1539,7 +1998,8 @@ apo_final_validation() {
                 fi
                 if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" "final-post-stress-boot-${boot_number}"; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure "final-post-stress-recovery-${boot_number}" "$failure_class" "$failure_reason"; then return 0; fi
+                    if apo_final_record_failure "final-post-stress-recovery-${boot_number}" "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                    (( failure_action_rc == 2 )) && return 2
                     return 1
                 fi
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" "NORMAL_${boot_number}"
@@ -1634,7 +2094,7 @@ apo_final_validation() {
 }
 
 apo_run_tuning() {
-    local phase
+    local phase tuning_rc passed_cpu safe_cpu
     while :; do
         phase=$(apo_state_get PHASE TRYBOOT_PROOF)
         case $phase in
@@ -1662,7 +2122,6 @@ apo_run_tuning() {
                 ;;
             SELECTION)
                 if [[ $(apo_state_get SUBPHASE) == CPU ]]; then
-                    local passed_cpu safe_cpu
                     passed_cpu=$(apo_state_get PASSED_CPUS '')
                     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
                         safe_cpu=$(apo_state_get SAFE_CPU "$APO_NORMAL_CPU")
@@ -1672,11 +2131,38 @@ apo_run_tuning() {
                         safe_cpu=$APO_NORMAL_CPU
                     fi
                     apo_state_set SAFE_CPU "$safe_cpu"; apo_state_save
-                    if (( APO_NEED_GPU == 1 )); then
+                    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
+                        apo_state_set RECOMMENDED_CPU "$safe_cpu"
+                        if [[ $(apo_state_get CPU_QUALIFIED_CLOCK '') != "$safe_cpu" ]]; then
+                            apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+                            apo_state_set CPU_QUALIFICATION_TARGET "$safe_cpu"
+                            apo_state_set CPU_QUALIFIED_CLOCK ''
+                        fi
+                        apo_state_phase CPU_QUALIFICATION READY RUNNING
+                    elif (( APO_NEED_GPU == 1 )); then
                         apo_state_phase GPU_SWEEP READY RUNNING
                     else
                         apo_select_conservative_clocks || return 1
                         apo_state_phase FINAL_VALIDATION READY RUNNING
+                    fi
+                else
+                    apo_select_conservative_clocks || return 1
+                    if (( APO_AUTO_GENERATED_CANDIDATES == 1 && APO_REQUIRE_GPU_STRESS == 1 )); then
+                        apo_state_phase GPU_QUALIFICATION READY RUNNING
+                    else
+                        apo_state_phase FINAL_VALIDATION READY RUNNING
+                    fi
+                fi
+                ;;
+            CPU_QUALIFICATION)
+                apo_qualify_cpu || return 1
+                if (( APO_NEED_GPU == 1 )); then
+                    if [[ $(apo_state_get GPU_GUARD_VERIFIED 0) == 1 ]]; then
+                        apo_state_set GPU_QUALIFICATION_CPU "$(apo_state_get RECOMMENDED_CPU '')"
+                        apo_state_set GPU_QUALIFICATION_TARGET "$(apo_state_get RECOMMENDED_GPU '')"
+                        apo_state_phase GPU_QUALIFICATION READY RUNNING
+                    else
+                        apo_state_phase GPU_SWEEP READY RUNNING
                     fi
                 else
                     apo_select_conservative_clocks || return 1
@@ -1687,8 +2173,18 @@ apo_run_tuning() {
                 apo_sweep_gpu || return 1
                 apo_state_phase SELECTION GPU RUNNING
                 ;;
+            GPU_QUALIFICATION)
+                apo_qualify_gpu || return 1
+                apo_state_phase FINAL_VALIDATION READY RUNNING
+                ;;
             FINAL_VALIDATION)
-                apo_final_validation || return 1
+                if apo_final_validation; then
+                    :
+                else
+                    tuning_rc=$?
+                    (( tuning_rc == 2 )) && continue
+                    return 1
+                fi
                 ;;
             COMPLETE) return 0 ;;
             PREPARED) apo_state_phase TRYBOOT_PROOF READY RUNNING ;;

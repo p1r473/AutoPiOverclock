@@ -195,4 +195,13 @@ if grep -Fq 'skip default-sink identity checks' "$ROOT/lib/detect.sh"; then
     echo 'Debian graphical preparation still documents skipped audio validation' >&2
     exit 1
 fi
+(
+    APO_ROOT=$ROOT
+    source "$ROOT/lib/common.sh"
+    source "$ROOT/lib/detect.sh"
+    APO_MODE_REQUESTED=auto
+    APO_DISCOVERY=([DISPLAY_PRESENT]=0 [DISPLAY_CONNECTED]=0 [AUDIO_BASELINE]='')
+    apo_choose_mode
+    [[ $APO_MODE_EFFECTIVE == headless ]]
+)
 printf 'test_public_safety: PASS\n'

@@ -59,8 +59,8 @@ if (
 fi
 grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fan-change.err"
 
-# Repeating the public command adopts only the exact recovered schema-7
-# final-stress boundary produced by alpha.20, not an arbitrary failed run.
+# Repeating the public command adopts an exact recovered schema-7
+# final-stress boundary, not an arbitrary failed run.
 FAILED_FINAL_RUN=20260827-010203-fedcba9876543210
 FAILED_FINAL_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_FINAL_RUN}.state"
 write_state_fixture "$FAILED_FINAL_STATE" \
@@ -126,8 +126,8 @@ ln -sfn "$(basename "$FAILED_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tron-lates
     [[ $APO_SELECTED_RUN_ID == "$FAILED_ENDURANCE_RUN" ]]
 )
 
-# An otherwise similar legacy schema-7 combined failure remains historical
-# evidence and is not selected for the schema-8 paired-backoff policy.
+# A recovered schema-7 combined failure is also selected: schema 9 migrates it
+# through the conservative paired backoff and fresh domain qualifications.
 FAILED_LEGACY_ENDURANCE_RUN=20260828-205613-3333333333333333
 FAILED_LEGACY_ENDURANCE_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_LEGACY_ENDURANCE_RUN}.state"
 write_state_fixture "$FAILED_LEGACY_ENDURANCE_STATE" \
@@ -145,6 +145,6 @@ ln -sfn "$(basename "$FAILED_LEGACY_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tro
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == run ]]
-    [[ -z $APO_SELECTED_RUN_ID ]]
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$FAILED_LEGACY_ENDURANCE_RUN" ]]
 )

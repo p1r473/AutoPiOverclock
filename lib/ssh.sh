@@ -3,6 +3,53 @@
 
 declare -ag APO_SSH_OPTIONS=()
 APO_REMOTE_IS_ROOT=0
+readonly APO_PERSISTENT_SSH_POLL_SECONDS=10
+readonly APO_PERSISTENT_SSH_NOTICE_SECONDS=300
+
+apo_persistent_ssh_recovery_enabled() {
+    [[ ${APO_PERSISTENT_SSH_RECOVERY:-0} == 1 && ${APO_PUBLIC_COMMAND:-} == overclock &&
+       ${APO_MUTATING_COMMAND:-0} == 1 ]]
+}
+
+apo_recovery_wait_checkpoint() {
+    local status=$1 context=$2 timeout_count
+    [[ -n ${APO_STATE_FILE:-} && -f ${APO_STATE_FILE:-} ]] || return 0
+    apo_state_set RECOVERY_WAIT_STATUS "$status"
+    apo_state_set RECOVERY_WAIT_CONTEXT "$context"
+    case $status in
+        WAITING)
+            apo_state_set RECOVERY_WAIT_STARTED_AT "$(apo_now_iso)"
+            timeout_count=$(apo_state_get RECOVERY_WAIT_TIMEOUTS 0)
+            [[ $timeout_count =~ ^[0-9]+$ ]] || timeout_count=0
+            apo_state_set RECOVERY_WAIT_TIMEOUTS "$((timeout_count + 1))"
+            ;;
+        RETURNED|IDLE)
+            apo_state_set RECOVERY_WAIT_STARTED_AT ''
+            ;;
+    esac
+    apo_state_save
+}
+
+apo_recovery_wait_event() {
+    local severity=$1 context=$2 message=$3
+    if [[ -n ${APO_LOG_FILE:-} && -f ${APO_LOG_FILE:-} ]]; then
+        apo_event "$context" "$severity" '' "$message"
+    else
+        apo_warn_plain "$message"
+    fi
+}
+
+apo_recovery_wait_begin() {
+    local context=$1 timeout_seconds=$2
+    apo_recovery_wait_checkpoint WAITING "$context"
+    apo_recovery_wait_event WARN "$context" "The target has not returned to SSH after ${timeout_seconds}s. The unattended overclock remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves the saved run resumable."
+}
+
+apo_recovery_wait_finish() {
+    local context=$1
+    apo_recovery_wait_checkpoint RETURNED "$context"
+    apo_recovery_wait_event INFO "$context" 'SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.'
+}
 
 apo_ssh_init() {
     APO_SSH_OPTIONS=(
@@ -95,7 +142,7 @@ apo_remote_boot_id() { apo_ssh_exec 'cat /proc/sys/kernel/random/boot_id' 2>/dev
 apo_remote_tryboot_flag() { apo_ssh_exec 'od -An -tx1 /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d " \n"' 2>/dev/null; }
 
 apo_wait_for_ssh() {
-    local timeout_seconds=$1 deadline remaining
+    local timeout_seconds=$1 context=${2:-ssh-recovery} deadline remaining next_notice
     deadline=$((SECONDS + timeout_seconds))
     while (( SECONDS < deadline )); do
         if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
@@ -104,11 +151,25 @@ apo_wait_for_ssh() {
         (( remaining > 0 )) || break
         if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
     done
-    return 1
+    apo_persistent_ssh_recovery_enabled || return 1
+    apo_recovery_wait_begin "$context" "$timeout_seconds"
+    next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
+    while :; do
+        if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
+        if apo_ssh_exec true >/dev/null 2>&1; then
+            apo_recovery_wait_finish "$context"
+            return 0
+        fi
+        if (( SECONDS >= next_notice )); then
+            apo_recovery_wait_event INFO "$context" 'The target is still unreachable; unattended recovery monitoring remains active and no additional reboot is being requested.'
+            next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
+        fi
+        sleep "$APO_PERSISTENT_SSH_POLL_SECONDS"
+    done
 }
 
 apo_wait_for_new_boot() {
-    local old_boot_id=$1 timeout_seconds=$2 deadline remaining current=''
+    local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot} deadline remaining current='' next_notice
     deadline=$((SECONDS + timeout_seconds))
     while (( SECONDS < deadline )); do
         if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
@@ -118,5 +179,24 @@ apo_wait_for_new_boot() {
         (( remaining > 0 )) || break
         if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
     done
-    return 1
+    current=$(apo_remote_boot_id 2>/dev/null || true)
+    [[ -z $current ]] || return 1
+    apo_persistent_ssh_recovery_enabled || return 1
+    apo_recovery_wait_begin "$context" "$timeout_seconds"
+    next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
+    while :; do
+        if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
+        current=$(apo_remote_boot_id 2>/dev/null || true)
+        if [[ -n $current ]]; then
+            apo_recovery_wait_finish "$context"
+            printf '%s' "$current"
+            if [[ $current != "$old_boot_id" ]]; then return 0; fi
+            return 1
+        fi
+        if (( SECONDS >= next_notice )); then
+            apo_recovery_wait_event INFO "$context" 'The target is still unreachable; unattended recovery monitoring remains active and no additional reboot is being requested.'
+            next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
+        fi
+        sleep "$APO_PERSISTENT_SSH_POLL_SECONDS"
+    done
 }

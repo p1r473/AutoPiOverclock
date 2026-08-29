@@ -25,7 +25,9 @@ APO_CPU_CANDIDATES=()
 APO_GPU_CANDIDATES=()
 apo_state_set PHASE PREPARE
 apo_state_set SUBPHASE INITIAL
-[[ $(apo_progress_estimate_remaining_tests) == 26 ]]
+[[ $(apo_progress_estimate_remaining_tests) == 27 ]]
+[[ $(apo_progress_qualification_cost) == 7560 ]]
+[[ $(apo_progress_final_full_cost 28800) == 29280 ]]
 [[ $(apo_progress_format_duration 45) == 45s ]]
 [[ $(apo_progress_format_duration 452) == 7m32s ]]
 [[ $(apo_progress_format_duration 22320) == 6h12m ]]

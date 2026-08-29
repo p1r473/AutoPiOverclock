@@ -3,8 +3,8 @@
 
 declare -Ag APO_STATE=()
 
-readonly APO_CURRENT_RUN_SCHEMA=8
-readonly APO_CURRENT_VALIDATION_SCHEMA=7
+readonly APO_CURRENT_RUN_SCHEMA=9
+readonly APO_CURRENT_VALIDATION_SCHEMA=8
 
 apo_state_valid_key() { [[ ${1-} =~ ^[A-Z][A-Z0-9_]*$ ]]; }
 apo_state_encode() { printf '%s' "${1-}" | base64 | tr -d '\n'; }
@@ -99,6 +99,17 @@ apo_state_initialize() {
     apo_state_set GPU_GUARD_TARGET ''
     apo_state_set CPU_GUARD_VERIFIED 0
     apo_state_set GPU_GUARD_VERIFIED 0
+    apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+    apo_state_set CPU_QUALIFICATION_TARGET ''
+    apo_state_set CPU_QUALIFIED_CLOCK ''
+    apo_state_set CPU_QUALIFICATION_HISTORY ''
+    apo_state_set CPU_QUALIFICATION_LAST_CLASS ''
+    apo_state_set CPU_QUALIFICATION_LAST_REASON ''
+    apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+    apo_state_set GPU_QUALIFICATION_CPU ''
+    apo_state_set GPU_QUALIFICATION_TARGET ''
+    apo_state_set GPU_QUALIFIED_CPU ''
+    apo_state_set GPU_QUALIFIED_CLOCK ''
     apo_state_set FLOOR_CPU ''
     apo_state_set FLOOR_GPU ''
     apo_state_set FLOOR_DURATION_S ''
@@ -163,6 +174,10 @@ apo_state_initialize() {
     apo_state_set LAST_BOOT_ID ''
     apo_state_set CANDIDATE_BOOT_ID ''
     apo_state_set NORMAL_BOOT_ID ''
+    apo_state_set RECOVERY_WAIT_STATUS IDLE
+    apo_state_set RECOVERY_WAIT_CONTEXT ''
+    apo_state_set RECOVERY_WAIT_STARTED_AT ''
+    apo_state_set RECOVERY_WAIT_TIMEOUTS 0
     apo_state_set MANUAL_TEST "${APO_MANUAL_TEST:-0}"
     apo_state_set MANUAL_CPU "${APO_MANUAL_CPU:-}"
     apo_state_set MANUAL_GPU "${APO_MANUAL_GPU:-}"
