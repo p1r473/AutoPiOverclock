@@ -171,8 +171,12 @@ resolve_discovered_auto_plan debian 2400 960 0
     APO_DRY_RUN=0
     APO_CONFIG_FILE=''
     APO_MODE_REQUESTED=auto
+    # These plan overrides are intentionally isolated to this fixture.
+    # shellcheck disable=SC2030
     APO_QUALIFICATION_DURATION_S=10800
+    # shellcheck disable=SC2030
     APO_FINAL_DURATION_S=21600
+    # shellcheck disable=SC2030
     APO_EDGE_DURATION_S=43200
     APO_EDGE_CPU_24H=1
     apo_config_load_for_new_run
@@ -210,8 +214,12 @@ apo_config_migrate_duration_schema_9
     apo_state_set ORIGIN_COMMAND overclock
     apo_state_set PHASE PREPARE
     apo_config_restore_from_state
+    # The custom-plan fixture above intentionally ran in another subshell.
+    # shellcheck disable=SC2031
     [[ $APO_QUALIFICATION_DURATION_S == "$APO_DEFAULT_QUALIFICATION_DURATION_S" ]]
+    # shellcheck disable=SC2031
     [[ $APO_FINAL_DURATION_S == "$APO_DEFAULT_FINAL_DURATION_S" ]]
+    # shellcheck disable=SC2031
     [[ $APO_EDGE_DURATION_S == "$APO_DEFAULT_EDGE_DURATION_S" ]]
 )
 if (
