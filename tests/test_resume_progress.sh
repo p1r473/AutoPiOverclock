@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-set -x
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
@@ -628,6 +627,14 @@ apo_state_set CPU_REFINE_COMPLETE 0
 apo_state_set CPU_GUARD_TARGET ''
 apo_state_set CPU_GUARD_VERIFIED 0
 apo_state_set SAFE_CPU ''
+apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+apo_state_set CPU_QUALIFICATION_TARGET ''
+apo_state_set CPU_QUALIFIED_CLOCK ''
+apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+apo_state_set GPU_QUALIFICATION_CPU ''
+apo_state_set GPU_QUALIFICATION_TARGET ''
+apo_state_set GPU_QUALIFIED_CPU ''
+apo_state_set GPU_QUALIFIED_CLOCK ''
 apo_validate_auto_resume_state
 [[ ${#ACTIONS[@]} == 0 ]]
 
