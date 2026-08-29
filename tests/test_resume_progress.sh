@@ -367,8 +367,9 @@ apo_final_validation
 [[ " ${ACTIONS[*]} " == *' stress:combined:final-endurance '* ]]
 apo_validate_auto_resume_state
 
-# CPU-only final stress uses the wider 50 MHz CPU production guard. Ambiguous
-# stages and harness failures are not converted into automatic clock evidence.
+# CPU-only final stress uses the wider 50 MHz CPU production guard. A proven
+# combined-endurance failure cannot identify one domain, so it lowers every
+# still-overclocked domain by its guard in one recorded paired step.
 APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 APO_EDGE_CPU_24H=0
@@ -382,14 +383,70 @@ apo_final_schedule_stress_backoff CPU_STRESS STABILITY_FAILURE 'CPU final fixtur
 [[ $(apo_state_get RECOMMENDED_GPU) == 900 ]]
 [[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'CPU:3000>2950' ]]
 apo_validate_auto_resume_state
-if apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'combined failure is ambiguous'; then
-    echo 'combined final failure was incorrectly converted into a domain backoff' >&2
-    exit 1
-fi
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'combined pair failed'
+[[ $(apo_state_get RECOMMENDED_CPU) == 2900 ]]
+[[ $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 2 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'CPU:3000>2950,PAIR:2950/900>2900/875' ]]
+[[ $(apo_state_get FINAL_BACKOFF_LAST_STAGE) == ENDURANCE ]]
+apo_validate_auto_resume_state
 if apo_final_schedule_stress_backoff CPU_STRESS HARNESS_FAILURE 'unproved workload'; then
     echo 'final harness failure was incorrectly converted into a clock backoff' >&2
     exit 1
 fi
+
+# A live recovered reboot during ordinary combined endurance immediately
+# restarts complete validation at the paired backoff, without attributing the
+# reboot to CPU or GPU alone.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_CPU_24H=0
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set STATUS RUNNING
+ENDURANCE_FAILURES=0
+apo_boot_candidate() {
+    ACTIONS+=("boot:$3")
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$1"
+    apo_state_set CURRENT_GPU "$2"
+}
+apo_recover_stress_failure() {
+    ACTIONS+=("recover:$1")
+    APO_LAST_CLASS=$2
+    APO_LAST_REASON=$3
+    apo_return_normal "$1"
+}
+apo_run_stress() {
+    ACTIONS+=("stress:$1:$3")
+    if [[ $3 == final-endurance && $ENDURANCE_FAILURES == 0 ]]; then
+        ENDURANCE_FAILURES=1
+        APO_LAST_CLASS=STABILITY_FAILURE
+        APO_LAST_REASON='combined endurance fixture rebooted autonomously'
+        APO_LAST_RESULT_STRUCTURED=0
+        return 1
+    fi
+    APO_LAST_RESULT_STRUCTURED=1
+}
+apo_final_validation
+[[ $ENDURANCE_FAILURES == 1 ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 1 ]]
+[[ $(apo_state_get FINAL_BACKOFF_CPU) == 2950 ]]
+[[ $(apo_state_get FINAL_BACKOFF_GPU) == 875 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'PAIR:3000/900>2950/875' ]]
+[[ $(apo_state_get FINAL_BACKOFF_LAST_STAGE) == ENDURANCE ]]
+[[ $(apo_state_get FINAL_CPU) == 2950 && $(apo_state_get FINAL_GPU) == 875 ]]
+[[ $(apo_state_get STATUS) == PASS && $(apo_state_get PHASE) == COMPLETE ]]
+[[ " ${ACTIONS[*]} " == *' recover:final-endurance-recovery '* ]]
+[[ " ${ACTIONS[*]} " == *' stress:cpu:final-cpu-only '* ]]
+[[ " ${ACTIONS[*]} " == *' stress:gpu:final-gpu-only '* ]]
+[[ " ${ACTIONS[*]} " == *' stress:combined:final-endurance '* ]]
+apo_validate_auto_resume_state
 
 # Ordered history is safety evidence, not a free-form recommendation override.
 apo_state_set FINAL_BACKOFF_HISTORY 'CPU:3000>2975'
@@ -425,6 +482,31 @@ apo_final_migrate_legacy_retry_state 7
 apo_final_schedule_stress_backoff GPU_STRESS "$(apo_state_get FAILURE_CLASS)" "$(apo_state_get FAILURE_REASON)"
 [[ $(apo_state_get RECOMMENDED_GPU) == 875 ]]
 apo_validate_auto_resume_state
+
+# The schema-7 compatibility bridge stays limited to the domain-specific
+# failures it originally encoded. It must not reinterpret a legacy combined
+# failure under the newer paired-backoff policy.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_CPU_24H=0
+apo_state_set RUN_SCHEMA 7
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set ORIGIN_COMMAND overclock
+apo_state_set STATUS FAILED
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set FAILURE_CLASS STABILITY_FAILURE
+apo_state_set FAILURE_REASON 'legacy combined-endurance failure'
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+if apo_final_migrate_legacy_retry_state 7; then
+    echo 'legacy combined-endurance failure was incorrectly upgraded for paired backoff' >&2
+    exit 1
+fi
 
 # A valid mid-refinement checkpoint is resumable, but malformed clock-bearing
 # state is rejected before any candidate action or arithmetic can occur.

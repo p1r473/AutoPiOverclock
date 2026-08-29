@@ -102,3 +102,49 @@ ln -sfn "$(basename "$apo_failed_harness_state")" "$CONTINUATION_OUTPUT/tron-lat
     [[ $APO_COMMAND == run ]]
     [[ -z $APO_SELECTED_RUN_ID ]]
 )
+
+# A current-schema automatic run whose combined endurance rebooted and then
+# proved complete normal recovery is adopted for conservative paired backoff.
+FAILED_ENDURANCE_RUN=20260828-205612-2222222222222222
+FAILED_ENDURANCE_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_ENDURANCE_RUN}.state"
+write_state_fixture "$FAILED_ENDURANCE_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 8 RUN_ID "$FAILED_ENDURANCE_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 STATUS FAILED PHASE FINAL_VALIDATION \
+    FAILURE_CLASS STABILITY_FAILURE FAILURE_REASON 'verified autonomous combined-endurance reboot' \
+    FINAL_STAGE ENDURANCE RECOMMENDED_CPU 3125 RECOMMENDED_GPU 1175 \
+    FINAL_TARGET_CPU 3125 FINAL_TARGET_GPU 1175 EDGE_CPU_STATUS NOT_REQUESTED \
+    FLOOR_VALIDATED 0 TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 APPLY_STATUS NOT_APPLIED
+ln -sfn "$(basename "$FAILED_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$FAILED_ENDURANCE_RUN" ]]
+)
+
+# An otherwise similar legacy schema-7 combined failure remains historical
+# evidence and is not selected for the schema-8 paired-backoff policy.
+FAILED_LEGACY_ENDURANCE_RUN=20260828-205613-3333333333333333
+FAILED_LEGACY_ENDURANCE_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_LEGACY_ENDURANCE_RUN}.state"
+write_state_fixture "$FAILED_LEGACY_ENDURANCE_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 7 RUN_ID "$FAILED_LEGACY_ENDURANCE_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 STATUS FAILED PHASE FINAL_VALIDATION \
+    FAILURE_CLASS STABILITY_FAILURE FAILURE_REASON 'legacy combined-endurance failure' \
+    FINAL_STAGE ENDURANCE RECOMMENDED_CPU 3125 RECOMMENDED_GPU 1175 \
+    FINAL_TARGET_CPU 3125 FINAL_TARGET_GPU 1175 EDGE_CPU_STATUS NOT_REQUESTED \
+    FLOOR_VALIDATED 0 TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 APPLY_STATUS NOT_APPLIED
+ln -sfn "$(basename "$FAILED_LEGACY_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == run ]]
+    [[ -z $APO_SELECTED_RUN_ID ]]
+)

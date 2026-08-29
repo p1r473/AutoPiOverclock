@@ -76,6 +76,24 @@ compact_line=$(apo_progress_render 150 600 2>&1)
 (( ${#compact_line} <= 61 ))
 [[ $compact_line != *$'\n'* ]]
 
+# Signal/exit cleanup clears the active line once and disables every later
+# logging callback from repainting it during potentially long normal recovery.
+SHUTDOWN_OUTPUT=$(mktemp)
+APO_PROGRESS_LINE_ACTIVE=1
+APO_PROGRESS_LINE_WIDTH=240
+APO_PROGRESS_SHUTTING_DOWN=0
+{
+    apo_progress_begin_shutdown
+    apo_progress_after_output
+} 2> "$SHUTDOWN_OUTPUT"
+[[ $APO_PROGRESS_SHUTTING_DOWN == 1 ]]
+[[ $APO_PROGRESS_LINE_ACTIVE == 0 && $APO_PROGRESS_LINE_WIDTH == 0 ]]
+if grep -Fq monkeebutt "$SHUTDOWN_OUTPUT"; then
+    echo 'shutdown logging repainted the progress line' >&2
+    exit 1
+fi
+rm -f "$SHUTDOWN_OUTPUT"
+
 if apo_progress_line_is_telemetry 'ordinary worker output without elapsed'; then
     echo 'ordinary worker output was mistaken for progress telemetry' >&2
     exit 1

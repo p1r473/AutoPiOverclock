@@ -10,6 +10,8 @@ readonly APO_PROGRESS_BAR_WIDTH=20
 APO_PROGRESS_SESSION_EPOCH=0
 APO_PROGRESS_SESSION_BASE_S=0
 APO_PROGRESS_LINE_ACTIVE=0
+APO_PROGRESS_LINE_WIDTH=0
+APO_PROGRESS_SHUTTING_DOWN=0
 APO_PROGRESS_LAST_TEMP=''
 APO_PROGRESS_LAST_CPU=''
 APO_PROGRESS_LAST_GPU=''
@@ -20,6 +22,7 @@ APO_PROGRESS_STRESS_ELAPSED=0
 APO_PROGRESS_STRESS_DURATION=0
 
 apo_progress_available() {
+    (( ${APO_PROGRESS_SHUTTING_DOWN:-0} == 0 )) || return 1
     case ${APO_COMMAND:-} in run|resume|post-floor-edge) ;; *) return 1 ;; esac
     [[ ${APO_PROGRESS_FORCE:-0} == 1 ]] && return 0
     [[ -t 1 && -t 2 && ${TERM:-dumb} != dumb ]]
@@ -28,6 +31,7 @@ apo_progress_available() {
 apo_progress_now_epoch() { date +%s; }
 
 apo_progress_start_session() {
+    APO_PROGRESS_SHUTTING_DOWN=0
     case ${APO_COMMAND:-} in
         run|resume|post-floor-edge) ;;
         *) APO_PROGRESS_SESSION_BASE_S=0; APO_PROGRESS_SESSION_EPOCH=0; return 0 ;;
@@ -442,14 +446,22 @@ apo_progress_render() {
     (( ${#line} > columns )) && line=${line:0:columns}
     printf '\r%-*s' "$columns" "$line" >&2
     APO_PROGRESS_LINE_ACTIVE=1
+    APO_PROGRESS_LINE_WIDTH=$columns
 }
 
 apo_progress_clear_line() {
     local columns
     (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
-    columns=$(apo_progress_terminal_columns)
+    columns=${APO_PROGRESS_LINE_WIDTH:-0}
+    [[ $columns =~ ^[0-9]+$ ]] && (( columns > 0 )) || columns=$(apo_progress_terminal_columns)
     printf '\r%*s\r' "$columns" '' >&2
     APO_PROGRESS_LINE_ACTIVE=0
+    APO_PROGRESS_LINE_WIDTH=0
+}
+
+apo_progress_begin_shutdown() {
+    APO_PROGRESS_SHUTTING_DOWN=1
+    apo_progress_clear_line
 }
 
 apo_progress_before_output() { apo_progress_clear_line; }
