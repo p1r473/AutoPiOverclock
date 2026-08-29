@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-PS4='+${LINENO}: '
-set -x
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
@@ -112,6 +110,7 @@ seed_valid_guarded_auto_floor_plan() {
     apo_state_set RECOVERY_WAIT_CONTEXT ''
     apo_state_set RECOVERY_WAIT_STARTED_AT ''
     apo_state_set RECOVERY_WAIT_TIMEOUTS 0
+    apo_final_initialize_backoff_state
 }
 
 # Only a Batocera graphical smoke failure that explicitly reports failed
