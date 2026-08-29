@@ -313,6 +313,19 @@ apo_config_store_in_state() {
     apo_state_set CFG_MANUAL_DURATION_S "${APO_MANUAL_DURATION_S:-}"
 }
 
+apo_config_state_requires_duration_plan() {
+    local origin phase
+    [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]] || return 1
+    origin=$(apo_state_get ORIGIN_COMMAND '')
+    phase=$(apo_state_get PHASE '')
+    [[ $origin == run || $origin == overclock || $origin == test ]] || return 1
+    # A crash during initial PREPARE can precede plan persistence. Keep that
+    # checkpoint inspectable and let resume's dedicated PREPARE refusal explain
+    # why it cannot continue. Every later tuning checkpoint must carry the
+    # immutable plan and still fails closed if any duration field is missing.
+    [[ -n $phase && $phase != PREPARE ]]
+}
+
 apo_config_restore_from_state() {
     local config_key internal_key
     apo_config_defaults
@@ -320,7 +333,7 @@ apo_config_restore_from_state() {
         internal_key=$(apo_config_internal_key "$config_key")
         APO_CFG[$internal_key]=$(apo_state_get "CFG_${internal_key}" "${APO_CFG[$internal_key]}")
     done
-    if [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]]; then
+    if apo_config_state_requires_duration_plan; then
         [[ -v APO_STATE[CFG_QUALIFICATION_DURATION_S] && -v APO_STATE[CFG_FINAL_DURATION_S] &&
            -v APO_STATE[CFG_EDGE_DURATION_S] && -v APO_STATE[CFG_DURATION_POLICY] ]] ||
             apo_die 'Current-schema state is missing its immutable duration plan.' "$APO_EXIT_INTERNAL"

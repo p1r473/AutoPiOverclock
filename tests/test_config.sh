@@ -201,6 +201,30 @@ apo_config_migrate_duration_schema_9
 [[ $(apo_state_get CFG_EDGE_DURATION_S) == 86400 ]]
 [[ $(apo_state_get CFG_DURATION_POLICY) == custom ]]
 
+# A crash before PREPARE persisted its plan remains inspectable and reaches the
+# dedicated safe-resume refusal. Once tuning has begun, the same missing plan
+# is corrupt current-schema state and must fail closed.
+(
+    APO_STATE=()
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set PHASE PREPARE
+    apo_config_restore_from_state
+    [[ $APO_QUALIFICATION_DURATION_S == "$APO_DEFAULT_QUALIFICATION_DURATION_S" ]]
+    [[ $APO_FINAL_DURATION_S == "$APO_DEFAULT_FINAL_DURATION_S" ]]
+    [[ $APO_EDGE_DURATION_S == "$APO_DEFAULT_EDGE_DURATION_S" ]]
+)
+if (
+    APO_STATE=()
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set PHASE CPU_SWEEP
+    apo_config_restore_from_state
+) >/dev/null 2>&1; then
+    echo 'current-schema tuning state without an immutable duration plan was accepted' >&2
+    exit 1
+fi
+
 # States created before the fan-policy key default safely to maximum cooling.
 APO_MAX_FAN=0
 (
