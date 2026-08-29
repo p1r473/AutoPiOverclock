@@ -149,13 +149,13 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
 # The simple unattended overclock command keeps observing after its ordinary
 # timeout, without issuing another reboot. A returned host is handed back to
 # the normal boot/ownership reconciliation path. Other commands stay bounded.
+APO_STATE_FILE=''
+APO_LOG_FILE=''
 (
     SECONDS=0
     APO_PUBLIC_COMMAND=overclock
     APO_MUTATING_COMMAND=1
     APO_PERSISTENT_SSH_RECOVERY=1
-    APO_STATE_FILE=''
-    APO_LOG_FILE=''
     SSH_ATTEMPTS=0
     apo_ssh_exec() {
         SSH_ATTEMPTS=$((SSH_ATTEMPTS + 1))
@@ -181,8 +181,6 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     APO_PUBLIC_COMMAND=overclock
     APO_MUTATING_COMMAND=1
     APO_PERSISTENT_SSH_RECOVERY=1
-    APO_STATE_FILE=''
-    APO_LOG_FILE=''
     BOOT_ATTEMPT_FILE=$(mktemp)
     trap 'rm -f "$BOOT_ATTEMPT_FILE"' EXIT
     apo_remote_boot_id() {
