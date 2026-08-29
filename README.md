@@ -148,14 +148,14 @@ Batocera is treated as Buildroot, not Arch Linux. AutoPiOverclock never attempts
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-08-29, `alpha.28` keeps `prepare`, `overclock`, and `reset` as the complete normal interface while retaining the expert recovery engine underneath. Automatic tuning now searches CPU first, qualifies it for two hours at stock GPU, searches and qualifies GPU for two hours at that CPU, then validates the pair for eight hours under combined CPU/GPU/I/O load. Eligible recovered boot/stability failures back off and continue automatically, and unattended `overclock` keeps monitoring through extended SSH loss without repeatedly rebooting the target. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware. Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
+As of 2026-08-29, `alpha.29` keeps `prepare`, `overclock`, and `reset` as the complete normal interface while retaining the expert recovery engine underneath. Automatic tuning now searches CPU first, qualifies it for two hours at stock GPU, searches and qualifies GPU for two hours at that CPU, then validates the pair for eight hours under combined CPU/GPU/I/O load. Eligible recovered boot/stability failures back off and continue automatically, and unattended `overclock` keeps monitoring through extended SSH loss without repeatedly rebooting the target. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware. Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
 
 | Evidence | Current status |
 | --- | --- |
 | Bash fixture suite | 19 scripted suites cover the three-command/manual-test interface, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | See the live badge for the current commit. |
-| Debian-family Raspberry Pi 5 run | Autonomous stress recovery has been observed, but a complete `alpha.28` run remains pending. |
-| Batocera Raspberry Pi 5 run | Recovery-mode boot and watchdog preparation have been exercised, but complete `alpha.28` validation remains pending. |
+| Debian-family Raspberry Pi 5 run | Autonomous stress recovery has been observed, but a complete `alpha.29` run remains pending. |
+| Batocera Raspberry Pi 5 run | Recovery-mode boot and watchdog preparation have been exercised, but complete `alpha.29` validation remains pending. |
 | Eight-hour production-floor validation | No public PASS claim until the retained run artifacts complete and are reviewed. |
 | Optional 24-hour CPU edge validation | No public PASS claim until the production floor passes first and the edge artifacts are reviewed. |
 

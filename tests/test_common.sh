@@ -156,14 +156,19 @@ APO_LOG_FILE=''
     APO_PUBLIC_COMMAND=overclock
     APO_MUTATING_COMMAND=1
     APO_PERSISTENT_SSH_RECOVERY=1
+    RECOVERY_NOTICE_FILE=$(mktemp)
+    trap 'rm -f "$RECOVERY_NOTICE_FILE"' EXIT
     SSH_ATTEMPTS=0
     apo_ssh_exec() {
         SSH_ATTEMPTS=$((SSH_ATTEMPTS + 1))
         (( SSH_ATTEMPTS >= 3 ))
     }
     sleep() { SECONDS=$((SECONDS + $1)); }
-    apo_wait_for_ssh 1 unattended-recovery-fixture
+    apo_wait_for_ssh 1 unattended-recovery-fixture 2> "$RECOVERY_NOTICE_FILE"
     [[ $SSH_ATTEMPTS == 3 ]]
+    [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
+    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended overclock remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves the saved run resumable.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.' "$RECOVERY_NOTICE_FILE"
 )
 (
     SECONDS=0
@@ -182,14 +187,19 @@ APO_LOG_FILE=''
     APO_MUTATING_COMMAND=1
     APO_PERSISTENT_SSH_RECOVERY=1
     BOOT_ATTEMPT_FILE=$(mktemp)
-    trap 'rm -f "$BOOT_ATTEMPT_FILE"' EXIT
+    RECOVERY_NOTICE_FILE=$(mktemp)
+    trap 'rm -f "$BOOT_ATTEMPT_FILE" "$RECOVERY_NOTICE_FILE"' EXIT
     apo_remote_boot_id() {
         printf x >> "$BOOT_ATTEMPT_FILE"
         (( $(wc -c < "$BOOT_ATTEMPT_FILE") >= 3 )) && printf new-boot || return 1
     }
     sleep() { SECONDS=$((SECONDS + $1)); }
-    [[ $(apo_wait_for_new_boot old-boot 1 unattended-boot-fixture) == new-boot ]]
+    returned_boot=$(apo_wait_for_new_boot old-boot 1 unattended-boot-fixture 2> "$RECOVERY_NOTICE_FILE")
+    [[ $returned_boot == new-boot ]]
     [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 3 ]]
+    [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
+    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended overclock remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves the saved run resumable.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.' "$RECOVERY_NOTICE_FILE"
 )
 
 # Reboots invalidate a Debian worker stored under /tmp. The shared reboot
