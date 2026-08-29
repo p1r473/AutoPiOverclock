@@ -51,12 +51,11 @@ run_cli reset fixture-target
 (( CLI_RC != 0 )) || fail 'fake-transport command-first reset unexpectedly succeeded'
 [[ -s $SSH_LOG ]] || fail 'command-first reset did not reach reset transport dispatch'
 
-# The old postfix form remains a compatibility alias.
+# The removed postfix form is rejected locally with the supported spelling.
 run_cli fixture-target reset
-(( CLI_RC != 0 )) || fail 'fake-transport reset unexpectedly succeeded'
-[[ $CLI_OUTPUT != *'Unexpected extra argument: reset'* ]] || fail 'TARGET reset was rejected as an extra positional argument'
-[[ $CLI_OUTPUT != *'Unknown command: reset'* ]] || fail 'TARGET reset was rejected as an unknown command'
-[[ -s $SSH_LOG ]] || fail 'TARGET reset did not reach reset transport dispatch'
+(( CLI_RC != 0 )) || fail 'removed TARGET reset order unexpectedly succeeded'
+[[ $CLI_OUTPUT == *'Use: autopioverclock reset TARGET.'* ]] || fail 'removed TARGET reset order did not show the supported spelling'
+[[ ! -s $SSH_LOG ]] || fail 'removed TARGET reset order reached SSH'
 
 # Reset is explicit and noninteractive. Tuning, saved-run selection, ordinary
 # confirmation, and report-only flags must be rejected before any SSH call.
@@ -117,6 +116,9 @@ SENTINEL_PID=''
 # Public/controller contract: command-first help, verified-stock completion, worker
 # data binding, and no terminal/session-process management.
 grep -Fq 'autopioverclock reset TARGET' "$ROOT/autopioverclock" || fail 'usage does not document mandatory-target reset syntax'
+if grep -Fq 'autopioverclock TARGET reset' "$ROOT/autopioverclock"; then
+    fail 'usage still documents the removed postfix reset syntax'
+fi
 grep -Rqs 'STOCK_VERIFIED' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller lacks the verified-stock completion checkpoint'
 grep -Rqs 'RESET_BACKUP' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not persist/report the reset backup'
 grep -Rqs 'reset-stock' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not dispatch stock reset'

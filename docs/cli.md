@@ -47,7 +47,7 @@ The total estimate is dynamic rather than a promise: a newly discovered failure 
 
 If its latest state is a current-schema `overclock` interrupted after preflight, rerunning the same `autopioverclock overclock TARGET` command safely recovers and continues that run with its recorded cooling policy. An interrupted workload is repeated at the same clocks because user interruption is not clock evidence. The same command also completes a validated application interrupted before or during reboot. A current-schema automatic run may continue after ordinary final CPU-only, GPU-only, or combined-endurance stress recorded `STABILITY_FAILURE`, completed verified normal recovery, and cleared every owned tryboot field. A domain-specific failure lowers only that clock; a combined-endurance failure lowers every still-overclocked domain by its production guard without attributing cause. Complete final validation restarts at the reduced target. The legacy schema-7 bridge remains limited to its exact CPU-only/GPU-only case. Other failed, old-schema, preflight-only, foreign, or ambiguous state is never silently adopted.
 
-`reset` is noninteractive and rejects `--yes`, run selection, tuning-plan, dependency, watchdog, dry-run, edge, fan-policy, mode, and redaction flags. The older `TARGET reset` order remains a compatibility alias; `reset TARGET` is the normal form.
+`reset TARGET` is the only stock-reset command order. It is noninteractive and rejects `--yes`, run selection, tuning-plan, dependency, watchdog, dry-run, edge, fan-policy, mode, and redaction flags.
 
 ## Normal options
 
@@ -77,7 +77,7 @@ autopioverclock report TARGET --run-id RUN_ID
 autopioverclock resume TARGET --run-id RUN_ID
 autopioverclock recover TARGET --run-id RUN_ID
 autopioverclock apply TARGET --run-id RUN_ID
-autopioverclock TARGET reset
+autopioverclock reset TARGET
 ```
 
 The `run TARGET` command and strict `--config FILE` plans remain for development and expert use. Advanced options include `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--run-id`, `--redact`, and `--yes`; a new advanced run may also use `--no-max-fan`. `prepare TARGET --dry-run` retains read-only discovery and plan generation. These are not required by the normal three-command workflow. The explicit public `overclock` command starts without a second ordinary prompt; all safety, validation, and recovery gates remain mandatory.
