@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.29 — 2026-08-29
+
+- Kept the intentional extended-SSH-recovery fixtures quiet during `make test`. The tests now capture and assert both expected recovery notices instead of printing realistic target warnings into the user's terminal.
+- Left production recovery messages unchanged: a real unattended overclock still reports when bounded SSH waiting becomes read-only monitoring and when the target returns for reconciliation.
+
 ## 0.1.0-alpha.28 — 2026-08-29
 
 - Fixed interactive progress updates stacking in Byobu/tmux and mobile terminals. Each repaint now reads the controlling terminal's live width instead of trusting a stale `COLUMNS` snapshot, explicitly returns to column one and erases the existing row, emits no newline, and leaves the wrapping final column unused.
