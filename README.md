@@ -4,14 +4,16 @@
 
 [![CI](https://github.com/p1r473/AutoPiOverclock/actions/workflows/ci.yml/badge.svg)](https://github.com/p1r473/AutoPiOverclock/actions/workflows/ci.yml)
 
-## TL;DR — get started
+## Quick start
 
 > [!CAUTION]
 > Overclocking can crash the target, corrupt storage, damage data, and in unusual cases contribute to hardware damage. `tryboot` and watchdogs reduce risk; they do not eliminate it. Back up the target and do not use this alpha on a system whose outage or corruption you cannot tolerate.
 
-Run AutoPiOverclock from a separate Linux controller. The controller and target must be different machines: self-hosted tuning is unsupported because a target crash or reboot would also remove the independent controller and recovery observer. The target must be a 64-bit ARM Raspberry Pi 5 with working SSH key authentication, adequate cooling, and a backup. Raspberry Pi OS, Debian, and supported Ubuntu Pi layouts may be graphical or completely headless; no screen, desktop session, or audio device is required in headless mode. `prepare` detects that automatically, installs and proves the target-side prerequisites, and proves recovery watchdog operation.
+### 1. Install it on the controller Pi
 
-For a new checkout:
+Run AutoPiOverclock from a separate Linux controller, not from the Raspberry Pi being tuned. The controller and target must be different machines so a target crash or reboot cannot also remove the recovery observer.
+
+Copy and paste this on the controller:
 
 ```bash
 git clone https://github.com/p1r473/AutoPiOverclock.git
@@ -21,7 +23,48 @@ sudo make install
 autopioverclock --version
 ```
 
-For an existing checkout:
+What those commands do:
+
+- `git clone` downloads AutoPiOverclock and `cd` enters its directory.
+- `make test` validates the local checkout. It does not connect to, modify, or reboot a target.
+- `sudo make install` installs the program under `/usr/local` and creates `/usr/local/bin/autopioverclock`.
+- `autopioverclock --version` confirms that the installed command works.
+
+### 2. Prepare the target
+
+Replace `pi-host` with the target's hostname, IP address, `username@hostname`, or `username@IP`:
+
+```bash
+autopioverclock prepare pi-host
+```
+
+`prepare` detects graphical or headless operation, installs and verifies required target-side dependencies, and proves watchdog recovery. The target must be a 64-bit ARM Raspberry Pi 5 with working SSH key authentication, adequate cooling, and a backup.
+
+### 3. Overclock the target
+
+```bash
+autopioverclock overclock pi-host
+```
+
+This automatically searches CPU first, qualifies CPU and GPU separately, validates the selected pair, applies only a fully validated result, and verifies the final reboot. It takes many hours and safely continues its latest eligible run when the same command is repeated.
+
+### 4. Reset to stock if you want to start over
+
+```bash
+autopioverclock reset pi-host
+```
+
+These are the only three commands needed for normal use: `prepare`, `overclock`, and `reset`. Every command names its target explicitly.
+
+To include the optional final CPU +25 MHz/24-hour edge test:
+
+```bash
+autopioverclock overclock pi-host --edge-cpu-24h
+```
+
+### Updating an existing installation
+
+Run this from the existing checkout on the controller:
 
 ```bash
 cd AutoPiOverclock
@@ -30,25 +73,6 @@ git pull --ff-only origin main
 make test
 sudo make install
 autopioverclock --version
-```
-
-Then use the three-command workflow:
-
-```bash
-# 1. Install and verify dependencies and watchdog recovery.
-autopioverclock prepare pi-host
-
-# 2. Automatically tune, validate, and apply the safe result.
-autopioverclock overclock pi-host
-
-# 3. Return to verified stock clocks whenever needed.
-autopioverclock reset pi-host
-```
-
-That is the normal interface. The optional final CPU +25 MHz test is the main tuning switch most users may want:
-
-```bash
-autopioverclock overclock pi-host --edge-cpu-24h
 ```
 
 The same commands work on Raspberry Pi OS Lite and other supported screenless Debian-family targets. Auto mode selects `headless`, skips display/audio gates, finds the actual V3D render node instead of assuming a device number, and still runs CPU, GPU, storage, thermal, throttle, kernel, watchdog, and normal-recovery checks. If the GPU route is absent or ambiguous, `prepare` stops with evidence instead of silently performing CPU-only tuning.
@@ -148,14 +172,14 @@ Batocera is treated as Buildroot, not Arch Linux. AutoPiOverclock never attempts
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-08-29, `alpha.29` keeps `prepare`, `overclock`, and `reset` as the complete normal interface while retaining the expert recovery engine underneath. Automatic tuning now searches CPU first, qualifies it for two hours at stock GPU, searches and qualifies GPU for two hours at that CPU, then validates the pair for eight hours under combined CPU/GPU/I/O load. Eligible recovered boot/stability failures back off and continue automatically, and unattended `overclock` keeps monitoring through extended SSH loss without repeatedly rebooting the target. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware. Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
+As of 2026-08-29, `alpha.30` keeps `prepare`, `overclock`, and `reset` as the complete normal interface while retaining the expert recovery engine underneath. Automatic tuning now searches CPU first, qualifies it for two hours at stock GPU, searches and qualifies GPU for two hours at that CPU, then validates the pair for eight hours under combined CPU/GPU/I/O load. Eligible recovered boot/stability failures back off and continue automatically, and unattended `overclock` keeps monitoring through extended SSH loss without repeatedly rebooting the target. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware. Debian-family and Batocera runs still require completed current-schema artifact review, so this README intentionally makes no hardware-pass or production-clock claim from the UX release.
 
 | Evidence | Current status |
 | --- | --- |
 | Bash fixture suite | 19 scripted suites cover the three-command/manual-test interface, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | See the live badge for the current commit. |
-| Debian-family Raspberry Pi 5 run | Autonomous stress recovery has been observed, but a complete `alpha.29` run remains pending. |
-| Batocera Raspberry Pi 5 run | Recovery-mode boot and watchdog preparation have been exercised, but complete `alpha.29` validation remains pending. |
+| Debian-family Raspberry Pi 5 run | Autonomous stress recovery has been observed, but a complete `alpha.30` run remains pending. |
+| Batocera Raspberry Pi 5 run | Recovery-mode boot and watchdog preparation have been exercised, but complete `alpha.30` validation remains pending. |
 | Eight-hour production-floor validation | No public PASS claim until the retained run artifacts complete and are reviewed. |
 | Optional 24-hour CPU edge validation | No public PASS claim until the production floor passes first and the edge artifacts are reviewed. |
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.30 — 2026-08-29
+
+- Rebuilt the top of the GitHub README as a numbered public quick start: clone the repository, enter it, run the local tests, install under `/usr/local`, verify the installed version, prepare an explicit target, overclock it, and reset it when needed.
+- Explained directly beside the commands that `make test` does not contact or reboot a target, separated first installation from later updates, and added a fixture contract that keeps the complete installation and three-command path in the quick-start section.
+
 ## 0.1.0-alpha.29 — 2026-08-29
 
 - Kept the intentional extended-SSH-recovery fixtures quiet during `make test`. The tests now capture and assert both expected recovery notices instead of printing realistic target warnings into the user's terminal.
