@@ -138,6 +138,19 @@ for normal_command in prepare overclock reset; do
 done
 
 grep -Fq 'controller and target must be different machines' "$ROOT/README.md"
+quick_start=$(sed -n '/^## Quick start$/,/^## Why this exists$/p' "$ROOT/README.md")
+for install_line in \
+    'git clone https://github.com/p1r473/AutoPiOverclock.git' \
+    'cd AutoPiOverclock' \
+    'make test' \
+    'sudo make install' \
+    'autopioverclock --version'; do
+    grep -Fq "$install_line" <<< "$quick_start"
+done
+grep -Fq 'It does not connect to, modify, or reboot a target.' <<< "$quick_start"
+grep -Fq 'autopioverclock prepare pi-host' <<< "$quick_start"
+grep -Fq 'autopioverclock overclock pi-host' <<< "$quick_start"
+grep -Fq 'autopioverclock reset pi-host' <<< "$quick_start"
 grep -Fq 'Run every command on the controller/master Pi.' "$ROOT/docs/cli.md"
 grep -Fq 'The eight-hour endurance phase is not repeated.' "$ROOT/docs/cli.md"
 grep -Fq 'a target with no screen remains fully supported' "$ROOT/docs/cli.md"
