@@ -183,14 +183,15 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     APO_PERSISTENT_SSH_RECOVERY=1
     APO_STATE_FILE=''
     APO_LOG_FILE=''
-    BOOT_ATTEMPTS=0
+    BOOT_ATTEMPT_FILE=$(mktemp)
+    trap 'rm -f "$BOOT_ATTEMPT_FILE"' EXIT
     apo_remote_boot_id() {
-        BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
-        (( BOOT_ATTEMPTS >= 3 )) && printf new-boot || return 1
+        printf x >> "$BOOT_ATTEMPT_FILE"
+        (( $(wc -c < "$BOOT_ATTEMPT_FILE") >= 3 )) && printf new-boot || return 1
     }
     sleep() { SECONDS=$((SECONDS + $1)); }
     [[ $(apo_wait_for_new_boot old-boot 1 unattended-boot-fixture) == new-boot ]]
-    [[ $BOOT_ATTEMPTS == 3 ]]
+    [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 3 ]]
 )
 
 # Reboots invalidate a Debian worker stored under /tmp. The shared reboot
