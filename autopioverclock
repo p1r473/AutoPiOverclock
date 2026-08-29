@@ -97,7 +97,6 @@ Usage:
   autopioverclock recover TARGET [--run-id RUN_ID]
   autopioverclock apply TARGET [--run-id RUN_ID]
   autopioverclock report TARGET [--run-id RUN_ID] [--redact]
-  autopioverclock TARGET reset
 
 Commands:
   prepare    Install and verify required dependencies and watchdog recovery
@@ -185,14 +184,10 @@ apo_parse_cli() {
         --version) printf '%s\n' "$APO_VERSION"; exit 0 ;;
         *)
             if (( ${#arguments[@]} >= 2 )) && [[ ${arguments[0]} != -* && ${arguments[1]} == reset ]]; then
-                APO_COMMAND=reset
-                APO_ORIGIN_COMMAND=reset
-                target=${arguments[0]}
-                index=2
-            else
-                APO_COMMAND=run
-                APO_ORIGIN_COMMAND=run
+                apo_die 'Unsupported command order. Use: autopioverclock reset TARGET.' "$APO_EXIT_USAGE"
             fi
+            APO_COMMAND=run
+            APO_ORIGIN_COMMAND=run
             ;;
     esac
     while (( index < ${#arguments[@]} )); do

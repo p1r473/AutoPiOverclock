@@ -231,7 +231,6 @@ The controller preserves the internal recovery proof, token/hash-owned `tryboot.
 | `recover TARGET` | Return the target to permanent normal configuration and verify health. |
 | `apply TARGET` | Apply only a fully validated result after an exact diff and typed confirmation. |
 | `report TARGET` | Generate a concise run report; supports redaction. |
-| `TARGET reset` | Historical postfix spelling retained for compatibility. |
 
 `--edge-cpu-24h` is the optional final CPU edge test. Maximum cooling is the default; `--no-max-fan` opts a new tuning or manual-test run out while preserving every normal thermal/throttle gate. Transport/output options and the retained expert recovery/reporting interface are documented in [`docs/cli.md`](docs/cli.md); they are not part of the normal three-command workflow.
 

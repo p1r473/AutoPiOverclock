@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.26 — 2026-08-28
+
+- Removed the historical postfix `TARGET reset` compatibility form. Stock reset now has one unambiguous spelling: `autopioverclock reset TARGET`.
+- Removed the postfix form from current help and documentation, reject it locally before SSH, and added regression coverage for the single supported command order.
+
 ## 0.1.0-alpha.25 — 2026-08-28
 
 - Made a fully recovered `STABILITY_FAILURE` during ordinary combined endurance a conservative pair-level boundary: every still-overclocked domain steps down by its production guard (CPU 50 MHz, GPU 25 MHz) and complete final validation restarts without claiming which domain caused the reboot.
