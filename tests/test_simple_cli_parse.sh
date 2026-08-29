@@ -67,4 +67,11 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
 )
 
 parse_fixture reset reset reset reset tron
-parse_fixture reset reset '' tron reset
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli tron reset
+) >/dev/null 2>&1; then
+    echo 'removed TARGET reset order was accepted by the parser' >&2
+    exit 1
+fi
