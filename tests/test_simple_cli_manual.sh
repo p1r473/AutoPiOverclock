@@ -123,7 +123,7 @@ for advanced_command in run resume status recover apply report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --cpu --gpu --minutes; do
+for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --cpu --gpu --minutes --qualification-hours --final-hours --edge-hours; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 
@@ -138,6 +138,11 @@ for normal_command in prepare overclock reset; do
 done
 
 grep -Fq 'controller and target must be different machines' "$ROOT/README.md"
+grep -Fq '## How automatic overclocking works' "$ROOT/README.md"
+grep -Fq '**Search CPU first.**' "$ROOT/README.md"
+grep -Fq '**Search and qualify GPU.**' "$ROOT/README.md"
+grep -Fq '**Validate the pair.**' "$ROOT/README.md"
+grep -Fq -- '--qualification-hours 3 --final-hours 12 --edge-hours 36' "$ROOT/README.md"
 quick_start=$(sed -n '/^## Quick start$/,/^## Why this exists$/p' "$ROOT/README.md")
 for install_line in \
     'git clone https://github.com/p1r473/AutoPiOverclock.git' \
@@ -152,7 +157,7 @@ grep -Fq 'autopioverclock prepare pi-host' <<< "$quick_start"
 grep -Fq 'autopioverclock overclock pi-host' <<< "$quick_start"
 grep -Fq 'autopioverclock reset pi-host' <<< "$quick_start"
 grep -Fq 'Run every command on the controller/master Pi.' "$ROOT/docs/cli.md"
-grep -Fq 'The eight-hour endurance phase is not repeated.' "$ROOT/docs/cli.md"
+grep -Fq 'The completed final-validation phase is not repeated.' "$ROOT/docs/cli.md"
 grep -Fq 'a target with no screen remains fully supported' "$ROOT/docs/cli.md"
 grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
 grep -Fq 'ssh -o BatchMode=yes "$TARGET" true' "$ROOT/README.md"

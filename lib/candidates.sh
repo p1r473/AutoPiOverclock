@@ -200,15 +200,29 @@ apo_run_manual_test() {
 }
 
 apo_post_floor_edge_source_is_eligible() {
-    local run_id final_cpu final_gpu permanent_hash mode
+    local run_id final_cpu final_gpu permanent_hash mode run_schema source_final source_qualification source_edge source_policy expected_policy
     run_id=$(apo_state_get RUN_ID '')
     final_cpu=$(apo_state_get FINAL_CPU '')
     final_gpu=$(apo_state_get FINAL_GPU '')
     permanent_hash=$(apo_state_get PERMANENT_HASH '')
     mode=$(apo_state_get MODE_EFFECTIVE '')
+    run_schema=$(apo_state_get RUN_SCHEMA '')
+    source_final=$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")
+    source_qualification=$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")
+    source_edge=$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")
+    expected_policy=$(apo_config_duration_policy "$source_qualification" "$source_final" "$source_edge")
+    source_policy=$(apo_state_get CFG_DURATION_POLICY "$expected_policy")
     apo_is_safe_run_id "$run_id" || return 1
+    if [[ $run_schema == "$APO_CURRENT_RUN_SCHEMA" ]]; then
+        [[ -v APO_STATE[CFG_QUALIFICATION_DURATION_S] && -v APO_STATE[CFG_FINAL_DURATION_S] &&
+           -v APO_STATE[CFG_EDGE_DURATION_S] && -v APO_STATE[CFG_DURATION_POLICY] ]] || return 1
+    fi
+    apo_validate_uint_range "$source_qualification" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" || return 1
+    apo_validate_uint_range "$source_final" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" || return 1
+    apo_validate_uint_range "$source_edge" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" || return 1
+    [[ $source_policy == "$expected_policy" ]] || return 1
     [[ $(apo_state_get FORMAT_VERSION '') == 1 &&
-       $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
+       ( $run_schema == "$APO_CURRENT_RUN_SCHEMA" || $run_schema == 9 ) &&
        $(apo_state_get ORIGIN_COMMAND '') == overclock &&
        $(apo_state_get READ_ONLY_RUN 0) == 0 &&
        $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
@@ -218,7 +232,7 @@ apo_post_floor_edge_source_is_eligible() {
        $(apo_state_get FINAL_STAGE '') == COMPLETE &&
        $(apo_state_get VALIDATED 0) == 1 &&
        $(apo_state_get VALIDATION_SCHEMA '') == "$APO_CURRENT_VALIDATION_SCHEMA" &&
-       $(apo_state_get VALIDATION_DURATION_S '') == 28800 &&
+       $(apo_state_get VALIDATION_DURATION_S '') == "$source_final" &&
        $(apo_state_get APPLY_STATUS '') == APPLIED &&
        $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED &&
        $(apo_state_get FLOOR_VALIDATED 0) == 0 &&
@@ -805,7 +819,7 @@ apo_auto_validate_edge_state() {
     }
     apo_auto_uint_in_range "$floor_cpu" "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_CPU_MAX_MHZ" || { APO_AUTO_VALIDATION_REASON="Saved production-floor CPU is malformed: ${floor_cpu:-missing}"; return 1; }
     apo_auto_uint_in_range "$floor_gpu" "$APO_AUTO_BASELINE_GPU" "$APO_AUTO_GPU_MAX_MHZ" || { APO_AUTO_VALIDATION_REASON="Saved production-floor GPU is malformed: ${floor_gpu:-missing}"; return 1; }
-    [[ $floor_duration == 28800 && ${APO_CFG[FINAL_DURATION_S]} == 28800 && $floor_schema == "$APO_CURRENT_VALIDATION_SCHEMA" ]] || {
+    [[ $floor_duration == "${APO_CFG[FINAL_DURATION_S]}" && $floor_schema == "$APO_CURRENT_VALIDATION_SCHEMA" ]] || {
         APO_AUTO_VALIDATION_REASON='Saved production-floor duration/schema does not match the recorded final plan'
         return 1
     }
@@ -894,12 +908,12 @@ apo_auto_validate_final_state() {
                 ;;
         esac
     fi
-    expected_duration=28800
+    expected_duration=${APO_CFG[FINAL_DURATION_S]}
     case $edge_status in
         RUNNING|PASS)
             expected_cpu=$(apo_state_get EDGE_CPU_TARGET '')
             expected_gpu=$(apo_state_get FLOOR_GPU '')
-            expected_duration=86400
+            expected_duration=$APO_EDGE_DURATION_S
             ;;
         REJECTED|SKIPPED_KNOWN_BOUNDARY)
             expected_cpu=$(apo_state_get FLOOR_CPU '')
@@ -1042,7 +1056,6 @@ apo_validate_auto_resume_state() {
         }
         if [[ ${APO_CFG[CPU_CANDIDATES]:-} != "$expected_cpu_csv" || ${APO_CFG[GPU_CANDIDATES]:-} != "$expected_gpu_csv" ||
               ${APO_CFG[BACKOFF_STEPS]:-missing} != 0 || ${APO_CFG[VOLTAGE_DELTA_UV]:-missing} != existing ||
-              ${APO_CFG[FINAL_DURATION_S]:-missing} != 28800 ||
               ${APO_TEST_VOLTAGE:-missing} != "$APO_PI5_STOCK_VOLTAGE_UV" ]]; then
             apo_auto_state_invalid 'Saved automatic candidate or voltage plan no longer matches the deterministic stock-derived plan.'
             return 1
@@ -1402,7 +1415,7 @@ apo_cpu_qualification_schedule_backoff() {
     apo_state_set FAILURE_REASON ''
     apo_clear_candidate_checkpoint
     apo_state_phase CPU_QUALIFICATION READY RUNNING
-    apo_summary_line "CPU QUALIFICATION BACKOFF: $entry after verified normal recovery; repeating the ${APO_DOMAIN_QUALIFICATION_DURATION_S}s CPU qualification at stock GPU"
+    apo_summary_line "CPU QUALIFICATION BACKOFF: $entry after verified normal recovery; repeating the ${APO_QUALIFICATION_DURATION_S}s CPU qualification at stock GPU"
     apo_event cpu-qualification-backoff WARN "$failure_class" "CPU qualification rejected ${current_cpu} MHz: $failure_reason; reduced CPU by ${APO_AUTO_CPU_GUARD_MHZ} MHz and will repeat at ${next_cpu} MHz with stock GPU"
 }
 
@@ -1427,14 +1440,14 @@ apo_qualify_cpu() {
         target_cpu=$(apo_state_get CPU_QUALIFICATION_TARGET '')
         apo_state_phase CPU_QUALIFICATION "CPU_${target_cpu}_GPU_${APO_NORMAL_GPU}" RUNNING
         label="cpu-qualification-${target_cpu}_gpu-${APO_NORMAL_GPU}"
-        apo_event cpu-qualification INFO '' "Qualifying CPU=$target_cpu MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s with GPU held at stock ${APO_NORMAL_GPU} MHz."
-        if apo_test_candidate "$target_cpu" "$APO_NORMAL_GPU" "$label" cpu "$APO_DOMAIN_QUALIFICATION_DURATION_S"; then
+        apo_event cpu-qualification INFO '' "Qualifying CPU=$target_cpu MHz for ${APO_QUALIFICATION_DURATION_S}s with GPU held at stock ${APO_NORMAL_GPU} MHz."
+        if apo_test_candidate "$target_cpu" "$APO_NORMAL_GPU" "$label" cpu "$APO_QUALIFICATION_DURATION_S"; then
             apo_state_set CPU_QUALIFICATION_STATUS PASS
             apo_state_set CPU_QUALIFIED_CLOCK "$target_cpu"
             apo_state_set RECOMMENDED_CPU "$target_cpu"
             apo_state_save
-            apo_summary_line "CPU QUALIFICATION: PASS — CPU $target_cpu MHz / stock GPU $APO_NORMAL_GPU MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s"
-            apo_event cpu-qualification PASS '' "CPU=$target_cpu passed isolated ${APO_DOMAIN_QUALIFICATION_DURATION_S}s qualification at stock GPU=$APO_NORMAL_GPU."
+            apo_summary_line "CPU QUALIFICATION: PASS — CPU $target_cpu MHz / stock GPU $APO_NORMAL_GPU MHz for ${APO_QUALIFICATION_DURATION_S}s"
+            apo_event cpu-qualification PASS '' "CPU=$target_cpu passed isolated ${APO_QUALIFICATION_DURATION_S}s qualification at stock GPU=$APO_NORMAL_GPU."
             return 0
         fi
         failure_class=${APO_LAST_CLASS:-HARNESS_FAILURE}
@@ -1496,14 +1509,14 @@ apo_qualify_gpu() {
         apo_state_set GPU_QUALIFICATION_TARGET "$target_gpu"
         apo_state_phase GPU_QUALIFICATION "CPU_${target_cpu}_GPU_${target_gpu}" RUNNING
         label="gpu-qualification-${target_cpu}_gpu-${target_gpu}"
-        apo_event gpu-qualification INFO '' "Qualifying GPU=$target_gpu MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s at qualified CPU=$target_cpu MHz."
-        if apo_test_candidate "$target_cpu" "$target_gpu" "$label" gpu "$APO_DOMAIN_QUALIFICATION_DURATION_S"; then
+        apo_event gpu-qualification INFO '' "Qualifying GPU=$target_gpu MHz for ${APO_QUALIFICATION_DURATION_S}s at qualified CPU=$target_cpu MHz."
+        if apo_test_candidate "$target_cpu" "$target_gpu" "$label" gpu "$APO_QUALIFICATION_DURATION_S"; then
             apo_state_set GPU_QUALIFICATION_STATUS PASS
             apo_state_set GPU_QUALIFIED_CPU "$target_cpu"
             apo_state_set GPU_QUALIFIED_CLOCK "$target_gpu"
             apo_state_save
-            apo_summary_line "GPU QUALIFICATION: PASS — CPU $target_cpu MHz / GPU $target_gpu MHz for ${APO_DOMAIN_QUALIFICATION_DURATION_S}s"
-            apo_event gpu-qualification PASS '' "GPU=$target_gpu passed isolated ${APO_DOMAIN_QUALIFICATION_DURATION_S}s qualification at qualified CPU=$target_cpu."
+            apo_summary_line "GPU QUALIFICATION: PASS — CPU $target_cpu MHz / GPU $target_gpu MHz for ${APO_QUALIFICATION_DURATION_S}s"
+            apo_event gpu-qualification PASS '' "GPU=$target_gpu passed isolated ${APO_QUALIFICATION_DURATION_S}s qualification at qualified CPU=$target_cpu."
             return 0
         fi
         failure_class=${APO_LAST_CLASS:-HARNESS_FAILURE}
@@ -1677,6 +1690,13 @@ apo_migrate_active_automatic_state() {
     apo_auto_validate_domain_state GPU || return 1
     apo_final_initialize_backoff_state
     apo_initialize_current_qualification_state
+    APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
+    APO_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
+    APO_FINAL_DURATION_S=${APO_CFG[FINAL_DURATION_S]}
+    APO_DURATION_POLICY=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "$APO_FINAL_DURATION_S" "$APO_EDGE_DURATION_S")
+    apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
+    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
+    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
     apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
     apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
 
@@ -1898,7 +1918,7 @@ apo_final_record_failure() {
         apo_state_set RECOMMENDED_GPU "$floor_gpu"
         apo_state_set FINAL_TARGET_CPU "$floor_cpu"
         apo_state_set FINAL_TARGET_GPU "$floor_gpu"
-        apo_state_complete "$floor_cpu" "$floor_gpu" 28800
+        apo_state_complete "$floor_cpu" "$floor_gpu" "${APO_CFG[FINAL_DURATION_S]}"
         apo_summary_line "OPTIONAL EDGE CPU: REJECTED — retained validated production floor CPU $floor_cpu MHz / GPU $floor_gpu MHz"
         apo_event edge-cpu-24h WARN "$failure_class" "Optional edge CPU clock was rejected: $failure_reason; retained validated production floor CPU=$floor_cpu GPU=$floor_gpu"
         return 0
@@ -1927,9 +1947,9 @@ apo_final_validation() {
     final_kind=$([[ $APO_REQUIRE_GPU_STRESS == 1 ]] && printf combined || printf cpu)
     endurance_duration=${APO_CFG[FINAL_DURATION_S]}
     if [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == RUNNING ]]; then
-        endurance_duration=86400
+        endurance_duration=$APO_EDGE_DURATION_S
         [[ $APO_REQUIRE_GPU_STRESS == 1 ]] || {
-            apo_state_fail HARNESS_FAILURE 'The optional 24-hour CPU edge requires the qualified GPU workload; CPU-only edge validation is refused.'
+            apo_state_fail HARNESS_FAILURE 'The optional CPU edge requires the qualified GPU workload; CPU-only edge validation is refused.'
             return 1
         }
         final_kind=combined
@@ -2038,7 +2058,7 @@ apo_final_validation() {
                        { [[ -n $cpu_boundary ]] && (( edge_target >= cpu_boundary )); }; then
                         apo_state_set EDGE_CPU_TARGET "$edge_target"
                         apo_state_set EDGE_CPU_STATUS SKIPPED_KNOWN_BOUNDARY
-                        apo_state_complete "$recommended_cpu" "$recommended_gpu" 28800
+                        apo_state_complete "$recommended_cpu" "$recommended_gpu" "${APO_CFG[FINAL_DURATION_S]}"
                         apo_summary_line "OPTIONAL EDGE CPU: SKIPPED — ${edge_target} MHz meets or exceeds the known failure/ceiling boundary; retained validated production floor."
                         apo_event edge-cpu-24h WARN STABILITY_FAILURE "Skipped known unsafe edge CPU target $edge_target MHz; retained validated production floor CPU=$recommended_cpu GPU=$recommended_gpu"
                         return 0
@@ -2055,10 +2075,10 @@ apo_final_validation() {
                     apo_state_set SUBPHASE EDGE_CPU_24H_PRE_STRESS_BOOT
                     apo_state_set STATUS RUNNING
                     apo_state_save
-                    apo_summary_line "PRODUCTION FLOOR: PASS — CPU $recommended_cpu MHz / GPU $recommended_gpu MHz; beginning optional 24-hour CPU edge validation at $edge_target MHz."
-                    apo_event production-floor PASS '' "Eight-hour production floor validated at CPU=$recommended_cpu GPU=$recommended_gpu; beginning optional 24-hour CPU edge validation at $edge_target MHz"
+                    apo_summary_line "PRODUCTION FLOOR: PASS — CPU $recommended_cpu MHz / GPU $recommended_gpu MHz for ${APO_CFG[FINAL_DURATION_S]}s; beginning optional ${APO_EDGE_DURATION_S}s CPU edge validation at $edge_target MHz."
+                    apo_event production-floor PASS '' "${APO_CFG[FINAL_DURATION_S]}s production floor validated at CPU=$recommended_cpu GPU=$recommended_gpu; beginning optional ${APO_EDGE_DURATION_S}s CPU edge validation at $edge_target MHz"
                     recommended_cpu=$edge_target
-                    endurance_duration=86400
+                    endurance_duration=$APO_EDGE_DURATION_S
                     continue
                 fi
                 if [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == RUNNING ]]; then

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.31 — 2026-08-29
+
+- Added simple whole-hour controls to the public automatic workflow: `--qualification-hours HOURS`, `--final-hours HOURS`, and `--edge-hours HOURS`, each accepting 1–168. Qualifications default to 2 hours, final validation defaults to 8 hours, the edge remains optional with 24 hours recommended, and `--edge-cpu-24h` remains a compatibility spelling.
+- Raised run state to schema 10 and bound qualification, final, and edge durations plus a `default`/`custom` policy label immutably into each run. Repeating `overclock TARGET` inherits the saved plan, rejects mid-run duration changes, and upgrades eligible schema-9 runs with their historical qualification/edge defaults while preserving their recorded final duration.
+- Made CPU/GPU qualifications, final validation, later-edge eligibility, automatic backoff/restart, progress ETA/countdown, status/report output, and permanent apply use the exact saved duration plan instead of hardcoded long-test durations. Apply still requires exact current-schema evidence; shorter custom tests trade confidence for time without bypassing recovery or health gates.
+- Clarified the interactive progress line as `CPU: XMHz | GPU: YMHz`, expanded README requirements for the separate controller and target, and added a public overclock-strategy section covering CPU-first search, guarded selection, GPU qualification, combined validation, automatic recovery/backoff, optional edge testing, and final application.
+
 ## 0.1.0-alpha.30 — 2026-08-29
 
 - Rebuilt the top of the GitHub README as a numbered public quick start: clone the repository, enter it, run the local tests, install under `/usr/local`, verify the installed version, prepare an explicit target, overclock it, and reset it when needed.

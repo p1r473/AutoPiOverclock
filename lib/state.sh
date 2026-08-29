@@ -3,7 +3,7 @@
 
 declare -Ag APO_STATE=()
 
-readonly APO_CURRENT_RUN_SCHEMA=9
+readonly APO_CURRENT_RUN_SCHEMA=10
 readonly APO_CURRENT_VALIDATION_SCHEMA=8
 
 apo_state_valid_key() { [[ ${1-} =~ ^[A-Z][A-Z0-9_]*$ ]]; }

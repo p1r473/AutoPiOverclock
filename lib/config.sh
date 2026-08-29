@@ -53,7 +53,7 @@ apo_config_defaults() {
     APO_CFG[GPU_CANDIDATES]=''
     APO_CFG[VOLTAGE_DELTA_UV]='existing'
     APO_CFG[CANDIDATE_DURATION_S]=600
-    APO_CFG[FINAL_DURATION_S]=28800
+    APO_CFG[FINAL_DURATION_S]=$APO_DEFAULT_FINAL_DURATION_S
     APO_CFG[MAX_TEMP_C]=75
     APO_CFG[TELEMETRY_INTERVAL_S]=5
     APO_CFG[BACKOFF_STEPS]=1
@@ -65,6 +65,46 @@ apo_config_defaults() {
     # Internal compatibility values, not accepted public configuration keys.
     APO_CFG[EXTRA_PING_TARGET]=''
     APO_CFG[HEALTH_HOOK]=''
+}
+
+apo_config_duration_policy() {
+    local qualification_duration=$1 final_duration=$2 edge_duration=$3
+    if [[ $qualification_duration == "$APO_DEFAULT_QUALIFICATION_DURATION_S" &&
+          $final_duration == "$APO_DEFAULT_FINAL_DURATION_S" &&
+          $edge_duration == "$APO_DEFAULT_EDGE_DURATION_S" ]]; then
+        printf default
+    else
+        printf custom
+    fi
+}
+
+apo_config_validate_duration_plan() {
+    local expected_policy
+    apo_validate_uint_range "${APO_QUALIFICATION_DURATION_S:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+        apo_die 'Saved qualification duration must be 3600-604800 seconds.' "$APO_EXIT_INTERNAL"
+    apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+        apo_die 'Saved final duration must be 3600-604800 seconds.' "$APO_EXIT_INTERNAL"
+    apo_validate_uint_range "${APO_EDGE_DURATION_S:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+        apo_die 'Saved edge duration must be 3600-604800 seconds.' "$APO_EXIT_INTERNAL"
+    expected_policy=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "${APO_CFG[FINAL_DURATION_S]}" "$APO_EDGE_DURATION_S")
+    [[ ${APO_DURATION_POLICY:-$expected_policy} == "$expected_policy" ]] ||
+        apo_die 'Saved duration policy does not match its qualification/final/edge durations.' "$APO_EXIT_INTERNAL"
+    APO_DURATION_POLICY=$expected_policy
+}
+
+apo_config_migrate_duration_schema_9() {
+    [[ $(apo_state_get RUN_SCHEMA '') == 9 ]] || return 1
+    # Schema 9 always used fixed two-hour qualifications and a fixed 24-hour
+    # edge. Its saved final_duration_seconds remains authoritative.
+    [[ $APO_QUALIFICATION_DURATION_S == "$APO_DEFAULT_QUALIFICATION_DURATION_S" &&
+       $APO_EDGE_DURATION_S == "$APO_DEFAULT_EDGE_DURATION_S" ]] || return 1
+    apo_config_validate_duration_plan
+    apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
+    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
+    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set APP_VERSION "$APO_VERSION"
+    apo_state_save
 }
 
 apo_config_stock_auto_baseline_ready() {
@@ -186,7 +226,7 @@ apo_config_validate() {
     apo_parse_ordered_int_list "${APO_CFG[CPU_CANDIDATES]}" APO_CPU_CANDIDATES "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" cpu_candidates_mhz
     apo_parse_ordered_int_list "${APO_CFG[GPU_CANDIDATES]}" APO_GPU_CANDIDATES "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" gpu_candidates_mhz
     apo_validate_uint_range "${APO_CFG[CANDIDATE_DURATION_S]}" 10 86400 || apo_die 'candidate_duration_seconds must be 10-86400.' "$APO_EXIT_USAGE"
-    apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]}" "$APO_MIN_FINAL_DURATION_S" 604800 || apo_die 'final_duration_seconds must be 28800-604800; final validation requires at least eight hours.' "$APO_EXIT_USAGE"
+    apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" || apo_die 'final_duration_seconds must be 3600-604800.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[MAX_TEMP_C]}" 40 95 || apo_die 'max_temp_c must be 40-95.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[TELEMETRY_INTERVAL_S]}" 1 60 || apo_die 'telemetry_interval_seconds must be 1-60.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[BACKOFF_STEPS]}" 0 10 || apo_die 'conservative_backoff_steps must be 0-10.' "$APO_EXIT_USAGE"
@@ -226,6 +266,9 @@ apo_config_load_for_new_run() {
     else
         [[ -z ${APO_CONFIG_FILE:-} ]] || apo_config_read_file "$APO_CONFIG_FILE"
     fi
+    if [[ ${APO_PUBLIC_COMMAND:-} == overclock ]]; then
+        APO_CFG[FINAL_DURATION_S]=$APO_FINAL_DURATION_S
+    fi
     if [[ ${APO_COMMAND:-prepare} == run && -z ${APO_CONFIG_FILE:-} && ${APO_MODE_REQUESTED:-auto} == auto && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
         APO_AUTO_CANDIDATES_PENDING=1
         APO_AUTO_GENERATED_CANDIDATES=1
@@ -245,7 +288,10 @@ apo_config_load_for_new_run() {
             apo_die 'The configuration skips both CPU and GPU tuning; use prepare instead of run.' "$APO_EXIT_USAGE"
         fi
     fi
+    APO_FINAL_DURATION_S=${APO_CFG[FINAL_DURATION_S]}
+    APO_DURATION_POLICY=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "$APO_FINAL_DURATION_S" "$APO_EDGE_DURATION_S")
     apo_config_validate
+    apo_config_validate_duration_plan
 }
 
 apo_config_store_in_state() {
@@ -256,6 +302,9 @@ apo_config_store_in_state() {
     done
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES "$APO_AUTO_GENERATED_CANDIDATES"
     apo_state_set CFG_EDGE_CPU_24H "${APO_EDGE_CPU_24H:-0}"
+    apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
+    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
+    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
     apo_state_set CFG_MAX_FAN "${APO_MAX_FAN:-1}"
     apo_state_set CFG_MANUAL_TEST "${APO_MANUAL_TEST:-0}"
     apo_state_set CFG_MANUAL_CPU "${APO_MANUAL_CPU:-}"
@@ -271,12 +320,21 @@ apo_config_restore_from_state() {
         internal_key=$(apo_config_internal_key "$config_key")
         APO_CFG[$internal_key]=$(apo_state_get "CFG_${internal_key}" "${APO_CFG[$internal_key]}")
     done
+    if [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]]; then
+        [[ -v APO_STATE[CFG_QUALIFICATION_DURATION_S] && -v APO_STATE[CFG_FINAL_DURATION_S] &&
+           -v APO_STATE[CFG_EDGE_DURATION_S] && -v APO_STATE[CFG_DURATION_POLICY] ]] ||
+            apo_die 'Current-schema state is missing its immutable duration plan.' "$APO_EXIT_INTERNAL"
+    fi
     APO_AUTO_GENERATED_CANDIDATES=$(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0)
     [[ $APO_AUTO_GENERATED_CANDIDATES == 0 || $APO_AUTO_GENERATED_CANDIDATES == 1 ]] ||
         apo_die 'Saved automatic-candidate marker is malformed.' "$APO_EXIT_INTERNAL"
     APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
     [[ $APO_EDGE_CPU_24H == 0 || $APO_EDGE_CPU_24H == 1 ]] ||
         apo_die 'Saved edge-CPU marker is malformed.' "$APO_EXIT_INTERNAL"
+    APO_QUALIFICATION_DURATION_S=$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")
+    APO_EDGE_DURATION_S=$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")
+    APO_FINAL_DURATION_S=${APO_CFG[FINAL_DURATION_S]}
+    APO_DURATION_POLICY=$(apo_state_get CFG_DURATION_POLICY "$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "$APO_FINAL_DURATION_S" "$APO_EDGE_DURATION_S")")
     APO_MAX_FAN=$(apo_state_get CFG_MAX_FAN 1)
     [[ $APO_MAX_FAN == 0 || $APO_MAX_FAN == 1 ]] ||
         apo_die 'Saved maximum-fan policy is malformed.' "$APO_EXIT_INTERNAL"
@@ -297,6 +355,7 @@ apo_config_restore_from_state() {
             apo_die 'Saved manual duration fields disagree.' "$APO_EXIT_INTERNAL"
     fi
     apo_config_validate
+    apo_config_validate_duration_plan
 }
 
 apo_write_effective_config() {
@@ -306,8 +365,9 @@ apo_write_effective_config() {
         printf '# candidate_max_fan=%s (controller policy; use --no-max-fan to opt out on a new run)\n' \
             "$([[ ${APO_MAX_FAN:-1} == 1 ]] && printf enabled || printf disabled)"
         if (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then
-            printf '# automatic_domain_qualification_seconds=%s (fixed safety policy, not a configurable shortcut)\n' \
-                "$APO_DOMAIN_QUALIFICATION_DURATION_S"
+            printf '# automatic_domain_qualification_seconds=%s\n' "$APO_QUALIFICATION_DURATION_S"
+            printf '# automatic_edge_seconds=%s (used only when edge validation is requested)\n' "$APO_EDGE_DURATION_S"
+            printf '# automatic_duration_policy=%s\n' "$APO_DURATION_POLICY"
             printf '# automatic_final_workload=combined CPU/GPU/I/O\n'
         fi
         if (( ${APO_MANUAL_TEST:-0} == 1 )); then

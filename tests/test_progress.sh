@@ -28,6 +28,9 @@ apo_state_set SUBPHASE INITIAL
 [[ $(apo_progress_estimate_remaining_tests) == 27 ]]
 [[ $(apo_progress_qualification_cost) == 7560 ]]
 [[ $(apo_progress_final_full_cost 28800) == 29280 ]]
+APO_QUALIFICATION_DURATION_S=3600
+[[ $(apo_progress_qualification_cost) == 3960 ]]
+APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 [[ $(apo_progress_format_duration 45) == 45s ]]
 [[ $(apo_progress_format_duration 452) == 7m32s ]]
 [[ $(apo_progress_format_duration 22320) == 6h12m ]]
@@ -67,7 +70,7 @@ progress_line=$(apo_progress_render 150 600 2>&1)
 [[ $progress_line == *monkeebutt* ]]
 [[ $progress_line == *'current 7m30s left'* ]]
 [[ $progress_line == *'tests ~1 left'* ]]
-[[ $progress_line == *'3100/1150MHz'* ]]
+[[ $progress_line == *'CPU: 3100MHz | GPU: 1150MHz'* ]]
 [[ $progress_line == *'64.2C max=65.0C'* ]]
 [[ $progress_line == *'throttled=0x0'* ]]
 [[ $progress_line == *'fan=pwm:255,rpm:5200'* ]]

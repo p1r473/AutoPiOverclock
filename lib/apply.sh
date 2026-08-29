@@ -291,7 +291,7 @@ apo_reconcile_interrupted_apply() {
 }
 
 apo_apply_recommendation() {
-    local validated validation_schema final_duration final_cpu final_gpu original_hash expected_hash proposed_file current_file diff_file remote_proposed
+    local validated validation_schema final_duration expected_duration edge_status final_cpu final_gpu original_hash expected_hash proposed_file current_file diff_file remote_proposed
     local expected_confirmation old_boot_id backup_file apply_log reported_backup reported_hash diff_rc apply_failure
     apo_apply_assert_tryboot_clear || apo_die "$APO_LAST_REASON" "$APO_EXIT_APPLY"
     validated=$(apo_state_get VALIDATED 0)
@@ -300,8 +300,17 @@ apo_apply_recommendation() {
        $(apo_state_get STATUS '') == PASS && $(apo_state_get PHASE '') == COMPLETE ]] ||
         apo_die 'Only a fully validated run produced by the current safety gates can be applied.' "$APO_EXIT_APPLY"
     final_duration=$(apo_state_get VALIDATION_DURATION_S 0)
-    apo_validate_uint_range "$final_duration" "$APO_MIN_FINAL_DURATION_S" 604800 ||
-        apo_die 'Permanent apply requires completed final-endurance evidence of at least eight hours.' "$APO_EXIT_APPLY"
+    apo_validate_uint_range "$final_duration" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+        apo_die 'Permanent apply requires completed final-endurance evidence for the saved duration plan.' "$APO_EXIT_APPLY"
+    edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
+    case $edge_status in
+        PASS) expected_duration=$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S") ;;
+        REJECTED|SKIPPED_KNOWN_BOUNDARY) expected_duration=$(apo_state_get FLOOR_DURATION_S '') ;;
+        NOT_REQUESTED) expected_duration=$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S") ;;
+        *) apo_die 'Permanent apply found an incomplete or malformed edge-test disposition.' "$APO_EXIT_APPLY" ;;
+    esac
+    [[ $final_duration == "$expected_duration" ]] ||
+        apo_die 'Permanent apply duration evidence does not match the immutable saved qualification/final/edge plan.' "$APO_EXIT_APPLY"
     case $(apo_state_get APPLY_STATUS NOT_APPLIED) in
         APPLIED) apo_info 'This run is already applied.'; return 0 ;;
         APPLYING)
