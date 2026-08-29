@@ -152,14 +152,13 @@ fi
 
 graphical_audio_context() {
     local profile=$1 audio_baseline=$2 audio_match=$3
+    local APO_COMMAND=prepare APO_DRY_RUN=0
     (
         APO_ROOT=$ROOT
         source "$ROOT/lib/common.sh"
         source "$ROOT/lib/config.sh"
         source "$ROOT/lib/detect.sh"
         apo_config_defaults
-        APO_COMMAND=prepare
-        APO_DRY_RUN=0
         APO_PROFILE=$profile
         APO_MODE_EFFECTIVE=graphical
         APO_CFG[AUDIO_SINK_MATCH]=$audio_match
