@@ -688,10 +688,10 @@ short_output=$(
 short_status=$?
 set -e
 if (( short_status != APO_EXIT_APPLY )); then
-    echo 'sub-eight-hour validation was incorrectly accepted for apply' >&2
+    echo 'sub-one-hour validation was incorrectly accepted for apply' >&2
     exit 1
 fi
-[[ $short_output == *'Permanent apply requires completed final-endurance evidence of at least eight hours.'* ]]
+[[ $short_output == *'Permanent apply requires completed final-endurance evidence for the saved duration plan.'* ]]
 grep -q 'apo_apply_force_normal_boot_and_health.*apply-existing-config-health' "$ROOT/lib/apply.sh"
 
 printf 'test_apply_resume: PASS\n'

@@ -37,10 +37,36 @@ parse_fixture run overclock overclock overclock tron
     [[ $APO_AUTO_APPLY == 1 ]]
     [[ $APO_ASSUME_YES == 1 ]]
     [[ $APO_EDGE_CPU_24H == 1 ]]
+    [[ $APO_EDGE_DURATION_S == 86400 ]]
     [[ $APO_MAX_FAN == 1 ]]
     [[ $APO_MODE_REQUESTED == auto ]]
     [[ -z $APO_CONFIG_FILE ]]
 )
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --qualification-hours 3 --final-hours 6 --edge-hours 12
+    [[ $APO_QUALIFICATION_DURATION_S == 10800 ]]
+    [[ $APO_FINAL_DURATION_S == 21600 ]]
+    [[ $APO_EDGE_DURATION_S == 43200 && $APO_EDGE_CPU_24H == 1 ]]
+    [[ $APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 && $APO_FINAL_HOURS_OPTION_SEEN == 1 && $APO_EDGE_HOURS_OPTION_SEEN == 1 ]]
+)
+for invalid_duration_args in \
+    '--qualification-hours 0' \
+    '--final-hours 169' \
+    '--edge-hours 1.5' \
+    '--edge-hours 12 --edge-cpu-24h'; do
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        # Fixed fixture tokens contain no shell metacharacters.
+        # shellcheck disable=SC2086
+        apo_parse_cli overclock tron $invalid_duration_args
+    ) >/dev/null 2>&1; then
+        echo "overclock accepted invalid duration options: $invalid_duration_args" >&2
+        exit 1
+    fi
+done
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"

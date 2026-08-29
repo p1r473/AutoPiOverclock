@@ -126,6 +126,10 @@ apo_state_load "$TEMP_DIR/debian-auto.state"
 [[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
 [[ ${APO_STATE[CFG_AUTO_GENERATED_CANDIDATES]} == 1 ]]
 [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 0 ]]
+[[ ${APO_STATE[CFG_QUALIFICATION_DURATION_S]} == 7200 ]]
+[[ ${APO_STATE[CFG_FINAL_DURATION_S]} == 28800 ]]
+[[ ${APO_STATE[CFG_EDGE_DURATION_S]} == 86400 ]]
+[[ ${APO_STATE[CFG_DURATION_POLICY]} == default ]]
 [[ ${APO_STATE[CFG_MAX_FAN]} == 1 ]]
 grep -Fq '# candidate_max_fan=enabled' "$TEMP_DIR/debian-auto.conf"
 grep -Fxq 'cpu_candidates_mhz=2500,2600,2700,2800,2900,3000,3100,3200' "$TEMP_DIR/debian-auto.conf"
@@ -154,9 +158,80 @@ resolve_discovered_auto_plan debian 2400 960 0
     [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 1 ]]
     [[ ${APO_STATE[CFG_MAX_FAN]} == 0 ]]
     grep -Fq '# candidate_max_fan=disabled' "$TEMP_DIR/debian-edge-auto.conf"
+    grep -Fq '# automatic_domain_qualification_seconds=7200' "$TEMP_DIR/debian-edge-auto.conf"
+    grep -Fq '# automatic_edge_seconds=86400' "$TEMP_DIR/debian-edge-auto.conf"
+    grep -Fq '# automatic_duration_policy=default' "$TEMP_DIR/debian-edge-auto.conf"
     apo_config_restore_from_state
     [[ $APO_MAX_FAN == 0 ]]
 )
+
+(
+    APO_COMMAND=run
+    APO_PUBLIC_COMMAND=overclock
+    APO_DRY_RUN=0
+    APO_CONFIG_FILE=''
+    APO_MODE_REQUESTED=auto
+    # These plan overrides are intentionally isolated to this fixture.
+    # shellcheck disable=SC2030
+    APO_QUALIFICATION_DURATION_S=10800
+    # shellcheck disable=SC2030
+    APO_FINAL_DURATION_S=21600
+    # shellcheck disable=SC2030
+    APO_EDGE_DURATION_S=43200
+    APO_EDGE_CPU_24H=1
+    apo_config_load_for_new_run
+    resolve_discovered_auto_plan debian 2400 960 0
+    finalize_discovered_fixture debian-custom-durations
+    APO_STATE=()
+    apo_state_load "$TEMP_DIR/debian-custom-durations.state"
+    [[ ${APO_STATE[CFG_QUALIFICATION_DURATION_S]} == 10800 ]]
+    [[ ${APO_STATE[CFG_FINAL_DURATION_S]} == 21600 ]]
+    [[ ${APO_STATE[CFG_EDGE_DURATION_S]} == 43200 ]]
+    [[ ${APO_STATE[CFG_DURATION_POLICY]} == custom ]]
+)
+
+# Schema 9 had fixed 2h/24h qualification and edge semantics. Migration binds
+# those defaults explicitly without changing its saved final duration.
+APO_STATE=()
+APO_STATE_FILE="$TEMP_DIR/schema-9-duration-migration.state"
+apo_state_set FORMAT_VERSION 1
+apo_state_set RUN_SCHEMA 9
+apo_state_set CFG_FINAL_DURATION_S 43200
+apo_config_restore_from_state
+apo_config_migrate_duration_schema_9
+[[ $(apo_state_get RUN_SCHEMA) == "$APO_CURRENT_RUN_SCHEMA" ]]
+[[ $(apo_state_get CFG_QUALIFICATION_DURATION_S) == 7200 ]]
+[[ $(apo_state_get CFG_FINAL_DURATION_S) == 43200 ]]
+[[ $(apo_state_get CFG_EDGE_DURATION_S) == 86400 ]]
+[[ $(apo_state_get CFG_DURATION_POLICY) == custom ]]
+
+# A crash before PREPARE persisted its plan remains inspectable and reaches the
+# dedicated safe-resume refusal. Once tuning has begun, the same missing plan
+# is corrupt current-schema state and must fail closed.
+(
+    APO_STATE=()
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set PHASE PREPARE
+    apo_config_restore_from_state
+    # The custom-plan fixture above intentionally ran in another subshell.
+    # shellcheck disable=SC2031
+    [[ $APO_QUALIFICATION_DURATION_S == "$APO_DEFAULT_QUALIFICATION_DURATION_S" ]]
+    # shellcheck disable=SC2031
+    [[ $APO_FINAL_DURATION_S == "$APO_DEFAULT_FINAL_DURATION_S" ]]
+    # shellcheck disable=SC2031
+    [[ $APO_EDGE_DURATION_S == "$APO_DEFAULT_EDGE_DURATION_S" ]]
+)
+if (
+    APO_STATE=()
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set PHASE CPU_SWEEP
+    apo_config_restore_from_state
+) >/dev/null 2>&1; then
+    echo 'current-schema tuning state without an immutable duration plan was accepted' >&2
+    exit 1
+fi
 
 # States created before the fan-policy key default safely to maximum cooling.
 APO_MAX_FAN=0
@@ -336,8 +411,8 @@ if (apo_config_defaults; APO_CFG[CPU_CANDIDATES]='2900,2800'; apo_config_validat
     echo 'descending candidate list was accepted' >&2
     exit 1
 fi
-if (apo_config_defaults; APO_CFG[FINAL_DURATION_S]=28799; apo_config_validate) >/dev/null 2>&1; then
-    echo 'sub-eight-hour final validation was accepted' >&2
+if (apo_config_defaults; APO_CFG[FINAL_DURATION_S]=3599; apo_config_validate) >/dev/null 2>&1; then
+    echo 'sub-one-hour final validation was accepted' >&2
     exit 1
 fi
 if (apo_config_defaults; APO_CFG[TELEMETRY_INTERVAL_S]=0; apo_config_validate) >/dev/null 2>&1; then

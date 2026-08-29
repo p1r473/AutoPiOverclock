@@ -43,13 +43,14 @@ Passed CPUs:    $(apo_report_state_value PASSED_CPUS none)
 Passed GPUs:    $(apo_report_state_value PASSED_GPUS none)
 CPU boundary:   $(apo_report_state_value CPU_FAILURE_BOUNDARY none)
 GPU boundary:   $(apo_report_state_value GPU_FAILURE_BOUNDARY none)
-CPU qualify 2h: $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value CPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)MHz
-GPU qualify 2h: $(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value GPU_QUALIFICATION_CPU pending)/$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value GPU_QUALIFIED_CPU pending)/$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)MHz
+CPU qualify:    $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value CPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)MHz duration=$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s
+GPU qualify:    $(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value GPU_QUALIFICATION_CPU pending)/$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value GPU_QUALIFIED_CPU pending)/$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)MHz duration=$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s
 Recommended:    CPU $(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)") MHz / GPU $(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)") MHz
 Auto backoffs:  $(apo_state_get FINAL_BACKOFF_COUNT 0) ($(apo_report_state_value FINAL_BACKOFF_HISTORY none))
 Validated floor: CPU $(apo_report_state_value FLOOR_CPU pending) MHz / GPU $(apo_report_state_value FLOOR_GPU pending) MHz ($(apo_state_get FLOOR_VALIDATED 0))
-Edge CPU 24h:   $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) target=$(apo_report_state_value EDGE_CPU_TARGET none)MHz
+Edge CPU:       $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) target=$(apo_report_state_value EDGE_CPU_TARGET none)MHz duration=$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")s
 Edge source:    run=$(apo_report_state_value SOURCE_FLOOR_RUN_ID none) post-floor=$(apo_state_get POST_FLOOR_EDGE 0)
+Duration policy: $(apo_state_get CFG_DURATION_POLICY default) qualification=$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s final=$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")s edge=$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")s
 Max fan tuning: $(apo_report_fan_policy)
 Manual test:    $(apo_state_get MANUAL_TEST_STATUS NOT_REQUESTED) CPU=$(apo_report_state_value MANUAL_CPU n/a)MHz GPU=$(apo_report_state_value MANUAL_GPU n/a)MHz duration=$(apo_report_state_value MANUAL_MINUTES n/a)min
 Run max temp:   $(apo_report_state_value RUN_MAX_TEMP pending)C
@@ -89,11 +90,11 @@ apo_generate_report() {
         printf 'GPU failure boundary: %s MHz\n' "$(apo_report_state_value GPU_FAILURE_BOUNDARY none)"
         printf 'CPU qualification: status=%s, target=%s MHz, qualified=%s MHz, duration=%ss\n' \
             "$(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED)" "$(apo_report_state_value CPU_QUALIFICATION_TARGET pending)" \
-            "$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)" "$APO_DOMAIN_QUALIFICATION_DURATION_S"
+            "$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)" "$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")"
         printf 'GPU qualification: status=%s, target=%s/%s MHz, qualified=%s/%s MHz, duration=%ss\n' \
             "$(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED)" "$(apo_report_state_value GPU_QUALIFICATION_CPU pending)" \
             "$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)" "$(apo_report_state_value GPU_QUALIFIED_CPU pending)" \
-            "$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)" "$APO_DOMAIN_QUALIFICATION_DURATION_S"
+            "$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)" "$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")"
         printf 'Conservative recommendation: CPU %s MHz, GPU %s MHz\n' "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
         printf 'Automatic qualification/final backoffs: count=%s, target=%s/%s MHz, history=%s\n' \
             "$(apo_state_get FINAL_BACKOFF_COUNT 0)" "$(apo_report_state_value FINAL_BACKOFF_CPU none)" \
@@ -104,13 +105,19 @@ apo_generate_report() {
         printf 'Validated production floor: CPU %s MHz, GPU %s MHz (validated=%s, duration=%ss)\n' \
             "$(apo_report_state_value FLOOR_CPU pending)" "$(apo_report_state_value FLOOR_GPU pending)" \
             "$(apo_state_get FLOOR_VALIDATED 0)" "$(apo_report_state_value FLOOR_DURATION_S pending)"
-        printf 'Optional edge CPU 24h: status=%s, target=%s MHz\n' \
-            "$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)" "$(apo_report_state_value EDGE_CPU_TARGET none)"
+        printf 'Optional edge CPU: status=%s, target=%s MHz, duration=%ss\n' \
+            "$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)" "$(apo_report_state_value EDGE_CPU_TARGET none)" \
+            "$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")"
         printf 'Post-floor edge source: enabled=%s, run=%s, permanent-hash=%s\n' \
             "$(apo_state_get POST_FLOOR_EDGE 0)" "$(apo_report_state_value SOURCE_FLOOR_RUN_ID none)" \
             "$(apo_report_state_value SOURCE_FLOOR_PERMANENT_HASH none)"
         printf 'Maximum fan cooling during tuning: %s\n' \
             "$(apo_report_fan_policy)"
+        printf 'Duration policy: %s (qualification=%ss each, final=%ss, edge=%ss)\n' \
+            "$(apo_state_get CFG_DURATION_POLICY default)" \
+            "$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")" \
+            "$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")" \
+            "$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")"
         printf 'Manual stability test: status=%s, CPU=%s MHz, GPU=%s MHz, duration=%s minutes\n' \
             "$(apo_state_get MANUAL_TEST_STATUS NOT_REQUESTED)" "$(apo_report_state_value MANUAL_CPU n/a)" \
             "$(apo_report_state_value MANUAL_GPU n/a)" "$(apo_report_state_value MANUAL_MINUTES n/a)"

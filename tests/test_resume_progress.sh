@@ -267,12 +267,17 @@ apo_state_complete 2900 850 28800
 [[ $(apo_state_get FINAL_CPU) == 2900 && $(apo_state_get FINAL_GPU) == 850 ]]
 [[ $(apo_state_get VALIDATED) == 1 && $(apo_state_get STATUS) == PASS ]]
 
-# Optional edge mode first checkpoints the completed production floor, then
-# validates the next 25 MHz CPU step with a fixed 24-hour endurance segment.
+# Optional edge mode checkpoints the completed production floor, then uses the
+# immutable custom edge duration for the next 25 MHz CPU step.
 APO_STATE=()
 ACTIONS=()
 STRESS_DURATIONS=()
 seed_valid_guarded_auto_floor_plan
+APO_CFG[FINAL_DURATION_S]=14400
+APO_FINAL_DURATION_S=14400
+APO_QUALIFICATION_DURATION_S=3600
+APO_EDGE_DURATION_S=43200
+APO_DURATION_POLICY=custom
 apo_boot_candidate() {
     ACTIONS+=("boot:$3")
     apo_state_set TRYBOOT_EXPECTED 1
@@ -285,7 +290,7 @@ apo_state_set RECOMMENDED_GPU 900
 apo_state_set FINAL_TARGET_CPU 3000
 apo_state_set FINAL_TARGET_GPU 900
 apo_state_set FINAL_STAGE VERIFY
-apo_state_set VALIDATION_DURATION_S 28800
+apo_state_set VALIDATION_DURATION_S 14400
 apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
 apo_state_set VALIDATED 0
 apo_final_validation
@@ -294,14 +299,21 @@ apo_final_validation
 [[ $(apo_state_get EDGE_CPU_TARGET) == 3025 ]]
 [[ $(apo_state_get EDGE_CPU_STATUS) == PASS ]]
 [[ $(apo_state_get FINAL_CPU) == 3025 && $(apo_state_get FINAL_GPU) == 900 ]]
-[[ $(apo_state_get VALIDATION_DURATION_S) == 86400 ]]
-[[ " ${STRESS_DURATIONS[*]} " == *' 86400 '* ]]
+[[ $(apo_state_get FLOOR_DURATION_S) == 14400 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == 43200 ]]
+[[ " ${STRESS_DURATIONS[*]} " == *' 43200 '* ]]
 apo_state_set FINAL_CPU 3200
 if apo_validate_auto_resume_state; then
     echo 'edge completion with final clocks outside its validated target was accepted' >&2
     exit 1
 fi
 [[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
+
+APO_CFG[FINAL_DURATION_S]=$APO_DEFAULT_FINAL_DURATION_S
+APO_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
+APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
+APO_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
+APO_DURATION_POLICY=default
 
 # A genuine edge stability failure retains the already validated floor. A
 # failed experiment must not erase the safe eight-hour result.
@@ -379,10 +391,11 @@ apo_validate_auto_resume_state
 
 # The first CPU qualification happens before a final GPU guard can be bound to
 # its backoff history. A recovered failure lowers CPU by 50 MHz, repeats the
-# full two-hour CPU qualification, and remains valid when GPU search begins.
+# full saved-duration CPU qualification, and remains valid when GPU search begins.
 APO_STATE=()
 ACTIONS=()
 seed_valid_guarded_auto_floor_plan
+APO_QUALIFICATION_DURATION_S=3600
 APO_EDGE_CPU_24H=0
 apo_state_set GPU_INDEX 0
 apo_state_set PASSED_GPUS ''
@@ -428,11 +441,12 @@ apo_qualify_cpu
 [[ $(apo_state_get CPU_QUALIFIED_CLOCK) == 2950 ]]
 [[ $(apo_state_get CPU_QUALIFICATION_HISTORY) == 'CPU:3000>2950' ]]
 [[ $(apo_state_get FINAL_BACKOFF_COUNT) == 0 ]]
-[[ " ${ACTIONS[*]} " == *' qualify:cpu:3000/800:7200 '* ]]
-[[ " ${ACTIONS[*]} " == *' qualify:cpu:2950/800:7200 '* ]]
+[[ " ${ACTIONS[*]} " == *' qualify:cpu:3000/800:3600 '* ]]
+[[ " ${ACTIONS[*]} " == *' qualify:cpu:2950/800:3600 '* ]]
 apo_state_set PHASE GPU_SWEEP
 apo_state_set SUBPHASE READY
 apo_validate_auto_resume_state
+APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 
 # CPU qualification uses the wider 50 MHz CPU production guard. A proven
 # combined-endurance failure cannot identify one domain, so it lowers every
