@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.28 — 2026-08-29
+
+- Fixed interactive progress updates stacking after a Byobu/tmux pane or mobile terminal resize. Each repaint now reads the controlling terminal's live width instead of trusting a stale `COLUMNS` snapshot, leaves the wrapping final column unused, and bounds stale-line cleanup to the current pane width.
+- Added narrow-pane rendering and resized-pane cleanup regressions so a live update remains one replace-in-place terminal row.
+
 ## 0.1.0-alpha.27 — 2026-08-29
 
 - Made automatic tuning determine CPU before GPU with a fixed evidence ladder: short 10-minute search candidates, a two-hour CPU-only qualification at stock GPU, GPU search at that qualified CPU, a two-hour GPU-only qualification, and an eight-hour combined CPU/GPU/I/O production validation.

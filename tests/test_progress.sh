@@ -75,8 +75,11 @@ progress_line=$(apo_progress_render 150 600 2>&1)
 
 COLUMNS=60
 compact_line=$(apo_progress_render 150 600 2>&1)
-(( ${#compact_line} <= 61 ))
+# The leading carriage return plus at most COLUMNS-1 printable cells must fit
+# inside the pane without ever entering its wrapping final column.
+(( ${#compact_line} <= COLUMNS ))
 [[ $compact_line != *$'\n'* ]]
+[[ ${compact_line:0:1} == $'\r' ]]
 
 # Signal/exit cleanup clears the active line once and disables every later
 # logging callback from repainting it during potentially long normal recovery.
@@ -94,6 +97,8 @@ if grep -Fq monkeebutt "$SHUTDOWN_OUTPUT"; then
     echo 'shutdown logging repainted the progress line' >&2
     exit 1
 fi
+shutdown_bytes=$(wc -c < "$SHUTDOWN_OUTPUT")
+(( shutdown_bytes <= COLUMNS + 1 ))
 rm -f "$SHUTDOWN_OUTPUT"
 
 if apo_progress_line_is_telemetry 'ordinary worker output without elapsed'; then
