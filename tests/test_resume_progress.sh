@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# This fixture calls production functions sourced below, then intentionally
+# redefines selected functions for later isolated scenarios.
+# shellcheck disable=SC2218
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
