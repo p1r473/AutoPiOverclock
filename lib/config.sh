@@ -305,6 +305,11 @@ apo_write_effective_config() {
         printf '# AutoPiOverclock effective configuration for run %s\n' "${APO_RUN_ID:-unknown}"
         printf '# candidate_max_fan=%s (controller policy; use --no-max-fan to opt out on a new run)\n' \
             "$([[ ${APO_MAX_FAN:-1} == 1 ]] && printf enabled || printf disabled)"
+        if (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then
+            printf '# automatic_domain_qualification_seconds=%s (fixed safety policy, not a configurable shortcut)\n' \
+                "$APO_DOMAIN_QUALIFICATION_DURATION_S"
+            printf '# automatic_final_workload=combined CPU/GPU/I/O\n'
+        fi
         if (( ${APO_MANUAL_TEST:-0} == 1 )); then
             printf '# manual_stability_test=CPU:%sMHz GPU:%sMHz duration:%smin; never eligible for permanent apply\n' \
                 "$APO_MANUAL_CPU" "$APO_MANUAL_GPU" "$APO_MANUAL_MINUTES"

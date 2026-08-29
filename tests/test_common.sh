@@ -146,6 +146,52 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     [[ $(wc -c < "$BOOT_ID_ATTEMPT_FILE") == 1 ]]
 )
 
+# The simple unattended overclock command keeps observing after its ordinary
+# timeout, without issuing another reboot. A returned host is handed back to
+# the normal boot/ownership reconciliation path. Other commands stay bounded.
+APO_STATE_FILE=''
+APO_LOG_FILE=''
+(
+    SECONDS=0
+    APO_PUBLIC_COMMAND=overclock
+    APO_MUTATING_COMMAND=1
+    APO_PERSISTENT_SSH_RECOVERY=1
+    SSH_ATTEMPTS=0
+    apo_ssh_exec() {
+        SSH_ATTEMPTS=$((SSH_ATTEMPTS + 1))
+        (( SSH_ATTEMPTS >= 3 ))
+    }
+    sleep() { SECONDS=$((SECONDS + $1)); }
+    apo_wait_for_ssh 1 unattended-recovery-fixture
+    [[ $SSH_ATTEMPTS == 3 ]]
+)
+(
+    SECONDS=0
+    APO_PUBLIC_COMMAND=resume
+    APO_MUTATING_COMMAND=1
+    APO_PERSISTENT_SSH_RECOVERY=1
+    SSH_ATTEMPTS=0
+    apo_ssh_exec() { SSH_ATTEMPTS=$((SSH_ATTEMPTS + 1)); return 1; }
+    sleep() { SECONDS=$((SECONDS + $1)); }
+    if apo_wait_for_ssh 1 bounded-resume-fixture; then exit 1; fi
+    [[ $SSH_ATTEMPTS == 1 ]]
+)
+(
+    SECONDS=0
+    APO_PUBLIC_COMMAND=overclock
+    APO_MUTATING_COMMAND=1
+    APO_PERSISTENT_SSH_RECOVERY=1
+    BOOT_ATTEMPT_FILE=$(mktemp)
+    trap 'rm -f "$BOOT_ATTEMPT_FILE"' EXIT
+    apo_remote_boot_id() {
+        printf x >> "$BOOT_ATTEMPT_FILE"
+        (( $(wc -c < "$BOOT_ATTEMPT_FILE") >= 3 )) && printf new-boot || return 1
+    }
+    sleep() { SECONDS=$((SECONDS + $1)); }
+    [[ $(apo_wait_for_new_boot old-boot 1 unattended-boot-fixture) == new-boot ]]
+    [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 3 ]]
+)
+
 # Reboots invalidate a Debian worker stored under /tmp. The shared reboot
 # handshake must not expose a returned boot until the exact local worker has
 # been uploaded again for that boot.

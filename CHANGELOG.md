@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-alpha.27 — 2026-08-29
+
+- Made automatic tuning determine CPU before GPU with a fixed evidence ladder: short 10-minute search candidates, a two-hour CPU-only qualification at stock GPU, GPU search at that qualified CPU, a two-hour GPU-only qualification, and an eight-hour combined CPU/GPU/I/O production validation.
+- Made a fully recovered `BOOT_FAILURE` or `STABILITY_FAILURE` during either domain qualification lower only that domain and repeat its full qualification. A recovered ambiguous failure during combined production validation lowers every still-overclocked domain, re-runs both qualifications, and restarts the eight-hour validation without pretending to know one cause.
+- Made the optional CPU +25 MHz edge a 24-hour combined CPU/GPU/I/O workload at the production-floor GPU. A later edge request still starts directly from an eligible applied floor without repeating its eight-hour validation.
+- Kept unattended `autopioverclock overclock TARGET` alive after the ordinary SSH timeout in read-only recovery monitoring. It issues no repeated reboot, reconciles boot identity and owned tryboot evidence when SSH returns, and remains safely interruptible and resumable.
+- Promoted screenless Raspberry Pi OS, Debian, and supported Ubuntu Pi layouts to an explicit automatic path: no display/audio baseline is required, the V3D render node is discovered dynamically, and older `stress-ng` builds receive a verified single-V3D-node fallback when device selection is unavailable.
+- Added schema-9 qualification and recovery-wait evidence, schema-8 active-run migration, conservative migration of eligible recovered schema-7/8 final failures, updated progress/status/report output, and regressions for headless discovery, dynamic V3D routing, qualification backoff, paired restart, and persistent SSH recovery.
+
 ## 0.1.0-alpha.26 — 2026-08-28
 
 - Removed the historical postfix `TARGET reset` compatibility form. Stock reset now has one unambiguous spelling: `autopioverclock reset TARGET`.

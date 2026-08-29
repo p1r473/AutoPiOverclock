@@ -42,6 +42,18 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     [[ $APPLICATION_READINESS_LAST_FAILURE == audio-unavailable ]]
 '
 
+# A Debian/Raspberry Pi OS target with no connector and no audio stack is a
+# valid headless host. Its health gate must not call either graphical probe.
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    check_required_processes() { :; }
+    check_required_services() { :; }
+    check_display() { echo display-probe-was-called >&2; return 1; }
+    audio_identity() { echo audio-probe-was-called >&2; return 1; }
+    application_health_ready headless "" "" "" "" ""
+'
+
 APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" bash -c '
     set -Eeuo pipefail
     source "$WORKER"
@@ -248,6 +260,7 @@ cat > "$TEMP_DIR/stress-ng-bin/stress-ng" <<'STRESS_NG'
 set -e
 [[ ${1-} == --help ]] || exit 1
 printf '      %s N  start N GPU workers\n' "${MOCK_STRESS_NG_OPTION:---gpu}"
+[[ -z ${MOCK_STRESS_NG_SECOND_OPTION:-} ]] || printf '      %s PATH  select a GPU device\n' "$MOCK_STRESS_NG_SECOND_OPTION"
 for ((line = 0; line < 20000; line++)); do
     printf '      --fixture-option-%05d N  trailing help text for pipe coverage\n' "$line"
 done
@@ -257,12 +270,19 @@ ORIGINAL_PATH=$PATH
 PATH="$TEMP_DIR/stress-ng-bin:$PATH"
 export MOCK_STRESS_NG_OPTION=--gpu
 stress_ng_has_gpu
+export MOCK_STRESS_NG_SECOND_OPTION=--gpu-devnode
+stress_ng_has_gpu_devnode
+export MOCK_STRESS_NG_SECOND_OPTION=--gpu-devnode-ops
+if stress_ng_has_gpu_devnode; then
+    echo 'stress-ng GPU-device detection accepted --gpu-devnode-ops as --gpu-devnode' >&2
+    exit 1
+fi
 export MOCK_STRESS_NG_OPTION=--gpu-ops
 if stress_ng_has_gpu; then
     echo 'stress-ng GPU detection accepted --gpu-ops as the --gpu stressor' >&2
     exit 1
 fi
-unset MOCK_STRESS_NG_OPTION
+unset MOCK_STRESS_NG_OPTION MOCK_STRESS_NG_SECOND_OPTION
 PATH=$ORIGINAL_PATH
 
 throttle_clean_relative throttled=0x50000 throttled=0x50000
@@ -302,6 +322,34 @@ printf 'enabled\n' > "$TEMP_DIR/debian-drm/card1-HDMI-A-1/enabled"
 [[ $(connected_display_baseline "$TEMP_DIR/debian-drm") == 'connector=card1-HDMI-A-1;mode=1920x1080;enabled=enabled' ]]
 printf 'disconnected\n' > "$TEMP_DIR/debian-drm/card1-HDMI-A-1/status"
 if display_hardware_present "$TEMP_DIR/debian-drm"; then exit 1; fi
+
+# Render-node numbering is not stable across kernels or attached GPUs. Headless
+# Debian must identify the V3D node from sysfs instead of assuming renderD128.
+mkdir -p "$TEMP_DIR/debian-dri" \
+    "$TEMP_DIR/debian-drm-class/renderD128/device" \
+    "$TEMP_DIR/debian-drm-class/renderD129/device"
+: > "$TEMP_DIR/debian-dri/renderD128"
+: > "$TEMP_DIR/debian-dri/renderD129"
+printf 'DRIVER=virtio_gpu\n' > "$TEMP_DIR/debian-drm-class/renderD128/device/uevent"
+printf 'DRIVER=v3d\n' > "$TEMP_DIR/debian-drm-class/renderD129/device/uevent"
+[[ $(v3d_render_node "$TEMP_DIR/debian-dri" "$TEMP_DIR/debian-drm-class") == "$TEMP_DIR/debian-dri/renderD129" ]]
+PATH="$TEMP_DIR/stress-ng-bin:$PATH"
+export MOCK_STRESS_NG_OPTION=--gpu MOCK_STRESS_NG_SECOND_OPTION=--gpu-devnode
+[[ $(stress_ng_gpu_strategy "$TEMP_DIR/debian-dri/renderD129" "$TEMP_DIR/debian-dri") == explicit-v3d-device ]]
+unset MOCK_STRESS_NG_SECOND_OPTION
+if stress_ng_gpu_strategy "$TEMP_DIR/debian-dri/renderD129" "$TEMP_DIR/debian-dri" >/dev/null; then
+    echo 'stress-ng without device selection accepted an ambiguous multi-render-node host' >&2
+    exit 1
+fi
+rm -f "$TEMP_DIR/debian-dri/renderD128"
+[[ $(stress_ng_gpu_strategy "$TEMP_DIR/debian-dri/renderD129" "$TEMP_DIR/debian-dri") == single-v3d-default ]]
+unset MOCK_STRESS_NG_OPTION
+PATH=$ORIGINAL_PATH
+rm -f "$TEMP_DIR/debian-drm-class/renderD129/device/uevent"
+if v3d_render_node "$TEMP_DIR/debian-dri" "$TEMP_DIR/debian-drm-class" >/dev/null; then
+    echo 'Debian V3D render-node discovery accepted a non-V3D node' >&2
+    exit 1
+fi
 
 (
     printf '[pi4]\narm_freq=9999\n' > "$TEMP_DIR/inactive-config.txt"

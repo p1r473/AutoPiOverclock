@@ -205,7 +205,7 @@ apo_return_normal() {
     expected_tryboot=$(apo_state_get TRYBOOT_EXPECTED 0)
     pending_boot_id=$(apo_state_get LAST_BOOT_ID '')
     while :; do
-        if ! apo_wait_for_ssh "$APO_BOOT_TIMEOUT"; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="SSH is unavailable for normal recovery after ${APO_BOOT_TIMEOUT}s."; return 1; fi
+        if ! apo_wait_for_ssh "$APO_BOOT_TIMEOUT" "$context"; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="SSH is unavailable for normal recovery after ${APO_BOOT_TIMEOUT}s."; return 1; fi
         current_boot_id=$(apo_remote_boot_id || true)
         if [[ -z $current_boot_id ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Could not read the boot ID during normal recovery.'; return 1; fi
         if ! apo_ensure_worker_for_boot "$current_boot_id" "$context"; then

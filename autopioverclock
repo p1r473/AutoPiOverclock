@@ -81,6 +81,7 @@ APO_MANUAL_OPTION_SEEN=0
 APO_MANUAL_CPU_OPTION_SEEN=0
 APO_MANUAL_GPU_OPTION_SEEN=0
 APO_MANUAL_MINUTES_OPTION_SEEN=0
+APO_PERSISTENT_SSH_RECOVERY=0
 
 usage() {
     cat <<'USAGE'
@@ -110,7 +111,7 @@ Commands:
   apply      Apply a selected fully validated result with typed confirmation
   report     Generate a concise report for a selected or latest run
 
-The optional --edge-cpu-24h flag adds the final CPU +25 MHz/24-hour test.
+The optional --edge-cpu-24h flag adds a CPU +25 MHz/24-hour combined CPU/GPU/I/O test.
 
 Target:
   hostname | IP | username@hostname | username@IP
@@ -118,7 +119,7 @@ Target:
   TARGET is required for every operational command.
 
 Common options:
-  --edge-cpu-24h           Add the final CPU +25 MHz/24-hour test to overclock
+  --edge-cpu-24h           Add the CPU +25 MHz/24-hour combined edge test to overclock
   --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning/test
   --cpu MHZ                Exact CPU clock for test TARGET
   --gpu MHZ                Exact GPU/V3D clock for test TARGET
@@ -160,6 +161,7 @@ apo_parse_cli() {
             APO_ORIGIN_COMMAND=overclock
             APO_PUBLIC_COMMAND=overclock
             APO_AUTO_APPLY=1
+            APO_PERSISTENT_SSH_RECOVERY=1
             index=1
             ;;
         test)
@@ -350,8 +352,10 @@ apo_public_overclock_select_continuation() {
          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $status == PASS && $phase == COMPLETE ]] &&
            [[ $apply_status == NOT_APPLIED || $apply_status == APPLYING ||
               $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; } ||
-          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 7 ]] &&
-            apo_final_saved_failure_is_retryable "$state_schema"; }; }; then
+         { [[ $state_schema == 8 && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
+           [[ $phase != PREPARE && $phase != PREPARED ]]; } ||
+         { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 8 || $state_schema == 7 ]] &&
+             apo_final_saved_failure_is_retryable "$state_schema"; }; }; then
         [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] || apo_die 'The active run has a malformed saved maximum-fan policy.' "$APO_EXIT_INTERNAL"
         if (( requested_max_fan_seen == 1 )) && [[ $requested_max_fan != "$saved_max_fan" ]]; then
             apo_die 'The active run was created with maximum-fan cooling. Its cooling policy cannot change during continuation; reset and start a fresh run to use --no-max-fan.' "$APO_EXIT_USAGE"
@@ -512,6 +516,10 @@ apo_post_floor_edge_reset_child_state() {
     apo_state_set TRYBOOT_EXPECTED 0
     apo_state_set TRYBOOT_FILE_MAY_EXIST 0
     apo_state_set MUTATIONS_STARTED 0
+    apo_state_set RECOVERY_WAIT_STATUS IDLE
+    apo_state_set RECOVERY_WAIT_CONTEXT ''
+    apo_state_set RECOVERY_WAIT_STARTED_AT ''
+    apo_state_set RECOVERY_WAIT_TIMEOUTS 0
     apo_state_set PROGRESS_ACTIVE_SECONDS 0
     apo_state_set PROGRESS_LAST_TEMP ''
     apo_state_set PROGRESS_LAST_CPU ''
@@ -672,7 +680,10 @@ apo_start_new_run() {
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
         apo_summary_line "Automatic refinement: ${APO_AUTO_REFINE_STEP_MHZ}MHz"
         apo_summary_line "Automatic production guard: CPU ${APO_AUTO_CPU_GUARD_MHZ}MHz / GPU ${APO_AUTO_GPU_GUARD_MHZ}MHz"
-        apo_summary_line "Optional post-floor CPU +25MHz/24-hour validation: $([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled)"
+        apo_summary_line "Isolated CPU qualification: ${APO_DOMAIN_QUALIFICATION_DURATION_S}s at stock GPU"
+        apo_summary_line "Isolated GPU qualification: ${APO_DOMAIN_QUALIFICATION_DURATION_S}s at qualified CPU"
+        apo_summary_line "Production validation: ${APO_CFG[FINAL_DURATION_S]}s combined CPU/GPU/I/O"
+        apo_summary_line "Optional post-floor CPU +25MHz/24-hour combined validation: $([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled)"
     fi
     apo_summary_line ''
     apo_event run-start INFO '' "command=$APO_ORIGIN_COMMAND version=$APO_VERSION"
@@ -748,6 +759,9 @@ apo_prepare_remote_for_saved_run() {
 apo_cleanup_handler() {
     local exit_code=$? saved_failure_class='' original_failure_class='' original_failure_reason='' recovery_reason=''
     trap - EXIT INT TERM HUP
+    # Ctrl-C must remain bounded. Persistent SSH monitoring is for the live
+    # unattended command, never for an exit-trap recovery attempt.
+    APO_PERSISTENT_SSH_RECOVERY=0
     if declare -F apo_progress_begin_shutdown >/dev/null 2>&1; then
         apo_progress_begin_shutdown
     elif declare -F apo_progress_clear_line >/dev/null 2>&1; then
@@ -849,8 +863,8 @@ main() {
             fi
             state_schema=$(apo_state_get RUN_SCHEMA '')
             if [[ $state_schema != "$APO_CURRENT_RUN_SCHEMA" ]]; then
-                if [[ $state_schema == 7 ]] && apo_final_migrate_legacy_retry_state "$state_schema"; then
-                    apo_event overclock-resume INFO '' 'Adopted the recovered final-stress boundary without repeating the failed clock.'
+                if [[ $state_schema == 7 || $state_schema == 8 ]] && apo_migrate_active_automatic_state "$state_schema"; then
+                    apo_event overclock-resume INFO '' 'Adopted the retained automatic progress and inserted the new isolated CPU/GPU qualification gates without repeating a recovered failed clock.'
                 else
                     apo_die 'This interrupted state predates the current safety/resume schema and cannot be resumed without bypassing required gates. Start a new run; status and report remain available.' "$APO_EXIT_USAGE"
                 fi

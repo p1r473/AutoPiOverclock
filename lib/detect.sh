@@ -99,7 +99,7 @@ apo_post_reboot_handshake() {
     local new_boot_id
     APO_REBOOT_BOOT_ID=''
     APO_REBOOT_HANDSHAKE_STAGE='wait'
-    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$timeout_seconds" || true)
+    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$timeout_seconds" "$context" || true)
     [[ -n $new_boot_id && $new_boot_id != "$old_boot_id" ]] || {
         APO_LAST_CLASS=HARNESS_FAILURE
         APO_LAST_REASON="The target did not return with a new boot ID after $context."
@@ -226,7 +226,7 @@ apo_store_discovery_state() {
     apo_state_set AUDIO_BASELINE "$APO_AUDIO_BASELINE"
     apo_state_set STORAGE_LAYOUT "$APO_STORAGE_LAYOUT"
     apo_state_set REQUIRE_GPU_STRESS "$APO_REQUIRE_GPU_STRESS"
-    for key in MODEL COMPATIBLE ARCH OS_ID OS_VERSION NORMAL_VOLTAGE_SOURCE PERMANENT_TUNING_PROVENANCE PERMANENT_TUNING_EVIDENCE TRYBOOT_EXISTS TRYBOOT_TYPE TRYBOOT_HASH BOOT_WATCHDOG_TIMEOUT KERNEL_WATCHDOG_TIMEOUT RUNTIME_WATCHDOG WATCHDOG_DEVICE WATCHDOG_RUNTIME_TIMEOUT WATCHDOG_OWNER ROOT_SOURCE BOOT_SOURCE DISPLAY_PRESENT AUDIO_BASELINE CPU_STRESS_AVAILABLE GPU_STRESS_AVAILABLE STRESS_NG_BINARY STRESS_NG_GPU_AVAILABLE DRM_RENDER_NODE OPENSSL_BINARY GLMARK_BINARY GLMARK_WAYLAND_BINARY GLMARK_DRM_BINARY GLMARK_DATA RECENT_THROTTLED THROTTLE_RECENT_SUPPORTED; do
+    for key in MODEL COMPATIBLE ARCH OS_ID OS_VERSION NORMAL_VOLTAGE_SOURCE PERMANENT_TUNING_PROVENANCE PERMANENT_TUNING_EVIDENCE TRYBOOT_EXISTS TRYBOOT_TYPE TRYBOOT_HASH BOOT_WATCHDOG_TIMEOUT KERNEL_WATCHDOG_TIMEOUT RUNTIME_WATCHDOG WATCHDOG_DEVICE WATCHDOG_RUNTIME_TIMEOUT WATCHDOG_OWNER ROOT_SOURCE BOOT_SOURCE DISPLAY_PRESENT AUDIO_BASELINE CPU_STRESS_AVAILABLE GPU_STRESS_AVAILABLE STRESS_NG_BINARY STRESS_NG_GPU_AVAILABLE STRESS_NG_GPU_STRATEGY DRM_RENDER_NODE OPENSSL_BINARY GLMARK_BINARY GLMARK_WAYLAND_BINARY GLMARK_DRM_BINARY GLMARK_DATA RECENT_THROTTLED THROTTLE_RECENT_SUPPORTED; do
         apo_state_set "DISC_${key}" "${APO_DISCOVERY[$key]:-}"
     done
     apo_state_save
@@ -312,9 +312,10 @@ apo_context_from_discovery() {
 apo_dependency_description() {
     case $APO_PROFILE in
         debian)
-            printf 'stress-ng=%s; stress-ng-gpu=%s; drm-render-node=%s' \
+            printf 'stress-ng=%s; stress-ng-gpu=%s; gpu-strategy=%s; drm-render-node=%s' \
                 "${APO_DISCOVERY[STRESS_NG_BINARY]:-missing}" \
                 "$([[ ${APO_DISCOVERY[STRESS_NG_GPU_AVAILABLE]:-0} == 1 ]] && printf ready || printf missing)" \
+                "${APO_DISCOVERY[STRESS_NG_GPU_STRATEGY]:-missing}" \
                 "${APO_DISCOVERY[DRM_RENDER_NODE]:-missing}"
             ;;
         batocera)
