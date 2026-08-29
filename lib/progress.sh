@@ -428,7 +428,7 @@ apo_progress_resolve_clock() {
 apo_progress_terminal_columns() {
     local columns=''
     # COLUMNS is only a launch-time snapshot for many non-interactive scripts and
-    # becomes stale when a Byobu/tmux pane or mobile client is resized. Query the
+    # becomes stale when an attached pane or mobile client is resized. Query the
     # controlling terminal first so every repaint uses the live pane width.
     if [[ -t 2 ]] && command -v stty >/dev/null 2>&1; then
         read -r _ columns < <(stty size < /dev/tty 2>/dev/null || true) || columns=''
