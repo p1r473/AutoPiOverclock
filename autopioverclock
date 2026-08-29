@@ -753,7 +753,11 @@ apo_prepare_remote_for_saved_run() {
 apo_cleanup_handler() {
     local exit_code=$? saved_failure_class='' original_failure_class='' original_failure_reason='' recovery_reason=''
     trap - EXIT INT TERM HUP
-    if declare -F apo_progress_clear_line >/dev/null 2>&1; then apo_progress_clear_line; fi
+    if declare -F apo_progress_begin_shutdown >/dev/null 2>&1; then
+        apo_progress_begin_shutdown
+    elif declare -F apo_progress_clear_line >/dev/null 2>&1; then
+        apo_progress_clear_line
+    fi
     if [[ ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && ${APO_MUTATING_COMMAND:-0} == 1 ]]; then
         local tryboot_flag=''
         tryboot_flag=$(apo_remote_tryboot_flag || true)
@@ -794,6 +798,7 @@ apo_cleanup_handler() {
     fi
     [[ -n ${APO_JSONL_FILE:-} && -f ${APO_JSONL_FILE:-} ]] && apo_finalize_json || true
     if [[ ${APO_WORKER_DEPLOYED:-0} == 1 && ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && $(apo_remote_tryboot_flag 2>/dev/null || true) != 00000001 ]]; then apo_profile_cleanup_worker || true; fi
+    if declare -F apo_progress_clear_line >/dev/null 2>&1; then apo_progress_clear_line; fi
     exit "$exit_code"
 }
 

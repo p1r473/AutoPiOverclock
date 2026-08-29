@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.25 — 2026-08-28
+
+- Made a fully recovered `STABILITY_FAILURE` during ordinary combined endurance a conservative pair-level boundary: every still-overclocked domain steps down by its production guard (CPU 50 MHz, GPU 25 MHz) and complete final validation restarts without claiming which domain caused the reboot.
+- Limited paired backoff to current-schema automatic runs with verified normal recovery and completely cleared owned tryboot evidence; boot, harness, recovery, optional-edge, and legacy combined-endurance failures retain their existing fail-closed behavior.
+- Made repeating `autopioverclock overclock TARGET` adopt an eligible recovered schema-8 endurance failure, while an ordinary user interruption repeats the interrupted workload at the same clocks rather than inventing a stability boundary.
+- Cleared the interactive progress line immediately on `INT`, `TERM`, `HUP`, or ordinary exit and suppressed repainting while exit-trap normal recovery emits output.
+- Added paired-history validation, current/legacy continuation selection, complete validation-restart, and progress-shutdown regressions; updated the public recovery and output contracts.
+
 ## 0.1.0-alpha.24 — 2026-08-28
 
 - Added a controller-side interactive whole-workflow progress bar with target identity, active clocks, current/run-maximum temperature, throttle state, activity, dynamically replanned approximate percentage/ETA, and approximate tests remaining.

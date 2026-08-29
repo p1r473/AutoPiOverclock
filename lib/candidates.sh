@@ -256,6 +256,7 @@ apo_auto_validate_boolean() {
 apo_auto_validate_final_backoff_state() {
     local count backoff_cpu backoff_gpu history last_stage last_class last_reason
     local safe_cpu safe_gpu expected_cpu expected_gpu entry domain from_clock to_clock extra expected_next
+    local from_cpu from_gpu to_cpu to_gpu pair_extra expected_cpu_next expected_gpu_next
     local -a entries=()
     count=$(apo_state_get FINAL_BACKOFF_COUNT 0)
     backoff_cpu=$(apo_state_get FINAL_BACKOFF_CPU '')
@@ -354,6 +355,49 @@ apo_auto_validate_final_backoff_state() {
                 }
                 expected_gpu=$to_clock
                 ;;
+            PAIR)
+                from_cpu=''; from_gpu=''; to_cpu=''; to_gpu=''; pair_extra=''
+                IFS='/' read -r from_cpu from_gpu pair_extra <<< "$from_clock"
+                [[ -n $from_cpu && -n $from_gpu && -z $pair_extra ]] || {
+                    APO_AUTO_VALIDATION_REASON="Saved final paired backoff origin is malformed: $from_clock"
+                    return 1
+                }
+                pair_extra=''
+                IFS='/' read -r to_cpu to_gpu pair_extra <<< "$to_clock"
+                [[ -n $to_cpu && -n $to_gpu && -z $pair_extra ]] || {
+                    APO_AUTO_VALIDATION_REASON="Saved final paired backoff destination is malformed: $to_clock"
+                    return 1
+                }
+                [[ $from_cpu == "$expected_cpu" && $from_gpu == "$expected_gpu" ]] || {
+                    APO_AUTO_VALIDATION_REASON="Saved final paired backoff does not continue from CPU $expected_cpu MHz / GPU $expected_gpu MHz"
+                    return 1
+                }
+                apo_auto_uint_in_range "$to_cpu" "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_CPU_MAX_MHZ" || {
+                    APO_AUTO_VALIDATION_REASON="Saved final paired CPU destination is malformed: $to_cpu"
+                    return 1
+                }
+                apo_auto_uint_in_range "$to_gpu" "$APO_AUTO_BASELINE_GPU" "$APO_AUTO_GPU_MAX_MHZ" || {
+                    APO_AUTO_VALIDATION_REASON="Saved final paired GPU destination is malformed: $to_gpu"
+                    return 1
+                }
+                expected_cpu_next=$expected_cpu
+                expected_gpu_next=$expected_gpu
+                if (( expected_cpu > APO_AUTO_BASELINE_CPU )); then
+                    expected_cpu_next=$((expected_cpu - APO_AUTO_CPU_GUARD_MHZ))
+                    (( expected_cpu_next < APO_AUTO_BASELINE_CPU )) && expected_cpu_next=$APO_AUTO_BASELINE_CPU
+                fi
+                if (( expected_gpu > APO_AUTO_BASELINE_GPU )); then
+                    expected_gpu_next=$((expected_gpu - APO_AUTO_GPU_GUARD_MHZ))
+                    (( expected_gpu_next < APO_AUTO_BASELINE_GPU )) && expected_gpu_next=$APO_AUTO_BASELINE_GPU
+                fi
+                (( to_cpu == expected_cpu_next && to_gpu == expected_gpu_next &&
+                   (to_cpu < from_cpu || to_gpu < from_gpu) )) || {
+                    APO_AUTO_VALIDATION_REASON="Saved final paired backoff is not one bounded CPU/GPU guard step: $entry"
+                    return 1
+                }
+                expected_cpu=$to_cpu
+                expected_gpu=$to_gpu
+                ;;
             *)
                 APO_AUTO_VALIDATION_REASON="Saved final backoff domain is malformed: $domain"
                 return 1
@@ -367,6 +411,7 @@ apo_auto_validate_final_backoff_state() {
     case $last_stage in
         CPU_STRESS) [[ ${entries[-1]} == CPU:* ]] ;;
         GPU_STRESS) [[ ${entries[-1]} == GPU:* ]] ;;
+        ENDURANCE) [[ ${entries[-1]} == PAIR:* ]] ;;
         *) false ;;
     esac || {
         APO_AUTO_VALIDATION_REASON='Saved final backoff stage does not match the last history entry'
@@ -1198,7 +1243,11 @@ apo_final_saved_failure_is_retryable() {
        -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') &&
        $(apo_state_get RECOMMENDED_CPU '') == "$(apo_state_get FINAL_TARGET_CPU '')" &&
        $(apo_state_get RECOMMENDED_GPU '') == "$(apo_state_get FINAL_TARGET_GPU '')" ]] || return 1
-    case $(apo_state_get FINAL_STAGE '') in CPU_STRESS|GPU_STRESS) return 0 ;; *) return 1 ;; esac
+    case $(apo_state_get FINAL_STAGE '') in
+        CPU_STRESS|GPU_STRESS) return 0 ;;
+        ENDURANCE) [[ $run_schema == "$APO_CURRENT_RUN_SCHEMA" ]] ;;
+        *) return 1 ;;
+    esac
 }
 
 apo_final_initialize_backoff_state() {
@@ -1257,6 +1306,19 @@ apo_final_schedule_stress_backoff() {
             (( next_gpu < APO_AUTO_BASELINE_GPU )) && next_gpu=$APO_AUTO_BASELINE_GPU
             entry="GPU:${current_gpu}>${next_gpu}"
             ;;
+        ENDURANCE)
+            domain=PAIR
+            (( current_cpu > APO_AUTO_BASELINE_CPU || current_gpu > APO_AUTO_BASELINE_GPU )) || return 1
+            if (( current_cpu > APO_AUTO_BASELINE_CPU )); then
+                next_cpu=$((current_cpu - APO_AUTO_CPU_GUARD_MHZ))
+                (( next_cpu < APO_AUTO_BASELINE_CPU )) && next_cpu=$APO_AUTO_BASELINE_CPU
+            fi
+            if (( current_gpu > APO_AUTO_BASELINE_GPU )); then
+                next_gpu=$((current_gpu - APO_AUTO_GPU_GUARD_MHZ))
+                (( next_gpu < APO_AUTO_BASELINE_GPU )) && next_gpu=$APO_AUTO_BASELINE_GPU
+            fi
+            entry="PAIR:${current_cpu}/${current_gpu}>${next_cpu}/${next_gpu}"
+            ;;
         *) return 1 ;;
     esac
     (( next_cpu > APO_AUTO_BASELINE_CPU || next_gpu > APO_AUTO_BASELINE_GPU )) || return 1
@@ -1279,8 +1341,13 @@ apo_final_schedule_stress_backoff() {
     apo_state_set FAILURE_REASON ''
     apo_state_clear_final_validation
     apo_final_checkpoint "$next_cpu" "$next_gpu" PRE_STRESS_BOOT
-    apo_summary_line "FINAL BACKOFF $domain: $entry after verified normal recovery; restarting complete final validation at CPU $next_cpu MHz / GPU $next_gpu MHz"
-    apo_event final-backoff WARN "$failure_class" "Final $domain-only stress rejected CPU=$current_cpu GPU=$current_gpu: $failure_reason; reduced $domain by $step MHz and restarted complete final validation at CPU=$next_cpu GPU=$next_gpu"
+    if [[ $domain == PAIR ]]; then
+        apo_summary_line "FINAL BACKOFF PAIR: $entry after verified normal recovery; combined endurance did not identify one failing domain, so every still-overclocked domain was reduced by its production guard before restarting complete final validation"
+        apo_event final-backoff WARN "$failure_class" "Final combined endurance rejected CPU=$current_cpu GPU=$current_gpu without identifying one failing domain: $failure_reason; conservatively reduced the pair to CPU=$next_cpu GPU=$next_gpu and restarted complete final validation"
+    else
+        apo_summary_line "FINAL BACKOFF $domain: $entry after verified normal recovery; restarting complete final validation at CPU $next_cpu MHz / GPU $next_gpu MHz"
+        apo_event final-backoff WARN "$failure_class" "Final $domain-only stress rejected CPU=$current_cpu GPU=$current_gpu: $failure_reason; reduced $domain by $step MHz and restarted complete final validation at CPU=$next_cpu GPU=$next_gpu"
+    fi
 }
 
 apo_final_record_failure() {
@@ -1434,7 +1501,16 @@ apo_final_validation() {
                 if ! apo_run_stress "$final_kind" "$endurance_duration" final-endurance 1; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
                     stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
-                    if apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then return 0; fi
+                    if apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then
+                        return 0
+                    else
+                        failure_action_rc=$?
+                    fi
+                    if (( failure_action_rc == 2 )); then
+                        recommended_cpu=$(apo_state_get RECOMMENDED_CPU '')
+                        recommended_gpu=$(apo_state_get RECOMMENDED_GPU '')
+                        continue
+                    fi
                     return 1
                 fi
                 if ! apo_health_check "$recommended_cpu" "$recommended_gpu" "$APO_TEST_VOLTAGE" final-post-endurance-health; then
