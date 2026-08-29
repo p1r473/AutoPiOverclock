@@ -426,16 +426,23 @@ apo_progress_resolve_clock() {
 }
 
 apo_progress_terminal_columns() {
-    local columns=${COLUMNS:-}
+    local columns=''
+    # COLUMNS is only a launch-time snapshot for many non-interactive scripts and
+    # becomes stale when an attached pane or mobile client is resized. Query the
+    # controlling terminal first so every repaint uses the live pane width.
+    if [[ -t 2 ]] && command -v stty >/dev/null 2>&1; then
+        read -r _ columns < <(stty size < /dev/tty 2>/dev/null || true) || columns=''
+    fi
+    [[ $columns =~ ^[0-9]+$ ]] || columns=${COLUMNS:-}
     if [[ ! $columns =~ ^[0-9]+$ ]] && command -v tput >/dev/null 2>&1; then columns=$(tput cols 2>/dev/null || true); fi
     [[ $columns =~ ^[0-9]+$ ]] || columns=120
-    (( columns < 20 )) && columns=20
+    (( columns > 1 )) || columns=2
     printf '%s' "$columns"
 }
 
 apo_progress_render() {
     local elapsed=${1:-${APO_PROGRESS_STRESS_ELAPSED:-0}} duration=${2:-${APO_PROGRESS_STRESS_DURATION:-0}}
-    local remaining active percent filled empty bar eta target cpu gpu temp max_temp throttle fan phase columns line
+    local remaining active percent filled empty bar eta target cpu gpu temp max_temp throttle fan phase columns render_width line
     local bar_width=$APO_PROGRESS_BAR_WIDTH tests current_remaining='' stress_label
     apo_progress_available || return 0
     active=$(apo_progress_active_seconds)
@@ -493,18 +500,19 @@ apo_progress_render() {
     else
         line="$target [$bar] ~${percent}% $eta | ~$tests tests | $phase"
     fi
-    (( ${#line} > columns )) && line=${line:0:columns}
-    printf '\r%-*s' "$columns" "$line" >&2
+    # Repaint the existing row explicitly. A bare carriage return plus padding
+    # is not reliably replace-in-place through every SSH/mobile terminal path.
+    # Keeping the final cell unused also prevents an implicit autowrap.
+    render_width=$((columns - 1))
+    (( ${#line} > render_width )) && line=${line:0:render_width}
+    printf '\033[1G\033[2K%s' "$line" >&2
     APO_PROGRESS_LINE_ACTIVE=1
-    APO_PROGRESS_LINE_WIDTH=$columns
+    APO_PROGRESS_LINE_WIDTH=${#line}
 }
 
 apo_progress_clear_line() {
-    local columns
     (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
-    columns=${APO_PROGRESS_LINE_WIDTH:-0}
-    [[ $columns =~ ^[0-9]+$ ]] && (( columns > 0 )) || columns=$(apo_progress_terminal_columns)
-    printf '\r%*s\r' "$columns" '' >&2
+    printf '\033[1G\033[2K' >&2
     APO_PROGRESS_LINE_ACTIVE=0
     APO_PROGRESS_LINE_WIDTH=0
 }
