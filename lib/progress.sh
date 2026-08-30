@@ -501,9 +501,9 @@ apo_progress_render() {
     medium_line+=" | ~$tests tests | CPU: $cpu | GPU: $gpu | ${temp}C | $phase"
     narrow_line="$target [$bar] ~${percent}% $eta | ~$tests tests | $phase"
 
-    # Byobu/tmux can retain a wider pane geometry than a newly attached mobile
-    # viewport. Prefer a complete compact layout over truncating the verbose
-    # layout against that potentially stale right edge.
+    # A multiplexed PTY can retain wider pane geometry than a newly attached
+    # mobile viewport. Prefer a complete compact layout over truncating the
+    # verbose layout against that potentially stale right edge.
     render_width=$((columns - APO_PROGRESS_RIGHT_MARGIN))
     (( render_width > 0 )) || render_width=1
     if (( columns >= APO_PROGRESS_WIDE_MIN_COLUMNS && ${#wide_line} <= render_width )); then
