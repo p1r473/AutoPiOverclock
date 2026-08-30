@@ -65,7 +65,7 @@ APO_RAW_TARGET=monkeebutt
 APO_PROGRESS_FORCE=1
 APO_PROGRESS_SESSION_BASE_S=300
 APO_PROGRESS_SESSION_EPOCH=$(date +%s)
-COLUMNS=240
+COLUMNS=300
 progress_line=$(apo_progress_render 150 600 2>&1)
 [[ $progress_line == *monkeebutt* ]]
 [[ $progress_line == *'current 7m30s left'* ]]
@@ -76,16 +76,34 @@ progress_line=$(apo_progress_render 150 600 2>&1)
 [[ $progress_line == *'fan=pwm:255,rpm:5200'* ]]
 [[ $progress_line == *'manual-cpu-3100 gpu-1150'* ]]
 
+COLUMNS=200
+medium_line=$(apo_progress_render 150 600 2>&1)
+[[ $medium_line == *'CPU: 3100 | GPU: 1150'* ]]
+[[ $medium_line != *'fan='* ]]
+
 COLUMNS=60
 compact_line=$(apo_progress_render 150 600 2>&1)
-# Every repaint explicitly selects column one, erases that row, and prints at
-# most COLUMNS-1 cells without emitting a newline.
-progress_control=$'\033[1G\033[2K'
-[[ $compact_line == "$progress_control"* ]]
+# Every repaint disables autowrap, selects and erases one row, prints inside a
+# safety margin, and restores autowrap without emitting a newline.
+progress_control=$'\033[?7l\033[1G\033[2K'
+progress_restore=$'\033[?7h'
+[[ $compact_line == "$progress_control"*"$progress_restore" ]]
 compact_payload=${compact_line#"$progress_control"}
-(( ${#compact_payload} <= COLUMNS - 1 ))
+compact_payload=${compact_payload%"$progress_restore"}
+(( ${#compact_payload} <= COLUMNS - APO_PROGRESS_RIGHT_MARGIN ))
 [[ $compact_line != *$'\n'* ]]
 [[ $compact_line != *$'\r'* ]]
+
+# A pane width large enough to select the old verbose layout, but small enough
+# to make that content brush the right edge, now chooses the compact layout.
+# Two consecutive refreshes each bracket their write with no-autowrap controls.
+COLUMNS=240
+repaint_output=$({ apo_progress_render 150 600; apo_progress_render 240 600; } 2>&1)
+[[ $repaint_output == *'CPU: 3100 | GPU: 1150'* ]]
+[[ $repaint_output != *'fan='* ]]
+[[ $(grep -oF $'\033[?7l' <<< "$repaint_output" | wc -l) == 2 ]]
+[[ $(grep -oF $'\033[?7h' <<< "$repaint_output" | wc -l) == 2 ]]
+[[ $repaint_output != *$'\n'* ]]
 
 # Signal/exit cleanup clears the active line once and disables every later
 # logging callback from repainting it during potentially long normal recovery.
@@ -104,7 +122,7 @@ if grep -Fq monkeebutt "$SHUTDOWN_OUTPUT"; then
     exit 1
 fi
 shutdown_bytes=$(wc -c < "$SHUTDOWN_OUTPUT")
-(( shutdown_bytes == ${#progress_control} ))
+(( shutdown_bytes == ${#progress_control} + ${#progress_restore} ))
 rm -f "$SHUTDOWN_OUTPUT"
 
 if apo_progress_line_is_telemetry 'ordinary worker output without elapsed'; then

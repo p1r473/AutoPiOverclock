@@ -6,6 +6,8 @@ readonly APO_PROGRESS_BOOT_ESTIMATE_S=60
 readonly APO_PROGRESS_PREPARE_ESTIMATE_S=180
 readonly APO_PROGRESS_APPLY_ESTIMATE_S=120
 readonly APO_PROGRESS_BAR_WIDTH=20
+readonly APO_PROGRESS_WIDE_MIN_COLUMNS=260
+readonly APO_PROGRESS_RIGHT_MARGIN=8
 
 APO_PROGRESS_SESSION_EPOCH=0
 APO_PROGRESS_SESSION_BASE_S=0
@@ -443,6 +445,7 @@ apo_progress_terminal_columns() {
 apo_progress_render() {
     local elapsed=${1:-${APO_PROGRESS_STRESS_ELAPSED:-0}} duration=${2:-${APO_PROGRESS_STRESS_DURATION:-0}}
     local remaining active percent filled empty bar eta target cpu gpu temp max_temp throttle fan phase columns render_width line
+    local wide_line medium_line narrow_line
     local bar_width=$APO_PROGRESS_BAR_WIDTH tests current_remaining='' stress_label
     apo_progress_available || return 0
     active=$(apo_progress_active_seconds)
@@ -453,7 +456,7 @@ apo_progress_render() {
         (( percent > 99 && remaining > 0 )) && percent=99
         columns=$(apo_progress_terminal_columns)
         if (( columns < 75 )); then bar_width=8
-        elif (( columns < 160 )); then bar_width=12; fi
+        elif (( columns < APO_PROGRESS_WIDE_MIN_COLUMNS )); then bar_width=12; fi
         filled=$((percent * bar_width / 100))
         empty=$((bar_width - filled))
         printf -v bar '%*s' "$filled" ''
@@ -465,7 +468,7 @@ apo_progress_render() {
         percent='--'
         columns=$(apo_progress_terminal_columns)
         if (( columns < 75 )); then bar_width=8
-        elif (( columns < 160 )); then bar_width=12; fi
+        elif (( columns < APO_PROGRESS_WIDE_MIN_COLUMNS )); then bar_width=12; fi
         printf -v bar '%*s' "$bar_width" ''
         bar=${bar// /-}
         eta='calculating'
@@ -486,33 +489,42 @@ apo_progress_render() {
         current_remaining=$(apo_progress_format_duration "$current_remaining")
     fi
     columns=${columns:-$(apo_progress_terminal_columns)}
-    if (( columns >= 160 )); then
-        line="$target [$bar] ~${percent}% ETA $eta"
-        [[ -z $current_remaining ]] || line+=" | current $current_remaining left"
-        line+=" | tests ~$tests left | CPU: ${cpu}MHz | GPU: ${gpu}MHz | ${temp}C"
-        [[ -z $max_temp ]] || line+=" max=${max_temp}C"
-        line+=" | $phase | $throttle"
-        [[ -z $fan ]] || line+=" | fan=$fan"
-    elif (( columns >= 75 )); then
-        line="$target [$bar] ~${percent}% $eta"
-        [[ -z $current_remaining ]] || line+=" c:${current_remaining}"
-        line+=" | ~$tests tests | CPU: $cpu | GPU: $gpu | ${temp}C | $phase"
+    wide_line="$target [$bar] ~${percent}% ETA $eta"
+    [[ -z $current_remaining ]] || wide_line+=" | current $current_remaining left"
+    wide_line+=" | tests ~$tests left | CPU: ${cpu}MHz | GPU: ${gpu}MHz | ${temp}C"
+    [[ -z $max_temp ]] || wide_line+=" max=${max_temp}C"
+    wide_line+=" | $phase | $throttle"
+    [[ -z $fan ]] || wide_line+=" | fan=$fan"
+
+    medium_line="$target [$bar] ~${percent}% $eta"
+    [[ -z $current_remaining ]] || medium_line+=" c:${current_remaining}"
+    medium_line+=" | ~$tests tests | CPU: $cpu | GPU: $gpu | ${temp}C | $phase"
+    narrow_line="$target [$bar] ~${percent}% $eta | ~$tests tests | $phase"
+
+    # A multiplexed PTY can retain wider pane geometry than a newly attached
+    # mobile viewport. Prefer a complete compact layout over truncating the
+    # verbose layout against that potentially stale right edge.
+    render_width=$((columns - APO_PROGRESS_RIGHT_MARGIN))
+    (( render_width > 0 )) || render_width=1
+    if (( columns >= APO_PROGRESS_WIDE_MIN_COLUMNS && ${#wide_line} <= render_width )); then
+        line=$wide_line
+    elif (( columns >= 75 && ${#medium_line} <= render_width )); then
+        line=$medium_line
     else
-        line="$target [$bar] ~${percent}% $eta | ~$tests tests | $phase"
+        line=$narrow_line
     fi
-    # Repaint the existing row explicitly. A bare carriage return plus padding
-    # is not reliably replace-in-place through every SSH/mobile terminal path.
-    # Keeping the final cell unused also prevents an implicit autowrap.
-    render_width=$((columns - 1))
     (( ${#line} > render_width )) && line=${line:0:render_width}
-    printf '\033[1G\033[2K%s' "$line" >&2
+    # Disable terminal autowrap only for the atomic repaint. Even if the pty's
+    # reported width is wider than the attached viewport, the cursor cannot
+    # spill into another row and leave a stale progress line behind.
+    printf '\033[?7l\033[1G\033[2K%s\033[?7h' "$line" >&2
     APO_PROGRESS_LINE_ACTIVE=1
     APO_PROGRESS_LINE_WIDTH=${#line}
 }
 
 apo_progress_clear_line() {
     (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
-    printf '\033[1G\033[2K' >&2
+    printf '\033[?7l\033[1G\033[2K\033[?7h' >&2
     APO_PROGRESS_LINE_ACTIVE=0
     APO_PROGRESS_LINE_WIDTH=0
 }

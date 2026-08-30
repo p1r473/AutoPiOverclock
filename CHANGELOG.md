@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.32 — 2026-08-30
+
+- Fixed progress rows still stacking when Byobu/tmux or a newly attached mobile client exposed a narrower viewport than the controlling terminal reported. Each repaint now temporarily disables terminal autowrap, selects a complete content-aware compact layout instead of truncating the verbose layout at the right edge, leaves an eight-column safety margin, and restores normal wrapping immediately afterward.
+- Added regressions for wide, medium, narrow, consecutive-repaint, no-newline, no-autowrap, wrap-restoration, and shutdown-clear behavior. Raw telemetry, saved progress state, and non-TTY output remain unchanged.
+
 ## 0.1.0-alpha.31 — 2026-08-29
 
 - Added simple whole-hour controls to the public automatic workflow: `--qualification-hours HOURS`, `--final-hours HOURS`, and `--edge-hours HOURS`, each accepting 1–168. Qualifications default to 2 hours, final validation defaults to 8 hours, the edge remains optional with 24 hours recommended, and `--edge-cpu-24h` remains a compatibility spelling.
