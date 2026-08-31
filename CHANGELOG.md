@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-alpha.33 — 2026-08-31
+
+- Replaced the public 8-hour-floor-then-optional-edge order with one default edge-first final sequence. After the saved 2-hour CPU/GPU qualifications, CPU +25 MHz receives a 24-hour combined CPU/GPU/I/O test first. A pass is final; a safely rejected or known-unsafe edge starts one fresh 24-hour guarded-floor fallback instead, so a passing edge never triggers a redundant second long workload.
+- Preserved automatic recovery below the new sequence: a guarded-floor pair failure still lowers every overclocked domain conservatively, repeats both qualifications, and starts a new edge-first sequence. Harness or recovery uncertainty remains fatal, and the previous edge disposition remains in immutable logs rather than being used as evidence for a different clock pair.
+- Added `--restart-from current|cpu-qualification|gpu-qualification|final` to `overclock TARGET` and `resume TARGET`. Eligible pre-final runs take their clocks only from retained guarded/backoff state while accepting a new explicit duration plan; prerequisite qualifications are verified and an already-started final sequence cannot be relabeled. Direct resume of an overclock retains unattended extended SSH monitoring and automatic apply. A completed applied result may run a longer linked final validation through its verified stock rollback backup and is reapplied only after PASS.
+- Corrected the progress estimate for edge-first operation: it initially budgets one long final result and dynamically adds the guarded-floor fallback only after edge rejection. The TTY bar's single-row repaint behavior remains unchanged.
+- Made 24 hours the public default for both alternative final paths, retained 1–168 hour overrides, documented latest-run selection and live JSON timing, and clarified that Debian worker files are intentionally transient under `/tmp` while durable artifacts remain under `$HOME/overclock-results` and verified rollback backups remain outside temporary storage.
+- Clarified that deployment requires one Raspberry Pi 5 target and one separate Linux controller; the controller is not required to be another Raspberry Pi. Fixed the worker fixture setup so library-only loading cannot accidentally suppress later executable-worker coverage.
+
 ## 0.1.0-alpha.32 — 2026-08-30
 
 - Fixed progress rows still stacking when Byobu/tmux or a newly attached mobile client exposed a narrower viewport than the controlling terminal reported. Each repaint now temporarily disables terminal autowrap, selects a complete content-aware compact layout instead of truncating the verbose layout at the right edge, leaves an eight-column safety margin, and restores normal wrapping immediately afterward.

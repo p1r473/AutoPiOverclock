@@ -36,6 +36,29 @@ APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 [[ $(apo_progress_format_duration 22320) == 6h12m ]]
 [[ $(apo_progress_format_duration 90000) == 1d01h00m ]]
 
+# The default edge-first policy budgets one long test, not edge plus floor.
+# A floor workload is added dynamically only after a safe edge rejection.
+APO_CFG[FINAL_DURATION_S]=86400
+APO_EDGE_DURATION_S=86400
+APO_EDGE_CPU_24H=1
+APO_EDGE_ORDER=edge-first
+[[ $(apo_progress_initial_final_sequence_cost) == 86880 ]]
+[[ $(apo_progress_future_validation_tests) == 1 ]]
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set FINAL_STAGE ''
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+[[ $(apo_progress_estimate_remaining_tests) == 1 ]]
+[[ $(apo_progress_final_remaining 0) == 86880 ]]
+apo_state_set EDGE_CPU_STATUS REJECTED
+[[ $(apo_progress_final_remaining 0) == 86880 ]]
+APO_EDGE_ORDER=floor-first
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+[[ $(apo_progress_initial_final_sequence_cost) == 173760 ]]
+[[ $(apo_progress_future_validation_tests) == 2 ]]
+APO_EDGE_CPU_24H=0
+APO_EDGE_ORDER=floor-first
+APO_CFG[FINAL_DURATION_S]=28800
+
 APO_AUTO_GENERATED_CANDIDATES=0
 APO_AUTO_CANDIDATES_PENDING=0
 APO_MANUAL_TEST=1

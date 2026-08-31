@@ -249,6 +249,7 @@ arm_freq=9999
 CONF
 
 APO_WORKER_LIBRARY_ONLY=1 source "$ROOT/workers/debian-worker.sh"
+unset APO_WORKER_LIBRARY_ONLY
 
 # grep -q can close this help pipe after the first match.  With pipefail that
 # turns the producer's expected SIGPIPE into a false "GPU unavailable" result.
@@ -441,6 +442,7 @@ for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh
 done
 
 APO_WORKER_LIBRARY_ONLY=1 source "$ROOT/workers/batocera-worker.sh"
+unset APO_WORKER_LIBRARY_ONLY
 throttle_clean_relative throttled=0x50000 throttled=0x50000
 if throttle_clean_relative throttled=0x50001 throttled=0x50000; then exit 1; fi
 

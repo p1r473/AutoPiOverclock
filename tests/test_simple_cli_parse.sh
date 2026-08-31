@@ -51,6 +51,22 @@ parse_fixture run overclock overclock overclock tron
     [[ $APO_EDGE_DURATION_S == 43200 && $APO_EDGE_CPU_24H == 1 ]]
     [[ $APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 && $APO_FINAL_HOURS_OPTION_SEEN == 1 && $APO_EDGE_HOURS_OPTION_SEEN == 1 ]]
 )
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24 --edge-hours 24
+    [[ $APO_COMMAND == resume && $APO_RESTART_FROM == cpu-qualification ]]
+    [[ $APO_RESTART_FROM_OPTION_SEEN == 1 ]]
+    [[ $APO_QUALIFICATION_DURATION_S == 7200 && $APO_FINAL_DURATION_S == 86400 && $APO_EDGE_DURATION_S == 86400 ]]
+)
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --restart-from gpu-sweep
+) >/dev/null 2>&1; then
+    echo 'resume accepted an unsupported restart checkpoint' >&2
+    exit 1
+fi
 for invalid_duration_args in \
     '--qualification-hours 0' \
     '--final-hours 169' \
