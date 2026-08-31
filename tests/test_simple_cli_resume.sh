@@ -221,6 +221,7 @@ ln -sfn "$(basename "$FINAL_EXTENSION_STATE")" "$FINAL_EXTENSION_OUTPUT/monkeebu
         ACTIONS+=(finish)
         apo_state_set APPLY_STATUS APPLIED
     }
+    apo_state_save() { ACTIONS+=(save); }
     apo_resume_post_floor_final
     [[ " ${ACTIONS[*]} " == *' validate prepare recover:post-floor-final-backoff-recovery backoff:ENDURANCE:STABILITY_FAILURE tuning finish '* ]]
     [[ $(apo_state_get POST_FLOOR_FINAL_STAGE) == COMPLETE ]]
@@ -315,3 +316,4 @@ ln -sfn "$(basename "$FAILED_LEGACY_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tro
     [[ $APO_COMMAND == resume ]]
     [[ $APO_SELECTED_RUN_ID == "$FAILED_LEGACY_ENDURANCE_RUN" ]]
 )
+
