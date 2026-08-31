@@ -89,7 +89,10 @@ APO_PROGRESS_FORCE=1
 APO_PROGRESS_SESSION_BASE_S=300
 APO_PROGRESS_SESSION_EPOCH=$(date +%s)
 COLUMNS=300
-progress_line=$(apo_progress_render 150 600 2>&1)
+progress_file=$(mktemp)
+APO_PROGRESS_LINE_ACTIVE=0
+apo_progress_render 150 600 2> "$progress_file"
+progress_line=$(< "$progress_file")
 [[ $progress_line == *monkeebutt* ]]
 [[ $progress_line == *'current 7m30s left'* ]]
 [[ $progress_line == *'tests ~1 left'* ]]
@@ -100,33 +103,57 @@ progress_line=$(apo_progress_render 150 600 2>&1)
 [[ $progress_line == *'manual-cpu-3100 gpu-1150'* ]]
 
 COLUMNS=200
-medium_line=$(apo_progress_render 150 600 2>&1)
+APO_PROGRESS_LINE_ACTIVE=0
+apo_progress_render 150 600 2> "$progress_file"
+medium_line=$(< "$progress_file")
 [[ $medium_line == *'CPU: 3100 | GPU: 1150'* ]]
 [[ $medium_line != *'fan='* ]]
 
 COLUMNS=60
-compact_line=$(apo_progress_render 150 600 2>&1)
-# Every repaint disables autowrap, selects and erases one row, prints inside a
-# safety margin, and restores autowrap without emitting a newline.
-progress_control=$'\033[?7l\033[1G\033[2K'
-progress_restore=$'\033[?7h'
+APO_PROGRESS_LINE_ACTIVE=0
+apo_progress_render 150 600 2> "$progress_file"
+compact_line=$(< "$progress_file")
+# The first paint reserves one blank cursor-anchor row, moves up to paint the
+# dedicated progress row, then returns to that anchor. Later paints never emit
+# another newline, even when a resize changes the selected layout.
+progress_control=$'\033[?7l\033[1G\n\033[1A\033[1G\033[2K'
+progress_restore=$'\033[1B\033[1G\033[?7h'
 [[ $compact_line == "$progress_control"*"$progress_restore" ]]
 compact_payload=${compact_line#"$progress_control"}
 compact_payload=${compact_payload%"$progress_restore"}
 (( ${#compact_payload} <= COLUMNS - APO_PROGRESS_RIGHT_MARGIN ))
-[[ $compact_line != *$'\n'* ]]
 [[ $compact_line != *$'\r'* ]]
+compact_without_reservation=${compact_line//$'\n'/}
+(( ${#compact_line} - ${#compact_without_reservation} == 1 ))
 
 # A pane width large enough to select the old verbose layout, but small enough
-# to make that content brush the right edge, now chooses the compact layout.
-# Two consecutive refreshes each bracket their write with no-autowrap controls.
+# to make that content brush the right edge, now chooses the medium layout.
+APO_PROGRESS_LINE_ACTIVE=0
 COLUMNS=240
-repaint_output=$({ apo_progress_render 150 600; apo_progress_render 240 600; } 2>&1)
-[[ $repaint_output == *'CPU: 3100 | GPU: 1150'* ]]
-[[ $repaint_output != *'fan='* ]]
+apo_progress_render 150 600 2> "$progress_file"
+edge_width_output=$(< "$progress_file")
+[[ $edge_width_output == *'CPU: 3100 | GPU: 1150'* ]]
+[[ $edge_width_output != *'fan='* ]]
+
+# Reproduce the reported Byobu failure shape: reserve under a narrow layout,
+# then expand to a wide layout while the same progress row remains active. The
+# two paints share exactly one anchor reservation and each returns to it.
+APO_PROGRESS_LINE_ACTIVE=0
+repaint_file=$(mktemp)
+{
+    COLUMNS=60
+    apo_progress_render 150 600
+    COLUMNS=300
+    apo_progress_render 240 600
+} 2> "$repaint_file"
+repaint_output=$(< "$repaint_file")
+[[ $repaint_output == *'CPU: 3100MHz | GPU: 1150MHz'* ]]
 [[ $(grep -oF $'\033[?7l' <<< "$repaint_output" | wc -l) == 2 ]]
 [[ $(grep -oF $'\033[?7h' <<< "$repaint_output" | wc -l) == 2 ]]
-[[ $repaint_output != *$'\n'* ]]
+[[ $(grep -oF $'\033[1A' <<< "$repaint_output" | wc -l) == 2 ]]
+[[ $(grep -oF $'\033[1B' <<< "$repaint_output" | wc -l) == 2 ]]
+repaint_without_reservation=${repaint_output//$'\n'/}
+(( ${#repaint_output} - ${#repaint_without_reservation} == 1 ))
 
 # Signal/exit cleanup clears the active line once and disables every later
 # logging callback from repainting it during potentially long normal recovery.
@@ -145,8 +172,9 @@ if grep -Fq monkeebutt "$SHUTDOWN_OUTPUT"; then
     exit 1
 fi
 shutdown_bytes=$(wc -c < "$SHUTDOWN_OUTPUT")
-(( shutdown_bytes == ${#progress_control} + ${#progress_restore} ))
-rm -f "$SHUTDOWN_OUTPUT"
+progress_clear=$'\033[?7l\033[1A\033[1G\033[2K\033[1B\033[1G\033[?7h'
+(( shutdown_bytes == ${#progress_clear} ))
+rm -f "$SHUTDOWN_OUTPUT" "$progress_file" "$repaint_file"
 
 if apo_progress_line_is_telemetry 'ordinary worker output without elapsed'; then
     echo 'ordinary worker output was mistaken for progress telemetry' >&2

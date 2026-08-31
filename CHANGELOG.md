@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.34 — 2026-08-31
+
+- Fixed the remaining Byobu/tmux progress-row stacking case exposed by a live narrow-to-wide layout transition. The renderer now reserves one blank cursor-anchor row beneath the display, repaints the dedicated row above it, and always returns the cursor to column one of the anchor instead of leaving it at the variable-length end of the bar.
+- Kept the worker-stream progress consumer in the controller shell with Bash `lastpipe`, restoring the caller's prior shell option afterward. Cursor-anchor and telemetry state therefore survive worker completion and cannot diverge from the terminal state through a pipeline subshell.
+- Added byte-level regressions for one-time row reservation, narrow-to-wide repainting, balanced cursor-up/down movement, no carriage returns, autowrap restoration, parent-shell state preservation, and shutdown clearing. Non-TTY output and retained raw telemetry remain unchanged.
+
 ## 0.1.0-alpha.33 — 2026-08-31
 
 - Replaced the public 8-hour-floor-then-optional-edge order with one default edge-first final sequence. After the saved 2-hour CPU/GPU qualifications, CPU +25 MHz receives a 24-hour combined CPU/GPU/I/O test first. A pass is final; a safely rejected or known-unsafe edge starts one fresh 24-hour guarded-floor fallback instead, so a passing edge never triggers a redundant second long workload.
