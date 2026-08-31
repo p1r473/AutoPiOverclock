@@ -86,7 +86,7 @@ if "$ROOT/autopioverclock" overclock tron --config fixture.conf >/dev/null 2>&1;
     exit 1
 fi
 if "$ROOT/autopioverclock" prepare tron --edge-cpu-24h >/dev/null 2>&1; then
-    echo 'prepare accepted the optional edge-tuning flag' >&2
+    echo 'prepare accepted the overclock-only edge-duration compatibility flag' >&2
     exit 1
 fi
 if "$ROOT/autopioverclock" prepare tron --no-max-fan >/dev/null 2>&1; then
@@ -123,7 +123,7 @@ for advanced_command in run resume status recover apply report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --cpu --gpu --minutes --qualification-hours --final-hours --edge-hours; do
+for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --cpu --gpu --minutes --qualification-hours --final-hours --edge-hours --restart-from; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 
@@ -141,8 +141,9 @@ grep -Fq 'controller and target must be different machines' "$ROOT/README.md"
 grep -Fq '## How automatic overclocking works' "$ROOT/README.md"
 grep -Fq '**Search CPU first.**' "$ROOT/README.md"
 grep -Fq '**Search and qualify GPU.**' "$ROOT/README.md"
-grep -Fq '**Validate the pair.**' "$ROOT/README.md"
-grep -Fq -- '--qualification-hours 3 --final-hours 12 --edge-hours 36' "$ROOT/README.md"
+grep -Fq '**Try the CPU edge first.**' "$ROOT/README.md"
+grep -Fq '**Validate one final result.**' "$ROOT/README.md"
+grep -Fq -- '--qualification-hours 3 --final-hours 36 --edge-hours 18' "$ROOT/README.md"
 quick_start=$(sed -n '/^## Quick start$/,/^## Why this exists$/p' "$ROOT/README.md")
 for install_line in \
     'git clone https://github.com/p1r473/AutoPiOverclock.git' \
@@ -156,9 +157,10 @@ grep -Fq 'It does not connect to, modify, or reboot a target.' <<< "$quick_start
 grep -Fq 'autopioverclock prepare pi-host' <<< "$quick_start"
 grep -Fq 'autopioverclock overclock pi-host' <<< "$quick_start"
 grep -Fq 'autopioverclock reset pi-host' <<< "$quick_start"
-grep -Fq 'Run every command on the controller/master Pi.' "$ROOT/docs/cli.md"
-grep -Fq 'The completed final-validation phase is not repeated.' "$ROOT/docs/cli.md"
-grep -Fq 'a target with no screen remains fully supported' "$ROOT/docs/cli.md"
+grep -Fq 'Run every command on the separate Linux controller.' "$ROOT/docs/cli.md"
+grep -Fq 'The controller may be any supported Linux computer; it does not need to be a Raspberry Pi.' "$ROOT/docs/cli.md"
+grep -Fq 'the guarded floor is not also run.' "$ROOT/docs/cli.md"
+grep -Fq 'Headless Raspberry Pi OS/Debian requires neither a desktop nor audio hardware' "$ROOT/docs/cli.md"
 grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
 grep -Fq 'ssh -o BatchMode=yes "$TARGET" true' "$ROOT/README.md"
 if grep -Fq 'command ssh' "$ROOT/README.md" || grep -Fq -- '-F /dev/null' "$ROOT/README.md"; then

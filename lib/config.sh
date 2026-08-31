@@ -78,6 +78,16 @@ apo_config_duration_policy() {
     fi
 }
 
+apo_config_saved_duration_policy_matches() {
+    local qualification_duration=$1 final_duration=$2 edge_duration=$3 saved_policy=$4 expected_policy
+    expected_policy=$(apo_config_duration_policy "$qualification_duration" "$final_duration" "$edge_duration")
+    [[ $saved_policy == "$expected_policy" ]] && return 0
+    [[ $saved_policy == default &&
+       $qualification_duration == "$APO_DEFAULT_QUALIFICATION_DURATION_S" &&
+       $final_duration == "$APO_LEGACY_DEFAULT_FINAL_DURATION_S" &&
+       $edge_duration == "$APO_DEFAULT_EDGE_DURATION_S" ]]
+}
+
 apo_config_validate_duration_plan() {
     local expected_policy
     apo_validate_uint_range "${APO_QUALIFICATION_DURATION_S:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
@@ -87,9 +97,10 @@ apo_config_validate_duration_plan() {
     apo_validate_uint_range "${APO_EDGE_DURATION_S:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
         apo_die 'Saved edge duration must be 3600-604800 seconds.' "$APO_EXIT_INTERNAL"
     expected_policy=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "${APO_CFG[FINAL_DURATION_S]}" "$APO_EDGE_DURATION_S")
-    [[ ${APO_DURATION_POLICY:-$expected_policy} == "$expected_policy" ]] ||
+    apo_config_saved_duration_policy_matches "$APO_QUALIFICATION_DURATION_S" "${APO_CFG[FINAL_DURATION_S]}" \
+        "$APO_EDGE_DURATION_S" "${APO_DURATION_POLICY:-$expected_policy}" ||
         apo_die 'Saved duration policy does not match its qualification/final/edge durations.' "$APO_EXIT_INTERNAL"
-    APO_DURATION_POLICY=$expected_policy
+    APO_DURATION_POLICY=${APO_DURATION_POLICY:-$expected_policy}
 }
 
 apo_config_migrate_duration_schema_9() {
@@ -302,6 +313,7 @@ apo_config_store_in_state() {
     done
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES "$APO_AUTO_GENERATED_CANDIDATES"
     apo_state_set CFG_EDGE_CPU_24H "${APO_EDGE_CPU_24H:-0}"
+    apo_state_set CFG_EDGE_ORDER "${APO_EDGE_ORDER:-floor-first}"
     apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
     apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
     apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
@@ -344,6 +356,9 @@ apo_config_restore_from_state() {
     APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
     [[ $APO_EDGE_CPU_24H == 0 || $APO_EDGE_CPU_24H == 1 ]] ||
         apo_die 'Saved edge-CPU marker is malformed.' "$APO_EXIT_INTERNAL"
+    APO_EDGE_ORDER=$(apo_state_get CFG_EDGE_ORDER floor-first)
+    [[ $APO_EDGE_ORDER == floor-first || $APO_EDGE_ORDER == edge-first ]] ||
+        apo_die 'Saved edge-order policy is malformed.' "$APO_EXIT_INTERNAL"
     APO_QUALIFICATION_DURATION_S=$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")
     APO_EDGE_DURATION_S=$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")
     APO_FINAL_DURATION_S=${APO_CFG[FINAL_DURATION_S]}

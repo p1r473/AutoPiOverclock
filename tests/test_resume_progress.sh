@@ -12,7 +12,7 @@ source "$ROOT/lib/recovery.sh"
 
 APO_CFG=(
     [CANDIDATE_DURATION_S]=60
-    [FINAL_DURATION_S]=28800
+    [FINAL_DURATION_S]=86400
     [BACKOFF_STEPS]=1
     [CANDIDATE_BOOTS]=4
     [FINAL_BOOTS]=5
@@ -262,7 +262,7 @@ fi
 # state checkpoint rather than two crash-separable writes.
 APO_STATE=()
 SAVE_COUNT=0
-apo_state_complete 2900 850 28800
+apo_state_complete 2900 850 "$APO_DEFAULT_FINAL_DURATION_S"
 [[ $SAVE_COUNT == 1 ]]
 [[ $(apo_state_get FINAL_CPU) == 2900 && $(apo_state_get FINAL_GPU) == 850 ]]
 [[ $(apo_state_get VALIDATED) == 1 && $(apo_state_get STATUS) == PASS ]]
@@ -315,8 +315,8 @@ APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 APO_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
 APO_DURATION_POLICY=default
 
-# A genuine edge stability failure retains the already validated floor. A
-# failed experiment must not erase the safe eight-hour result.
+# A legacy floor-first edge stability failure retains the already validated
+# floor. A failed experiment must not erase that complete result.
 APO_STATE=()
 ACTIONS=()
 seed_valid_guarded_auto_floor_plan
@@ -325,7 +325,7 @@ apo_state_set RECOMMENDED_GPU 900
 apo_state_set FINAL_TARGET_CPU 3000
 apo_state_set FINAL_TARGET_GPU 900
 apo_state_set FINAL_STAGE VERIFY
-apo_state_set VALIDATION_DURATION_S 28800
+apo_state_set VALIDATION_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S"
 apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
 apo_state_set VALIDATED 0
 apo_boot_candidate() {
@@ -345,7 +345,7 @@ apo_final_validation
 [[ $(apo_state_get FINAL_CPU) == 3000 && $(apo_state_get FINAL_GPU) == 900 ]]
 [[ $(apo_state_get FINAL_TARGET_CPU) == 3000 && $(apo_state_get FINAL_TARGET_GPU) == 900 ]]
 [[ $(apo_state_get VALIDATED) == 1 ]]
-[[ $(apo_state_get VALIDATION_DURATION_S) == 28800 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == "$APO_DEFAULT_FINAL_DURATION_S" ]]
 
 # A recovered boundary during the isolated two-hour GPU qualification lowers
 # only GPU by 25 MHz and repeats that qualification at the lower clock.
@@ -552,6 +552,8 @@ fi
 
 # A recovered schema-7 domain-specific final-stress failure is upgraded in
 # place and immediately backed off without repeating the failed clock.
+APO_CFG[FINAL_DURATION_S]=$APO_LEGACY_DEFAULT_FINAL_DURATION_S
+APO_FINAL_DURATION_S=$APO_LEGACY_DEFAULT_FINAL_DURATION_S
 APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 APO_EDGE_CPU_24H=0
@@ -631,6 +633,8 @@ apo_migrate_active_automatic_state 8
 [[ $(apo_state_get GPU_QUALIFICATION_STATUS) == NOT_STARTED ]]
 [[ $(apo_state_get FINAL_STAGE) == '' ]]
 apo_validate_auto_resume_state
+APO_CFG[FINAL_DURATION_S]=$APO_DEFAULT_FINAL_DURATION_S
+APO_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
 
 # A valid mid-refinement checkpoint is resumable, but malformed clock-bearing
 # state is rejected before any candidate action or arithmetic can occur.
@@ -684,7 +688,7 @@ for resume_stage in BOOT_1 NORMAL_1; do
     apo_state_set FINAL_TARGET_CPU 3000
     apo_state_set FINAL_TARGET_GPU 900
     apo_state_set FINAL_STAGE "$resume_stage"
-    apo_state_set VALIDATION_DURATION_S 28800
+    apo_state_set VALIDATION_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S"
     apo_validate_auto_resume_state
 done
 
@@ -694,7 +698,7 @@ APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 apo_state_set FLOOR_CPU 3000
 apo_state_set FLOOR_GPU 900
-apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S"
 apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
 apo_state_set FLOOR_VALIDATED 1
 apo_state_set EDGE_CPU_TARGET 3025
@@ -741,7 +745,7 @@ APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 apo_state_set FLOOR_CPU 3000
 apo_state_set FLOOR_GPU 900
-apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S"
 apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
 apo_state_set FLOOR_VALIDATED 1
 apo_state_set EDGE_CPU_TARGET 3025
@@ -765,7 +769,7 @@ APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 apo_state_set FLOOR_CPU 3000
 apo_state_set FLOOR_GPU 900
-apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S"
 apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
 apo_state_set FLOOR_VALIDATED 1
 apo_state_set EDGE_CPU_TARGET 3025
@@ -804,7 +808,7 @@ apo_final_record_failure edge-watchdog-recovery HARNESS_FAILURE 'The worker fail
 [[ $(apo_state_get EDGE_CPU_STATUS) == REJECTED ]]
 [[ $(apo_state_get EDGE_CPU_FAILURE_CLASS) == STABILITY_FAILURE ]]
 [[ $(apo_state_get FINAL_CPU) == 3000 && $(apo_state_get FINAL_GPU) == 900 ]]
-[[ $(apo_state_get VALIDATION_DURATION_S) == 28800 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == "$APO_DEFAULT_FINAL_DURATION_S" ]]
 APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
 # Restore the lightweight boundaries expected by the remaining state-only
 # assertions in this script.
@@ -834,7 +838,7 @@ apo_state_set FINAL_TARGET_CPU 3000
 apo_state_set FINAL_TARGET_GPU 900
 apo_state_set VALIDATED 1
 apo_state_set VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
-apo_state_set VALIDATION_DURATION_S 28800
+apo_state_set VALIDATION_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S"
 apo_state_set STATUS PASS
 apo_state_set PHASE COMPLETE
 apo_state_set FINAL_STAGE COMPLETE
@@ -869,7 +873,7 @@ apo_state_set SOURCE_FLOOR_PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 apo_state_set PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 apo_state_set FLOOR_CPU 3000
 apo_state_set FLOOR_GPU 900
-apo_state_set FLOOR_DURATION_S 28800
+apo_state_set FLOOR_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S"
 apo_state_set FLOOR_VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
 apo_state_set FLOOR_VALIDATED 1
 apo_state_set EDGE_CPU_TARGET 3025
@@ -905,6 +909,149 @@ apo_final_validation
 [[ $(apo_state_get VALIDATION_DURATION_S) == 86400 ]]
 [[ " ${ACTIONS[*]} " == *' stress:combined:86400:final-endurance '* ]]
 [[ " ${ACTIONS[*]} " != *':28800:'* ]]
+
+# New public runs spend the single long validation on the +25 MHz edge first.
+# A passing edge is the final 24-hour result; the guarded floor is not also run.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_ORDER=edge-first
+APO_EDGE_CPU_24H=1
+APO_CFG[FINAL_DURATION_S]=$APO_DEFAULT_FINAL_DURATION_S
+APO_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
+APO_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ''
+apo_state_set STATUS RUNNING
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set VALIDATED 0
+apo_boot_candidate() {
+    ACTIONS+=("boot:$1/$2:$3")
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$1"
+    apo_state_set CURRENT_GPU "$2"
+}
+apo_final_validation
+[[ $(apo_state_get EDGE_CPU_STATUS) == PASS ]]
+[[ $(apo_state_get FLOOR_VALIDATED) == 0 ]]
+[[ $(apo_state_get FINAL_CPU) == 3025 && $(apo_state_get FINAL_GPU) == 900 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == "$APO_DEFAULT_EDGE_DURATION_S" ]]
+[[ $(printf '%s\n' "${ACTIONS[@]}" | grep -c '^stress:combined:86400:final-endurance$') == 1 ]]
+
+# A safely recovered edge rejection does not mark the untested floor PASS. It
+# starts one fresh 24-hour guarded-floor validation and completes only after it.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_ORDER=edge-first
+APO_EDGE_CPU_24H=1
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ''
+apo_state_set STATUS RUNNING
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set VALIDATED 0
+apo_boot_candidate() {
+    ACTIONS+=("boot:$1/$2:$3")
+    if (( $1 == 3025 )); then
+        APO_LAST_CLASS=STABILITY_FAILURE
+        APO_LAST_REASON='edge-first fixture failed'
+        return 1
+    fi
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$1"
+    apo_state_set CURRENT_GPU "$2"
+}
+if apo_final_validation; then
+    echo 'edge-first rejection incorrectly completed before floor validation' >&2
+    exit 1
+else
+    [[ $? == 2 ]]
+fi
+[[ $(apo_state_get EDGE_CPU_STATUS) == REJECTED ]]
+[[ $(apo_state_get FLOOR_VALIDATED) == 0 ]]
+[[ $(apo_state_get STATUS) == RUNNING && $(apo_state_get FINAL_STAGE) == '' ]]
+apo_boot_candidate() {
+    ACTIONS+=("boot:$1/$2:$3")
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set CURRENT_CPU "$1"
+    apo_state_set CURRENT_GPU "$2"
+}
+apo_final_validation
+[[ $(apo_state_get EDGE_CPU_STATUS) == REJECTED ]]
+[[ $(apo_state_get FLOOR_VALIDATED) == 1 ]]
+[[ $(apo_state_get FINAL_CPU) == 3000 && $(apo_state_get FINAL_GPU) == 900 ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == "$APO_DEFAULT_FINAL_DURATION_S" ]]
+[[ $(printf '%s\n' "${ACTIONS[@]}" | grep -c '^stress:combined:86400:final-endurance$') == 1 ]]
+
+# If the freshly tested guarded floor also proves unstable after an edge
+# rejection, automatic tuning still backs off safely. The old edge disposition
+# remains in the immutable event log while the reduced pair gets a new final
+# sequence and fresh clock identities.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_ORDER=edge-first
+APO_EDGE_CPU_24H=1
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set FLOOR_CPU 3000
+apo_state_set FLOOR_GPU 900
+apo_state_set FLOOR_DURATION_S ''
+apo_state_set FLOOR_VALIDATION_SCHEMA ''
+apo_state_set FLOOR_VALIDATED 0
+apo_state_set EDGE_CPU_TARGET 3025
+apo_state_set EDGE_CPU_STATUS REJECTED
+apo_state_set EDGE_CPU_FAILURE_CLASS STABILITY_FAILURE
+apo_state_set EDGE_CPU_FAILURE_REASON 'edge fixture failed first'
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'floor fixture also failed'
+[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 1 ]]
+[[ $(apo_state_get FINAL_BACKOFF_CPU) == 2950 ]]
+[[ $(apo_state_get FINAL_BACKOFF_GPU) == 875 ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ $(apo_state_get EDGE_CPU_STATUS) == NOT_REQUESTED ]]
+[[ -z $(apo_state_get FLOOR_CPU '') && -z $(apo_state_get EDGE_CPU_TARGET '') ]]
+
+# Checkpoint restarts take clocks from retained state and durations from the
+# command request; they never encode host-specific clocks in controller code.
+APO_STATE=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_ORDER=floor-first
+apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+apo_state_set ORIGIN_COMMAND overclock
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_state_set POST_FLOOR_EDGE 0
+apo_state_set POST_FLOOR_FINAL 0
+apo_state_set PHASE CPU_QUALIFICATION
+apo_state_set STATUS INTERRUPTED
+apo_state_set CPU_QUALIFICATION_STATUS RUNNING
+apo_state_set CPU_QUALIFICATION_TARGET 3000
+apo_state_set CPU_QUALIFIED_CLOCK ''
+APO_RESTART_QUALIFICATION_DURATION_S=10800
+APO_RESTART_FINAL_DURATION_S=86400
+APO_RESTART_EDGE_DURATION_S=43200
+apo_restart_active_automatic_state cpu-qualification
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == NOT_STARTED ]]
+[[ $(apo_state_get CPU_QUALIFICATION_TARGET) == 3000 ]]
+[[ $(apo_state_get CFG_QUALIFICATION_DURATION_S) == 10800 ]]
+[[ $(apo_state_get CFG_FINAL_DURATION_S) == 86400 ]]
+[[ $(apo_state_get CFG_EDGE_DURATION_S) == 43200 ]]
+[[ $(apo_state_get CFG_EDGE_ORDER) == edge-first ]]
 
 # Old automatic states without immutable provenance fail closed; explicit-plan
 # states do not inherit the configuration-free stock gate.

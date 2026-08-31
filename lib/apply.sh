@@ -236,6 +236,7 @@ apo_apply_validate_expected_config() {
 
 apo_reconcile_interrupted_apply() {
     local old_hash expected_hash backup_file recovery_action deterministic_backup current_hash disposition
+    local source_run_id source_backup valid_backup=0
     local final_cpu final_gpu final_voltage
     APO_APPLY_RECONCILE_RESULT=''
     [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) == APPLYING ]] || return 0
@@ -247,8 +248,21 @@ apo_reconcile_interrupted_apply() {
     final_gpu=$(apo_state_get FINAL_GPU '')
     final_voltage=$(apo_state_get TEST_VOLTAGE '')
     deterministic_backup=$(apo_apply_backup_path "$APO_RUN_ID" || true)
+    if [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 &&
+          $(apo_state_get POST_FLOOR_FINAL_STAGE '') == ROLLBACK_PENDING &&
+          $recovery_action == ROLLBACK ]]; then
+        source_run_id=$(apo_state_get SOURCE_FINAL_RUN_ID '')
+        source_backup=$(apo_state_get SOURCE_FINAL_APPLY_BACKUP '')
+        if apo_is_safe_run_id "$source_run_id" && [[ $source_run_id != "$APO_RUN_ID" &&
+             $source_backup == "$(apo_apply_backup_path "$source_run_id" || true)" &&
+             $backup_file == "$source_backup" ]]; then
+            valid_backup=1
+        fi
+    elif [[ -n $deterministic_backup && $backup_file == "$deterministic_backup" ]]; then
+        valid_backup=1
+    fi
     if ! apo_apply_valid_hash "$old_hash" || ! apo_apply_valid_hash "$expected_hash" || [[ $old_hash == "$expected_hash" ]] ||
-        [[ -z $deterministic_backup || $backup_file != "$deterministic_backup" ]] ||
+        (( valid_backup == 0 )) ||
         [[ -z $final_cpu || -z $final_gpu || -z $final_voltage ]] ||
         [[ -n $recovery_action && $recovery_action != ROLLBACK ]]; then
         apo_apply_manual_recovery 'The interrupted apply plan is incomplete or inconsistent; automatic mutation is refused.'

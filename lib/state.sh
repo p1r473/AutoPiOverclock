@@ -118,6 +118,12 @@ apo_state_initialize() {
     apo_state_set POST_FLOOR_EDGE 0
     apo_state_set SOURCE_FLOOR_RUN_ID ''
     apo_state_set SOURCE_FLOOR_PERMANENT_HASH ''
+    apo_state_set POST_FLOOR_FINAL 0
+    apo_state_set POST_FLOOR_FINAL_STAGE ''
+    apo_state_set SOURCE_FINAL_RUN_ID ''
+    apo_state_set SOURCE_FINAL_PERMANENT_HASH ''
+    apo_state_set SOURCE_FINAL_VALIDATION_DURATION_S ''
+    apo_state_set SOURCE_FINAL_APPLY_BACKUP ''
     apo_state_set EDGE_CPU_TARGET ''
     apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
     apo_state_set EDGE_CPU_FAILURE_CLASS ''

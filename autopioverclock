@@ -77,6 +77,9 @@ APO_LOCK_FD=''
 APO_POST_FLOOR_EDGE_SOURCE_STATE=''
 APO_POST_FLOOR_EDGE_MAX_FAN=1
 APO_POST_FLOOR_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
+APO_POST_FLOOR_FINAL_SOURCE_STATE=''
+APO_POST_FLOOR_FINAL_MAX_FAN=1
+APO_POST_FLOOR_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
 APO_WORKER_BOOT_ID=''
 APO_REBOOT_BOOT_ID=''
 APO_REBOOT_HANDSHAKE_STAGE=''
@@ -90,6 +93,12 @@ APO_MANUAL_CPU_OPTION_SEEN=0
 APO_MANUAL_GPU_OPTION_SEEN=0
 APO_MANUAL_MINUTES_OPTION_SEEN=0
 APO_PERSISTENT_SSH_RECOVERY=0
+APO_RESTART_FROM=''
+APO_RESTART_FROM_OPTION_SEEN=0
+APO_RESTART_PENDING=0
+APO_RESTART_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
+APO_RESTART_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
+APO_RESTART_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
 
 usage() {
     cat <<'USAGE'
@@ -97,12 +106,15 @@ AutoPiOverclock — recoverable Raspberry Pi 5 overclock validation
 
 Usage:
   autopioverclock prepare TARGET
-  autopioverclock overclock TARGET [--qualification-hours HOURS] [--final-hours HOURS]
+  autopioverclock overclock TARGET [--restart-from CHECKPOINT]
+                                      [--qualification-hours HOURS] [--final-hours HOURS]
                                       [--edge-hours HOURS | --edge-cpu-24h] [--no-max-fan]
   autopioverclock test TARGET --cpu MHZ --gpu MHZ --minutes MINUTES [--no-max-fan]
   autopioverclock reset TARGET
   autopioverclock run TARGET [OPTIONS]
-  autopioverclock resume TARGET [--run-id RUN_ID]
+  autopioverclock resume TARGET [--run-id RUN_ID] [--restart-from CHECKPOINT]
+                                  [--qualification-hours HOURS] [--final-hours HOURS]
+                                  [--edge-hours HOURS | --edge-cpu-24h]
   autopioverclock status TARGET [--run-id RUN_ID] [--redact]
   autopioverclock recover TARGET [--run-id RUN_ID]
   autopioverclock apply TARGET [--run-id RUN_ID]
@@ -120,9 +132,9 @@ Commands:
   apply      Apply a selected fully validated result with typed confirmation
   report     Generate a concise report for a selected or latest run
 
-Automatic defaults are 2-hour CPU/GPU qualifications, an 8-hour final test,
-and an optional 24-hour CPU +25 MHz edge test. Explicit hour options are saved
-with the run and cannot change during continuation.
+  Automatic defaults are 2-hour CPU/GPU qualifications and one accepted
+  24-hour combined result: CPU +25 MHz is tried first, and a safely rejected
+  edge starts a fresh 24-hour guarded-floor fallback instead.
 
 Target:
   hostname | IP | username@hostname | username@IP
@@ -131,9 +143,10 @@ Target:
 
 Common options:
   --qualification-hours N  CPU and GPU qualification hours for overclock (default: 2)
-  --final-hours N          Combined final-validation hours for overclock (default: 8)
-  --edge-hours N           Enable the CPU +25 MHz edge test for N hours (default: off)
+  --final-hours N          Guarded-floor fallback hours for overclock (default: 24)
+  --edge-hours N           First CPU +25 MHz attempt hours (default: 24)
   --edge-cpu-24h           Compatibility spelling for --edge-hours 24
+  --restart-from POINT     current, cpu-qualification, gpu-qualification, or final
   --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning/test
   --cpu MHZ                Exact CPU clock for test TARGET
   --gpu MHZ                Exact GPU/V3D clock for test TARGET
@@ -209,7 +222,7 @@ apo_parse_cli() {
     while (( index < ${#arguments[@]} )); do
         token=${arguments[$index]}
         case $token in
-            --config|--mode|--output-dir|--ssh-port|--identity-file|--run-id|--cpu|--gpu|--minutes|--qualification-hours|--final-hours|--edge-hours)
+            --config|--mode|--output-dir|--ssh-port|--identity-file|--run-id|--cpu|--gpu|--minutes|--qualification-hours|--final-hours|--edge-hours|--restart-from)
                 (( index + 1 < ${#arguments[@]} )) || apo_die "$token requires a value." "$APO_EXIT_USAGE"
                 case $token in
                     --config) APO_CONFIG_FILE=${arguments[$((index + 1))]}; APO_CONFIG_OPTION_SEEN=1 ;;
@@ -218,6 +231,11 @@ apo_parse_cli() {
                     --ssh-port) APO_SSH_PORT=${arguments[$((index + 1))]} ;;
                     --identity-file) APO_IDENTITY_FILE=${arguments[$((index + 1))]} ;;
                     --run-id) APO_SELECTED_RUN_ID=${arguments[$((index + 1))]}; APO_RUN_ID_OPTION_SEEN=1 ;;
+                    --restart-from)
+                        (( APO_RESTART_FROM_OPTION_SEEN == 0 )) || apo_die '--restart-from may be specified only once.' "$APO_EXIT_USAGE"
+                        APO_RESTART_FROM=${arguments[$((index + 1))]}
+                        APO_RESTART_FROM_OPTION_SEEN=1
+                        ;;
                     --cpu)
                         (( APO_MANUAL_CPU_OPTION_SEEN == 0 )) || apo_die '--cpu may be specified only once.' "$APO_EXIT_USAGE"
                         APO_MANUAL_CPU=${arguments[$((index + 1))]}
@@ -286,6 +304,14 @@ apo_parse_cli() {
     apo_validate_uint_range "$APO_SSH_PORT" 1 65535 || apo_die '--ssh-port must be 1-65535.' "$APO_EXIT_USAGE"
     [[ -z $APO_SELECTED_RUN_ID ]] || apo_is_safe_run_id "$APO_SELECTED_RUN_ID" || apo_die 'Invalid --run-id.' "$APO_EXIT_USAGE"
     [[ -z $APO_IDENTITY_FILE || -r $APO_IDENTITY_FILE ]] || apo_die "Identity file is unreadable: $APO_IDENTITY_FILE" "$APO_EXIT_USAGE"
+    if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
+        case $APO_RESTART_FROM in current|cpu-qualification|gpu-qualification|final) ;; *)
+            apo_die '--restart-from must be current, cpu-qualification, gpu-qualification, or final.' "$APO_EXIT_USAGE"
+            ;;
+        esac
+        [[ $APO_PUBLIC_COMMAND == overclock || $APO_COMMAND == resume ]] ||
+            apo_die '--restart-from is valid only with overclock TARGET or resume TARGET.' "$APO_EXIT_USAGE"
+    fi
     if [[ $APO_PUBLIC_COMMAND == test ]]; then
         (( APO_MANUAL_CPU_OPTION_SEEN == 1 && APO_MANUAL_GPU_OPTION_SEEN == 1 && APO_MANUAL_MINUTES_OPTION_SEEN == 1 )) ||
             apo_die 'test TARGET requires --cpu MHZ, --gpu MHZ, and --minutes MINUTES.' "$APO_EXIT_USAGE"
@@ -307,9 +333,9 @@ apo_parse_cli() {
     elif (( APO_MANUAL_OPTION_SEEN == 1 )); then
         apo_die '--cpu, --gpu, and --minutes are valid only with test TARGET.' "$APO_EXIT_USAGE"
     fi
-    if [[ $APO_PUBLIC_COMMAND != overclock ]] &&
+    if [[ $APO_PUBLIC_COMMAND != overclock && $APO_COMMAND != resume ]] &&
        (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 || APO_FINAL_HOURS_OPTION_SEEN == 1 || APO_EDGE_HOURS_OPTION_SEEN == 1 )); then
-        apo_die "--qualification-hours, --final-hours, and --edge-hours are valid only with overclock TARGET, not ${APO_PUBLIC_COMMAND:-this command} TARGET." "$APO_EXIT_USAGE"
+        apo_die "--qualification-hours, --final-hours, and --edge-hours are valid only with overclock TARGET or resume TARGET, not ${APO_PUBLIC_COMMAND:-this command} TARGET." "$APO_EXIT_USAGE"
     fi
     if [[ $APO_COMMAND == reset ]]; then
         (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die '--config is not valid with reset TARGET.' "$APO_EXIT_USAGE"
@@ -341,6 +367,12 @@ apo_parse_cli() {
         (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die 'Run prepare TARGET to install watchdogs; overclock does not change host prerequisites.' "$APO_EXIT_USAGE"
         (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with overclock TARGET; use prepare TARGET --dry-run for inspection.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with overclock TARGET.' "$APO_EXIT_USAGE"
+        # The simple public workflow tests CPU +25 MHz first. A full pass is
+        # the final result; a safely rejected edge starts one fresh guarded-
+        # floor validation instead. Explicit edge spellings remain accepted
+        # for custom duration and command compatibility.
+        APO_EDGE_CPU_24H=1
+        APO_EDGE_ORDER=edge-first
         APO_ASSUME_YES=1
     fi
     case $APO_COMMAND in
@@ -351,7 +383,9 @@ apo_parse_cli() {
             [[ $APO_MODE_REQUESTED == auto ]] || apo_die '--mode is valid only with run or prepare; saved runs use their recorded mode.' "$APO_EXIT_USAGE"
             (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is valid only with run or prepare.' "$APO_EXIT_USAGE"
             (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is valid only with run or prepare.' "$APO_EXIT_USAGE"
-            (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is valid only with a new run or overclock TARGET.' "$APO_EXIT_USAGE"
+            if [[ $APO_COMMAND != resume || $APO_RESTART_FROM_OPTION_SEEN == 0 ]]; then
+                (( APO_EDGE_CPU_24H == 0 )) || apo_die '--edge-cpu-24h is valid only with a new run or a checkpoint restart.' "$APO_EXIT_USAGE"
+            fi
             (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan is valid only with a new run or overclock TARGET.' "$APO_EXIT_USAGE"
             ;;
     esac
@@ -372,7 +406,7 @@ apo_acquire_lock() {
 }
 
 apo_public_overclock_load_saved_duration_plan() {
-    local expected_policy
+    local expected_policy saved_policy
     if [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]]; then
         [[ -v APO_STATE[CFG_QUALIFICATION_DURATION_S] && -v APO_STATE[CFG_FINAL_DURATION_S] &&
            -v APO_STATE[CFG_EDGE_DURATION_S] && -v APO_STATE[CFG_DURATION_POLICY] ]] ||
@@ -388,7 +422,9 @@ apo_public_overclock_load_saved_duration_plan() {
     apo_validate_uint_range "$APO_SAVED_EDGE_DURATION_S" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
         apo_die 'The retained run has a malformed edge duration.' "$APO_EXIT_INTERNAL"
     expected_policy=$(apo_config_duration_policy "$APO_SAVED_QUALIFICATION_DURATION_S" "$APO_SAVED_FINAL_DURATION_S" "$APO_SAVED_EDGE_DURATION_S")
-    [[ $(apo_state_get CFG_DURATION_POLICY "$expected_policy") == "$expected_policy" ]] ||
+    saved_policy=$(apo_state_get CFG_DURATION_POLICY "$expected_policy")
+    apo_config_saved_duration_policy_matches "$APO_SAVED_QUALIFICATION_DURATION_S" "$APO_SAVED_FINAL_DURATION_S" \
+        "$APO_SAVED_EDGE_DURATION_S" "$saved_policy" ||
         apo_die 'The retained run duration policy does not match its saved durations.' "$APO_EXIT_INTERNAL"
 }
 
@@ -403,13 +439,36 @@ apo_public_overclock_require_matching_saved_durations() {
         apo_die '--edge-cpu-24h means exactly 24 hours and does not match the active run edge duration. Repeat overclock TARGET without duration options, or use the original --edge-hours HOURS value.' "$APO_EXIT_USAGE"
 }
 
+apo_restart_merge_unspecified_saved_durations() {
+    (( APO_RESTART_FROM_OPTION_SEEN == 1 )) || return 0
+    if (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 0 )); then
+        APO_RESTART_QUALIFICATION_DURATION_S=$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")
+    fi
+    if (( APO_FINAL_HOURS_OPTION_SEEN == 0 )); then
+        APO_RESTART_FINAL_DURATION_S=$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")
+    fi
+    if (( APO_EDGE_HOURS_OPTION_SEEN == 0 && APO_EDGE_CPU_24H_OPTION_SEEN == 0 )); then
+        APO_RESTART_EDGE_DURATION_S=$(apo_state_get CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")
+    fi
+    apo_validate_uint_range "$APO_RESTART_QUALIFICATION_DURATION_S" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" &&
+        apo_validate_uint_range "$APO_RESTART_FINAL_DURATION_S" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" &&
+        apo_validate_uint_range "$APO_RESTART_EDGE_DURATION_S" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+        apo_die 'The checkpoint restart resolved to a malformed saved duration plan.' "$APO_EXIT_HARNESS"
+}
+
 apo_public_overclock_select_continuation() {
     local state_file stored_run_id stored_target origin status phase apply_status state_schema saved_edge requested_edge
-    local saved_max_fan requested_max_fan requested_max_fan_seen
+    local saved_max_fan requested_max_fan requested_max_fan_seen requested_final requested_final_seen source_validation_duration post_floor_final
+    local requested_edge_explicit requested_qualification requested_edge_duration
     local -a state_files=()
     local state_index
     [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
     requested_edge=$APO_EDGE_CPU_24H
+    requested_edge_explicit=$((APO_EDGE_HOURS_OPTION_SEEN || APO_EDGE_CPU_24H_OPTION_SEEN))
+    requested_final=$APO_FINAL_DURATION_S
+    requested_final_seen=$APO_FINAL_HOURS_OPTION_SEEN
+    requested_qualification=$APO_QUALIFICATION_DURATION_S
+    requested_edge_duration=$APO_EDGE_DURATION_S
     requested_max_fan=$APO_MAX_FAN
     requested_max_fan_seen=$APO_MAX_FAN_OPTION_SEEN
     state_file=$(apo_find_state_file '' || true)
@@ -424,6 +483,7 @@ apo_public_overclock_select_continuation() {
     state_schema=$(apo_state_get RUN_SCHEMA '')
     saved_edge=$(apo_state_get CFG_EDGE_CPU_24H 0)
     saved_max_fan=$(apo_state_get CFG_MAX_FAN 1)
+    post_floor_final=$(apo_state_get POST_FLOOR_FINAL 0)
     if apo_is_safe_run_id "$stored_run_id" &&
        [[ $stored_target == "$APO_REMOTE_TARGET" && $origin == overclock ]] &&
        { { [[ ( $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 ) && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
@@ -433,40 +493,99 @@ apo_public_overclock_select_continuation() {
               $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; } ||
          { [[ $state_schema == 8 && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
            [[ $phase != PREPARE && $phase != PREPARED ]]; } ||
-         { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 || $state_schema == 8 || $state_schema == 7 ]] &&
-              apo_final_saved_failure_is_retryable "$state_schema"; }; }; then
+          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 || $state_schema == 8 || $state_schema == 7 ]] &&
+               apo_final_saved_failure_is_retryable "$state_schema"; } ||
+          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $post_floor_final == 1 && $status == FAILED ]]; }; }; then
         apo_public_overclock_load_saved_duration_plan
-        apo_public_overclock_require_matching_saved_durations
+        if (( APO_RESTART_FROM_OPTION_SEEN == 0 )); then
+            apo_public_overclock_require_matching_saved_durations
+        else
+            APO_RESTART_QUALIFICATION_DURATION_S=$requested_qualification
+            APO_RESTART_FINAL_DURATION_S=$requested_final
+            APO_RESTART_EDGE_DURATION_S=$requested_edge_duration
+            apo_restart_merge_unspecified_saved_durations
+            requested_qualification=$APO_RESTART_QUALIFICATION_DURATION_S
+            requested_final=$APO_RESTART_FINAL_DURATION_S
+            requested_edge_duration=$APO_RESTART_EDGE_DURATION_S
+        fi
         [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] || apo_die 'The active run has a malformed saved maximum-fan policy.' "$APO_EXIT_INTERNAL"
         if (( requested_max_fan_seen == 1 )) && [[ $requested_max_fan != "$saved_max_fan" ]]; then
             apo_die 'The active run was created with maximum-fan cooling. Its cooling policy cannot change during continuation; reset and start a fresh run to use --no-max-fan.' "$APO_EXIT_USAGE"
         fi
-        if (( requested_edge == 1 && saved_edge == 0 )); then
+        if (( APO_RESTART_FROM_OPTION_SEEN == 0 && requested_edge_explicit == 1 && requested_edge == 1 && saved_edge == 0 )); then
             apo_die 'The active run was created without an edge test. Finish it first, then repeat overclock TARGET with --edge-hours HOURS against the applied floor.' "$APO_EXIT_USAGE"
         fi
         APO_SELECTED_RUN_ID=$stored_run_id
         APO_COMMAND=resume
-        APO_EDGE_CPU_24H=$saved_edge
-        APO_QUALIFICATION_DURATION_S=$APO_SAVED_QUALIFICATION_DURATION_S
-        APO_FINAL_DURATION_S=$APO_SAVED_FINAL_DURATION_S
-        APO_EDGE_DURATION_S=$APO_SAVED_EDGE_DURATION_S
+        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
+            APO_RESTART_PENDING=1
+            APO_RESTART_QUALIFICATION_DURATION_S=$requested_qualification
+            APO_RESTART_FINAL_DURATION_S=$requested_final
+            APO_RESTART_EDGE_DURATION_S=$requested_edge_duration
+            APO_EDGE_CPU_24H=1
+            APO_EDGE_ORDER=edge-first
+            APO_QUALIFICATION_DURATION_S=$requested_qualification
+            APO_FINAL_DURATION_S=$requested_final
+            APO_EDGE_DURATION_S=$requested_edge_duration
+        else
+            APO_EDGE_CPU_24H=$saved_edge
+            APO_QUALIFICATION_DURATION_S=$APO_SAVED_QUALIFICATION_DURATION_S
+            APO_FINAL_DURATION_S=$APO_SAVED_FINAL_DURATION_S
+            APO_EDGE_DURATION_S=$APO_SAVED_EDGE_DURATION_S
+        fi
         APO_MAX_FAN=$saved_max_fan
         return 0
     fi
     if [[ ( $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 ) && $stored_target == "$APO_REMOTE_TARGET" &&
           $origin == overclock && $status == PASS && $phase == COMPLETE && $apply_status == APPLIED ]]; then
         apo_public_overclock_load_saved_duration_plan
+        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
+            APO_RESTART_QUALIFICATION_DURATION_S=$requested_qualification
+            APO_RESTART_FINAL_DURATION_S=$requested_final
+            APO_RESTART_EDGE_DURATION_S=$requested_edge_duration
+            apo_restart_merge_unspecified_saved_durations
+            requested_qualification=$APO_RESTART_QUALIFICATION_DURATION_S
+            requested_final=$APO_RESTART_FINAL_DURATION_S
+            requested_edge_duration=$APO_RESTART_EDGE_DURATION_S
+        fi
         (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 0 )) || [[ $APO_QUALIFICATION_DURATION_S == "$APO_SAVED_QUALIFICATION_DURATION_S" ]] ||
             apo_die 'A completed floor cannot be relabeled with a different qualification duration.' "$APO_EXIT_USAGE"
-        (( APO_FINAL_HOURS_OPTION_SEEN == 0 )) || [[ $APO_FINAL_DURATION_S == "$APO_SAVED_FINAL_DURATION_S" ]] ||
-            apo_die 'A completed floor cannot be relabeled with a different final duration.' "$APO_EXIT_USAGE"
+        source_validation_duration=$(apo_state_get VALIDATION_DURATION_S '')
+        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )) && [[ $APO_RESTART_FROM != final ]]; then
+            apo_die 'A completed applied run can restart only from final; earlier checkpoints require a fresh reset and overclock.' "$APO_EXIT_USAGE"
+        fi
+        if { (( requested_final_seen == 1 || APO_RESTART_FROM_OPTION_SEEN == 1 )); } && [[ $requested_final != "$APO_SAVED_FINAL_DURATION_S" ]]; then
+            apo_validate_uint_range "$source_validation_duration" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+                apo_die 'The completed run has malformed retained validation-duration evidence.' "$APO_EXIT_HARNESS"
+            (( requested_final > source_validation_duration )) ||
+                apo_die 'A completed result cannot be relabeled with a shorter final duration; request a duration longer than its retained validation.' "$APO_EXIT_USAGE"
+            (( requested_edge_explicit == 0 )) ||
+                apo_die 'Extend the applied floor with --final-hours first; final extension and a new edge experiment cannot be combined in one continuation.' "$APO_EXIT_USAGE"
+            apo_post_floor_final_source_is_eligible ||
+                apo_die 'Longer final validation requires a retained, applied current-schema automatic result plus its verified pre-apply stock backup.' "$APO_EXIT_USAGE"
+            state_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${stored_run_id}.state"
+            [[ -f $state_file ]] || apo_die 'The applied result selected for longer final validation has no explicit retained state file.' "$APO_EXIT_USAGE"
+            apo_state_load "$state_file"
+            [[ $(apo_state_get RUN_ID '') == "$stored_run_id" && $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" ]] &&
+                apo_post_floor_final_source_is_eligible ||
+                apo_die 'The explicit retained state for longer final validation failed eligibility checks.' "$APO_EXIT_USAGE"
+            APO_POST_FLOOR_FINAL_SOURCE_STATE=$state_file
+            APO_POST_FLOOR_FINAL_MAX_FAN=$requested_max_fan
+            APO_POST_FLOOR_FINAL_DURATION_S=$requested_final
+            APO_COMMAND=post-floor-final
+            APO_EDGE_CPU_24H=0
+            return 0
+        fi
+        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
+            apo_die 'The retained result already completed at least the requested final duration; choose a longer --final-hours value to run a fresh extension.' "$APO_EXIT_USAGE"
+        fi
         if (( saved_edge == 1 && APO_EDGE_CPU_24H_OPTION_SEEN == 1 )) && [[ $APO_SAVED_EDGE_DURATION_S != "$APO_DEFAULT_EDGE_DURATION_S" ]]; then
             apo_die '--edge-cpu-24h means exactly 24 hours and does not match the completed run edge duration.' "$APO_EXIT_USAGE"
         fi
         if (( saved_edge == 1 && APO_EDGE_HOURS_OPTION_SEEN == 1 )) && [[ $APO_EDGE_DURATION_S != "$APO_SAVED_EDGE_DURATION_S" ]]; then
             apo_die 'A completed edge run cannot be relabeled with a different edge duration.' "$APO_EXIT_USAGE"
         fi
-        if (( requested_edge == 1 && saved_edge == 0 )); then
+        if (( requested_edge_explicit == 1 && requested_edge == 1 && saved_edge == 0 )); then
             apo_post_floor_edge_source_is_eligible ||
                 apo_die 'Later edge validation requires a retained, applied current-schema automatic floor with unchanged ownership evidence.' "$APO_EXIT_USAGE"
             state_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${stored_run_id}.state"
@@ -495,7 +614,7 @@ apo_public_overclock_select_continuation() {
     # A later prepare audit may own the latest link even though it left an
     # already-applied floor unchanged. Search retained tuning states only in
     # that benign case; reset or failed tuning state must never be skipped.
-    if (( requested_edge == 1 )) && [[ $origin == prepare && $status == PASS && $phase == COMPLETE ]]; then
+    if (( requested_edge_explicit == 1 && requested_edge == 1 )) && [[ $origin == prepare && $status == PASS && $phase == COMPLETE ]]; then
         shopt -s nullglob
         state_files=("${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"*.state)
         shopt -u nullglob
@@ -573,6 +692,7 @@ apo_post_floor_edge_reset_child_state() {
     apo_state_set ORIGIN_COMMAND overclock
     apo_state_set READ_ONLY_RUN 0
     apo_state_set CFG_EDGE_CPU_24H 1
+    apo_state_set CFG_EDGE_ORDER floor-first
     apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
     apo_state_set CFG_FINAL_DURATION_S "$APO_FINAL_DURATION_S"
     apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
@@ -637,6 +757,116 @@ apo_post_floor_edge_reset_child_state() {
     apo_state_set PROGRESS_STRESS_ELAPSED 0
     apo_state_set PROGRESS_STRESS_DURATION 0
     apo_state_set RUN_MAX_TEMP ''
+}
+
+apo_post_floor_final_reset_child_state() {
+    local source_run_id=$1 source_hash=$2 source_validation_duration=$3 source_backup=$4
+    local final_cpu=$5 final_gpu=$6 key
+    apo_state_set FORMAT_VERSION 1
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set APP_VERSION "$APO_VERSION"
+    apo_state_set RUN_ID "$APO_RUN_ID"
+    apo_state_set CREATED_AT "$(apo_now_iso)"
+    apo_state_set RAW_TARGET "$APO_RAW_TARGET"
+    apo_state_set REMOTE_TARGET "$APO_REMOTE_TARGET"
+    apo_state_set TARGET_HOST "$APO_TARGET_HOST"
+    apo_state_set TARGET_SLUG "$APO_TARGET_SLUG"
+    apo_state_set OUTPUT_DIR "$APO_OUTPUT_DIR"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set READ_ONLY_RUN 0
+    apo_state_set CFG_EDGE_CPU_24H 0
+    apo_state_set CFG_EDGE_ORDER floor-first
+    apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
+    apo_state_set CFG_FINAL_DURATION_S "$APO_FINAL_DURATION_S"
+    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
+    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
+    apo_state_set CFG_MAX_FAN "${APO_MAX_FAN:-1}"
+    apo_state_set POST_FLOOR_EDGE 0
+    apo_state_set SOURCE_FLOOR_RUN_ID ''
+    apo_state_set SOURCE_FLOOR_PERMANENT_HASH ''
+    apo_state_set POST_FLOOR_FINAL 1
+    apo_state_set POST_FLOOR_FINAL_STAGE ROLLBACK_PENDING
+    apo_state_set SOURCE_FINAL_RUN_ID "$source_run_id"
+    apo_state_set SOURCE_FINAL_PERMANENT_HASH "$source_hash"
+    apo_state_set SOURCE_FINAL_VALIDATION_DURATION_S "$source_validation_duration"
+    apo_state_set SOURCE_FINAL_APPLY_BACKUP "$source_backup"
+    apo_state_set STATUS RUNNING
+    apo_state_set PHASE FINAL_VALIDATION
+    apo_state_set SUBPHASE POST_FLOOR_FINAL_ROLLBACK
+    apo_state_set RECOMMENDED_CPU "$final_cpu"
+    apo_state_set RECOMMENDED_GPU "$final_gpu"
+    apo_state_set FINAL_TARGET_CPU "$final_cpu"
+    apo_state_set FINAL_TARGET_GPU "$final_gpu"
+    apo_state_set OVERCLOCK_COMPLETE_RECORDED 0
+    for key in FAILURE_CLASS FAILURE_REASON LAST_FAILURE_CLASS LAST_FAILURE_REASON TRYBOOT_OWNED_HASH \
+               TRYBOOT_RESERVATION_HASH TRYBOOT_OWNERSHIP_TOKEN TRYBOOT_QUARANTINE_PATH TRYBOOT_LAST_HASH; do
+        apo_state_set "$key" ''
+    done
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+    apo_state_set MUTATIONS_STARTED 0
+    apo_state_set RECOVERY_WAIT_STATUS IDLE
+    apo_state_set RECOVERY_WAIT_CONTEXT ''
+    apo_state_set RECOVERY_WAIT_STARTED_AT ''
+    apo_state_set RECOVERY_WAIT_TIMEOUTS 0
+    apo_state_set PROGRESS_ACTIVE_SECONDS 0
+    apo_state_set PROGRESS_LAST_TEMP ''
+    apo_state_set PROGRESS_LAST_CPU ''
+    apo_state_set PROGRESS_LAST_GPU ''
+    apo_state_set PROGRESS_LAST_THROTTLE ''
+    apo_state_set PROGRESS_LAST_FAN ''
+    apo_state_set PROGRESS_STRESS_LABEL ''
+    apo_state_set PROGRESS_STRESS_ELAPSED 0
+    apo_state_set PROGRESS_STRESS_DURATION 0
+    apo_state_set RUN_MAX_TEMP ''
+}
+
+apo_post_floor_final_normalize_after_rollback() {
+    local final_cpu=$1 final_gpu=$2 key
+    [[ $(apo_state_get APPLY_STATUS '') == ROLLED_BACK ]] || {
+        APO_LAST_CLASS=APPLY_FAILURE
+        APO_LAST_REASON='Longer final validation cannot start until the verified pre-apply stock config has been restored.'
+        return 1
+    }
+    APO_EDGE_CPU_24H=0
+    APO_EDGE_ORDER=floor-first
+    APO_PERMANENT_CONFIG_HASH=$(apo_state_get APPLY_OLD_HASH '')
+    APO_NORMAL_CPU=$APO_AUTO_BASELINE_CPU
+    APO_NORMAL_GPU=$APO_AUTO_BASELINE_GPU
+    APO_NORMAL_VOLTAGE=$APO_AUTO_BASELINE_VOLTAGE
+    apo_state_set NORMAL_CPU "$APO_NORMAL_CPU"
+    apo_state_set NORMAL_GPU "$APO_NORMAL_GPU"
+    apo_state_set NORMAL_VOLTAGE "$APO_NORMAL_VOLTAGE"
+    apo_state_set PERMANENT_HASH "$APO_PERMANENT_CONFIG_HASH"
+    apo_state_set CFG_EDGE_CPU_24H 0
+    apo_state_set FLOOR_CPU ''
+    apo_state_set FLOOR_GPU ''
+    apo_state_set FLOOR_DURATION_S ''
+    apo_state_set FLOOR_VALIDATION_SCHEMA ''
+    apo_state_set FLOOR_VALIDATED 0
+    apo_state_set EDGE_CPU_TARGET ''
+    apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+    apo_state_set EDGE_CPU_FAILURE_CLASS ''
+    apo_state_set EDGE_CPU_FAILURE_REASON ''
+    apo_state_set RECOMMENDED_CPU "$final_cpu"
+    apo_state_set RECOMMENDED_GPU "$final_gpu"
+    apo_state_set FINAL_TARGET_CPU "$final_cpu"
+    apo_state_set FINAL_TARGET_GPU "$final_gpu"
+    apo_state_clear_final_validation
+    apo_state_set FINAL_STAGE PRE_STRESS_BOOT
+    apo_state_set STATUS RUNNING
+    apo_state_set PHASE FINAL_VALIDATION
+    apo_state_set SUBPHASE POST_FLOOR_FINAL_PRE_STRESS_BOOT
+    apo_state_set POST_FLOOR_FINAL_STAGE VALIDATING
+    apo_state_set APPLY_STATUS NOT_APPLIED
+    for key in APPLY_OLD_HASH APPLY_EXPECTED_HASH APPLY_BACKUP APPLY_BOOT_ID APPLY_RECOVERY_ACTION APPLY_FAILURE_REASON; do
+        apo_state_set "$key" ''
+    done
+    unset 'APO_STATE[APPLIED_AT]'
+    apo_state_set FAILURE_CLASS ''
+    apo_state_set FAILURE_REASON ''
+    apo_state_set BASELINE_BOOT_ID "$(apo_state_get NORMAL_BOOT_ID '')"
+    apo_state_save
 }
 
 apo_start_post_floor_edge() {
@@ -741,6 +971,197 @@ apo_start_post_floor_edge() {
     fi
     apo_event post-floor-edge PASS '' "Applied ${APO_FINAL_DURATION_S}s floor and headless/graphical mode were re-proved; starting only the CPU +25 MHz/${APO_EDGE_DURATION_S}s edge validation."
     apo_final_validation
+}
+
+apo_resume_post_floor_final() {
+    local extension_stage apply_status source_run_id source_hash source_duration source_backup old_hash
+    local final_cpu final_gpu status
+    [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 ]] ||
+        apo_die 'Internal error: longer final-validation continuation lacks its source marker.' "$APO_EXIT_INTERNAL"
+    source_run_id=$(apo_state_get SOURCE_FINAL_RUN_ID '')
+    source_hash=$(apo_state_get SOURCE_FINAL_PERMANENT_HASH '')
+    source_duration=$(apo_state_get SOURCE_FINAL_VALIDATION_DURATION_S '')
+    source_backup=$(apo_state_get SOURCE_FINAL_APPLY_BACKUP '')
+    final_cpu=$(apo_state_get FINAL_TARGET_CPU "$(apo_state_get FINAL_CPU '')")
+    final_gpu=$(apo_state_get FINAL_TARGET_GPU "$(apo_state_get FINAL_GPU '')")
+    [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
+       $source_run_id != "$(apo_state_get RUN_ID '')" ]] && apo_is_safe_run_id "$source_run_id" &&
+       [[ $source_hash =~ ^[0-9a-f]{64}$ && $source_duration =~ ^[1-9][0-9]{0,6}$ &&
+          -n $source_backup && $final_cpu =~ ^[0-9]+$ && $final_gpu =~ ^[0-9]+$ ]] ||
+        apo_die 'The longer final-validation continuation has malformed source identity or clock evidence.' "$APO_EXIT_HARNESS"
+
+    extension_stage=$(apo_state_get POST_FLOOR_FINAL_STAGE '')
+    if [[ $extension_stage == ROLLBACK_PENDING ]]; then
+        apo_prepare_remote_for_saved_run
+        apply_status=$(apo_state_get APPLY_STATUS '')
+        case $apply_status in
+            APPLIED)
+                apo_apply_assert_tryboot_clear || {
+                    apo_state_fail RECOVERY_FAILURE "Longer final validation found uncleared tryboot evidence before stock rollback: $APO_LAST_REASON"
+                    return "$APO_EXIT_RECOVERY"
+                }
+                [[ $(apo_state_get PERMANENT_HASH '') == "$source_hash" ]] || {
+                    apo_state_fail RECOVERY_FAILURE 'The applied config hash in the continuation state no longer matches its source result.'
+                    return "$APO_EXIT_RECOVERY"
+                }
+                apo_verify_permanent_hash post-floor-final-applied-baseline || {
+                    apo_state_fail RECOVERY_FAILURE "The applied result changed before longer final validation: $APO_LAST_REASON"
+                    return "$APO_EXIT_RECOVERY"
+                }
+                apo_recover_normal post-floor-final-applied-health || {
+                    apo_state_fail RECOVERY_FAILURE "The applied result did not pass current health before stock rollback: $APO_LAST_REASON"
+                    return "$APO_EXIT_RECOVERY"
+                }
+                APO_NORMAL_CPU=$APO_AUTO_BASELINE_CPU
+                APO_NORMAL_GPU=$APO_AUTO_BASELINE_GPU
+                APO_NORMAL_VOLTAGE=$APO_AUTO_BASELINE_VOLTAGE
+                apo_state_set NORMAL_CPU "$APO_NORMAL_CPU"
+                apo_state_set NORMAL_GPU "$APO_NORMAL_GPU"
+                apo_state_set NORMAL_VOLTAGE "$APO_NORMAL_VOLTAGE"
+                old_hash=$(apo_state_get APPLY_OLD_HASH '')
+                apo_apply_restore_old_config "$old_hash" "$source_backup" \
+                    "Preparing a stock recovery baseline before extending source run $source_run_id from ${source_duration}s to ${APO_FINAL_DURATION_S}s" ||
+                    return "$APO_EXIT_APPLY"
+                ;;
+            APPLYING)
+                APO_NORMAL_CPU=$APO_AUTO_BASELINE_CPU
+                APO_NORMAL_GPU=$APO_AUTO_BASELINE_GPU
+                APO_NORMAL_VOLTAGE=$APO_AUTO_BASELINE_VOLTAGE
+                apo_state_set NORMAL_CPU "$APO_NORMAL_CPU"
+                apo_state_set NORMAL_GPU "$APO_NORMAL_GPU"
+                apo_state_set NORMAL_VOLTAGE "$APO_NORMAL_VOLTAGE"
+                apo_reconcile_interrupted_apply || return "$APO_EXIT_APPLY"
+                ;;
+            ROLLED_BACK) ;;
+            FAILED_NEEDS_MANUAL_RECOVERY)
+                apo_die "The stock rollback for longer final validation needs manual recovery: $(apo_state_get APPLY_FAILURE_REASON 'unknown mismatch')" "$APO_EXIT_APPLY"
+                ;;
+            *)
+                apo_die "Longer final validation found an unexpected rollback state: ${apply_status:-missing}." "$APO_EXIT_HARNESS"
+                ;;
+        esac
+        [[ $(apo_state_get APPLY_STATUS '') == ROLLED_BACK ]] ||
+            apo_die 'The verified pre-apply stock config was not restored; longer final validation is refusing to start.' "$APO_EXIT_APPLY"
+        apo_state_set POST_FLOOR_FINAL_STAGE ROLLBACK_COMPLETE
+        apo_state_set SUBPHASE POST_FLOOR_FINAL_ROLLBACK_COMPLETE
+        apo_state_save
+        extension_stage=ROLLBACK_COMPLETE
+    fi
+
+    if [[ $extension_stage == ROLLBACK_COMPLETE ]]; then
+        apo_post_floor_final_normalize_after_rollback "$final_cpu" "$final_gpu" ||
+            return "$APO_EXIT_APPLY"
+        extension_stage=VALIDATING
+        apo_summary_line "STOCK BASELINE RESTORED: the source result is no longer permanent while its longer validation runs."
+        apo_event post-floor-final-rollback PASS '' "Verified stock config restored; starting ${APO_FINAL_DURATION_S}s validation of CPU=$final_cpu GPU=$final_gpu."
+    fi
+
+    [[ $extension_stage == VALIDATING || $extension_stage == COMPLETE || $extension_stage == FAILED ]] ||
+        apo_die "Unknown longer final-validation stage: ${extension_stage:-missing}." "$APO_EXIT_HARNESS"
+    apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
+    if [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) == APPLYING ]]; then
+        apo_prepare_remote_for_saved_run
+        apo_reconcile_interrupted_apply || return "$APO_EXIT_APPLY"
+    fi
+    status=$(apo_state_get STATUS '')
+    if [[ $status == PASS && $(apo_state_get PHASE '') == COMPLETE ]]; then
+        apo_finish_public_overclock
+        if [[ $(apo_state_get APPLY_STATUS '') == APPLIED || $APO_AUTO_APPLY == 0 ]]; then
+            apo_state_set POST_FLOOR_FINAL_STAGE COMPLETE
+            apo_state_save
+        fi
+        return 0
+    fi
+    if [[ $status == FAILED ]]; then
+        return "$(apo_class_exit_code "$(apo_state_get FAILURE_CLASS HARNESS_FAILURE)")"
+    fi
+    apo_prepare_remote_for_saved_run
+    apo_recover_normal post-floor-final-resume-recovery || {
+        apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+        return "$APO_EXIT_RECOVERY"
+    }
+    apo_state_set STATUS RUNNING
+    apo_state_set FAILURE_CLASS ''
+    apo_state_set FAILURE_REASON ''
+    apo_state_save
+    apo_final_validation || return "$(apo_class_exit_code "$(apo_state_get FAILURE_CLASS HARNESS_FAILURE)")"
+    apo_finish_public_overclock
+    if [[ $(apo_state_get APPLY_STATUS '') == APPLIED || $APO_AUTO_APPLY == 0 ]]; then
+        apo_state_set POST_FLOOR_FINAL_STAGE COMPLETE
+        apo_state_save
+    fi
+}
+
+apo_start_post_floor_final() {
+    local source_state_file=$APO_POST_FLOOR_FINAL_SOURCE_STATE source_run_id source_hash source_duration source_backup
+    local final_cpu final_gpu source_mode source_gpu_requirement validation_reason key
+    local -A source_state=()
+    [[ -n $source_state_file && -f $source_state_file ]] ||
+        apo_die 'The retained applied result selected for longer final validation is unavailable.' "$APO_EXIT_USAGE"
+    apo_state_load "$source_state_file"
+    [[ $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" ]] ||
+        apo_die 'The retained applied result belongs to another target.' "$APO_EXIT_USAGE"
+    apo_post_floor_final_source_is_eligible ||
+        apo_die 'The retained result lacks current validation, applied-hash, clear-tryboot, or verified stock-backup evidence.' "$APO_EXIT_USAGE"
+    source_run_id=$(apo_state_get RUN_ID '')
+    source_hash=$(apo_state_get PERMANENT_HASH '')
+    source_duration=$(apo_state_get VALIDATION_DURATION_S '')
+    source_backup=$(apo_state_get APPLY_BACKUP '')
+    final_cpu=$(apo_state_get FINAL_CPU '')
+    final_gpu=$(apo_state_get FINAL_GPU '')
+    source_mode=$(apo_state_get MODE_EFFECTIVE '')
+    source_gpu_requirement=$(apo_state_get REQUIRE_GPU_STRESS '')
+    (( APO_POST_FLOOR_FINAL_DURATION_S > source_duration )) ||
+        apo_die 'The requested final duration must be longer than the retained applied validation.' "$APO_EXIT_USAGE"
+    APO_RUN_ID=$source_run_id
+    apo_restore_context_from_state
+    APO_STATE_VALIDATION_READ_ONLY=1
+    if ! apo_validate_auto_resume_state; then
+        validation_reason=${APO_LAST_REASON:-'retained state validation failed'}
+        APO_STATE_VALIDATION_READ_ONLY=0
+        APO_STATE=()
+        APO_STATE_FILE=''
+        apo_die "The retained applied result failed read-only safety validation: $validation_reason" "$APO_EXIT_HARNESS"
+    fi
+    APO_STATE_VALIDATION_READ_ONLY=0
+    [[ $APO_MODE_EFFECTIVE == "$source_mode" && $APO_REQUIRE_GPU_STRESS == "$source_gpu_requirement" ]] ||
+        apo_die 'The retained graphical/headless validation mode could not be reconstructed exactly.' "$APO_EXIT_HARNESS"
+    for key in "${!APO_STATE[@]}"; do source_state["$key"]=${APO_STATE[$key]}; done
+
+    APO_EDGE_CPU_24H=0
+    APO_EDGE_ORDER=floor-first
+    APO_MAX_FAN=$APO_POST_FLOOR_FINAL_MAX_FAN
+    APO_FINAL_DURATION_S=$APO_POST_FLOOR_FINAL_DURATION_S
+    APO_CFG[FINAL_DURATION_S]=$APO_FINAL_DURATION_S
+    APO_DURATION_POLICY=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "$APO_FINAL_DURATION_S" "$APO_EDGE_DURATION_S")
+    apo_init_artifacts
+    APO_STATE=()
+    for key in "${!source_state[@]}"; do APO_STATE["$key"]=${source_state[$key]}; done
+    apo_post_floor_final_reset_child_state "$source_run_id" "$source_hash" "$source_duration" "$source_backup" "$final_cpu" "$final_gpu"
+    apo_progress_start_session
+    apo_load_profile "$APO_PROFILE"
+    apo_store_artifact_state
+    apo_write_effective_config "$APO_EFFECTIVE_CONFIG_FILE"
+    {
+        printf 'SourceFinalRunID=%s\nSourceFinalState=%s\nSourceFinalPermanentHash=%s\nSourceFinalBackup=%s\n' \
+            "$source_run_id" "$source_state_file" "$source_hash" "$source_backup"
+        printf 'Profile=%s\nMode=%s\nGPUStressRequired=%s\nFinalCPU=%s\nFinalGPU=%s\nPreviousDuration=%s\nRequestedDuration=%s\n' \
+            "$APO_PROFILE" "$APO_MODE_EFFECTIVE" "$APO_REQUIRE_GPU_STRESS" "$final_cpu" "$final_gpu" \
+            "$source_duration" "$APO_FINAL_DURATION_S"
+    } > "$APO_DISCOVERY_FILE"
+    chmod 600 "$APO_DISCOVERY_FILE"
+    apo_summary_line 'AutoPiOverclock longer final validation'
+    apo_summary_line "Run ID: $APO_RUN_ID"
+    apo_summary_line "Source applied result: $source_run_id"
+    apo_summary_line "Target: $APO_REMOTE_TARGET"
+    apo_summary_line "Exact retained clocks: CPU $final_cpu MHz / GPU $final_gpu MHz"
+    apo_summary_line "Previous validation: ${source_duration}s"
+    apo_summary_line "New complete validation: ${APO_FINAL_DURATION_S}s"
+    apo_summary_line 'Safety policy: restore the verified stock backup first; reapply these clocks only after the longer validation passes.'
+    apo_summary_line "Maximum fan cooling during validation: $([[ $APO_MAX_FAN == 1 ]] && printf enabled || printf disabled)"
+    apo_summary_line ''
+    apo_event run-start INFO '' "command=overclock-post-floor-final version=$APO_VERSION source-run=$source_run_id mode=$APO_MODE_EFFECTIVE"
+    apo_resume_post_floor_final
 }
 
 apo_finish_public_overclock() {
@@ -940,6 +1361,12 @@ apo_exit_from_saved_failure() {
 main() {
     local status state_schema retry_saved_final=0 saved_failure_stage='' saved_failure_class='' saved_failure_reason=''
     apo_parse_cli "$@"
+    if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
+        APO_RESTART_PENDING=1
+        APO_RESTART_QUALIFICATION_DURATION_S=$APO_QUALIFICATION_DURATION_S
+        APO_RESTART_FINAL_DURATION_S=$APO_FINAL_DURATION_S
+        APO_RESTART_EDGE_DURATION_S=$APO_EDGE_DURATION_S
+    fi
     apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync chmod mkdir mv readlink rm
     case $APO_COMMAND in run|prepare|resume|recover|reset|apply) apo_acquire_lock ;; esac
     apo_public_overclock_select_continuation
@@ -960,6 +1387,10 @@ main() {
             apo_start_post_floor_edge
             apo_finish_public_overclock
             ;;
+        post-floor-final)
+            APO_MUTATING_COMMAND=1
+            apo_start_post_floor_final
+            ;;
         reset)
             # Stock reset has its own idempotent worker/reboot protocol. The
             # generic tuning exit trap must not interpret reset state as owned
@@ -978,6 +1409,16 @@ main() {
         resume)
             APO_MUTATING_COMMAND=1
             apo_load_selected_run
+            apo_restart_merge_unspecified_saved_durations
+            if [[ $(apo_state_get ORIGIN_COMMAND '') == overclock ]]; then
+                APO_AUTO_APPLY=1
+                APO_PERSISTENT_SSH_RECOVERY=1
+            fi
+            if (( APO_RESTART_FROM_OPTION_SEEN == 0 )) &&
+               (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 || APO_FINAL_HOURS_OPTION_SEEN == 1 || APO_EDGE_HOURS_OPTION_SEEN == 1 )); then
+                apo_public_overclock_load_saved_duration_plan
+                apo_public_overclock_require_matching_saved_durations
+            fi
             if [[ $APO_PUBLIC_COMMAND == overclock ]]; then
                 apo_event overclock-resume INFO '' "Continuing interrupted overclock run $APO_RUN_ID through the same safety gates."
             fi
@@ -988,6 +1429,24 @@ main() {
                 else
                     apo_die 'This interrupted state predates the current safety/resume schema and cannot be resumed without bypassing required gates. Start a new run; status and report remain available.' "$APO_EXIT_USAGE"
                 fi
+            fi
+            if [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 ]]; then
+                apo_resume_post_floor_final
+                return 0
+            fi
+            if (( APO_RESTART_PENDING == 1 )) && [[ $(apo_state_get STATUS '') == PASS && $(apo_state_get PHASE '') == COMPLETE ]]; then
+                [[ $APO_RESTART_FROM == final && $(apo_state_get APPLY_STATUS '') == APPLIED ]] ||
+                    apo_die 'A completed run can restart only from final, and only while its validated result is still applied.' "$APO_EXIT_USAGE"
+                apo_post_floor_final_source_is_eligible ||
+                    apo_die 'The completed applied run lacks the retained stock backup or current validation evidence required for a fresh final restart.' "$APO_EXIT_USAGE"
+                (( APO_RESTART_FINAL_DURATION_S > $(apo_state_get VALIDATION_DURATION_S 0) )) ||
+                    apo_die 'The fresh final restart must request more hours than the retained validation.' "$APO_EXIT_USAGE"
+                APO_POST_FLOOR_FINAL_SOURCE_STATE=$APO_STATE_FILE
+                APO_POST_FLOOR_FINAL_MAX_FAN=$APO_MAX_FAN
+                APO_POST_FLOOR_FINAL_DURATION_S=$APO_RESTART_FINAL_DURATION_S
+                APO_EDGE_CPU_24H=0
+                apo_start_post_floor_final
+                return 0
             fi
             apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
             if [[ $(apo_state_get ORIGIN_COMMAND '') == prepare || $(apo_state_get READ_ONLY_RUN 0) == 1 ]]; then
@@ -1035,7 +1494,11 @@ main() {
             fi
             apo_prepare_remote_for_saved_run
             apo_recover_normal resume-initial-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
-            if (( retry_saved_final == 1 )); then
+            if (( APO_RESTART_PENDING == 1 )); then
+                apo_restart_active_automatic_state "$APO_RESTART_FROM" ||
+                    apo_die "Checkpoint restart was refused: ${APO_LAST_REASON:-saved prerequisites are incomplete}." "$APO_EXIT_USAGE"
+                retry_saved_final=0
+            elif (( retry_saved_final == 1 )); then
                 if ! apo_final_schedule_stress_backoff "$saved_failure_stage" "$saved_failure_class" "$saved_failure_reason"; then
                     apo_state_fail "$saved_failure_class" "$saved_failure_reason"
                     return "$(apo_class_exit_code "$saved_failure_class")"

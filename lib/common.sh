@@ -16,8 +16,12 @@ readonly APO_EXIT_INTERNAL=70
 readonly APO_MIN_TUNING_DURATION_S=3600
 readonly APO_MAX_TUNING_DURATION_S=604800
 readonly APO_DEFAULT_QUALIFICATION_DURATION_S=7200
-readonly APO_DEFAULT_FINAL_DURATION_S=28800
+readonly APO_DEFAULT_FINAL_DURATION_S=86400
 readonly APO_DEFAULT_EDGE_DURATION_S=86400
+# Schema-10 runs created through alpha.32 recorded the former recommended
+# eight-hour final as policy=default. Keep that historical label verifiable
+# without treating new eight-hour requests as the current default.
+readonly APO_LEGACY_DEFAULT_FINAL_DURATION_S=28800
 # Retained as a source-compatible name for older fixture/support code. New
 # automatic runs use the immutable per-run APO_QUALIFICATION_DURATION_S value.
 readonly APO_DOMAIN_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
@@ -26,6 +30,7 @@ readonly APO_MIN_FINAL_DURATION_S=$APO_MIN_TUNING_DURATION_S
 APO_QUALIFICATION_DURATION_S=${APO_QUALIFICATION_DURATION_S:-$APO_DEFAULT_QUALIFICATION_DURATION_S}
 APO_FINAL_DURATION_S=${APO_FINAL_DURATION_S:-$APO_DEFAULT_FINAL_DURATION_S}
 APO_EDGE_DURATION_S=${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}
+APO_EDGE_ORDER=${APO_EDGE_ORDER:-floor-first}
 
 APO_FATAL_MESSAGE=''
 APO_FATAL_EXIT_CODE=''

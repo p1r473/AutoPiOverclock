@@ -81,6 +81,31 @@ if (
 fi
 grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fan-change.err"
 
+# An explicit checkpoint restart may replace an untouched long-duration plan.
+# The saved state supplies clocks; the command supplies only checkpoint/time.
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24 --edge-hours 24
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
+    [[ $APO_RESTART_PENDING == 1 && $APO_RESTART_FROM == cpu-qualification ]]
+    [[ $APO_RESTART_QUALIFICATION_DURATION_S == 7200 ]]
+    [[ $APO_RESTART_FINAL_DURATION_S == 86400 && $APO_RESTART_EDGE_DURATION_S == 86400 ]]
+    [[ $APO_EDGE_CPU_24H == 1 && $APO_EDGE_ORDER == edge-first ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --restart-from cpu-qualification --final-hours 24
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_RESTART_QUALIFICATION_DURATION_S == 10800 ]]
+    [[ $APO_RESTART_FINAL_DURATION_S == 86400 ]]
+    [[ $APO_RESTART_EDGE_DURATION_S == 86400 ]]
+)
+
 # The compatibility flag has literal 24-hour semantics. It cannot silently
 # continue a custom-duration edge run as though the user had requested 12h.
 EDGE_CONTINUATION_OUTPUT="$TEMP_DIR/edge-continuation-output"
@@ -113,6 +138,42 @@ if (
     exit 1
 fi
 grep -Fq -- '--edge-cpu-24h means exactly 24 hours' "$TEMP_DIR/edge-alias-duration-change.err"
+
+# A completed, applied historical 8-hour floor with a safely rejected edge can
+# start one linked fresh 24-hour floor validation. The source clocks and exact
+# stock rollback backup come from retained evidence, never from CLI values.
+FINAL_EXTENSION_OUTPUT="$TEMP_DIR/final-extension-output"
+mkdir -p "$FINAL_EXTENSION_OUTPUT"
+FINAL_EXTENSION_SOURCE=20260829-223837-7b9716f361ef9804
+FINAL_EXTENSION_STATE="$FINAL_EXTENSION_OUTPUT/monkeebutt-${FINAL_EXTENSION_SOURCE}.state"
+write_state_fixture "$FINAL_EXTENSION_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$FINAL_EXTENSION_SOURCE" \
+    REMOTE_TARGET "$(id -un)@monkeebutt" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 PROFILE debian \
+    MODE_EFFECTIVE headless REQUIRE_GPU_STRESS 1 CFG_AUTO_GENERATED_CANDIDATES 1 \
+    CFG_EDGE_CPU_24H 1 CFG_EDGE_ORDER floor-first CFG_QUALIFICATION_DURATION_S 7200 \
+    CFG_FINAL_DURATION_S 28800 CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY default \
+    STATUS PASS PHASE COMPLETE FINAL_STAGE COMPLETE VALIDATED 1 VALIDATION_SCHEMA 8 \
+    VALIDATION_DURATION_S 28800 APPLY_STATUS APPLIED EDGE_CPU_STATUS REJECTED \
+    FLOOR_CPU 3100 FLOOR_GPU 1175 FLOOR_DURATION_S 28800 FLOOR_VALIDATION_SCHEMA 8 FLOOR_VALIDATED 1 \
+    FINAL_CPU 3100 FINAL_GPU 1175 RECOMMENDED_CPU 3100 RECOMMENDED_GPU 1175 \
+    FINAL_TARGET_CPU 3100 FINAL_TARGET_GPU 1175 NORMAL_CPU 3100 NORMAL_GPU 1175 \
+    NORMAL_VOLTAGE 0 TEST_VOLTAGE 0 TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 \
+    APPLY_OLD_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    APPLY_EXPECTED_HASH bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    PERMANENT_HASH bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    APPLY_BACKUP "/var/lib/autopioverclock/backups/config-${FINAL_EXTENSION_SOURCE}-before-apply.txt"
+ln -sfn "$(basename "$FINAL_EXTENSION_STATE")" "$FINAL_EXTENSION_OUTPUT/monkeebutt-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock monkeebutt --restart-from final --final-hours 24
+    APO_OUTPUT_DIR=$FINAL_EXTENSION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == post-floor-final ]]
+    [[ $APO_POST_FLOOR_FINAL_SOURCE_STATE == "$FINAL_EXTENSION_STATE" ]]
+    [[ $APO_POST_FLOOR_FINAL_DURATION_S == 86400 ]]
+    [[ $(apo_state_get FINAL_CPU) == 3100 && $(apo_state_get FINAL_GPU) == 1175 ]]
+)
 
 # Repeating the public command adopts an exact recovered schema-7
 # final-stress boundary, not an arbitrary failed run.

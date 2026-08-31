@@ -25,7 +25,7 @@ APO_PROGRESS_STRESS_DURATION=0
 
 apo_progress_available() {
     (( ${APO_PROGRESS_SHUTTING_DOWN:-0} == 0 )) || return 1
-    case ${APO_COMMAND:-} in run|resume|post-floor-edge) ;; *) return 1 ;; esac
+    case ${APO_COMMAND:-} in run|resume|post-floor-edge|post-floor-final) ;; *) return 1 ;; esac
     [[ ${APO_PROGRESS_FORCE:-0} == 1 ]] && return 0
     [[ -t 1 && -t 2 && ${TERM:-dumb} != dumb ]]
 }
@@ -35,7 +35,7 @@ apo_progress_now_epoch() { date +%s; }
 apo_progress_start_session() {
     APO_PROGRESS_SHUTTING_DOWN=0
     case ${APO_COMMAND:-} in
-        run|resume|post-floor-edge) ;;
+        run|resume|post-floor-edge|post-floor-final) ;;
         *) APO_PROGRESS_SESSION_BASE_S=0; APO_PROGRESS_SESSION_EPOCH=0; return 0 ;;
     esac
     APO_PROGRESS_SESSION_BASE_S=$(apo_state_get PROGRESS_ACTIVE_SECONDS 0)
@@ -151,13 +151,33 @@ apo_progress_final_full_cost() {
     printf '%s' "$((endurance + (final_boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S))"
 }
 
+apo_progress_initial_final_sequence_cost() {
+    local final_cost edge_cost
+    final_cost=$(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}")
+    if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
+        edge_cost=$(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")
+        if [[ ${APO_EDGE_ORDER:-floor-first} == edge-first ]]; then
+            # Only one long result is required. A rejected edge dynamically
+            # replaces this estimate with the guarded-floor workload.
+            printf '%s' "$edge_cost"
+            return 0
+        fi
+        final_cost=$((final_cost + edge_cost))
+    fi
+    printf '%s' "$final_cost"
+}
+
 apo_progress_final_remaining() {
-    local elapsed=${1:-0} stage edge_status endurance final_boots remaining=0 boot_number normal_number
+    local elapsed=${1:-0} stage edge_status endurance final_boots remaining=0 boot_number normal_number edge_order
     final_boots=${APO_CFG[FINAL_BOOTS]:-3}
     stage=$(apo_state_get FINAL_STAGE PRE_STRESS_BOOT)
     edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
+    edge_order=${APO_EDGE_ORDER:-floor-first}
     endurance=${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}
     [[ $edge_status == RUNNING ]] && endurance=${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}
+    if [[ $edge_status == NOT_REQUESTED && ${APO_EDGE_CPU_24H:-0} == 1 && $edge_order == edge-first ]]; then
+        endurance=${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}
+    fi
     case $stage in
         ''|PRE_STRESS_BOOT)
             remaining=$(apo_progress_final_full_cost "$endurance")
@@ -185,7 +205,7 @@ apo_progress_final_remaining() {
         *) remaining=$(apo_progress_final_full_cost "$endurance") ;;
     esac
     (( remaining < 0 )) && remaining=0
-    if [[ $edge_status == NOT_REQUESTED && ${APO_EDGE_CPU_24H:-0} == 1 ]]; then
+    if [[ $edge_status == NOT_REQUESTED && ${APO_EDGE_CPU_24H:-0} == 1 && $edge_order == floor-first ]]; then
         remaining=$((remaining + $(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")))
     fi
     printf '%s' "$remaining"
@@ -193,7 +213,9 @@ apo_progress_final_remaining() {
 
 apo_progress_future_validation_tests() {
     local tests=1
-    (( ${APO_EDGE_CPU_24H:-0} == 1 )) && tests=$((tests + 1))
+    if (( ${APO_EDGE_CPU_24H:-0} == 1 )) && [[ ${APO_EDGE_ORDER:-floor-first} == floor-first ]]; then
+        tests=$((tests + 1))
+    fi
     printf '%s' "$tests"
 }
 
@@ -263,7 +285,7 @@ apo_progress_estimate_remaining_tests() {
                 RUNNING) count=1 ;;
                 NOT_REQUESTED)
                     count=1
-                    (( ${APO_EDGE_CPU_24H:-0} == 1 )) && count=2
+                    if (( ${APO_EDGE_CPU_24H:-0} == 1 )) && [[ ${APO_EDGE_ORDER:-floor-first} == floor-first ]]; then count=2; fi
                     ;;
                 *) count=$([[ $(apo_state_get FINAL_STAGE '') == COMPLETE ]] && printf 0 || printf 1) ;;
             esac
@@ -290,10 +312,7 @@ apo_progress_future_tuning_cost() {
         gpu_count=$(apo_progress_domain_remaining_count GPU BEFORE)
         remaining=$((remaining + gpu_count * candidate_cost + qualification_cost))
     fi
-    remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}")))
-    if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
-        remaining=$((remaining + $(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")))
-    fi
+    remaining=$((remaining + $(apo_progress_initial_final_sequence_cost)))
     printf '%s' "$remaining"
 }
 
@@ -337,8 +356,7 @@ apo_progress_estimate_remaining_seconds() {
                 count=$(apo_progress_domain_remaining_count GPU BEFORE)
                 remaining=$((remaining + count * candidate_cost + qualification_cost))
             fi
-            remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}")))
-            (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")))
+            remaining=$((remaining + $(apo_progress_initial_final_sequence_cost)))
             ;;
         CPU_QUALIFICATION)
             remaining=$((qualification_cost - elapsed))
@@ -350,16 +368,14 @@ apo_progress_estimate_remaining_seconds() {
                 fi
                 remaining=$((remaining + qualification_cost))
             fi
-            remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}")))
-            (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")))
+            remaining=$((remaining + $(apo_progress_initial_final_sequence_cost)))
             ;;
         GPU_SWEEP)
             count=$(apo_progress_domain_remaining_count GPU CURRENT)
             remaining=$((count * candidate_cost - elapsed))
             (( remaining < 0 )) && remaining=0
             remaining=$((remaining + qualification_cost))
-            remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}")))
-            (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")))
+            remaining=$((remaining + $(apo_progress_initial_final_sequence_cost)))
             ;;
         SELECTION)
             if [[ $subphase == CPU ]]; then
@@ -371,14 +387,12 @@ apo_progress_estimate_remaining_seconds() {
             elif (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
                 remaining=$qualification_cost
             fi
-            remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}")))
-            (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")))
+            remaining=$((remaining + $(apo_progress_initial_final_sequence_cost)))
             ;;
         GPU_QUALIFICATION)
             remaining=$((qualification_cost - elapsed))
             (( remaining < 0 )) && remaining=0
-            remaining=$((remaining + $(apo_progress_final_full_cost "${APO_CFG[FINAL_DURATION_S]:-$APO_DEFAULT_FINAL_DURATION_S}")))
-            (( ${APO_EDGE_CPU_24H:-0} == 1 )) && remaining=$((remaining + $(apo_progress_final_full_cost "${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}")))
+            remaining=$((remaining + $(apo_progress_initial_final_sequence_cost)))
             ;;
         FINAL_VALIDATION) remaining=$(apo_progress_final_remaining "$elapsed" "$duration") ;;
         MANUAL_TEST)

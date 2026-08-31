@@ -58,7 +58,7 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
 fi
 approved_options=$(printf '%s\n' \
     --cpu --edge-cpu-24h --edge-hours --final-hours --gpu --help --identity-file --minutes --no-max-fan \
-    --output-dir --qualification-hours --ssh-port --version | LC_ALL=C sort)
+    --output-dir --qualification-hours --restart-from --ssh-port --version | LC_ALL=C sort)
 documented_options=$(awk '/^Common options:/{capture=1; next} /^Advanced options:/{capture=0} capture' "$ROOT/autopioverclock" |
     grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
@@ -82,6 +82,10 @@ if grep -RIn --include='*.sh' 'apo_wait_for_new_boot' "$ROOT/lib" "$ROOT/profile
 fi
 if "$ROOT/autopioverclock" prepare example-host --edge-cpu-24h --config fixture.conf >/dev/null 2>&1; then
     echo '--edge-cpu-24h accepted an explicit configuration' >&2
+    exit 1
+fi
+if grep -RIn -- '/var/tmp' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" "$ROOT/workers" "$ROOT/assets" "$ROOT/tools"; then
+    echo 'production code reintroduced /var/tmp; reboot-transient workers belong in /tmp and retained data belongs in the result/backup stores' >&2
     exit 1
 fi
 

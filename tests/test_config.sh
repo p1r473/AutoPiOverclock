@@ -126,8 +126,9 @@ apo_state_load "$TEMP_DIR/debian-auto.state"
 [[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
 [[ ${APO_STATE[CFG_AUTO_GENERATED_CANDIDATES]} == 1 ]]
 [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 0 ]]
+[[ ${APO_STATE[CFG_EDGE_ORDER]} == floor-first ]]
 [[ ${APO_STATE[CFG_QUALIFICATION_DURATION_S]} == 7200 ]]
-[[ ${APO_STATE[CFG_FINAL_DURATION_S]} == 28800 ]]
+[[ ${APO_STATE[CFG_FINAL_DURATION_S]} == 86400 ]]
 [[ ${APO_STATE[CFG_EDGE_DURATION_S]} == 86400 ]]
 [[ ${APO_STATE[CFG_DURATION_POLICY]} == default ]]
 [[ ${APO_STATE[CFG_MAX_FAN]} == 1 ]]
@@ -151,7 +152,7 @@ resolve_discovered_auto_plan debian 2400 960 0
     APO_MAX_FAN=0
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 2400 960 0
-    [[ ${APO_CFG[FINAL_DURATION_S]} == 28800 ]]
+    [[ ${APO_CFG[FINAL_DURATION_S]} == 86400 ]]
     finalize_discovered_fixture debian-edge-auto
     APO_STATE=()
     apo_state_load "$TEMP_DIR/debian-edge-auto.state"
