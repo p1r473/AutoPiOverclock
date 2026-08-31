@@ -55,13 +55,20 @@ apo_parse_data_file() {
 apo_run_worker_capture() {
     local phase=$1 worker_command=$2
     shift 2
-    local output_file remote_rc
+    local output_file remote_rc lastpipe_was_set=0
     output_file=$(apo_candidate_log_file "$phase")
     APO_LAST_WORKER_LOG=$output_file
     set +e
     if declare -F apo_progress_capture_worker_stream >/dev/null 2>&1; then
+        # The progress consumer is the final pipeline command. Run it in this
+        # shell so its cursor-anchor and telemetry state remain identical to the
+        # parent after the worker exits; a subshell copy can otherwise leave the
+        # terminal and controller disagreeing about whether a row is reserved.
+        shopt -q lastpipe && lastpipe_was_set=1
+        shopt -s lastpipe
         apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" 2>&1 | apo_progress_capture_worker_stream "$output_file"
         remote_rc=${PIPESTATUS[0]}
+        (( lastpipe_was_set == 1 )) || shopt -u lastpipe
     else
         apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
         remote_rc=${PIPESTATUS[0]}

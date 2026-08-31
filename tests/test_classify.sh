@@ -41,4 +41,29 @@ apo_classify_output "$TEMP_DIR/ssh-timeout.log" stress
 [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
 [[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
 [[ $APO_LAST_RESULT_STRUCTURED == 0 ]]
+
+# The live worker-stream consumer must run in the controller shell. Otherwise
+# cursor-anchor and telemetry updates disappear with a pipeline subshell while
+# the terminal itself remains changed, which can stack a later progress paint.
+APO_LOG_FILE="$TEMP_DIR/controller.log"
+APO_REMOTE_WORKER=/tmp/fixture-worker
+APO_PIPELINE_STATE=before
+lastpipe_before=$(shopt -p lastpipe || true)
+apo_candidate_log_file() { printf '%s' "$TEMP_DIR/worker.log"; }
+apo_remote_worker() {
+    printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'pipeline fixture passed' | base64 | tr -d '\n')"
+}
+apo_progress_capture_worker_stream() {
+    local output_file=$1 line
+    while IFS= read -r line || [[ -n $line ]]; do printf '%s\n' "$line" >> "$output_file"; done
+    APO_PIPELINE_STATE=preserved
+}
+apo_progress_record_worker_result() { :; }
+apo_state_set() { :; }
+apo_state_save() { :; }
+apo_event() { :; }
+apo_run_worker_capture pipeline-fixture stress
+[[ $APO_PIPELINE_STATE == preserved ]]
+[[ $(shopt -p lastpipe || true) == "$lastpipe_before" ]]
 printf 'test_classify: PASS\n'

@@ -528,17 +528,26 @@ apo_progress_render() {
         line=$narrow_line
     fi
     (( ${#line} > render_width )) && line=${line:0:render_width}
-    # Disable terminal autowrap only for the atomic repaint. Even if the pty's
-    # reported width is wider than the attached viewport, the cursor cannot
-    # spill into another row and leave a stale progress line behind.
-    printf '\033[?7l\033[1G\033[2K%s\033[?7h' "$line" >&2
+    # Keep the terminal cursor on a dedicated blank anchor row beneath the
+    # progress display. Repainting from the end of the text is not reliable in
+    # Byobu/tmux when a client resize changes the selected layout: some terminal
+    # stacks can move that end cursor to a new physical row before the next
+    # erase. The first paint reserves exactly one anchor row; every paint then
+    # moves up, replaces the progress row, and returns to column one of the
+    # anchor. Text length and live-width changes therefore cannot move the
+    # controller's resting cursor or turn a refresh into a historical line.
+    printf '\033[?7l' >&2
+    if (( APO_PROGRESS_LINE_ACTIVE == 0 )); then
+        printf '\033[1G\n' >&2
+    fi
+    printf '\033[1A\033[1G\033[2K%s\033[1B\033[1G\033[?7h' "$line" >&2
     APO_PROGRESS_LINE_ACTIVE=1
     APO_PROGRESS_LINE_WIDTH=${#line}
 }
 
 apo_progress_clear_line() {
     (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
-    printf '\033[?7l\033[1G\033[2K\033[?7h' >&2
+    printf '\033[?7l\033[1A\033[1G\033[2K\033[1B\033[1G\033[?7h' >&2
     APO_PROGRESS_LINE_ACTIVE=0
     APO_PROGRESS_LINE_WIDTH=0
 }
