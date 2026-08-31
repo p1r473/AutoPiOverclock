@@ -1175,8 +1175,8 @@ apo_validate_auto_resume_state() {
             apo_auto_state_invalid 'Saved source-final identity exists outside a longer final-validation continuation.'
             return 1
         fi
-    elif (( post_floor_edge == 1 || auto_marker != 1 || edge_marker != 0 )); then
-        apo_auto_state_invalid 'Longer final-validation continuation is saved on a post-floor edge, non-auto, or edge-enabled run.'
+    elif (( post_floor_edge == 1 || auto_marker != 1 )); then
+        apo_auto_state_invalid 'Longer final-validation continuation is saved on a post-floor edge or non-auto run.'
         return 1
     elif ! apo_is_safe_run_id "$source_final_run_id" ||
          [[ $source_final_run_id == $(apo_state_get RUN_ID '') || ! $source_final_hash =~ ^[0-9a-f]{64}$ ]] ||
@@ -1185,11 +1185,25 @@ apo_validate_auto_resume_state() {
         apo_auto_state_invalid 'Saved longer final-validation continuation has invalid source run, hash, duration, or backup evidence.'
         return 1
     else
-        case $post_floor_final_stage in VALIDATING|COMPLETE|FAILED) ;; *)
+        case $post_floor_final_stage in VALIDATING|BACKOFF_TUNING|COMPLETE|FAILED) ;; *)
             apo_auto_state_invalid "Saved longer final-validation stage is malformed: ${post_floor_final_stage:-missing}"
             return 1
             ;;
         esac
+        if [[ $post_floor_final_stage == VALIDATING && $edge_marker != 0 ]]; then
+            apo_auto_state_invalid 'Initial longer final validation unexpectedly contains an edge-first plan.'
+            return 1
+        fi
+        if [[ $post_floor_final_stage == BACKOFF_TUNING && $edge_marker != 1 ]]; then
+            apo_auto_state_invalid 'Longer-final automatic backoff is missing its edge-first plan.'
+            return 1
+        fi
+        if (( edge_marker == 1 )) &&
+           [[ ${APO_EDGE_ORDER:-floor-first} != edge-first ||
+              $(apo_state_get CFG_EDGE_DURATION_S '') != "$(apo_state_get CFG_FINAL_DURATION_S '')" ]]; then
+            apo_auto_state_invalid 'Longer-final automatic backoff must use one equal-duration edge-first final plan.'
+            return 1
+        fi
     fi
     if (( auto_marker == 1 )); then
         if [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} != verified-default || ${APO_AUTO_BASELINE_EVIDENCE:-missing} != none ||
@@ -2192,6 +2206,57 @@ apo_final_schedule_stress_backoff() {
     fi
 }
 
+apo_post_floor_final_schedule_stress_backoff() {
+    local failed_stage=$1 failure_class=$2 failure_reason=$3
+    local failed_cpu failed_gpu next_cpu next_gpu
+    local old_edge_marker old_edge_order old_edge_duration old_duration_policy old_extension_stage old_app_version
+    [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 ]] || return 1
+    case $(apo_state_get POST_FLOOR_FINAL_STAGE '') in VALIDATING|FAILED) ;; *) return 1 ;; esac
+    apo_class_is_edge_failure "$failure_class" || return 1
+
+    failed_cpu=$(apo_state_get FINAL_TARGET_CPU '')
+    failed_gpu=$(apo_state_get FINAL_TARGET_GPU '')
+    old_edge_marker=${APO_EDGE_CPU_24H:-0}
+    old_edge_order=${APO_EDGE_ORDER:-floor-first}
+    old_edge_duration=${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}
+    old_duration_policy=${APO_DURATION_POLICY:-default}
+    old_extension_stage=$(apo_state_get POST_FLOOR_FINAL_STAGE '')
+    old_app_version=$(apo_state_get APP_VERSION '')
+
+    # The requested longer-final duration becomes both alternatives in the
+    # fresh edge-first sequence. These state changes are intentionally held in
+    # memory until the generic scheduler performs its single atomic save.
+    APO_EDGE_CPU_24H=1
+    APO_EDGE_ORDER=edge-first
+    APO_EDGE_DURATION_S=$APO_FINAL_DURATION_S
+    APO_DURATION_POLICY=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "$APO_FINAL_DURATION_S" "$APO_EDGE_DURATION_S")
+    apo_state_set CFG_EDGE_CPU_24H 1
+    apo_state_set CFG_EDGE_ORDER edge-first
+    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
+    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
+    apo_state_set POST_FLOOR_FINAL_STAGE BACKOFF_TUNING
+    apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
+
+    if ! apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason"; then
+        APO_EDGE_CPU_24H=$old_edge_marker
+        APO_EDGE_ORDER=$old_edge_order
+        APO_EDGE_DURATION_S=$old_edge_duration
+        APO_DURATION_POLICY=$old_duration_policy
+        apo_state_set CFG_EDGE_CPU_24H "$old_edge_marker"
+        apo_state_set CFG_EDGE_ORDER "$old_edge_order"
+        apo_state_set CFG_EDGE_DURATION_S "$old_edge_duration"
+        apo_state_set CFG_DURATION_POLICY "$old_duration_policy"
+        apo_state_set POST_FLOOR_FINAL_STAGE "$old_extension_stage"
+        apo_state_set APP_VERSION "$old_app_version"
+        return 1
+    fi
+
+    next_cpu=$(apo_state_get RECOMMENDED_CPU '?')
+    next_gpu=$(apo_state_get RECOMMENDED_GPU '?')
+    apo_summary_line "LONGER FINAL AUTO BACKOFF: CPU $failed_cpu MHz / GPU $failed_gpu MHz was safely rejected; stock remains active while CPU $next_cpu MHz / GPU $next_gpu MHz is requalified before a fresh edge-first ${APO_FINAL_DURATION_S}s final sequence"
+    apo_event post-floor-final-backoff WARN "$failure_class" "Longer validation safely rejected CPU=$failed_cpu GPU=$failed_gpu: $failure_reason; source clocks were not reapplied, conservatively reduced pair CPU=$next_cpu GPU=$next_gpu will repeat both qualifications, then edge-first and guarded-floor alternatives each use ${APO_FINAL_DURATION_S}s"
+}
+
 apo_final_record_failure() {
     local recovery_context=$1 failure_class=$2 failure_reason=$3 stress_result_structured=${4-} floor_cpu floor_gpu failed_stage edge_order
     failed_stage=$(apo_state_get FINAL_STAGE '')
@@ -2208,7 +2273,11 @@ apo_final_record_failure() {
         apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
         return 1
     fi
-    if [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 ]]; then
+    if [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 &&
+          $(apo_state_get POST_FLOOR_FINAL_STAGE '') != BACKOFF_TUNING ]]; then
+        if apo_post_floor_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason"; then
+            return 2
+        fi
         apo_state_clear_final_validation
         apo_state_fail "$failure_class" "$failure_reason"
         apo_state_set POST_FLOOR_FINAL_STAGE FAILED
@@ -2285,6 +2354,10 @@ apo_final_record_failure() {
     fi
     apo_state_clear_final_validation
     apo_state_fail "$failure_class" "$failure_reason"
+    if [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 ]]; then
+        apo_state_set POST_FLOOR_FINAL_STAGE FAILED
+        apo_state_save
+    fi
     return 1
 }
 

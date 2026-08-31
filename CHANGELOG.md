@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.35 — 2026-08-31
+
+- Fixed linked longer-final validation so a fully recovered `BOOT_FAILURE` or `STABILITY_FAILURE` no longer stops at stock. Ambiguous combined evidence now lowers every still-overclocked domain by its existing production guard, repeats both saved-duration qualifications, and continues into a fresh edge-first final sequence without claiming whether CPU or GPU caused the reboot.
+- Made the linked run's requested longer-final duration govern both alternatives after backoff: CPU +25 MHz is tested first, and a safely rejected edge starts the guarded floor for the same complete duration. Rejected source clocks are never reapplied; harness or recovery uncertainty remains fatal with verified stock active.
+- Made plain `resume TARGET` adopt the exact recovered alpha.34 linked-run failure after a fresh stock-health proof, preserving source-run identity, rollback evidence, backoff history, and automatic final apply. Added regressions for both the live failure path and later direct resume.
+
 ## 0.1.0-alpha.34 — 2026-08-31
 
 - Fixed the remaining Byobu/tmux progress-row stacking case exposed by a live narrow-to-wide layout transition. The renderer now reserves one blank cursor-anchor row beneath the display, repaints the dedicated row above it, and always returns the cursor to column one of the anchor instead of leaving it at the variable-length end of the bar.

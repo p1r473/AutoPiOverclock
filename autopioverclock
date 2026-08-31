@@ -975,7 +975,7 @@ apo_start_post_floor_edge() {
 
 apo_resume_post_floor_final() {
     local extension_stage apply_status source_run_id source_hash source_duration source_backup old_hash
-    local final_cpu final_gpu status
+    local final_cpu final_gpu status saved_failure_stage saved_failure_class saved_failure_reason normal_recovery_done=0
     [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 ]] ||
         apo_die 'Internal error: longer final-validation continuation lacks its source marker.' "$APO_EXIT_INTERNAL"
     source_run_id=$(apo_state_get SOURCE_FINAL_RUN_ID '')
@@ -1056,7 +1056,7 @@ apo_resume_post_floor_final() {
         apo_event post-floor-final-rollback PASS '' "Verified stock config restored; starting ${APO_FINAL_DURATION_S}s validation of CPU=$final_cpu GPU=$final_gpu."
     fi
 
-    [[ $extension_stage == VALIDATING || $extension_stage == COMPLETE || $extension_stage == FAILED ]] ||
+    [[ $extension_stage == VALIDATING || $extension_stage == BACKOFF_TUNING || $extension_stage == COMPLETE || $extension_stage == FAILED ]] ||
         apo_die "Unknown longer final-validation stage: ${extension_stage:-missing}." "$APO_EXIT_HARNESS"
     apo_validate_auto_resume_state || return "$APO_EXIT_HARNESS"
     if [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) == APPLYING ]]; then
@@ -1073,18 +1073,44 @@ apo_resume_post_floor_final() {
         return 0
     fi
     if [[ $status == FAILED ]]; then
+        saved_failure_stage=$(apo_state_get FINAL_STAGE '')
+        saved_failure_class=$(apo_state_get FAILURE_CLASS HARNESS_FAILURE)
+        saved_failure_reason=$(apo_state_get FAILURE_REASON '')
+        if ! apo_final_saved_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then
+            return "$(apo_class_exit_code "$saved_failure_class")"
+        fi
+        apo_prepare_remote_for_saved_run
+        apo_recover_normal post-floor-final-backoff-recovery || {
+            apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+            apo_state_set POST_FLOOR_FINAL_STAGE FAILED
+            apo_state_save
+            return "$APO_EXIT_RECOVERY"
+        }
+        normal_recovery_done=1
+        if ! apo_post_floor_final_schedule_stress_backoff "$saved_failure_stage" "$saved_failure_class" "$saved_failure_reason"; then
+            return "$(apo_class_exit_code "$saved_failure_class")"
+        fi
+        extension_stage=BACKOFF_TUNING
+        status=RUNNING
+    fi
+    if (( normal_recovery_done == 0 )); then
+        apo_prepare_remote_for_saved_run
+        apo_recover_normal post-floor-final-resume-recovery || {
+            apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+            apo_state_set POST_FLOOR_FINAL_STAGE FAILED
+            apo_state_save
+            return "$APO_EXIT_RECOVERY"
+        }
+        apo_state_set STATUS RUNNING
+        apo_state_set FAILURE_CLASS ''
+        apo_state_set FAILURE_REASON ''
+        apo_state_save
+    fi
+    if ! apo_run_tuning; then
+        apo_state_set POST_FLOOR_FINAL_STAGE FAILED
+        apo_state_save
         return "$(apo_class_exit_code "$(apo_state_get FAILURE_CLASS HARNESS_FAILURE)")"
     fi
-    apo_prepare_remote_for_saved_run
-    apo_recover_normal post-floor-final-resume-recovery || {
-        apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
-        return "$APO_EXIT_RECOVERY"
-    }
-    apo_state_set STATUS RUNNING
-    apo_state_set FAILURE_CLASS ''
-    apo_state_set FAILURE_REASON ''
-    apo_state_save
-    apo_final_validation || return "$(apo_class_exit_code "$(apo_state_get FAILURE_CLASS HARNESS_FAILURE)")"
     apo_finish_public_overclock
     if [[ $(apo_state_get APPLY_STATUS '') == APPLIED || $APO_AUTO_APPLY == 0 ]]; then
         apo_state_set POST_FLOOR_FINAL_STAGE COMPLETE
