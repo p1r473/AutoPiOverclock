@@ -530,7 +530,7 @@ apo_progress_render() {
     (( ${#line} > render_width )) && line=${line:0:render_width}
     # Keep the terminal cursor on a dedicated blank anchor row beneath the
     # progress display. Repainting from the end of the text is not reliable in
-    # Byobu/tmux when a client resize changes the selected layout: some terminal
+    # a terminal multiplexer when a client resize changes the selected layout:
     # stacks can move that end cursor to a new physical row before the next
     # erase. The first paint reserves exactly one anchor row; every paint then
     # moves up, replaces the progress row, and returns to column one of the
