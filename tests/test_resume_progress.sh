@@ -550,6 +550,71 @@ if apo_validate_auto_resume_state; then
 fi
 [[ $(apo_state_get FAILURE_CLASS) == HARNESS_FAILURE ]]
 
+# A safely recovered failure in a linked longer-final run is not terminal. The
+# ambiguous pair is reduced by both production guards, both qualifications are
+# reset, and the requested 24-hour duration becomes one fresh edge-first plan.
+APO_STATE=()
+ACTIONS=()
+seed_valid_guarded_auto_floor_plan
+APO_EDGE_CPU_24H=0
+APO_EDGE_ORDER=floor-first
+APO_EDGE_DURATION_S=43200
+APO_FINAL_DURATION_S=86400
+APO_CFG[FINAL_DURATION_S]=86400
+APO_DURATION_POLICY=custom
+apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+apo_state_set RUN_ID 20260831-131319-1111111111111111
+apo_state_set ORIGIN_COMMAND overclock
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set CFG_EDGE_CPU_24H 0
+apo_state_set CFG_EDGE_ORDER floor-first
+apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
+apo_state_set CFG_FINAL_DURATION_S 86400
+apo_state_set CFG_EDGE_DURATION_S 43200
+apo_state_set CFG_DURATION_POLICY custom
+apo_state_set POST_FLOOR_FINAL 1
+apo_state_set POST_FLOOR_FINAL_STAGE VALIDATING
+apo_state_set SOURCE_FINAL_RUN_ID 20260829-223837-2222222222222222
+apo_state_set SOURCE_FINAL_PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+apo_state_set SOURCE_FINAL_VALIDATION_DURATION_S 28800
+apo_state_set SOURCE_FINAL_APPLY_BACKUP /var/lib/autopioverclock/backups/source-before-apply.txt
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_state_set STATUS RUNNING
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set STATUS FAILED
+apo_state_set POST_FLOOR_FINAL_STAGE FAILED
+apo_state_set FAILURE_CLASS STABILITY_FAILURE
+apo_state_set FAILURE_REASON 'linked longer final rebooted autonomously'
+apo_validate_auto_resume_state
+apo_final_saved_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"
+apo_state_set STATUS RUNNING
+apo_state_set POST_FLOOR_FINAL_STAGE VALIDATING
+apo_state_set FAILURE_CLASS ''
+apo_state_set FAILURE_REASON ''
+if apo_final_record_failure post-floor-final-fixture STABILITY_FAILURE 'linked longer final rebooted autonomously'; then
+    echo 'linked longer-final stability failure was incorrectly treated as complete' >&2
+    exit 1
+else
+    [[ $? == 2 ]]
+fi
+[[ $(apo_state_get POST_FLOOR_FINAL_STAGE) == BACKOFF_TUNING ]]
+[[ $(apo_state_get APP_VERSION) == "$APO_VERSION" ]]
+[[ $(apo_state_get STATUS) == RUNNING && $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 2950 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == 'PAIR:3000/900>2950/875' ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == NOT_STARTED ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == NOT_STARTED ]]
+[[ $APO_EDGE_CPU_24H == 1 && $APO_EDGE_ORDER == edge-first ]]
+[[ $APO_EDGE_DURATION_S == 86400 ]]
+[[ $(apo_state_get CFG_EDGE_CPU_24H) == 1 && $(apo_state_get CFG_EDGE_ORDER) == edge-first ]]
+[[ $(apo_state_get CFG_EDGE_DURATION_S) == 86400 && $(apo_state_get CFG_FINAL_DURATION_S) == 86400 ]]
+apo_validate_auto_resume_state
+
 # A recovered schema-7 domain-specific final-stress failure is upgraded in
 # place and immediately backed off without repeating the failed clock.
 APO_CFG[FINAL_DURATION_S]=$APO_LEGACY_DEFAULT_FINAL_DURATION_S

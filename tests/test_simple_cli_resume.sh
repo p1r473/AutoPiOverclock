@@ -175,6 +175,58 @@ ln -sfn "$(basename "$FINAL_EXTENSION_STATE")" "$FINAL_EXTENSION_OUTPUT/monkeebu
     [[ $(apo_state_get FINAL_CPU) == 3100 && $(apo_state_get FINAL_GPU) == 1175 ]]
 )
 
+# A direct resume of the exact linked-run failure reported by hardware performs
+# a fresh stock health proof, schedules conservative pair backoff, and returns
+# to the tuning loop instead of immediately returning the stability exit code.
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    ACTIONS=()
+    APO_AUTO_APPLY=1
+    APO_STATE=()
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set RUN_ID 20260831-131319-3333333333333333
+    apo_state_set POST_FLOOR_FINAL 1
+    apo_state_set POST_FLOOR_FINAL_STAGE FAILED
+    apo_state_set SOURCE_FINAL_RUN_ID "$FINAL_EXTENSION_SOURCE"
+    apo_state_set SOURCE_FINAL_PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    apo_state_set SOURCE_FINAL_VALIDATION_DURATION_S 28800
+    apo_state_set SOURCE_FINAL_APPLY_BACKUP /var/lib/autopioverclock/backups/source-before-apply.txt
+    apo_state_set FINAL_TARGET_CPU 3100
+    apo_state_set FINAL_TARGET_GPU 1175
+    apo_state_set FINAL_STAGE ENDURANCE
+    apo_state_set STATUS FAILED
+    apo_state_set PHASE FINAL_VALIDATION
+    apo_state_set FAILURE_CLASS STABILITY_FAILURE
+    apo_state_set FAILURE_REASON 'verified autonomous combined-endurance reboot'
+    apo_state_set APPLY_STATUS NOT_APPLIED
+    apo_validate_auto_resume_state() { ACTIONS+=(validate); }
+    apo_final_saved_failure_is_retryable() { return 0; }
+    apo_prepare_remote_for_saved_run() { ACTIONS+=(prepare); }
+    apo_recover_normal() { ACTIONS+=("recover:$1"); }
+    apo_post_floor_final_schedule_stress_backoff() {
+        ACTIONS+=("backoff:$1:$2")
+        apo_state_set POST_FLOOR_FINAL_STAGE BACKOFF_TUNING
+        apo_state_set STATUS RUNNING
+        apo_state_set PHASE CPU_QUALIFICATION
+        apo_state_set FAILURE_CLASS ''
+        apo_state_set FAILURE_REASON ''
+    }
+    apo_run_tuning() {
+        ACTIONS+=(tuning)
+        apo_state_set STATUS PASS
+        apo_state_set PHASE COMPLETE
+    }
+    apo_finish_public_overclock() {
+        ACTIONS+=(finish)
+        apo_state_set APPLY_STATUS APPLIED
+    }
+    apo_state_save() { ACTIONS+=(save); }
+    apo_resume_post_floor_final
+    [[ " ${ACTIONS[*]} " == *' validate prepare recover:post-floor-final-backoff-recovery backoff:ENDURANCE:STABILITY_FAILURE tuning finish '* ]]
+    [[ $(apo_state_get POST_FLOOR_FINAL_STAGE) == COMPLETE ]]
+)
+
 # Repeating the public command adopts an exact recovered schema-7
 # final-stress boundary, not an arbitrary failed run.
 FAILED_FINAL_RUN=20260827-010203-fedcba9876543210
@@ -264,3 +316,4 @@ ln -sfn "$(basename "$FAILED_LEGACY_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tro
     [[ $APO_COMMAND == resume ]]
     [[ $APO_SELECTED_RUN_ID == "$FAILED_LEGACY_ENDURANCE_RUN" ]]
 )
+
