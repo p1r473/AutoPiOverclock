@@ -32,8 +32,6 @@ apo_transient_hash_read_failure_is_retryable() {
     case $failure_reason in
         Permanent\ config\ hash\ is\ unavailable\ in\ *\;\ the\ target\ did\ not\ return\ readable\ hash\ evidence.) return 0 ;;
         Permanent\ config\ hash\ is\ unavailable\ in\ *\;\ the\ target\ returned\ malformed\ hash\ evidence.) return 0 ;;
-        Permanent\ config\ hash\ is\ unavailable\ in\ *\ after\ *\ attempts\;\ the\ target\ did\ not\ return\ readable\ hash\ evidence.) return 0 ;;
-        Permanent\ config\ hash\ is\ unavailable\ in\ *\ after\ *\ attempts\;\ the\ target\ returned\ malformed\ hash\ evidence.) return 0 ;;
         *) return 1 ;;
     esac
 }
