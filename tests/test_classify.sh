@@ -43,7 +43,7 @@ apo_classify_output "$TEMP_DIR/ssh-timeout.log" stress
 [[ $APO_LAST_RESULT_STRUCTURED == 0 ]]
 
 # The live worker-stream consumer must run in the controller shell. Otherwise
-# cursor-anchor and telemetry updates disappear with a pipeline subshell while
+# progress-line and telemetry updates disappear with a pipeline subshell while
 # the terminal itself remains changed, which can stack a later progress paint.
 APO_LOG_FILE="$TEMP_DIR/controller.log"
 APO_REMOTE_WORKER=/tmp/fixture-worker

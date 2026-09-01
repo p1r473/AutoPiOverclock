@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.37 — 2026-09-01
+
+- Fixed progress-line stacking after a Byobu/tmux client changed between a narrow phone viewport and a wider terminal. The renderer no longer reserves a blank row or uses vertical cursor movement, both of which can be remapped by terminal reflow.
+- Repaints now erase and replace only the current logical row, park the cursor at column one, and temporarily disable autowrap without emitting a newline. The worker-stream consumer still runs in the controller shell, preserving progress state across the pipeline.
+- Added byte-level narrow-to-wide-to-narrow, ordinary-output, and shutdown regressions proving that progress paints contain no newline, carriage return, cursor-up, or cursor-down controls and that only real output advances the terminal.
+
 ## 0.1.0-alpha.36 — 2026-08-31
 
 - Closed the candidate boot/health handoff gap exposed on Tron. The reboot handshake now retains the distinct candidate boot ID before redeploying the run-isolated worker, so a second autonomous reboot during worker deployment or required health can be proved through the same clear-tryboot, owned-file-cleanup, protected-hash, stock-clock, and watchdog recovery gates used for stress failures.
