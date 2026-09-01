@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Independent fixture subshells intentionally reuse controller variable names.
+# shellcheck disable=SC2030,SC2031
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
