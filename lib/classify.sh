@@ -79,6 +79,12 @@ apo_run_worker_capture_once() {
     local output_file remote_rc lastpipe_was_set=0
     output_file=$(apo_candidate_log_file "$phase")
     APO_LAST_WORKER_LOG=$output_file
+    # A checkpoint retry intentionally reuses its phase-specific path. Start
+    # every capture from an empty file so a prior structured PASS/FAIL trailer
+    # can never be mistaken for evidence from the new SSH attempt. The
+    # non-progress tee path already truncates; the live progress consumer
+    # appends line-by-line and therefore needs this explicit reset.
+    : > "$output_file"
     set +e
     if declare -F apo_progress_capture_worker_stream >/dev/null 2>&1; then
         # The progress consumer is the final pipeline command. Run it in this
