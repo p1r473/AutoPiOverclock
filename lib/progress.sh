@@ -529,8 +529,8 @@ apo_progress_render() {
     fi
     (( ${#line} > render_width )) && line=${line:0:render_width}
     # Repaint only the current logical row. A reserved blank row plus cursor-up
-    # and cursor-down controls is not stable when Byobu/tmux reflows a pane
-    # between a narrow phone viewport and a wider client: the resting cursor can
+    # and cursor-down controls is not stable when client geometry is reflowed
+    # from a narrow phone viewport to a wider client: the resting cursor can
     # be remapped onto the display row and strand the previous paint. Disabling
     # autowrap, keeping a right-edge margin, and parking at column one leaves one
     # unwrapped logical row without emitting a newline or vertical movement.
