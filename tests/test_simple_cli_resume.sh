@@ -35,6 +35,19 @@ write_state_fixture() {
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
+    APO_STATE=()
+    apo_state_set ORIGIN_COMMAND run
+    APO_PUBLIC_COMMAND=''
+    APO_AUTO_APPLY=0
+    APO_PERSISTENT_SSH_RECOVERY=0
+    apo_restore_saved_command_policy
+    [[ -z $APO_PUBLIC_COMMAND ]]
+    [[ $APO_AUTO_APPLY == 0 ]]
+    [[ $APO_PERSISTENT_SSH_RECOVERY == 1 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
     APO_PUBLIC_COMMAND=overclock
     APO_MUTATING_COMMAND=1
     APO_PERSISTENT_SSH_RECOVERY=1
@@ -332,6 +345,34 @@ ln -sfn "$(basename "$FAILED_CLEAN_EARLY_STATE")" "$CONTINUATION_OUTPUT/tron-lat
     apo_public_overclock_select_continuation
     [[ $APO_COMMAND == resume ]]
     [[ $APO_SELECTED_RUN_ID == "$FAILED_CLEAN_EARLY_RUN" ]]
+)
+
+# The exact alpha.38 failure occurred after a successful candidate workload and
+# normal recovery when one controller-side permanent-hash read returned no
+# evidence. The simple command must select that checkpoint for re-proof/retry.
+FAILED_HASH_READ_RUN=20260901-182253-6666666666666666
+FAILED_HASH_READ_STATE="$CONTINUATION_OUTPUT/monkeebutt-${FAILED_HASH_READ_RUN}.state"
+write_state_fixture "$FAILED_HASH_READ_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$FAILED_HASH_READ_RUN" \
+    REMOTE_TARGET "$(id -un)@monkeebutt" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_EDGE_CPU_24H 1 \
+    CFG_QUALIFICATION_DURATION_S 7200 CFG_FINAL_DURATION_S 86400 \
+    CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY default \
+    STATUS FAILED PHASE CPU_SWEEP \
+    FAILURE_CLASS RECOVERY_FAILURE \
+    FAILURE_REASON 'Permanent config hash is unavailable in cpu-refine-3150_gpu-960-candidate-post-stress; the target did not return readable hash evidence.' \
+    CANDIDATE_LABEL cpu-refine-3150_gpu-960 CANDIDATE_CPU 3150 CANDIDATE_GPU 960 \
+    CANDIDATE_STAGE STRESS TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 \
+    APPLY_STATUS NOT_APPLIED TRANSIENT_RETRY_COUNT 0
+ln -sfn "$(basename "$FAILED_HASH_READ_STATE")" "$CONTINUATION_OUTPUT/monkeebutt-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock monkeebutt
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$FAILED_HASH_READ_RUN" ]]
 )
 
 apo_failed_harness_run=20260827-010203-1111111111111111

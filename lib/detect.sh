@@ -6,7 +6,7 @@ APO_PROFILE=''
 APO_LOCAL_WORKER=''
 APO_REMOTE_WORK_DIR=''
 APO_REMOTE_WORKER=''
-APO_BOOT_TIMEOUT=240
+APO_BOOT_TIMEOUT=300
 APO_BOOT_SETTLE_SECONDS=15
 APO_MODE_EFFECTIVE=''
 APO_BOOT_CONFIG=''
@@ -40,7 +40,7 @@ APO_WORKER_DEPLOYED=0
 
 apo_probe_profile() {
     local detected
-    detected=$(apo_ssh_exec 'if [ -f /usr/share/batocera/batocera.version ] || command -v batocera-version >/dev/null 2>&1; then printf batocera; elif [ -r /etc/os-release ]; then . /etc/os-release; case "${ID:-}" in raspbian|debian|ubuntu) printf debian ;; *) printf unsupported ;; esac; else printf unsupported; fi' 2>/dev/null || true)
+    detected=$(apo_ssh_read 'if [ -f /usr/share/batocera/batocera.version ] || command -v batocera-version >/dev/null 2>&1; then printf batocera; elif [ -r /etc/os-release ]; then . /etc/os-release; case "${ID:-}" in raspbian|debian|ubuntu) printf debian ;; *) printf unsupported ;; esac; else printf unsupported; fi' || true)
     case $detected in batocera|debian) printf '%s' "$detected" ;; *) apo_die "Unsupported target operating system: ${detected:-unknown}" "$APO_EXIT_PREFLIGHT" ;; esac
 }
 
@@ -88,7 +88,7 @@ apo_redeploy_worker_for_boot() {
 apo_ensure_worker_for_boot() {
     local boot_id=$1 context=${2:-current-boot}
     if [[ ${APO_WORKER_BOOT_ID:-} == "$boot_id" ]] &&
-       apo_remote_root "test -x $(apo_sh_quote "$APO_REMOTE_WORKER")" >/dev/null 2>&1; then
+       apo_remote_root_read "test -x $(apo_sh_quote "$APO_REMOTE_WORKER")" >/dev/null 2>&1; then
         return 0
     fi
     apo_redeploy_worker_for_boot "$boot_id" "$context"
@@ -156,23 +156,39 @@ apo_normalize_initial_boot() {
 }
 
 apo_discovery_capture() {
-    local output_file=${APO_DISCOVERY_FILE:-/tmp/autopioverclock-discovery.$$} remote_rc
-    : > "$output_file"
-    set +e
-    if (( APO_WORKER_DEPLOYED == 1 )); then
-        apo_remote_worker "$APO_REMOTE_WORKER" discover 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
-        remote_rc=${PIPESTATUS[0]}
-    else
-        local wrapper
-        if (( APO_REMOTE_IS_ROOT == 1 )); then wrapper='/bin/bash -s -- discover';
-        else wrapper='sudo -n /bin/bash -s -- discover'; fi
-        command ssh "${APO_SSH_OPTIONS[@]}" -T "$APO_REMOTE_TARGET" "$wrapper" < "$APO_LOCAL_WORKER" 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
-        remote_rc=${PIPESTATUS[0]}
-    fi
-    set -e
-    apo_classify_output "$output_file" discovery
-    (( remote_rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]] || apo_die "Discovery failed: $APO_LAST_REASON" "$(apo_class_exit_code "$APO_LAST_CLASS")"
-    apo_parse_data_file "$output_file" APO_DISCOVERY
+    local output_file=${APO_DISCOVERY_FILE:-/tmp/autopioverclock-discovery.$$} remote_rc attempt attempts_used=0 wrapper
+    apo_transient_read_policy_normalize
+    for (( attempt=1; attempt<=APO_TRANSIENT_READ_ATTEMPTS; attempt++ )); do
+        attempts_used=$attempt
+        : > "$output_file"
+        set +e
+        if (( APO_WORKER_DEPLOYED == 1 )); then
+            apo_remote_worker "$APO_REMOTE_WORKER" discover 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
+            remote_rc=${PIPESTATUS[0]}
+        else
+            if (( APO_REMOTE_IS_ROOT == 1 )); then wrapper='/bin/bash -s -- discover';
+            else wrapper='sudo -n /bin/bash -s -- discover'; fi
+            command ssh "${APO_SSH_OPTIONS[@]}" -T "$APO_REMOTE_TARGET" "$wrapper" < "$APO_LOCAL_WORKER" 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
+            remote_rc=${PIPESTATUS[0]}
+        fi
+        set -e
+        apo_classify_output "$output_file" discovery
+        if (( remote_rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then
+            apo_parse_data_file "$output_file" APO_DISCOVERY
+            return 0
+        fi
+        if (( APO_LAST_RESULT_STRUCTURED == 1 )) && [[ $APO_LAST_CLASS != PASS ]]; then break; fi
+        if [[ $APO_LAST_CLASS != HARNESS_FAILURE && $APO_LAST_CLASS != PASS ]]; then break; fi
+        if (( attempt < APO_TRANSIENT_READ_ATTEMPTS )); then
+            apo_event discovery-transport-retry WARN HARNESS_FAILURE "Discovery transport evidence was incomplete; repeating the read-only discovery capture (attempt $((attempt + 1))/$APO_TRANSIENT_READ_ATTEMPTS)."
+            apo_transient_read_delay
+        fi
+    done
+    [[ $APO_LAST_CLASS != PASS ]] || {
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON='Discovery returned PASS evidence through a failed SSH transport.'
+    }
+    apo_die "Discovery failed after $attempts_used attempts: $APO_LAST_REASON" "$(apo_class_exit_code "$APO_LAST_CLASS")"
 }
 
 apo_validate_pi5() {
@@ -337,7 +353,7 @@ apo_dependency_description() {
 }
 
 apo_dependency_preflight() {
-    local dependency_detail
+    local dependency_detail baseline_hash current_boot_id install_rc attempt
     dependency_detail=$(apo_dependency_description)
     if apo_profile_dependencies_ready; then
         apo_summary_line "Dependencies: READY ($dependency_detail)"
@@ -350,12 +366,43 @@ apo_dependency_preflight() {
     fi
     (( APO_INSTALL_MISSING == 1 )) || apo_die "Required stress dependencies are missing. Run autopioverclock prepare ${APO_RAW_TARGET} first." "$APO_EXIT_PREFLIGHT"
     apo_reset_throttle_history dependency-staging-baseline || apo_die "$APO_LAST_REASON" "$APO_EXIT_PREFLIGHT"
-    apo_profile_install_dependencies || apo_die 'Dependency installation/staging failed.' "$APO_EXIT_PREFLIGHT"
-    apo_discovery_capture
-    apo_throttle_clean_relative "${APO_DISCOVERY[RECENT_THROTTLED]:-}" "$APO_THROTTLE_RUNTIME_BASELINE" || apo_die "A current or new throttle condition appeared during dependency staging: ${APO_DISCOVERY[RECENT_THROTTLED]:-missing}" "$APO_EXIT_PREFLIGHT"
-    [[ ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$APO_PERMANENT_CONFIG_HASH" ]] || apo_die 'Permanent config changed during dependency staging; refusing to replace the protected baseline hash.' "$APO_EXIT_RECOVERY"
-    apo_context_from_discovery
-    apo_profile_dependencies_ready || apo_die 'Dependencies are still unavailable after the approved installation attempt.' "$APO_EXIT_PREFLIGHT"
+    baseline_hash=$APO_PERMANENT_CONFIG_HASH
+    # Debian package installation and the Batocera bundle transaction are
+    # intentionally idempotent. If their SSH result is lost, reconcile the
+    # live target first; accept a proved installation, or repeat the same
+    # bounded operation up to five times. Protected-config drift still stops
+    # immediately and is never retried away.
+    for (( attempt=1; attempt<=5; attempt++ )); do
+        install_rc=0
+        apo_profile_install_dependencies || install_rc=$?
+        apo_wait_for_ssh "$APO_PREFLIGHT_SSH_TIMEOUT_SECONDS" dependency-reconcile || {
+            (( attempt < 5 )) || apo_die 'Dependency installation could not be reconciled because SSH remained unavailable.' "$APO_EXIT_PREFLIGHT"
+            apo_event dependency-install-retry WARN HARNESS_FAILURE "Dependency staging lost SSH before reconciliation; retrying the same idempotent installation (attempt $((attempt + 1))/5)."
+            apo_transient_read_delay
+            continue
+        }
+        current_boot_id=$(apo_remote_boot_id || true)
+        [[ -n $current_boot_id ]] || {
+            (( attempt < 5 )) || apo_die 'Dependency installation could not be reconciled because the boot identity remained unreadable.' "$APO_EXIT_PREFLIGHT"
+            apo_event dependency-install-retry WARN HARNESS_FAILURE "Dependency staging returned without a readable boot identity; retrying the same idempotent installation (attempt $((attempt + 1))/5)."
+            apo_transient_read_delay
+            continue
+        }
+        apo_ensure_worker_for_boot "$current_boot_id" dependency-reconcile || {
+            (( attempt < 5 )) || apo_die "Dependency installation returned, but its run-isolated worker could not be restored: $APO_LAST_REASON" "$APO_EXIT_HARNESS"
+            apo_event dependency-install-retry WARN HARNESS_FAILURE "Dependency staging returned but worker restoration was incomplete; retrying the same idempotent installation (attempt $((attempt + 1))/5)."
+            apo_transient_read_delay
+            continue
+        }
+        apo_discovery_capture
+        [[ ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$baseline_hash" ]] || apo_die 'Permanent config changed during dependency staging; refusing to replace the protected baseline hash.' "$APO_EXIT_RECOVERY"
+        apo_throttle_clean_relative "${APO_DISCOVERY[RECENT_THROTTLED]:-}" "$APO_THROTTLE_RUNTIME_BASELINE" || apo_die "A current or new throttle condition appeared during dependency staging: ${APO_DISCOVERY[RECENT_THROTTLED]:-missing}" "$APO_EXIT_PREFLIGHT"
+        apo_context_from_discovery
+        if apo_profile_dependencies_ready; then break; fi
+        (( attempt < 5 )) || apo_die 'Dependencies are still unavailable after five reconciled installation attempts.' "$APO_EXIT_PREFLIGHT"
+        apo_event dependency-install-retry WARN HARNESS_FAILURE "Dependency staging did not yet prove the required workload after attempt $attempt/5 (worker rc=$install_rc); retrying automatically."
+        apo_transient_read_delay
+    done
     dependency_detail=$(apo_dependency_description)
     apo_summary_line "Dependencies: READY after approved staging ($dependency_detail)"
 }

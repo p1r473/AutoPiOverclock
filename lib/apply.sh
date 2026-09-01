@@ -23,10 +23,9 @@ apo_apply_hash_disposition() {
 }
 
 apo_current_permanent_hash() {
-    local current_hash
-    current_hash=$(apo_remote_root "sha256sum $(apo_sh_quote "$APO_BOOT_CONFIG")" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-    apo_apply_valid_hash "$current_hash" || return 1
-    printf '%s' "$current_hash"
+    apo_read_permanent_hash || return 1
+    apo_apply_valid_hash "$APO_PERMANENT_HASH_READ_VALUE" || return 1
+    printf '%s' "$APO_PERMANENT_HASH_READ_VALUE"
 }
 
 apo_apply_assert_tryboot_clear() {
@@ -54,7 +53,7 @@ apo_apply_assert_tryboot_clear() {
         APO_LAST_REASON='Permanent apply cannot verify the tryboot path because target discovery state is incomplete.'
         return 1
     fi
-    tryboot_path_state=$(apo_remote_root "if [ -e $(apo_sh_quote "$APO_TRYBOOT_CONFIG") ] || [ -L $(apo_sh_quote "$APO_TRYBOOT_CONFIG") ]; then printf present; else printf absent; fi" 2>/dev/null || true)
+    tryboot_path_state=$(apo_remote_root_read "if [ -e $(apo_sh_quote "$APO_TRYBOOT_CONFIG") ] || [ -L $(apo_sh_quote "$APO_TRYBOOT_CONFIG") ]; then printf present; else printf absent; fi" || true)
     if [[ $tryboot_path_state != absent ]]; then
         APO_LAST_CLASS=APPLY_FAILURE
         APO_LAST_REASON='Permanent apply is refused while any tryboot path exists or its absence cannot be verified.'
@@ -345,8 +344,10 @@ apo_apply_recommendation() {
     proposed_file="${APO_RUN_PREFIX}-apply-proposed-config.txt"
     current_file="${APO_RUN_PREFIX}-apply-current-config.txt"
     diff_file="${APO_RUN_PREFIX}-apply.diff"
-    apo_remote_root "cat $(apo_sh_quote "$APO_BOOT_CONFIG")" > "$current_file"
-    apo_remote_worker "$APO_REMOTE_WORKER" render-permanent "$final_cpu" "$final_gpu" "$APO_GPU_KEY" "$APO_TEST_VOLTAGE" "$APO_RUN_ID" > "$proposed_file"
+    apo_remote_root_read_file "$current_file" "cat $(apo_sh_quote "$APO_BOOT_CONFIG")" ||
+        apo_die "The current permanent config could not be read after $APO_TRANSIENT_READ_ATTEMPTS attempts." "$APO_EXIT_APPLY"
+    apo_remote_worker_read_file "$proposed_file" "$APO_REMOTE_WORKER" render-permanent "$final_cpu" "$final_gpu" "$APO_GPU_KEY" "$APO_TEST_VOLTAGE" "$APO_RUN_ID" ||
+        apo_die "The proposed permanent config could not be rendered after $APO_TRANSIENT_READ_ATTEMPTS attempts." "$APO_EXIT_APPLY"
     [[ -s $proposed_file ]] || apo_die 'The proposed permanent config rendered empty.' "$APO_EXIT_APPLY"
     expected_hash=$(sha256sum "$proposed_file" | awk 'NR == 1 {print $1}')
     apo_apply_valid_hash "$expected_hash" || apo_die 'Could not calculate the proposed permanent-config hash.' "$APO_EXIT_APPLY"

@@ -791,6 +791,8 @@ grep -q 'expected hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 # preserve its primary worker failure while re-verifying the hash after SSH
 # returns.
 (
+    APO_PERMANENT_HASH_READ_ATTEMPTS=3
+    APO_PERMANENT_HASH_READ_DELAY_SECONDS=0
     source "$ROOT/lib/health.sh"
     # shellcheck disable=SC2030
     APO_BOOT_CONFIG=/boot/config.txt
@@ -823,6 +825,61 @@ grep -q 'expected hash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     HASH_RC=$?
     set -e
     [[ $HASH_RC == 2 && $APO_LAST_REASON == *'malformed hash evidence'* ]]
+
+    # The public policy gives even an isolated protected-hash read thirty
+    # chances across its production multi-minute window.
+    APO_PERMANENT_HASH_READ_ATTEMPTS=30
+    APO_PERMANENT_HASH_READ_DELAY_SECONDS=0
+    HASH_ATTEMPT_FILE=$(mktemp)
+    trap 'rm -f "$HASH_ATTEMPT_FILE"' EXIT
+    : > "$HASH_ATTEMPT_FILE"
+    apo_remote_root() {
+        printf x >> "$HASH_ATTEMPT_FILE"
+        (( $(wc -c < "$HASH_ATTEMPT_FILE") == 30 )) || return 255
+        printf '%s  /boot/config.txt\n' "$APO_PERMANENT_CONFIG_HASH"
+    }
+    apo_verify_permanent_hash hash-thirtieth-attempt
+    [[ $(wc -c < "$HASH_ATTEMPT_FILE") == 30 ]]
+
+    : > "$HASH_ATTEMPT_FILE"
+    apo_remote_root() {
+        printf x >> "$HASH_ATTEMPT_FILE"
+        printf '%s  /boot/config.txt\n' "$(printf 'b%.0s' {1..64})"
+    }
+    set +e
+    apo_verify_permanent_hash hash-immediate-mismatch
+    HASH_RC=$?
+    set -e
+    [[ $HASH_RC == 1 ]]
+    [[ $(wc -c < "$HASH_ATTEMPT_FILE") == 1 ]]
+)
+
+# Once complete stock recovery proves health, the exact controller-only hash
+# read failure that ended alpha.38 is normalized to a retryable harness gate.
+# A failed recheck remains RECOVERY_FAILURE and is never retried away.
+(
+    APO_PERMANENT_HASH_READ_ATTEMPTS=3
+    APO_PERMANENT_HASH_READ_DELAY_SECONDS=0
+    source "$ROOT/lib/health.sh"
+    APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
+    apo_return_normal() { APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0; return 0; }
+    apo_verify_permanent_hash() { return 0; }
+    old_hash_reason='Permanent config hash is unavailable in cpu-refine-3150_gpu-960-candidate-post-stress; the target did not return readable hash evidence.'
+    apo_recover_preserving_failure recovered-hash-read RECOVERY_FAILURE "$old_hash_reason"
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    [[ $APO_LAST_REASON == *'complete normal recovery re-proved the exact hash and health'* ]]
+
+    apo_verify_permanent_hash() {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='hash recheck fixture remained unreadable'
+        return 2
+    }
+    if apo_recover_preserving_failure failed-hash-read RECOVERY_FAILURE "$old_hash_reason"; then
+        echo 'failed protected-hash recheck was incorrectly normalized' >&2
+        exit 1
+    fi
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+    [[ $APO_LAST_REASON == *'hash recheck fixture remained unreadable'* ]]
 )
 
 run_stress_hash_fixture() (

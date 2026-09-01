@@ -26,6 +26,23 @@ apo_transient_worker_failure_is_retryable() {
     esac
 }
 
+apo_transient_hash_read_failure_is_retryable() {
+    local failure_class=$1 failure_reason=$2
+    [[ $failure_class == RECOVERY_FAILURE && -n $failure_reason ]] || return 1
+    case $failure_reason in
+        Permanent\ config\ hash\ is\ unavailable\ in\ *\;\ the\ target\ did\ not\ return\ readable\ hash\ evidence.) return 0 ;;
+        Permanent\ config\ hash\ is\ unavailable\ in\ *\;\ the\ target\ returned\ malformed\ hash\ evidence.) return 0 ;;
+        Permanent\ config\ hash\ is\ unavailable\ in\ *\ after\ *\ attempts\;\ the\ target\ did\ not\ return\ readable\ hash\ evidence.) return 0 ;;
+        Permanent\ config\ hash\ is\ unavailable\ in\ *\ after\ *\ attempts\;\ the\ target\ returned\ malformed\ hash\ evidence.) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+apo_transient_gate_failure_is_retryable() {
+    apo_transient_worker_failure_is_retryable "$@" ||
+        apo_transient_hash_read_failure_is_retryable "$1" "$2"
+}
+
 apo_stress_reboot_scope_is_active() {
     local stress_reboot_scope=$1
     case $stress_reboot_scope in
@@ -416,6 +433,19 @@ apo_recover_preserving_failure() {
     local recovery_context=$1 original_class=$2 original_reason=$3 force_normal_reboot=${4:-0} stress_reboot_scope=${5:-none}
     local recovery_class recovery_reason
     if apo_return_normal "$recovery_context" "$force_normal_reboot" "$stress_reboot_scope"; then
+        if apo_transient_hash_read_failure_is_retryable "$original_class" "$original_reason" &&
+           (( APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 0 )); then
+            if ! apo_verify_permanent_hash "${recovery_context}-hash-recheck"; then
+                recovery_class=${APO_LAST_CLASS:-RECOVERY_FAILURE}
+                recovery_reason=${APO_LAST_REASON:-unknown-hash-recheck-error}
+                APO_LAST_CLASS=RECOVERY_FAILURE
+                APO_LAST_REASON="Original $original_class: $original_reason; normal recovery health passed, but protected-config hash re-verification failed with $recovery_class: $recovery_reason"
+                return 1
+            fi
+            APO_LAST_CLASS=HARNESS_FAILURE
+            APO_LAST_REASON="Protected-config hash evidence was temporarily unavailable, but complete normal recovery re-proved the exact hash and health. Original evidence failure: $original_reason"
+            return 0
+        fi
         APO_LAST_CLASS=$original_class
         APO_LAST_REASON=$original_reason
         return 0

@@ -52,7 +52,28 @@ apo_parse_data_file() {
     done < "$source_file"
 }
 
-apo_run_worker_capture() {
+: "${APO_TRANSIENT_WORKER_ATTEMPTS:=5}"
+
+apo_worker_command_is_safe_to_retry() {
+    case $1 in
+        health|plan-candidate|verify-tryboot|verify-stock-reset|reset-throttle-history|plan-watchdog-repair|render-permanent|classify-kernel-log)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+apo_worker_capture_failure_is_retryable() {
+    if declare -F apo_transient_worker_failure_is_retryable >/dev/null 2>&1; then
+        apo_transient_worker_failure_is_retryable "$APO_LAST_CLASS" "$APO_LAST_REASON" "${APO_LAST_RESULT_STRUCTURED:-0}"
+        return
+    fi
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE && $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+}
+
+apo_run_worker_capture_once() {
     local phase=$1 worker_command=$2
     shift 2
     local output_file remote_rc lastpipe_was_set=0
@@ -78,14 +99,37 @@ apo_run_worker_capture() {
     if declare -F apo_progress_record_worker_result >/dev/null 2>&1; then
         apo_progress_record_worker_result "$output_file" "$APO_LAST_MAX_TEMP"
     fi
-    apo_state_set LAST_FAILURE_CLASS "$([[ $APO_LAST_CLASS == PASS ]] && printf '' || printf '%s' "$APO_LAST_CLASS")"
-    apo_state_set LAST_FAILURE_REASON "$([[ $APO_LAST_CLASS == PASS ]] && printf '' || printf '%s' "$APO_LAST_REASON")"
-    apo_state_save
     if (( remote_rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then
-        apo_event "$phase" PASS '' "$APO_LAST_REASON"
         return 0
     fi
     [[ $APO_LAST_CLASS != PASS ]] || { APO_LAST_CLASS=HARNESS_FAILURE; APO_LAST_REASON="Worker returned rc=$remote_rc despite PASS output."; }
+    return 1
+}
+
+apo_run_worker_capture() {
+    local phase=$1 worker_command=$2 expected_boot_id current_boot_id attempt max_attempts=1
+    shift 2
+    [[ $APO_TRANSIENT_WORKER_ATTEMPTS =~ ^[1-9][0-9]*$ ]] || APO_TRANSIENT_WORKER_ATTEMPTS=5
+    if apo_worker_command_is_safe_to_retry "$worker_command"; then max_attempts=$APO_TRANSIENT_WORKER_ATTEMPTS; fi
+    for (( attempt=1; attempt<=max_attempts; attempt++ )); do
+        if apo_run_worker_capture_once "$phase" "$worker_command" "$@"; then
+            apo_state_set LAST_FAILURE_CLASS ''
+            apo_state_set LAST_FAILURE_REASON ''
+            apo_state_save
+            apo_event "$phase" PASS '' "$APO_LAST_REASON"
+            return 0
+        fi
+        if (( attempt >= max_attempts )) || ! apo_worker_capture_failure_is_retryable; then break; fi
+        expected_boot_id=${APO_WORKER_BOOT_ID:-}
+        [[ -n $expected_boot_id ]] || break
+        current_boot_id=$(apo_remote_boot_id 2>/dev/null || true)
+        [[ $current_boot_id == "$expected_boot_id" ]] || break
+        apo_event "${phase}-transport-retry" WARN HARNESS_FAILURE "The read-only $worker_command gate returned incomplete transport evidence on the same boot; repeating it automatically (attempt $((attempt + 1))/$max_attempts)."
+        if declare -F apo_transient_read_delay >/dev/null 2>&1; then apo_transient_read_delay; else sleep 10; fi
+    done
+    apo_state_set LAST_FAILURE_CLASS "$APO_LAST_CLASS"
+    apo_state_set LAST_FAILURE_REASON "$APO_LAST_REASON"
+    apo_state_save
     apo_event "$phase" ERROR "$APO_LAST_CLASS" "$APO_LAST_REASON"
     return 1
 }

@@ -66,4 +66,37 @@ apo_event() { :; }
 apo_run_worker_capture pipeline-fixture stress
 [[ $APO_PIPELINE_STATE == preserved ]]
 [[ $(shopt -p lastpipe || true) == "$lastpipe_before" ]]
+
+# Safe read-only worker gates retry repeatedly on the same boot. Long stress
+# and mutation commands are never replayed by this transport layer.
+APO_TRANSIENT_WORKER_ATTEMPTS=5
+APO_WORKER_BOOT_ID=01234567-89ab-cdef-0123-456789abcdef
+WORKER_ATTEMPT_FILE="$TEMP_DIR/worker-attempts"
+: > "$WORKER_ATTEMPT_FILE"
+apo_remote_boot_id() { printf '%s' "$APO_WORKER_BOOT_ID"; }
+apo_transient_read_delay() { :; }
+apo_remote_worker() {
+    printf x >> "$WORKER_ATTEMPT_FILE"
+    if (( $(wc -c < "$WORKER_ATTEMPT_FILE") < 5 )); then return 255; fi
+    printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'safe worker retry passed' | base64 | tr -d '\n')"
+}
+apo_run_worker_capture retryable-health health
+[[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 5 ]]
+[[ $APO_LAST_CLASS == PASS ]]
+
+: > "$WORKER_ATTEMPT_FILE"
+apo_remote_worker() { printf x >> "$WORKER_ATTEMPT_FILE"; return 255; }
+if apo_run_worker_capture no-stress-replay stress; then
+    echo 'long stress command was replayed/accepted by the same-boot read layer' >&2
+    exit 1
+fi
+[[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 1 ]]
+
+: > "$WORKER_ATTEMPT_FILE"
+if apo_run_worker_capture no-mutation-replay prepare-candidate; then
+    echo 'candidate mutation was replayed/accepted by the safe read layer' >&2
+    exit 1
+fi
+[[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 1 ]]
 printf 'test_classify: PASS\n'
