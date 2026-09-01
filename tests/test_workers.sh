@@ -817,6 +817,30 @@ set -e
 DEBIAN_EARLY_CPU_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); print; exit}' <<< "$DEBIAN_EARLY_CPU_OUTPUT")
 [[ $(printf '%s' "$DEBIAN_EARLY_CPU_REASON_B64" | base64 --decode) == 'CPU stress exited early with rc=0.' ]]
 
+# The workload and Bash supervisor have independent second counters. A clean
+# result within the bounded completion tolerance is complete, not an early
+# harness exit. This covers the 24-hour boundary race in both workers.
+for WORKER_NAME in debian batocera; do
+    NEAR_BOUNDARY_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${WORKER_NAME}-worker.sh" bash -c '
+        set -u -o pipefail
+        source "$WORKER"
+        [[ $(stress_completion_tolerance 20) == 3 ]]
+        [[ $(stress_completion_tolerance 600) == 3 ]]
+        [[ $(stress_completion_tolerance 7200) == 7 ]]
+        [[ $(stress_completion_tolerance 86400) == 30 ]]
+        current_temp() { printf 50; }
+        current_throttle() { printf "throttled=0x0"; }
+        clock_mhz() { case $1 in arm) printf 2400 ;; *) printf 800 ;; esac; }
+        kernel_log() { :; }
+        kernel_error_lines() { :; }
+        openssl() { command /bin/sleep 0.5; printf "near-boundary output\n"; }
+        stress-ng() { command /bin/sleep 0.5; printf "near-boundary output\n"; }
+        sleep() { command /bin/sleep 0.7; SECONDS=$((SECONDS + 18)); }
+        cmd_stress cpu 20 75 headless "" 0 2400 800 throttled=0x0 60
+    ' 2>&1)
+    [[ $NEAR_BOUNDARY_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+done
+
 # OpenSSL speed applies -seconds independently to every default buffer size.
 # Batocera must select one 16 KiB block and elapsed-time accounting so a 600s
 # CPU/combined request actually ends after roughly 600 wall-clock seconds.

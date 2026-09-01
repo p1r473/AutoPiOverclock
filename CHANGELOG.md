@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.38 — 2026-09-01
+
+- Fixed a long-duration worker race that could report `CPU stress exited early with rc=0` after the CPU workload had actually completed its full requested duration. Debian and Batocera now allow only a duration-scaled 0.1% clean-completion tolerance, bounded to 3–30 seconds; genuinely early or nonzero exits still fail.
+- Raised fully recovered harness-gate retries from two to five and extended them to structured harness diagnoses. Every retry repeats the complete checkpointed gate only after verified normal recovery; harness evidence is never mislabeled as a clock boundary, and recovery uncertainty still stops.
+- Fixed explicit `resume TARGET` so a saved public overclock restores the same persistent SSH policy as `overclock TARGET`, including its initial reconnect: after the ordinary 240/300-second boot budget it keeps polling read-only every 10 seconds until SSH returns or the operator interrupts it. Seeing the old boot briefly no longer disables extended monitoring after that boot disappears. Added regressions for seven delayed connection attempts, slow shutdown, several consecutive structured failures followed by success, five-retry exhaustion, and direct adoption of the saved 24-hour clean-exit failure.
+
 ## 0.1.0-alpha.37 — 2026-09-01
 
 - Fixed progress-line stacking after a Byobu/tmux client changed between a narrow phone viewport and a wider terminal. The renderer no longer reserves a blank row or uses vertical cursor movement, both of which can be remapped by terminal reflow.

@@ -602,6 +602,14 @@ gpu_early_exit_class() {
     fi
 }
 
+stress_completion_tolerance() {
+    local duration=$1 tolerance
+    tolerance=$((duration / 1000))
+    (( tolerance < 3 )) && tolerance=3
+    (( tolerance > 30 )) && tolerance=30
+    printf '%s' "$tolerance"
+}
+
 watchdog_boot_timeout() {
     rpi-eeprom-config 2>/dev/null | awk -F= '
         $1 ~ /^[[:space:]]*BOOT_WATCHDOG_TIMEOUT[[:space:]]*$/ {
@@ -1645,7 +1653,7 @@ stress_signal_cleanup() {
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=$4 baseline=$5 io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
     local cpu_output gpu_output launcher_file
-    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle kernel_lines new_errors
+    local start_seconds expected_end hard_deadline completion_tolerance now_seconds next_log max_seen=0 temp throttle kernel_lines new_errors
     local cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' glmark_binary glmark_data library_dirs gpu_stack
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
@@ -1689,6 +1697,7 @@ cmd_stress() {
 
     kernel_lines=$(kernel_log | wc -l)
     start_seconds=$SECONDS; expected_end=$((start_seconds + duration)); hard_deadline=$((expected_end + 60)); next_log=$start_seconds
+    completion_tolerance=$(stress_completion_tolerance "$duration")
     # OpenSSL applies -seconds to every default buffer size.  Constrain the
     # benchmark to one large block so the requested duration is the total wall
     # time, including when CPU and GPU stress run together.
@@ -1721,7 +1730,10 @@ cmd_stress() {
             failure_reason="Persistent filesystem activity failed during load with rc=$io_rc."
             break
         fi
-        if (( now_seconds < expected_end - 2 )); then
+        # The workload and Bash supervisor use independent whole-second clocks.
+        # Permit a clean child to finish within 0.1% of the requested duration
+        # (bounded to 3-30 seconds); nonzero exits still fail after wait.
+        if (( now_seconds < expected_end - completion_tolerance )); then
             if [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]]; then wait "$stress_cpu_pid"; cpu_rc=$?; stress_cpu_pid=''; failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE); failure_reason="CPU stress exited early with rc=$cpu_rc."; break; fi
             if [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]]; then wait "$stress_gpu_pid"; gpu_rc=$?; stress_gpu_pid=''; failure_class=$(gpu_early_exit_class "$gpu_rc" "$gpu_output"); failure_reason="GPU stress exited early with rc=$gpu_rc."; break; fi
         fi

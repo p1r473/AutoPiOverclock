@@ -1319,9 +1319,21 @@ apo_load_selected_run() {
 }
 
 apo_prepare_remote_for_saved_run() {
+    if apo_persistent_ssh_recovery_enabled; then
+        apo_wait_for_ssh "$APO_BOOT_TIMEOUT" resume-connect ||
+            apo_die "Saved overclock target $APO_REMOTE_TARGET did not return to SSH." "$APO_EXIT_RECOVERY"
+    fi
     apo_ssh_preflight
     apo_deploy_worker
     APO_HAVE_REMOTE_CONTEXT=1
+}
+
+apo_restore_saved_command_policy() {
+    if [[ $(apo_state_get ORIGIN_COMMAND '') == overclock ]]; then
+        APO_PUBLIC_COMMAND=overclock
+        APO_AUTO_APPLY=1
+        APO_PERSISTENT_SSH_RECOVERY=1
+    fi
 }
 
 apo_cleanup_handler() {
@@ -1437,10 +1449,7 @@ main() {
             APO_MUTATING_COMMAND=1
             apo_load_selected_run
             apo_restart_merge_unspecified_saved_durations
-            if [[ $(apo_state_get ORIGIN_COMMAND '') == overclock ]]; then
-                APO_AUTO_APPLY=1
-                APO_PERSISTENT_SSH_RECOVERY=1
-            fi
+            apo_restore_saved_command_policy
             if (( APO_RESTART_FROM_OPTION_SEEN == 0 )) &&
                (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 || APO_FINAL_HOURS_OPTION_SEEN == 1 || APO_EDGE_HOURS_OPTION_SEEN == 1 )); then
                 apo_public_overclock_load_saved_duration_plan
@@ -1540,7 +1549,7 @@ main() {
                 apo_state_set FAILURE_REASON ''
                 apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
                 apo_state_save
-                apo_event automatic-transport-retry WARN HARNESS_FAILURE "Adopted a safely recovered unstructured worker loss from the saved checkpoint; repeating that complete candidate gate automatically: $saved_failure_reason"
+                apo_event automatic-harness-retry WARN HARNESS_FAILURE "Adopted a safely recovered retryable harness failure from the saved checkpoint; repeating that complete candidate gate automatically: $saved_failure_reason"
             else
                 apo_state_set STATUS RUNNING
                 apo_state_set FAILURE_CLASS ''

@@ -170,23 +170,26 @@ apo_wait_for_ssh() {
 }
 
 apo_wait_for_new_boot() {
-    local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot} deadline remaining current='' next_notice same_boot_seen=0
+    local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot} deadline remaining current='' next_notice last_observation=unreachable
     deadline=$((SECONDS + timeout_seconds))
     while (( SECONDS < deadline )); do
         if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
         current=$(apo_remote_boot_id 2>/dev/null || true)
         if [[ -n $current ]]; then
             if [[ $current != "$old_boot_id" ]]; then printf '%s' "$current"; return 0; fi
-            same_boot_seen=1
+            last_observation=old-boot
+        else
+            last_observation=unreachable
         fi
         remaining=$((deadline - SECONDS))
         (( remaining > 0 )) || break
         if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
     done
-    # Do not start another potentially long SSH attempt after the bounded
-    # deadline. If the old boot was reachable during the wait, the requested
-    # reboot was not proved and indefinite recovery monitoring is inappropriate.
-    (( same_boot_seen == 0 )) || return 1
+    # A continuously reachable old boot means the requested reboot was not
+    # proved. If it disappeared before the deadline, however, keep observing:
+    # a slow target must not be abandoned merely because its old boot answered
+    # once while shutdown was beginning.
+    [[ $last_observation != old-boot ]] || return 1
     apo_persistent_ssh_recovery_enabled || return 1
     apo_recovery_wait_begin "$context" "$timeout_seconds"
     next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
