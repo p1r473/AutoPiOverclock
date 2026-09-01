@@ -1222,9 +1222,17 @@ stress_signal_cleanup() {
     exit "$exit_code"
 }
 
+stress_completion_tolerance() {
+    local duration=$1 tolerance
+    tolerance=$((duration / 1000))
+    (( tolerance < 3 )) && tolerance=3
+    (( tolerance > 30 )) && tolerance=30
+    printf '%s' "$tolerance"
+}
+
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
-    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors
+    local start_seconds expected_end hard_deadline completion_tolerance now_seconds next_log max_seen=0 temp throttle new_errors
     local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
@@ -1249,6 +1257,7 @@ cmd_stress() {
     trap 'stress_signal_cleanup 129' HUP
     kernel_lines=$(kernel_log | wc -l)
     start_seconds=$SECONDS; expected_end=$((start_seconds + duration)); hard_deadline=$((expected_end + 60)); next_log=$start_seconds
+    completion_tolerance=$(stress_completion_tolerance "$duration")
     case $stress_kind in cpu|combined) stress-ng --cpu "$(nproc)" --cpu-method all --verify --timeout "${duration}s" --metrics-brief >"$cpu_output" 2>&1 & stress_cpu_pid=$! ;; esac
     case $stress_kind in
         gpu|combined)
@@ -1302,7 +1311,10 @@ cmd_stress() {
         # Classify individual early exits before considering the aggregate
         # all-dead state.  CPU-only/GPU-only and simultaneous clean exits must
         # never bypass the requested-duration gate.
-        if (( now_seconds < expected_end - 2 )); then
+        # The workload and Bash supervisor use independent whole-second clocks.
+        # Permit a clean child to finish within 0.1% of the requested duration
+        # (bounded to 3-30 seconds); nonzero exits still fail after wait.
+        if (( now_seconds < expected_end - completion_tolerance )); then
             if [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]]; then wait "$stress_cpu_pid"; cpu_rc=$?; stress_cpu_pid=''; failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE); failure_reason="CPU stress exited early with rc=$cpu_rc."; break; fi
             if [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]]; then wait "$stress_gpu_pid"; gpu_rc=$?; stress_gpu_pid=''; if grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi; failure_reason="GPU stress exited early with rc=$gpu_rc."; break; fi
         fi

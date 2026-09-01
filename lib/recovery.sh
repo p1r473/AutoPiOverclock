@@ -6,14 +6,22 @@ APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
 APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
 APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
 APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE=0
-APO_TRANSIENT_PHASE_RETRY_MAX=2
+APO_TRANSIENT_PHASE_RETRY_MAX=5
 
 apo_transient_worker_failure_is_retryable() {
     local failure_class=$1 failure_reason=$2 result_structured=${3:-0}
-    [[ $failure_class == HARNESS_FAILURE && $result_structured == 0 ]] || return 1
+    [[ $failure_class == HARNESS_FAILURE && -n $failure_reason ]] || return 1
+    # A structured harness diagnosis is never promoted to a clock boundary,
+    # but a complete verified normal recovery makes its exact gate safe to
+    # repeat. Saved state predating this decision has no structured-result bit,
+    # so only the two known clean-early-exit reasons are adopted on resume.
+    [[ $result_structured == 1 ]] && return 0
+    [[ $result_structured == 0 ]] || return 1
     case $failure_reason in
         'The worker failed without a structured result.') return 0 ;;
         The\ target\ returned\ after\ *,\ but\ its\ run-isolated\ worker\ could\ not\ be\ redeployed.) return 0 ;;
+        'CPU stress exited early with rc=0.') return 0 ;;
+        'GPU stress exited early with rc=0.') return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -78,7 +86,7 @@ apo_transient_phase_retry_schedule() {
     apo_state_set FAILURE_CLASS ''
     apo_state_set FAILURE_REASON ''
     apo_state_save
-    apo_event automatic-transport-retry WARN HARNESS_FAILURE "Recovered an unstructured transport loss in $retry_context; repeating the complete affected gate automatically (retry $retry_count/$APO_TRANSIENT_PHASE_RETRY_MAX): $original_reason"
+    apo_event automatic-harness-retry WARN HARNESS_FAILURE "Recovered a retryable harness failure in $retry_context; repeating the complete affected gate automatically (retry $retry_count/$APO_TRANSIENT_PHASE_RETRY_MAX): $original_reason"
 }
 
 apo_transient_phase_retry_clear() {

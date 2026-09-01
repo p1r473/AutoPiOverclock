@@ -112,7 +112,7 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
 )
 
 # If the same candidate boot is still alive, transport loss is not rewritten
-# as a clock boundary. It receives two bounded automatic gate retries instead
+# as a clock boundary. It receives five bounded automatic gate retries instead
 # of immediately terminating or looping forever.
 (
     reset_recovery_fixture
@@ -130,13 +130,15 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
     apo_recover_observed_phase_failure same-boot-handoff-recovery HARNESS_FAILURE 'The worker failed without a structured result.' 1 candidate-boot BOOT_FAILURE 'candidate boot or required boot health'
     [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 0 ]]
     [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
-    apo_transient_phase_retry_schedule candidate-handoff "$APO_LAST_CLASS" "$APO_LAST_REASON" 1
-    apo_transient_phase_retry_schedule candidate-handoff "$APO_LAST_CLASS" "$APO_LAST_REASON" 1
+    for retry_number in 1 2 3 4 5; do
+        apo_transient_phase_retry_schedule candidate-handoff "$APO_LAST_CLASS" "$APO_LAST_REASON" 1
+        [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == "$retry_number" ]]
+    done
     if apo_transient_phase_retry_schedule candidate-handoff "$APO_LAST_CLASS" "$APO_LAST_REASON" 1; then
         echo 'automatic transport retry exceeded its bounded limit' >&2
         exit 1
     fi
-    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 2 ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 5 ]]
 )
 
 # An already-normal target uses the complete profile timeout and records its

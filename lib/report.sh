@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local status and concise report generation.
 
-: "${APO_TRANSIENT_PHASE_RETRY_MAX:=2}"
+: "${APO_TRANSIENT_PHASE_RETRY_MAX:=5}"
 
 apo_report_value() {
     local value=$1 replacement

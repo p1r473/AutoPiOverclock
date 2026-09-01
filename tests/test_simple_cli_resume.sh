@@ -17,6 +17,37 @@ write_state_fixture() {
     done
 }
 
+# Explicit resume of a saved public overclock must restore the original
+# unattended reconnect and automatic-apply policy before any remote work.
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    APO_STATE=()
+    apo_state_set ORIGIN_COMMAND overclock
+    APO_PUBLIC_COMMAND=resume
+    APO_AUTO_APPLY=0
+    APO_PERSISTENT_SSH_RECOVERY=0
+    apo_restore_saved_command_policy
+    [[ $APO_PUBLIC_COMMAND == overclock ]]
+    [[ $APO_AUTO_APPLY == 1 ]]
+    [[ $APO_PERSISTENT_SSH_RECOVERY == 1 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    APO_PUBLIC_COMMAND=overclock
+    APO_MUTATING_COMMAND=1
+    APO_PERSISTENT_SSH_RECOVERY=1
+    APO_BOOT_TIMEOUT=300
+    APO_REMOTE_TARGET=root@tron
+    PREPARE_ACTIONS=()
+    apo_wait_for_ssh() { PREPARE_ACTIONS+=("wait:$1:$2"); }
+    apo_ssh_preflight() { PREPARE_ACTIONS+=(preflight); }
+    apo_deploy_worker() { PREPARE_ACTIONS+=(deploy); }
+    apo_prepare_remote_for_saved_run
+    [[ ${PREPARE_ACTIONS[*]} == 'wait:300:resume-connect preflight deploy' ]]
+)
+
 CONTINUATION_OUTPUT="$TEMP_DIR/continuation-output"
 mkdir -p "$CONTINUATION_OUTPUT"
 CONTINUATION_RUN=20260827-010203-abcdef0123456789
@@ -274,6 +305,33 @@ ln -sfn "$(basename "$FAILED_BOOT_HANDOFF_STATE")" "$CONTINUATION_OUTPUT/tron-la
     apo_public_overclock_select_continuation
     [[ $APO_COMMAND == resume ]]
     [[ $APO_SELECTED_RUN_ID == "$FAILED_BOOT_HANDOFF_RUN" ]]
+)
+
+# The exact clean early-exit state produced by the 24-hour supervisor race is
+# safe to adopt after its already-recorded complete normal recovery.
+FAILED_CLEAN_EARLY_RUN=20260901-125438-5555555555555555
+FAILED_CLEAN_EARLY_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_CLEAN_EARLY_RUN}.state"
+write_state_fixture "$FAILED_CLEAN_EARLY_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$FAILED_CLEAN_EARLY_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_EDGE_CPU_24H 1 \
+    CFG_QUALIFICATION_DURATION_S 7200 CFG_FINAL_DURATION_S 86400 \
+    CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY default \
+    STATUS FAILED PHASE FINAL_VALIDATION \
+    FAILURE_CLASS HARNESS_FAILURE FAILURE_REASON 'CPU stress exited early with rc=0.' \
+    FINAL_STAGE ENDURANCE FINAL_TARGET_CPU 3000 FINAL_TARGET_GPU 1150 \
+    RECOMMENDED_CPU 2975 RECOMMENDED_GPU 1150 EDGE_CPU_STATUS RUNNING \
+    TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 APPLY_STATUS NOT_APPLIED \
+    TRANSIENT_RETRY_COUNT 0
+ln -sfn "$(basename "$FAILED_CLEAN_EARLY_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$FAILED_CLEAN_EARLY_RUN" ]]
 )
 
 apo_failed_harness_run=20260827-010203-1111111111111111

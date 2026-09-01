@@ -204,8 +204,46 @@ if apo_test_candidate 3200 800 cpu-3200_gpu-800 combined; then
 fi
 [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
 [[ $APO_LAST_REASON == *'The worker failed without a structured result.'* ]]
-[[ $APO_LAST_REASON == *'exhausted 2 bounded retries'* ]]
+[[ $APO_LAST_REASON == *'exhausted 5 bounded retries'* ]]
 [[ $RECOVERY_STRESS_SCOPE == candidate ]]
+
+# A structured harness failure is retried only after normal recovery. Prove
+# that several consecutive failures do not terminate an unattended run and
+# that a later complete gate clears its durable retry counter.
+ACTIONS=()
+APO_STATE=()
+apo_state_set CANDIDATE_LABEL cpu-3000_gpu-800
+apo_state_set CANDIDATE_CPU 3000
+apo_state_set CANDIDATE_GPU 800
+apo_state_set CANDIDATE_STAGE STRESS
+apo_state_set TRYBOOT_EXPECTED 1
+apo_state_set CURRENT_CPU 3000
+apo_state_set CURRENT_GPU 800
+STRUCTURED_STRESS_ATTEMPTS=0
+apo_run_stress() {
+    STRUCTURED_STRESS_ATTEMPTS=$((STRUCTURED_STRESS_ATTEMPTS + 1))
+    if (( STRUCTURED_STRESS_ATTEMPTS <= 3 )); then
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON='CPU stress exited early with rc=0.'
+        APO_LAST_RESULT_STRUCTURED=1
+        return 1
+    fi
+    ACTIONS+=("stress:$1:$3")
+    APO_LAST_RESULT_STRUCTURED=1
+}
+apo_recover_preserving_failure() {
+    APO_LAST_CLASS=$2
+    APO_LAST_REASON=$3
+    APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+}
+apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
+[[ $STRUCTURED_STRESS_ATTEMPTS == 4 ]]
+[[ $(apo_state_get CANDIDATE_STAGE) == COMPLETE ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
+[[ -z $(apo_state_get TRANSIENT_RETRY_CONTEXT '') ]]
 
 # Restore the general success fixtures used by the remaining resume tests.
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }

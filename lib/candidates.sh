@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Candidate sweep, conservative selection, final endurance validation, and resume phases.
 
-: "${APO_TRANSIENT_PHASE_RETRY_MAX:=2}"
+: "${APO_TRANSIENT_PHASE_RETRY_MAX:=5}"
 
 apo_gpu_harness_smoke() {
     local smoke_duration=20 failure_class failure_reason force_normal_reboot=0
