@@ -55,6 +55,7 @@ reset_recovery_fixture() {
 # Extract only the function to exercise the real controller implementation
 # without dispatching main.
 eval "$(sed -n '/^apo_cleanup_handler()/,/^}/p' "$ROOT/autopioverclock")"
+apo_remote_tryboot_flag_once() { apo_remote_tryboot_flag; }
 EXIT_RECOVERY_MARKER=$(mktemp)
 set +e
 (
