@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
+# Independent fixture subshells intentionally reuse controller variable names.
+# shellcheck disable=SC2030,SC2031
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/ssh.sh"
+
+[[ $APO_TRANSIENT_READ_ATTEMPTS == 30 ]]
+[[ $APO_TRANSIENT_READ_DELAY_SECONDS == 10 ]]
+[[ $APO_PREFLIGHT_SSH_TIMEOUT_SECONDS == 300 ]]
 
 apo_parse_target example-host
 [[ $APO_REMOTE_USER == "$(id -un)" ]]
@@ -105,6 +111,8 @@ fi
 
 rm -f -- "$UPLOAD_REMOTE_FILE"
 UPLOAD_EXECUTION_MODE=corrupt
+APO_TRANSIENT_READ_ATTEMPTS=3
+APO_TRANSIENT_READ_DELAY_SECONDS=0
 if apo_remote_upload_root "$UPLOAD_SOURCE" "$UPLOAD_REMOTE_FILE" 2>"$UPLOAD_TEST_ROOT/corrupt.err"; then
     echo 'corrupted upload stream was accepted' >&2
     exit 1
@@ -119,6 +127,72 @@ if grep -q 'unbound variable' "$UPLOAD_TEST_ROOT/corrupt.err"; then
     exit 1
 fi
 rm -rf -- "$UPLOAD_TEST_ROOT"
+
+# Safe scalar, exact-file, boot-ID, and tryboot reads all survive many
+# consecutive transport failures. Failed exact-file attempts never leak their
+# partial bytes into the accepted output.
+(
+    APO_TRANSIENT_READ_ATTEMPTS=30
+    APO_TRANSIENT_READ_DELAY_SECONDS=0
+    SSH_ATTEMPT_FILE=$(mktemp)
+    READ_RESULT=$(mktemp)
+    trap 'rm -f "$SSH_ATTEMPT_FILE" "$READ_RESULT"' EXIT
+    apo_ssh_exec() {
+        printf x >> "$SSH_ATTEMPT_FILE"
+        (( $(wc -c < "$SSH_ATTEMPT_FILE") == 30 )) || return 255
+        printf ready
+    }
+    apo_ssh_read 'printf ready' > "$READ_RESULT"
+    [[ $(cat "$READ_RESULT") == ready ]]
+    [[ $(wc -c < "$SSH_ATTEMPT_FILE") == 30 ]]
+)
+(
+    APO_TRANSIENT_READ_ATTEMPTS=30
+    APO_TRANSIENT_READ_DELAY_SECONDS=0
+    READ_ATTEMPTS=0
+    READ_OUTPUT=$(mktemp)
+    EXPECTED_OUTPUT=$(mktemp)
+    trap 'rm -f "$READ_OUTPUT" "$EXPECTED_OUTPUT"' EXIT
+    printf 'complete\n\n' > "$EXPECTED_OUTPUT"
+    apo_ssh_exec() {
+        READ_ATTEMPTS=$((READ_ATTEMPTS + 1))
+        if (( READ_ATTEMPTS < 30 )); then printf 'partial'; return 255; fi
+        printf 'complete\n\n'
+    }
+    apo_ssh_read_file "$READ_OUTPUT" 'fixture-read'
+    cmp "$EXPECTED_OUTPUT" "$READ_OUTPUT"
+    [[ $READ_ATTEMPTS == 30 ]]
+)
+(
+    APO_TRANSIENT_READ_ATTEMPTS=30
+    APO_TRANSIENT_READ_DELAY_SECONDS=0
+    BOOT_READ_FILE=$(mktemp)
+    BOOT_RESULT=$(mktemp)
+    trap 'rm -f "$BOOT_READ_FILE" "$BOOT_RESULT"' EXIT
+    apo_ssh_exec() {
+        printf x >> "$BOOT_READ_FILE"
+        (( $(wc -c < "$BOOT_READ_FILE") == 30 )) || return 255
+        printf '01234567-89ab-cdef-0123-456789abcdef\n'
+    }
+    apo_remote_boot_id > "$BOOT_RESULT"
+    [[ $(cat "$BOOT_RESULT") == 01234567-89ab-cdef-0123-456789abcdef ]]
+    [[ $(wc -c < "$BOOT_READ_FILE") == 30 ]]
+)
+(
+    APO_TRANSIENT_READ_ATTEMPTS=30
+    APO_TRANSIENT_READ_DELAY_SECONDS=0
+    TRYBOOT_READ_FILE=$(mktemp)
+    TRYBOOT_RESULT=$(mktemp)
+    trap 'rm -f "$TRYBOOT_READ_FILE" "$TRYBOOT_RESULT"' EXIT
+    apo_ssh_exec() {
+        printf x >> "$TRYBOOT_READ_FILE"
+        (( $(wc -c < "$TRYBOOT_READ_FILE") == 30 )) || return 255
+        printf '00000000'
+    }
+    apo_remote_tryboot_flag > "$TRYBOOT_RESULT"
+    [[ $(cat "$TRYBOOT_RESULT") == 00000000 ]]
+    [[ $(wc -c < "$TRYBOOT_READ_FILE") == 30 ]]
+)
 
 # SSH/reboot waits use elapsed wall time, including time spent inside a failed
 # connection attempt.  A nominal 10-second timeout must not become four
@@ -138,7 +212,7 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     BOOT_ID_ATTEMPT_FILE=$(mktemp)
     trap 'rm -f "$BOOT_ID_ATTEMPT_FILE"' EXIT
     SECONDS=0
-    apo_remote_boot_id() { printf x >> "$BOOT_ID_ATTEMPT_FILE"; command /bin/sleep 2; return 1; }
+    apo_remote_boot_id_once() { printf x >> "$BOOT_ID_ATTEMPT_FILE"; command /bin/sleep 2; return 1; }
     if apo_wait_for_new_boot old-boot 4; then
         echo 'missing reboot fixture unexpectedly succeeded' >&2
         exit 1
@@ -146,9 +220,9 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     [[ $(wc -c < "$BOOT_ID_ATTEMPT_FILE") == 1 ]]
 )
 
-# The simple unattended overclock command keeps observing after its ordinary
+# Every unattended mutating/recovery command keeps observing after its ordinary
 # timeout, without issuing another reboot. A returned host is handed back to
-# the normal boot/ownership reconciliation path. Other commands stay bounded.
+# the normal boot/ownership reconciliation path.
 APO_STATE_FILE=''
 APO_LOG_FILE=''
 (
@@ -167,7 +241,7 @@ APO_LOG_FILE=''
     apo_wait_for_ssh 1 unattended-recovery-fixture 2> "$RECOVERY_NOTICE_FILE"
     [[ $SSH_ATTEMPTS == 7 ]]
     [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
-    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended overclock remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves the saved run resumable.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves saved work resumable.' "$RECOVERY_NOTICE_FILE"
     grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.' "$RECOVERY_NOTICE_FILE"
 )
 (
@@ -176,10 +250,16 @@ APO_LOG_FILE=''
     APO_MUTATING_COMMAND=1
     APO_PERSISTENT_SSH_RECOVERY=1
     SSH_ATTEMPTS=0
-    apo_ssh_exec() { SSH_ATTEMPTS=$((SSH_ATTEMPTS + 1)); return 1; }
+    RECOVERY_NOTICE_FILE=$(mktemp)
+    trap 'rm -f "$RECOVERY_NOTICE_FILE"' EXIT
+    apo_ssh_exec() {
+        SSH_ATTEMPTS=$((SSH_ATTEMPTS + 1))
+        (( SSH_ATTEMPTS >= 7 ))
+    }
     sleep() { SECONDS=$((SECONDS + $1)); }
-    if apo_wait_for_ssh 1 bounded-resume-fixture; then exit 1; fi
-    [[ $SSH_ATTEMPTS == 1 ]]
+    apo_wait_for_ssh 1 persistent-resume-fixture 2> "$RECOVERY_NOTICE_FILE"
+    [[ $SSH_ATTEMPTS == 7 ]]
+    [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
 )
 (
     SECONDS=0
@@ -189,7 +269,7 @@ APO_LOG_FILE=''
     BOOT_ATTEMPT_FILE=$(mktemp)
     RECOVERY_NOTICE_FILE=$(mktemp)
     trap 'rm -f "$BOOT_ATTEMPT_FILE" "$RECOVERY_NOTICE_FILE"' EXIT
-    apo_remote_boot_id() {
+    apo_remote_boot_id_once() {
         printf x >> "$BOOT_ATTEMPT_FILE"
         (( $(wc -c < "$BOOT_ATTEMPT_FILE") >= 7 )) && printf new-boot || return 1
     }
@@ -198,7 +278,7 @@ APO_LOG_FILE=''
     [[ $returned_boot == new-boot ]]
     [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 7 ]]
     [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
-    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended overclock remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves the saved run resumable.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves saved work resumable.' "$RECOVERY_NOTICE_FILE"
     grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.' "$RECOVERY_NOTICE_FILE"
 )
 (
@@ -209,7 +289,7 @@ APO_LOG_FILE=''
     BOOT_ATTEMPT_FILE=$(mktemp)
     RECOVERY_NOTICE_FILE=$(mktemp)
     trap 'rm -f "$BOOT_ATTEMPT_FILE" "$RECOVERY_NOTICE_FILE"' EXIT
-    apo_remote_boot_id() {
+    apo_remote_boot_id_once() {
         printf x >> "$BOOT_ATTEMPT_FILE"
         case $(wc -c < "$BOOT_ATTEMPT_FILE") in
             1) printf old-boot ;;
@@ -259,6 +339,75 @@ APO_LOG_FILE=''
     [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
     [[ $APO_LAST_REASON == *'run-isolated worker could not be redeployed'* ]]
 )
+
+# An idempotent dependency transaction whose SSH result is repeatedly lost is
+# reconciled from fresh discovery and retried up to five times. A protected
+# config mismatch is a hard stop on the first observation, never something the
+# retry loop can erase.
+(
+    source "$ROOT/lib/detect.sh"
+    DEPENDENCY_ATTEMPT_FILE=$(mktemp)
+    trap 'rm -f "$DEPENDENCY_ATTEMPT_FILE"' EXIT
+    : > "$DEPENDENCY_ATTEMPT_FILE"
+    APO_DRY_RUN=0
+    APO_INSTALL_MISSING=1
+    APO_PREFLIGHT_SSH_TIMEOUT_SECONDS=300
+    APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    APO_THROTTLE_RUNTIME_BASELINE=throttled=0x0
+    DEPENDENCIES_READY=0
+    apo_profile_dependencies_ready() { (( DEPENDENCIES_READY == 1 )); }
+    apo_dependency_description() { printf fixture; }
+    apo_reset_throttle_history() { :; }
+    apo_profile_install_dependencies() { printf x >> "$DEPENDENCY_ATTEMPT_FILE"; return 255; }
+    apo_wait_for_ssh() { :; }
+    apo_remote_boot_id() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
+    apo_ensure_worker_for_boot() { :; }
+    apo_discovery_capture() {
+        APO_DISCOVERY[PERMANENT_HASH]=$APO_PERMANENT_CONFIG_HASH
+        APO_DISCOVERY[RECENT_THROTTLED]=throttled=0x0
+        if (( $(wc -c < "$DEPENDENCY_ATTEMPT_FILE") == 5 )); then DEPENDENCIES_READY=1; fi
+    }
+    apo_throttle_clean_relative() { :; }
+    apo_context_from_discovery() { :; }
+    apo_event() { :; }
+    apo_summary_line() { :; }
+    apo_transient_read_delay() { :; }
+    apo_dependency_preflight
+    [[ $(wc -c < "$DEPENDENCY_ATTEMPT_FILE") == 5 ]]
+    (( DEPENDENCIES_READY == 1 ))
+)
+DEPENDENCY_MISMATCH_ATTEMPTS=$(mktemp)
+trap 'rm -f "$UPLOAD_FIXTURE"; rm -f "$DEPENDENCY_MISMATCH_ATTEMPTS"' EXIT
+: > "$DEPENDENCY_MISMATCH_ATTEMPTS"
+if (
+    source "$ROOT/lib/detect.sh"
+    APO_DRY_RUN=0
+    APO_INSTALL_MISSING=1
+    APO_PREFLIGHT_SSH_TIMEOUT_SECONDS=300
+    APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    APO_THROTTLE_RUNTIME_BASELINE=throttled=0x0
+    apo_profile_dependencies_ready() { return 1; }
+    apo_dependency_description() { printf fixture; }
+    apo_reset_throttle_history() { :; }
+    apo_profile_install_dependencies() { printf x >> "$DEPENDENCY_MISMATCH_ATTEMPTS"; }
+    apo_wait_for_ssh() { :; }
+    apo_remote_boot_id() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
+    apo_ensure_worker_for_boot() { :; }
+    apo_discovery_capture() {
+        APO_DISCOVERY[PERMANENT_HASH]=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        APO_DISCOVERY[RECENT_THROTTLED]=throttled=0x0
+    }
+    apo_throttle_clean_relative() { :; }
+    apo_context_from_discovery() { :; }
+    apo_event() { :; }
+    apo_summary_line() { :; }
+    apo_transient_read_delay() { :; }
+    apo_dependency_preflight
+) >/dev/null 2>&1; then
+    echo 'dependency retry accepted protected-config drift' >&2
+    exit 1
+fi
+[[ $(wc -c < "$DEPENDENCY_MISMATCH_ATTEMPTS") == 1 ]]
 
 if (apo_parse_target 'bad user@example-host' >/dev/null 2>&1); then
     echo 'unsafe username was accepted' >&2

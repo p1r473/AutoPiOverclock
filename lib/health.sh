@@ -1,24 +1,59 @@
 #!/usr/bin/env bash
 # Controller-side health and stress wrappers.
 
+: "${APO_PERMANENT_HASH_READ_ATTEMPTS:=${APO_TRANSIENT_READ_ATTEMPTS:-30}}"
+: "${APO_PERMANENT_HASH_READ_DELAY_SECONDS:=${APO_TRANSIENT_READ_DELAY_SECONDS:-10}}"
+APO_PERMANENT_HASH_READ_VALUE=''
+APO_PERMANENT_HASH_READ_EVIDENCE=unreadable
+APO_PERMANENT_HASH_READ_USED=0
+
+apo_read_permanent_hash() {
+    local hash_output='' current_hash='' attempt
+    APO_PERMANENT_HASH_READ_VALUE=''
+    APO_PERMANENT_HASH_READ_EVIDENCE=unreadable
+    APO_PERMANENT_HASH_READ_USED=0
+    [[ $APO_PERMANENT_HASH_READ_ATTEMPTS =~ ^[1-9][0-9]*$ ]] || APO_PERMANENT_HASH_READ_ATTEMPTS=30
+    [[ $APO_PERMANENT_HASH_READ_DELAY_SECONDS =~ ^[0-9]+$ ]] || APO_PERMANENT_HASH_READ_DELAY_SECONDS=10
+    for (( attempt=1; attempt<=APO_PERMANENT_HASH_READ_ATTEMPTS; attempt++ )); do
+        APO_PERMANENT_HASH_READ_USED=$attempt
+        hash_output=''
+        current_hash=''
+        if hash_output=$(apo_remote_root "sha256sum $(apo_sh_quote "$APO_BOOT_CONFIG")" 2>/dev/null); then
+            current_hash=$(awk 'NR == 1 {print $1}' <<< "$hash_output")
+            if [[ $current_hash =~ ^[0-9a-f]{64}$ ]]; then
+                APO_PERMANENT_HASH_READ_VALUE=$current_hash
+                APO_PERMANENT_HASH_READ_EVIDENCE=valid
+                return 0
+            fi
+            APO_PERMANENT_HASH_READ_EVIDENCE=malformed
+        else
+            APO_PERMANENT_HASH_READ_EVIDENCE=unreadable
+        fi
+        if (( attempt < APO_PERMANENT_HASH_READ_ATTEMPTS && APO_PERMANENT_HASH_READ_DELAY_SECONDS > 0 )); then
+            sleep "$APO_PERMANENT_HASH_READ_DELAY_SECONDS"
+        fi
+    done
+    return 1
+}
+
 apo_verify_permanent_hash() {
-    local context=$1 current_hash hash_output
-    if ! hash_output=$(apo_remote_root "sha256sum $(apo_sh_quote "$APO_BOOT_CONFIG")" 2>/dev/null); then
-        APO_LAST_CLASS=RECOVERY_FAILURE
-        APO_LAST_REASON="Permanent config hash is unavailable in $context; the target did not return readable hash evidence."
-        return 2
+    local context=$1 current_hash=''
+    if apo_read_permanent_hash; then
+        current_hash=$APO_PERMANENT_HASH_READ_VALUE
+        if [[ $current_hash != "$APO_PERMANENT_CONFIG_HASH" ]]; then
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON="Permanent config hash changed in $context (${APO_PERMANENT_CONFIG_HASH} -> $current_hash)."
+            return 1
+        fi
+        return 0
     fi
-    current_hash=$(awk 'NR == 1 {print $1}' <<< "$hash_output")
-    if [[ ! $current_hash =~ ^[0-9a-f]{64}$ ]]; then
-        APO_LAST_CLASS=RECOVERY_FAILURE
-        APO_LAST_REASON="Permanent config hash is unavailable in $context; the target returned malformed hash evidence."
-        return 2
+    APO_LAST_CLASS=RECOVERY_FAILURE
+    if [[ $APO_PERMANENT_HASH_READ_EVIDENCE == malformed ]]; then
+        APO_LAST_REASON="Permanent config hash is unavailable in $context after $APO_PERMANENT_HASH_READ_USED attempts; the target returned malformed hash evidence."
+    else
+        APO_LAST_REASON="Permanent config hash is unavailable in $context after $APO_PERMANENT_HASH_READ_USED attempts; the target did not return readable hash evidence."
     fi
-    if [[ $current_hash != "$APO_PERMANENT_CONFIG_HASH" ]]; then
-        APO_LAST_CLASS=RECOVERY_FAILURE
-        APO_LAST_REASON="Permanent config hash changed in $context (${APO_PERMANENT_CONFIG_HASH} -> $current_hash)."
-        return 1
-    fi
+    return 2
 }
 
 apo_candidate_fan_policy() {

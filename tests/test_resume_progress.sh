@@ -57,7 +57,7 @@ apo_return_normal() {
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
 apo_health_check() { ACTIONS+=("health:$4"); }
 apo_verify_permanent_hash() { ACTIONS+=("hash:$1"); }
-apo_recover_preserving_failure() { APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
+apo_recover_preserving_failure() { RECOVERY_FORCE_REBOOT=${4:-0}; APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
 apo_record_failure_after_recovery() { RECOVERY_FORCE_REBOOT=${4:-0}; apo_state_fail "$2" "$3"; }
 apo_class_is_edge_failure() { [[ $1 == BOOT_FAILURE || $1 == STABILITY_FAILURE ]]; }
 
@@ -241,6 +241,49 @@ apo_recover_preserving_failure() {
 }
 apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
 [[ $STRUCTURED_STRESS_ATTEMPTS == 4 ]]
+[[ $(apo_state_get CANDIDATE_STAGE) == COMPLETE ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
+[[ -z $(apo_state_get TRANSIENT_RETRY_CONTEXT '') ]]
+
+# The exact alpha.38 post-stress hash-read failure follows the same complete
+# recovery/retry path. It is not a 3150 MHz boundary, and several consecutive
+# controller read losses do not end the unattended sweep.
+ACTIONS=()
+APO_STATE=()
+apo_state_set CANDIDATE_LABEL cpu-refine-3150_gpu-960
+apo_state_set CANDIDATE_CPU 3150
+apo_state_set CANDIDATE_GPU 960
+apo_state_set CANDIDATE_STAGE STRESS
+apo_state_set TRYBOOT_EXPECTED 1
+apo_state_set CURRENT_CPU 3150
+apo_state_set CURRENT_GPU 960
+HASH_STRESS_ATTEMPTS=0
+apo_run_stress() {
+    HASH_STRESS_ATTEMPTS=$((HASH_STRESS_ATTEMPTS + 1))
+    if (( HASH_STRESS_ATTEMPTS <= 3 )); then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Permanent config hash is unavailable in cpu-refine-3150_gpu-960-candidate-post-stress; the target did not return readable hash evidence.'
+        APO_LAST_RESULT_STRUCTURED=1
+        return 1
+    fi
+    ACTIONS+=("stress:$1:$3")
+    APO_LAST_RESULT_STRUCTURED=1
+}
+apo_recover_preserving_failure() {
+    APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+    if apo_transient_hash_read_failure_is_retryable "$2" "$3"; then
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON="complete normal recovery re-proved the exact hash and health: $3"
+    else
+        APO_LAST_CLASS=$2
+        APO_LAST_REASON=$3
+    fi
+}
+apo_test_candidate 3150 960 cpu-refine-3150_gpu-960 combined
+[[ $HASH_STRESS_ATTEMPTS == 4 ]]
 [[ $(apo_state_get CANDIDATE_STAGE) == COMPLETE ]]
 [[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
 [[ -z $(apo_state_get TRANSIENT_RETRY_CONTEXT '') ]]

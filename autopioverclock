@@ -1321,7 +1321,7 @@ apo_load_selected_run() {
 apo_prepare_remote_for_saved_run() {
     if apo_persistent_ssh_recovery_enabled; then
         apo_wait_for_ssh "$APO_BOOT_TIMEOUT" resume-connect ||
-            apo_die "Saved overclock target $APO_REMOTE_TARGET did not return to SSH." "$APO_EXIT_RECOVERY"
+            apo_die "Saved target $APO_REMOTE_TARGET did not return to SSH." "$APO_EXIT_RECOVERY"
     fi
     apo_ssh_preflight
     apo_deploy_worker
@@ -1329,10 +1329,10 @@ apo_prepare_remote_for_saved_run() {
 }
 
 apo_restore_saved_command_policy() {
+    APO_PERSISTENT_SSH_RECOVERY=1
     if [[ $(apo_state_get ORIGIN_COMMAND '') == overclock ]]; then
         APO_PUBLIC_COMMAND=overclock
         APO_AUTO_APPLY=1
-        APO_PERSISTENT_SSH_RECOVERY=1
     fi
 }
 
@@ -1349,7 +1349,7 @@ apo_cleanup_handler() {
     fi
     if [[ ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && ${APO_MUTATING_COMMAND:-0} == 1 ]]; then
         local tryboot_flag=''
-        tryboot_flag=$(apo_remote_tryboot_flag || true)
+        tryboot_flag=$(apo_remote_tryboot_flag_once || true)
         if [[ $tryboot_flag == 00000001 || $(apo_state_get TRYBOOT_EXPECTED 0) == 1 ||
               $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 1 || -n $(apo_state_get TRYBOOT_OWNED_HASH '') ||
               -n $(apo_state_get TRYBOOT_RESERVATION_HASH '') || -n $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') ||
@@ -1386,7 +1386,7 @@ apo_cleanup_handler() {
         if [[ $exit_code == 1 && -n $saved_failure_class ]]; then exit_code=$(apo_class_exit_code "$saved_failure_class"); fi
     fi
     [[ -n ${APO_JSONL_FILE:-} && -f ${APO_JSONL_FILE:-} ]] && apo_finalize_json || true
-    if [[ ${APO_WORKER_DEPLOYED:-0} == 1 && ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && $(apo_remote_tryboot_flag 2>/dev/null || true) != 00000001 ]]; then apo_profile_cleanup_worker || true; fi
+    if [[ ${APO_WORKER_DEPLOYED:-0} == 1 && ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && $(apo_remote_tryboot_flag_once 2>/dev/null || true) != 00000001 ]]; then apo_profile_cleanup_worker || true; fi
     if declare -F apo_progress_clear_line >/dev/null 2>&1; then apo_progress_clear_line; fi
     exit "$exit_code"
 }
@@ -1410,6 +1410,11 @@ main() {
     case $APO_COMMAND in run|prepare|resume|recover|reset|apply) apo_acquire_lock ;; esac
     apo_public_overclock_select_continuation
     apo_public_test_select_continuation
+    case $APO_COMMAND in
+        run|prepare|resume|recover|reset|apply|post-floor-edge|post-floor-final)
+            (( APO_DRY_RUN == 1 )) || APO_PERSISTENT_SSH_RECOVERY=1
+            ;;
+    esac
     apo_progress_start_session
     trap apo_cleanup_handler EXIT
     trap 'exit 130' INT
@@ -1544,12 +1549,20 @@ main() {
                     return "$(apo_class_exit_code "$saved_failure_class")"
                 fi
             elif (( retry_saved_transient == 1 )); then
+                if apo_transient_hash_read_failure_is_retryable "$saved_failure_class" "$saved_failure_reason"; then
+                    if ! apo_verify_permanent_hash resume-transient-hash-recheck; then
+                        apo_state_fail RECOVERY_FAILURE "Saved protected-config evidence could not be re-proved after normal recovery: $APO_LAST_REASON"
+                        return "$APO_EXIT_RECOVERY"
+                    fi
+                    saved_failure_class=HARNESS_FAILURE
+                    saved_failure_reason="Protected-config hash evidence was temporarily unavailable, but resume re-proved the exact hash and normal health. Original evidence failure: $saved_failure_reason"
+                fi
                 apo_state_set STATUS RUNNING
                 apo_state_set FAILURE_CLASS ''
                 apo_state_set FAILURE_REASON ''
                 apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
                 apo_state_save
-                apo_event automatic-harness-retry WARN HARNESS_FAILURE "Adopted a safely recovered retryable harness failure from the saved checkpoint; repeating that complete candidate gate automatically: $saved_failure_reason"
+                apo_event automatic-harness-retry WARN HARNESS_FAILURE "Adopted a safely recovered retryable harness/evidence failure from the saved checkpoint; repeating that complete candidate gate automatically: $saved_failure_reason"
             else
                 apo_state_set STATUS RUNNING
                 apo_state_set FAILURE_CLASS ''

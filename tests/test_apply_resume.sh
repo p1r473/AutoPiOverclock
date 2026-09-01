@@ -87,6 +87,17 @@ apo_remote_root() {
         *) return 98 ;;
     esac
 }
+apo_remote_root_read() { apo_remote_root "$@"; }
+apo_remote_root_read_file() {
+    local output_file=$1
+    shift
+    apo_remote_root "$@" > "$output_file"
+}
+apo_remote_worker_read_file() {
+    local output_file=$1
+    shift
+    apo_remote_worker "$@" > "$output_file"
+}
 apo_apply_verify_old_config() { ROUTE="OLD:$2"; apo_state_set APPLY_STATUS "$2"; return 0; }
 apo_apply_validate_expected_config() { ROUTE=EXPECTED; apo_state_set APPLY_STATUS APPLIED; return 0; }
 apo_apply_restore_old_config() { ROUTE=ROLLBACK; apo_state_set APPLY_STATUS ROLLED_BACK; return 0; }
