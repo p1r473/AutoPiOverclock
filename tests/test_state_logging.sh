@@ -114,10 +114,10 @@ APO_REDACT=0
 apo_state_set CFG_MAX_FAN 0
 status_output=$(apo_print_status)
 grep -Fq 'Max fan tuning: disabled' <<< "$status_output"
-grep -Fq 'Gate retries:   0/2 context=none' <<< "$status_output"
+grep -Fq 'Gate retries:   0/5 context=none' <<< "$status_output"
 APO_RUN_PREFIX="$TEMP_DIR/fixture-report"
 report_output=$(apo_generate_report)
 grep -Fq 'Maximum fan cooling during tuning: disabled' "$TEMP_DIR/fixture-report-report.txt"
-grep -Fq 'Automatic gate retries: 0/2, context=none' "$TEMP_DIR/fixture-report-report.txt"
+grep -Fq 'Automatic gate retries: 0/5, context=none' "$TEMP_DIR/fixture-report-report.txt"
 grep -Fq 'Report file:' <<< "$report_output"
 printf 'test_state_logging: PASS\n'
