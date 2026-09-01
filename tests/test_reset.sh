@@ -31,9 +31,14 @@ run_cli() {
     : > "$SSH_LOG"
     : > "$PROCESS_LOG"
     set +e
+    # The production reset command deliberately keeps monitoring an
+    # unreachable target. This fixture's SSH binary is permanently failing,
+    # so give only the synthetic process a short outer deadline; otherwise a
+    # successful persistent-recovery implementation would make the unit test
+    # wait forever.
     CLI_OUTPUT=$(env HOME="$FAKE_HOME" PATH="$FAKE_BIN:$PATH" \
         APO_RESET_TEST_SSH_LOG="$SSH_LOG" APO_RESET_TEST_PROCESS_LOG="$PROCESS_LOG" \
-        "$ROOT/autopioverclock" "$@" 2>&1)
+        timeout --signal=TERM --kill-after=1s 2s "$ROOT/autopioverclock" "$@" 2>&1)
     CLI_RC=$?
     set -e
 }
