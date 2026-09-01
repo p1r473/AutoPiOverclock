@@ -2,7 +2,7 @@
 # This fixture calls production functions sourced below, then intentionally
 # redefines selected functions for later isolated scenarios.
 # shellcheck disable=SC2218
-set -Eeuxo pipefail
+set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
@@ -57,7 +57,7 @@ apo_return_normal() {
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
 apo_health_check() { ACTIONS+=("health:$4"); }
 apo_verify_permanent_hash() { ACTIONS+=("hash:$1"); }
-apo_recover_preserving_failure() { return 0; }
+apo_recover_preserving_failure() { APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
 apo_record_failure_after_recovery() { RECOVERY_FORCE_REBOOT=${4:-0}; apo_state_fail "$2" "$3"; }
 apo_class_is_edge_failure() { [[ $1 == BOOT_FAILURE || $1 == STABILITY_FAILURE ]]; }
 
@@ -177,6 +177,8 @@ apo_run_stress() {
 RECOVERY_UNEXPECTED_FIXTURE=1
 RECOVERY_STRESS_SCOPE=''
 apo_recover_preserving_failure() {
+    APO_LAST_CLASS=$2
+    APO_LAST_REASON=$3
     RECOVERY_STRESS_SCOPE=${5:-none}
     APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=$RECOVERY_UNEXPECTED_FIXTURE
     if (( RECOVERY_UNEXPECTED_FIXTURE == 1 )); then
@@ -207,7 +209,7 @@ fi
 
 # Restore the general success fixtures used by the remaining resume tests.
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
-apo_recover_preserving_failure() { return 0; }
+apo_recover_preserving_failure() { APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
 
 # Resume final validation at post-stress boot 2 of five. Endurance and boot 1
 # are already checkpointed and must not run again.
@@ -884,7 +886,7 @@ apo_return_normal() {
     apo_state_set CURRENT_CPU ''
     apo_state_set CURRENT_GPU ''
 }
-apo_recover_preserving_failure() { return 0; }
+apo_recover_preserving_failure() { APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
 
 # Applying a validated auto result changes the live/permanent normal clocks,
 # but the immutable stock baseline must still make the completed state safe to
