@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Candidate sweep, conservative selection, final endurance validation, and resume phases.
 
+: "${APO_TRANSIENT_PHASE_RETRY_MAX:=2}"
+
 apo_gpu_harness_smoke() {
     local smoke_duration=20 failure_class failure_reason force_normal_reboot=0
     apo_state_phase GPU_SMOKE NORMAL_BASELINE RUNNING
@@ -41,17 +43,31 @@ apo_candidate_tryboot_active_in_state() {
 }
 
 apo_candidate_boot_or_preserve_failure() {
-    local cpu_mhz=$1 gpu_mhz=$2 boot_context=$3 recovery_context=$4 failure_class failure_reason
-    if apo_boot_candidate "$cpu_mhz" "$gpu_mhz" "$boot_context"; then return 0; fi
-    failure_class=$APO_LAST_CLASS
-    failure_reason=$APO_LAST_REASON
-    apo_recover_preserving_failure "$recovery_context" "$failure_class" "$failure_reason" || return 1
-    return 1
+    local cpu_mhz=$1 gpu_mhz=$2 boot_context=$3 recovery_context=$4 failure_class failure_reason eligible
+    while :; do
+        if apo_boot_candidate "$cpu_mhz" "$gpu_mhz" "$boot_context"; then
+            apo_transient_phase_retry_clear "$boot_context"
+            return 0
+        fi
+        failure_class=$APO_LAST_CLASS
+        failure_reason=$APO_LAST_REASON
+        eligible=${APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE:-0}
+        apo_recover_observed_phase_failure "$recovery_context" "$failure_class" "$failure_reason" "$eligible" candidate-boot BOOT_FAILURE 'candidate boot or required boot health' || return 1
+        if apo_transient_phase_retry_schedule "$boot_context" "$APO_LAST_CLASS" "$APO_LAST_REASON" "$eligible"; then
+            continue
+        fi
+        if [[ $APO_LAST_CLASS == HARNESS_FAILURE && $eligible == 1 ]]; then
+            APO_LAST_REASON+=" Automatic recovery exhausted $APO_TRANSIENT_PHASE_RETRY_MAX bounded retries of this candidate gate."
+        else
+            apo_transient_phase_retry_clear "$boot_context"
+        fi
+        return 1
+    done
 }
 
 apo_test_candidate() {
     local cpu_mhz=$1 gpu_mhz=$2 label=$3 stress_kind=$4 stress_duration=${5:-${APO_CFG[CANDIDATE_DURATION_S]}} stage failure_class failure_reason boot_number normal_number
-    local candidate_boots=${APO_CFG[CANDIDATE_BOOTS]} stress_result_structured
+    local candidate_boots=${APO_CFG[CANDIDATE_BOOTS]} stress_result_structured transient_eligible
     if ! apo_candidate_identity_matches "$label" "$cpu_mhz" "$gpu_mhz"; then
         apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" BOOT_1
         apo_event "$label" INFO '' "Testing CPU=$cpu_mhz GPU=$gpu_mhz"
@@ -107,9 +123,21 @@ apo_test_candidate() {
                     failure_class=$APO_LAST_CLASS
                     failure_reason=$APO_LAST_REASON
                     stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
+                    transient_eligible=0
+                    if apo_transient_worker_failure_is_retryable "$failure_class" "$failure_reason" "$stress_result_structured"; then transient_eligible=1; fi
                     apo_recover_stress_failure "${label}-stress-recovery" "$failure_class" "$failure_reason" "$stress_result_structured" candidate || return 1
+                    if apo_transient_phase_retry_schedule "${label}-stress" "$APO_LAST_CLASS" "$APO_LAST_REASON" "$transient_eligible"; then
+                        apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" STRESS_BOOT
+                        continue
+                    fi
+                    if [[ $APO_LAST_CLASS == HARNESS_FAILURE && $transient_eligible == 1 ]]; then
+                        APO_LAST_REASON+=" Automatic recovery exhausted $APO_TRANSIENT_PHASE_RETRY_MAX bounded retries of this stress gate."
+                    else
+                        apo_transient_phase_retry_clear "${label}-stress"
+                    fi
                     return 1
                 fi
+                apo_transient_phase_retry_clear "${label}-stress"
                 apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" POST_STRESS_HEALTH
                 ;;
             POST_STRESS_HEALTH)
@@ -123,9 +151,22 @@ apo_test_candidate() {
                 if ! apo_health_check "$cpu_mhz" "$gpu_mhz" "$APO_TEST_VOLTAGE" "${label}-post-stress"; then
                     failure_class=$APO_LAST_CLASS
                     failure_reason=$APO_LAST_REASON
-                    apo_recover_preserving_failure "${label}-post-stress-recovery" "$failure_class" "$failure_reason" || return 1
+                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
+                    transient_eligible=0
+                    if apo_transient_worker_failure_is_retryable "$failure_class" "$failure_reason" "$stress_result_structured"; then transient_eligible=1; fi
+                    apo_recover_observed_phase_failure "${label}-post-stress-recovery" "$failure_class" "$failure_reason" "$transient_eligible" candidate-health STABILITY_FAILURE 'post-stress health' || return 1
+                    if apo_transient_phase_retry_schedule "${label}-post-stress-health" "$APO_LAST_CLASS" "$APO_LAST_REASON" "$transient_eligible"; then
+                        apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" STRESS_BOOT
+                        continue
+                    fi
+                    if [[ $APO_LAST_CLASS == HARNESS_FAILURE && $transient_eligible == 1 ]]; then
+                        APO_LAST_REASON+=" Automatic recovery exhausted $APO_TRANSIENT_PHASE_RETRY_MAX bounded retries of this post-stress health gate."
+                    else
+                        apo_transient_phase_retry_clear "${label}-post-stress-health"
+                    fi
                     return 1
                 fi
+                apo_transient_phase_retry_clear "${label}-post-stress-health"
                 apo_candidate_checkpoint "$label" "$cpu_mhz" "$gpu_mhz" FINAL_NORMAL
                 ;;
             FINAL_NORMAL)
@@ -702,6 +743,21 @@ apo_validate_recovery_wait_state() {
     esac
 }
 
+apo_validate_transient_retry_state() {
+    local retry_context retry_count
+    retry_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
+    retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
+    [[ $retry_count =~ ^[0-9]+$ && $retry_count -le $APO_TRANSIENT_PHASE_RETRY_MAX ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved automatic transport-retry count is malformed'
+        return 1
+    }
+    if (( retry_count == 0 )); then
+        [[ -z $retry_context ]] || { APO_AUTO_VALIDATION_REASON='Idle automatic transport-retry state retains a context'; return 1; }
+    else
+        [[ $retry_context =~ ^[A-Za-z0-9._:-]+$ ]] || { APO_AUTO_VALIDATION_REASON='Saved automatic transport-retry context is malformed'; return 1; }
+    fi
+}
+
 apo_auto_parse_clock_csv() {
     local label=$1 csv_value=$2 minimum=$3 maximum=$4 output_name=$5 item previous=-1
     local -n output_values=$output_name
@@ -1144,6 +1200,7 @@ apo_validate_auto_resume_state() {
     local post_floor_final post_floor_final_stage source_final_run_id source_final_hash source_final_duration source_final_backup
     APO_AUTO_VALIDATION_REASON=''
     apo_validate_recovery_wait_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    apo_validate_transient_retry_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_auto_validate_boolean 'automatic-candidate' "$auto_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_auto_validate_boolean 'edge CPU option' "$edge_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     post_floor_edge=$(apo_state_get POST_FLOOR_EDGE 0)
@@ -1799,6 +1856,40 @@ apo_final_saved_failure_is_retryable() {
     esac
 }
 
+apo_saved_transient_failure_is_retryable() {
+    local run_schema=${1:-$APO_CURRENT_RUN_SCHEMA} phase candidate_stage final_stage failure_reason retry_count
+    phase=$(apo_state_get PHASE '')
+    candidate_stage=$(apo_state_get CANDIDATE_STAGE '')
+    final_stage=$(apo_state_get FINAL_STAGE '')
+    failure_reason=$(apo_state_get FAILURE_REASON '')
+    retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
+    [[ $(apo_state_get RUN_SCHEMA '') == "$run_schema" && $run_schema == "$APO_CURRENT_RUN_SCHEMA" &&
+       $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
+       $(apo_state_get ORIGIN_COMMAND '') == overclock &&
+       $(apo_state_get STATUS '') == FAILED &&
+       $(apo_state_get FAILURE_CLASS '') == HARNESS_FAILURE &&
+       $retry_count =~ ^[0-9]+$ && $retry_count -lt $APO_TRANSIENT_PHASE_RETRY_MAX &&
+       $(apo_state_get APPLY_STATUS NOT_APPLIED) != APPLIED &&
+       $(apo_state_get TRYBOOT_EXPECTED 0) == 0 &&
+       $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 0 &&
+       -z $(apo_state_get TRYBOOT_OWNED_HASH '') &&
+       -z $(apo_state_get TRYBOOT_RESERVATION_HASH '') &&
+       -z $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') &&
+       -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]] || return 1
+    apo_transient_worker_failure_is_retryable HARNESS_FAILURE "$failure_reason" 0 || return 1
+    case $phase in
+        CPU_SWEEP|GPU_SWEEP|CPU_QUALIFICATION|GPU_QUALIFICATION)
+            case $candidate_stage in BOOT_*|STRESS_BOOT|STRESS|POST_STRESS_HEALTH) return 0 ;; *) return 1 ;; esac
+            ;;
+        FINAL_VALIDATION)
+            case $final_stage in PRE_STRESS_BOOT|ENDURANCE|BOOT_*) return 0 ;; *) return 1 ;; esac
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 apo_final_initialize_backoff_state() {
     local key
     for key in FINAL_BACKOFF_CPU FINAL_BACKOFF_GPU FINAL_BACKOFF_HISTORY FINAL_BACKOFF_LAST_STAGE \
@@ -1813,13 +1904,14 @@ apo_initialize_current_qualification_state() {
     for key in CPU_QUALIFICATION_TARGET CPU_QUALIFIED_CLOCK CPU_QUALIFICATION_HISTORY \
                CPU_QUALIFICATION_LAST_CLASS CPU_QUALIFICATION_LAST_REASON GPU_QUALIFICATION_CPU \
                GPU_QUALIFICATION_TARGET GPU_QUALIFIED_CPU GPU_QUALIFIED_CLOCK \
-               RECOVERY_WAIT_CONTEXT RECOVERY_WAIT_STARTED_AT; do
+               RECOVERY_WAIT_CONTEXT RECOVERY_WAIT_STARTED_AT TRANSIENT_RETRY_CONTEXT; do
         [[ -v APO_STATE[$key] ]] || apo_state_set "$key" ''
     done
     [[ -v APO_STATE[CPU_QUALIFICATION_STATUS] ]] || apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
     [[ -v APO_STATE[GPU_QUALIFICATION_STATUS] ]] || apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
     [[ -v APO_STATE[RECOVERY_WAIT_STATUS] ]] || apo_state_set RECOVERY_WAIT_STATUS IDLE
     [[ -v APO_STATE[RECOVERY_WAIT_TIMEOUTS] ]] || apo_state_set RECOVERY_WAIT_TIMEOUTS 0
+    [[ -v APO_STATE[TRANSIENT_RETRY_COUNT] ]] || apo_state_set TRANSIENT_RETRY_COUNT 0
 }
 
 apo_migrate_active_automatic_state() {
@@ -2258,20 +2350,57 @@ apo_post_floor_final_schedule_stress_backoff() {
 }
 
 apo_final_record_failure() {
-    local recovery_context=$1 failure_class=$2 failure_reason=$3 stress_result_structured=${4-} floor_cpu floor_gpu failed_stage edge_order
+    local recovery_context=$1 failure_class=$2 failure_reason=$3 recovery_kind=${4:-plain} recovery_evidence=${5:-0}
+    local floor_cpu floor_gpu failed_stage edge_order transient_eligible=0
     failed_stage=$(apo_state_get FINAL_STAGE '')
-    if [[ -n $stress_result_structured ]]; then
-        if ! apo_recover_stress_failure "$recovery_context" "$failure_class" "$failure_reason" "$stress_result_structured" final; then
+    case $recovery_kind in
+        stress)
+            if apo_transient_worker_failure_is_retryable "$failure_class" "$failure_reason" "$recovery_evidence"; then transient_eligible=1; fi
+            apo_recover_stress_failure "$recovery_context" "$failure_class" "$failure_reason" "$recovery_evidence" final || {
+                apo_state_clear_final_validation
+                apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+                return 1
+            }
+            ;;
+        boot)
+            transient_eligible=$recovery_evidence
+            apo_recover_observed_phase_failure "$recovery_context" "$failure_class" "$failure_reason" "$transient_eligible" final-boot BOOT_FAILURE 'final-validation boot or required boot health' || {
+                apo_state_clear_final_validation
+                apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+                return 1
+            }
+            ;;
+        health)
+            if apo_transient_worker_failure_is_retryable "$failure_class" "$failure_reason" "$recovery_evidence"; then transient_eligible=1; fi
+            apo_recover_observed_phase_failure "$recovery_context" "$failure_class" "$failure_reason" "$transient_eligible" final-health STABILITY_FAILURE 'final post-stress health' || {
+                apo_state_clear_final_validation
+                apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+                return 1
+            }
+            ;;
+        plain)
+            apo_recover_preserving_failure "$recovery_context" "$failure_class" "$failure_reason" || {
+                apo_state_clear_final_validation
+                apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+                return 1
+            }
+            ;;
+        *)
             apo_state_clear_final_validation
-            apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
+            apo_state_fail HARNESS_FAILURE "Unknown final failure recovery kind: $recovery_kind"
             return 1
-        fi
-        failure_class=$APO_LAST_CLASS
-        failure_reason=$APO_LAST_REASON
-    elif ! apo_recover_preserving_failure "$recovery_context" "$failure_class" "$failure_reason"; then
-        apo_state_clear_final_validation
-        apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"
-        return 1
+            ;;
+    esac
+    failure_class=$APO_LAST_CLASS
+    failure_reason=$APO_LAST_REASON
+    if apo_transient_phase_retry_schedule "final-${failed_stage}-${recovery_kind}" "$failure_class" "$failure_reason" "$transient_eligible"; then
+        return 3
+    fi
+    if [[ $failure_class == HARNESS_FAILURE && $transient_eligible == 1 ]]; then
+        failure_reason+=" Automatic recovery exhausted $APO_TRANSIENT_PHASE_RETRY_MAX bounded retries of this final-validation gate."
+        APO_LAST_REASON=$failure_reason
+    else
+        apo_transient_phase_retry_clear "final-${failed_stage}-${recovery_kind}"
     fi
     if [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 &&
           $(apo_state_get POST_FLOOR_FINAL_STAGE '') != BACKOFF_TUNING ]]; then
@@ -2439,39 +2568,48 @@ apo_final_validation() {
             PRE_STRESS_BOOT)
                 if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-pre-stress-boot; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure final-pre-stress-recovery "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                    if apo_final_record_failure final-pre-stress-recovery "$failure_class" "$failure_reason" boot "${APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE:-0}"; then return 0; else failure_action_rc=$?; fi
                     (( failure_action_rc == 2 )) && return 2
+                    (( failure_action_rc == 3 )) && continue
                     return 1
                 fi
+                apo_transient_phase_retry_clear 'final-PRE_STRESS_BOOT-boot'
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" ENDURANCE
                 ;;
             ENDURANCE)
                 if ! apo_candidate_tryboot_active_in_state "$recommended_cpu" "$recommended_gpu"; then
                     if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" final-endurance-resume-boot; then
                         failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                        if apo_final_record_failure final-endurance-resume-recovery "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                        if apo_final_record_failure final-endurance-resume-recovery "$failure_class" "$failure_reason" boot "${APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE:-0}"; then return 0; else failure_action_rc=$?; fi
                         (( failure_action_rc == 2 )) && return 2
+                        (( failure_action_rc == 3 )) && continue
                         return 1
                     fi
+                    apo_transient_phase_retry_clear 'final-ENDURANCE-boot'
                 fi
                 APO_LAST_RESULT_STRUCTURED=0
                 if ! apo_run_stress "$final_kind" "$endurance_duration" final-endurance 1; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
                     stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
-                    if apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason" "$stress_result_structured"; then
+                    if apo_final_record_failure final-endurance-recovery "$failure_class" "$failure_reason" stress "$stress_result_structured"; then
                         return 0
                     else
                         failure_action_rc=$?
                     fi
                     (( failure_action_rc == 2 )) && return 2
+                    (( failure_action_rc == 3 )) && continue
                     return 1
                 fi
+                apo_transient_phase_retry_clear 'final-ENDURANCE-stress'
                 if ! apo_health_check "$recommended_cpu" "$recommended_gpu" "$APO_TEST_VOLTAGE" final-post-endurance-health; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure final-health-recovery "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                    stress_result_structured=${APO_LAST_RESULT_STRUCTURED:-0}
+                    if apo_final_record_failure final-health-recovery "$failure_class" "$failure_reason" health "$stress_result_structured"; then return 0; else failure_action_rc=$?; fi
                     (( failure_action_rc == 2 )) && return 2
+                    (( failure_action_rc == 3 )) && continue
                     return 1
                 fi
+                apo_transient_phase_retry_clear 'final-ENDURANCE-health'
                 apo_state_set VALIDATION_DURATION_S "$endurance_duration"
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" RETURN_NORMAL
                 ;;
@@ -2493,10 +2631,12 @@ apo_final_validation() {
                 fi
                 if ! apo_boot_candidate "$recommended_cpu" "$recommended_gpu" "final-post-stress-boot-${boot_number}"; then
                     failure_class=$APO_LAST_CLASS; failure_reason=$APO_LAST_REASON
-                    if apo_final_record_failure "final-post-stress-recovery-${boot_number}" "$failure_class" "$failure_reason"; then return 0; else failure_action_rc=$?; fi
+                    if apo_final_record_failure "final-post-stress-recovery-${boot_number}" "$failure_class" "$failure_reason" boot "${APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE:-0}"; then return 0; else failure_action_rc=$?; fi
                     (( failure_action_rc == 2 )) && return 2
+                    (( failure_action_rc == 3 )) && continue
                     return 1
                 fi
+                apo_transient_phase_retry_clear "final-BOOT_${boot_number}-boot"
                 apo_final_checkpoint "$recommended_cpu" "$recommended_gpu" "NORMAL_${boot_number}"
                 ;;
             NORMAL_*)

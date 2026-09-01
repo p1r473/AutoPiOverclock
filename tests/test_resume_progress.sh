@@ -57,7 +57,7 @@ apo_return_normal() {
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
 apo_health_check() { ACTIONS+=("health:$4"); }
 apo_verify_permanent_hash() { ACTIONS+=("hash:$1"); }
-apo_recover_preserving_failure() { return 0; }
+apo_recover_preserving_failure() { APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
 apo_record_failure_after_recovery() { RECOVERY_FORCE_REBOOT=${4:-0}; apo_state_fail "$2" "$3"; }
 apo_class_is_edge_failure() { [[ $1 == BOOT_FAILURE || $1 == STABILITY_FAILURE ]]; }
 
@@ -158,8 +158,8 @@ apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
 
 # A missing stress trailer is promoted only when normal recovery proves that
 # the saved candidate boot rebooted before the controller requested it. This is
-# a silicon stability boundary, while same-boot transport loss remains fatal
-# harness uncertainty.
+# a silicon stability boundary, while same-boot transport loss receives only
+# bounded complete-gate retries and remains harness uncertainty if exhausted.
 APO_STATE=()
 apo_state_set CANDIDATE_LABEL cpu-3200_gpu-800
 apo_state_set CANDIDATE_CPU 3200
@@ -177,6 +177,8 @@ apo_run_stress() {
 RECOVERY_UNEXPECTED_FIXTURE=1
 RECOVERY_STRESS_SCOPE=''
 apo_recover_preserving_failure() {
+    APO_LAST_CLASS=$2
+    APO_LAST_REASON=$3
     RECOVERY_STRESS_SCOPE=${5:-none}
     APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=$RECOVERY_UNEXPECTED_FIXTURE
     if (( RECOVERY_UNEXPECTED_FIXTURE == 1 )); then
@@ -201,12 +203,13 @@ if apo_test_candidate 3200 800 cpu-3200_gpu-800 combined; then
     exit 1
 fi
 [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
-[[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+[[ $APO_LAST_REASON == *'The worker failed without a structured result.'* ]]
+[[ $APO_LAST_REASON == *'exhausted 2 bounded retries'* ]]
 [[ $RECOVERY_STRESS_SCOPE == candidate ]]
 
 # Restore the general success fixtures used by the remaining resume tests.
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
-apo_recover_preserving_failure() { return 0; }
+apo_recover_preserving_failure() { APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
 
 # Resume final validation at post-stress boot 2 of five. Endurance and boot 1
 # are already checkpointed and must not run again.
@@ -864,7 +867,7 @@ apo_ensure_worker_for_boot() { return 0; }
 apo_remote_tryboot_flag() { printf 00000000; }
 apo_remote_worker() { EDGE_RECOVERY_REBOOTS=$((EDGE_RECOVERY_REBOOTS + 1)); }
 apo_health_check() { return 0; }
-apo_final_record_failure edge-watchdog-recovery HARNESS_FAILURE 'The worker failed without a structured result.' 0
+apo_final_record_failure edge-watchdog-recovery HARNESS_FAILURE 'The worker failed without a structured result.' stress 0
 [[ $EDGE_RECOVERY_REBOOTS == 0 ]]
 [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
 [[ $APO_RECOVERY_UNEXPECTED_REBOOT_FROM == edge-candidate-boot ]]
@@ -883,7 +886,7 @@ apo_return_normal() {
     apo_state_set CURRENT_CPU ''
     apo_state_set CURRENT_GPU ''
 }
-apo_recover_preserving_failure() { return 0; }
+apo_recover_preserving_failure() { APO_LAST_CLASS=$2; APO_LAST_REASON=$3; return 0; }
 
 # Applying a validated auto result changes the live/permanent normal clocks,
 # but the immutable stock baseline must still make the completed state safe to

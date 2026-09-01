@@ -223,6 +223,7 @@ APO_LOG_FILE=''
     }
     apo_post_reboot_handshake old-boot 30 candidate-boot
     [[ $APO_REBOOT_BOOT_ID == new-boot ]]
+    [[ $APO_REBOOT_OBSERVED_BOOT_ID == new-boot ]]
     [[ $APO_REBOOT_HANDSHAKE_STAGE == complete ]]
     [[ $APO_WORKER_BOOT_ID == new-boot && $UPLOADS == 1 ]]
 
@@ -232,6 +233,7 @@ APO_LOG_FILE=''
         exit 1
     fi
     [[ $APO_REBOOT_HANDSHAKE_STAGE == worker ]]
+    [[ $APO_REBOOT_OBSERVED_BOOT_ID == newer-boot ]]
     [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
     [[ $APO_LAST_REASON == *'run-isolated worker could not be redeployed'* ]]
 )
