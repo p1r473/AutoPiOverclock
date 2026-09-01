@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Local status and concise report generation.
 
+: "${APO_TRANSIENT_PHASE_RETRY_MAX:=2}"
+
 apo_report_value() {
     local value=$1 replacement
     if [[ ${APO_REDACT:-0} == 1 ]]; then
@@ -62,6 +64,7 @@ Apply status:   $(apo_state_get APPLY_STATUS NOT_APPLIED)
 Watchdog repair: $(apo_state_get WATCHDOG_REPAIR_STATUS NOT_STARTED)
 Watchdog hashes: old=$(apo_report_state_value WATCHDOG_REPAIR_OLD_HASH none) expected=$(apo_report_state_value WATCHDOG_REPAIR_EXPECTED_HASH none) new=$(apo_report_state_value WATCHDOG_REPAIR_NEW_HASH none)
 SSH recovery:   $(apo_state_get RECOVERY_WAIT_STATUS IDLE) context=$(apo_report_state_value RECOVERY_WAIT_CONTEXT none) extended-waits=$(apo_state_get RECOVERY_WAIT_TIMEOUTS 0)
+Gate retries:   $(apo_state_get TRANSIENT_RETRY_COUNT 0)/$APO_TRANSIENT_PHASE_RETRY_MAX context=$(apo_report_state_value TRANSIENT_RETRY_CONTEXT none)
 Failure class:  $(apo_state_get FAILURE_CLASS none)
 Failure reason: $(apo_report_value "$(apo_state_get FAILURE_REASON none)")
 State file:     $(apo_report_value "$APO_STATE_FILE")
@@ -138,6 +141,8 @@ apo_generate_report() {
             "$(apo_report_state_value WATCHDOG_REPAIR_OLD_HASH none)" "$(apo_report_state_value WATCHDOG_REPAIR_EXPECTED_HASH none)" "$(apo_report_state_value WATCHDOG_REPAIR_NEW_HASH none)"
         printf 'Extended SSH recovery: status=%s, context=%s, waits=%s\n' \
             "$(apo_state_get RECOVERY_WAIT_STATUS IDLE)" "$(apo_report_state_value RECOVERY_WAIT_CONTEXT none)" "$(apo_state_get RECOVERY_WAIT_TIMEOUTS 0)"
+        printf 'Automatic gate retries: %s/%s, context=%s\n' \
+            "$(apo_state_get TRANSIENT_RETRY_COUNT 0)" "$APO_TRANSIENT_PHASE_RETRY_MAX" "$(apo_report_state_value TRANSIENT_RETRY_CONTEXT none)"
         printf 'Failure class: %s\n' "$(apo_state_get FAILURE_CLASS none)"
         printf 'Failure reason: %s\n' "$(apo_report_value "$(apo_state_get FAILURE_REASON none)")"
         printf 'Storage layout: %s\n' "$(apo_report_value "$(apo_state_get STORAGE_LAYOUT unknown)")"

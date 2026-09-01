@@ -250,6 +250,29 @@ ln -sfn "$(basename "$FAILED_FINAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.st
     [[ $APO_SELECTED_RUN_ID == "$FAILED_FINAL_RUN" ]]
 )
 
+# A current saved sweep checkpoint matching Tron's recovered unstructured
+# boot/health handoff is selected by the simple command and retried in place.
+FAILED_BOOT_HANDOFF_RUN=20260831-200735-4444444444444444
+FAILED_BOOT_HANDOFF_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_BOOT_HANDOFF_RUN}.state"
+write_state_fixture "$FAILED_BOOT_HANDOFF_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$FAILED_BOOT_HANDOFF_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 STATUS FAILED PHASE CPU_SWEEP \
+    FAILURE_CLASS HARNESS_FAILURE FAILURE_REASON 'The worker failed without a structured result.' \
+    CANDIDATE_LABEL cpu-3000_gpu-960 CANDIDATE_CPU 3000 CANDIDATE_GPU 960 \
+    CANDIDATE_STAGE STRESS_BOOT TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 \
+    APPLY_STATUS NOT_APPLIED TRANSIENT_RETRY_COUNT 0
+ln -sfn "$(basename "$FAILED_BOOT_HANDOFF_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume ]]
+    [[ $APO_SELECTED_RUN_ID == "$FAILED_BOOT_HANDOFF_RUN" ]]
+)
+
 apo_failed_harness_run=20260827-010203-1111111111111111
 apo_failed_harness_state="$CONTINUATION_OUTPUT/tron-${apo_failed_harness_run}.state"
 write_state_fixture "$apo_failed_harness_state" \
@@ -316,4 +339,3 @@ ln -sfn "$(basename "$FAILED_LEGACY_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tro
     [[ $APO_COMMAND == resume ]]
     [[ $APO_SELECTED_RUN_ID == "$FAILED_LEGACY_ENDURANCE_RUN" ]]
 )
-

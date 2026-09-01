@@ -158,8 +158,8 @@ apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
 
 # A missing stress trailer is promoted only when normal recovery proves that
 # the saved candidate boot rebooted before the controller requested it. This is
-# a silicon stability boundary, while same-boot transport loss remains fatal
-# harness uncertainty.
+# a silicon stability boundary, while same-boot transport loss receives only
+# bounded complete-gate retries and remains harness uncertainty if exhausted.
 APO_STATE=()
 apo_state_set CANDIDATE_LABEL cpu-3200_gpu-800
 apo_state_set CANDIDATE_CPU 3200
@@ -201,7 +201,8 @@ if apo_test_candidate 3200 800 cpu-3200_gpu-800 combined; then
     exit 1
 fi
 [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
-[[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+[[ $APO_LAST_REASON == *'The worker failed without a structured result.'* ]]
+[[ $APO_LAST_REASON == *'exhausted 2 bounded retries'* ]]
 [[ $RECOVERY_STRESS_SCOPE == candidate ]]
 
 # Restore the general success fixtures used by the remaining resume tests.
@@ -864,7 +865,7 @@ apo_ensure_worker_for_boot() { return 0; }
 apo_remote_tryboot_flag() { printf 00000000; }
 apo_remote_worker() { EDGE_RECOVERY_REBOOTS=$((EDGE_RECOVERY_REBOOTS + 1)); }
 apo_health_check() { return 0; }
-apo_final_record_failure edge-watchdog-recovery HARNESS_FAILURE 'The worker failed without a structured result.' 0
+apo_final_record_failure edge-watchdog-recovery HARNESS_FAILURE 'The worker failed without a structured result.' stress 0
 [[ $EDGE_RECOVERY_REBOOTS == 0 ]]
 [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
 [[ $APO_RECOVERY_UNEXPECTED_REBOOT_FROM == edge-candidate-boot ]]

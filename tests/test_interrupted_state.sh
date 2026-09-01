@@ -28,6 +28,8 @@ reset_recovery_fixture() {
     apo_state_set LAST_BOOT_ID ''
     apo_state_set NORMAL_BOOT_ID ''
     apo_state_set CANDIDATE_BOOT_ID ''
+    apo_state_set TRANSIENT_RETRY_CONTEXT ''
+    apo_state_set TRANSIENT_RETRY_COUNT 0
     APO_BOOT_TIMEOUT=300
     APO_BOOT_SETTLE_SECONDS=0
     APO_NORMAL_CPU=2400
@@ -81,11 +83,61 @@ set +e
     (exit 143)
     apo_cleanup_handler
 )
+
 EXIT_HANDLER_RC=$?
 set -e
 [[ $EXIT_HANDLER_RC == 143 ]]
 [[ $(<"$EXIT_RECOVERY_MARKER") == called ]]
 rm -f -- "$EXIT_RECOVERY_MARKER"
+
+# A candidate that was observed on a distinct tryboot boot and then vanished
+# during its boot/health handoff is a boot boundary only after recovery proves
+# a later clear normal boot, exact ownership cleanup, and normal health.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID candidate-boot-handoff
+    apo_state_set CANDIDATE_BOOT_ID candidate-boot-handoff
+    apo_state_set CANDIDATE_STAGE STRESS_BOOT
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf candidate-boot-normal; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_remote_worker() { return 1; }
+    apo_health_check() { return 0; }
+    apo_recover_observed_phase_failure boot-handoff-recovery HARNESS_FAILURE 'The worker failed without a structured result.' 1 candidate-boot BOOT_FAILURE 'candidate boot or required boot health'
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]
+    [[ $APO_LAST_CLASS == BOOT_FAILURE ]]
+    [[ $APO_LAST_REASON == *'during candidate boot or required boot health'* ]]
+    [[ $APO_LAST_REASON == *'candidate-boot-handoff to verified normal boot candidate-boot-normal'* ]]
+)
+
+# If the same candidate boot is still alive, transport loss is not rewritten
+# as a clock boundary. It receives two bounded automatic gate retries instead
+# of immediately terminating or looping forever.
+(
+    reset_recovery_fixture
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID same-boot-handoff
+    apo_state_set CANDIDATE_BOOT_ID same-boot-handoff
+    apo_state_set CANDIDATE_STAGE STRESS_BOOT
+    CURRENT_BOOT_ID=same-boot-handoff
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() { [[ $CURRENT_BOOT_ID == same-boot-handoff ]] && printf 00000001 || printf 00000000; }
+    apo_remote_worker() { CURRENT_BOOT_ID=same-boot-normal; }
+    apo_wait_for_new_boot() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_health_check() { return 0; }
+    apo_recover_observed_phase_failure same-boot-handoff-recovery HARNESS_FAILURE 'The worker failed without a structured result.' 1 candidate-boot BOOT_FAILURE 'candidate boot or required boot health'
+    [[ $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 0 ]]
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    apo_transient_phase_retry_schedule candidate-handoff "$APO_LAST_CLASS" "$APO_LAST_REASON" 1
+    apo_transient_phase_retry_schedule candidate-handoff "$APO_LAST_CLASS" "$APO_LAST_REASON" 1
+    if apo_transient_phase_retry_schedule candidate-handoff "$APO_LAST_CLASS" "$APO_LAST_REASON" 1; then
+        echo 'automatic transport retry exceeded its bounded limit' >&2
+        exit 1
+    fi
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 2 ]]
+)
 
 # An already-normal target uses the complete profile timeout and records its
 # current boot ID instead of leaving stale candidate/recovery state behind.

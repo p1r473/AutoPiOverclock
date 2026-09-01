@@ -495,7 +495,8 @@ apo_public_overclock_select_continuation() {
            [[ $phase != PREPARE && $phase != PREPARED ]]; } ||
           { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 || $state_schema == 8 || $state_schema == 7 ]] &&
                apo_final_saved_failure_is_retryable "$state_schema"; } ||
-          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $post_floor_final == 1 && $status == FAILED ]]; }; }; then
+          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $post_floor_final == 1 && $status == FAILED ]]; } ||
+          { apo_saved_transient_failure_is_retryable "$state_schema"; }; }; then
         apo_public_overclock_load_saved_duration_plan
         if (( APO_RESTART_FROM_OPTION_SEEN == 0 )); then
             apo_public_overclock_require_matching_saved_durations
@@ -1385,7 +1386,7 @@ apo_exit_from_saved_failure() {
 }
 
 main() {
-    local status state_schema retry_saved_final=0 saved_failure_stage='' saved_failure_class='' saved_failure_reason=''
+    local status state_schema retry_saved_final=0 retry_saved_transient=0 saved_failure_stage='' saved_failure_class='' saved_failure_reason=''
     apo_parse_cli "$@"
     if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
         APO_RESTART_PENDING=1
@@ -1517,6 +1518,10 @@ main() {
                 saved_failure_stage=$(apo_state_get FINAL_STAGE '')
                 saved_failure_class=$(apo_state_get FAILURE_CLASS '')
                 saved_failure_reason=$(apo_state_get FAILURE_REASON '')
+            elif apo_saved_transient_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then
+                retry_saved_transient=1
+                saved_failure_class=$(apo_state_get FAILURE_CLASS '')
+                saved_failure_reason=$(apo_state_get FAILURE_REASON '')
             fi
             apo_prepare_remote_for_saved_run
             apo_recover_normal resume-initial-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
@@ -1529,6 +1534,13 @@ main() {
                     apo_state_fail "$saved_failure_class" "$saved_failure_reason"
                     return "$(apo_class_exit_code "$saved_failure_class")"
                 fi
+            elif (( retry_saved_transient == 1 )); then
+                apo_state_set STATUS RUNNING
+                apo_state_set FAILURE_CLASS ''
+                apo_state_set FAILURE_REASON ''
+                apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
+                apo_state_save
+                apo_event automatic-transport-retry WARN HARNESS_FAILURE "Adopted a safely recovered unstructured worker loss from the saved checkpoint; repeating that complete candidate gate automatically: $saved_failure_reason"
             else
                 apo_state_set STATUS RUNNING
                 apo_state_set FAILURE_CLASS ''

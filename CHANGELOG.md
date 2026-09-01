@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.36 — 2026-08-31
+
+- Closed the candidate boot/health handoff gap exposed on Tron. The reboot handshake now retains the distinct candidate boot ID before redeploying the run-isolated worker, so a second autonomous reboot during worker deployment or required health can be proved through the same clear-tryboot, owned-file-cleanup, protected-hash, stock-clock, and watchdog recovery gates used for stress failures.
+- Added one bounded automatic transport supervisor across sweep, refinement, CPU/GPU qualification, edge/floor final validation, and post-stress health. A safely recovered unstructured SSH/worker loss repeats the complete affected gate up to two times; an exactly proved autonomous reboot becomes the appropriate boot/stability boundary and backs off automatically; recovery uncertainty still stops without relabeling evidence.
+- Made the simple `overclock TARGET` and plain `resume TARGET` adopt the exact safely recovered alpha.35 Tron-style worker-loss checkpoint and retry it in place. Retry context/count are persisted and validated, preventing both immediate terminal exits and infinite retry loops.
+
 ## 0.1.0-alpha.35 — 2026-08-31
 
 - Fixed linked longer-final validation so a fully recovered `BOOT_FAILURE` or `STABILITY_FAILURE` no longer stops at stock. Ambiguous combined evidence now lowers every still-overclocked domain by its existing production guard, repeats both saved-duration qualifications, and continues into a fresh edge-first final sequence without claiming whether CPU or GPU caused the reboot.

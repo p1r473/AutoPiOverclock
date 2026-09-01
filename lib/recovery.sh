@@ -5,6 +5,18 @@ APO_RECOVERY_IN_PROGRESS=0
 APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
 APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
 APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
+APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE=0
+APO_TRANSIENT_PHASE_RETRY_MAX=2
+
+apo_transient_worker_failure_is_retryable() {
+    local failure_class=$1 failure_reason=$2 result_structured=${3:-0}
+    [[ $failure_class == HARNESS_FAILURE && $result_structured == 0 ]] || return 1
+    case $failure_reason in
+        'The worker failed without a structured result.') return 0 ;;
+        The\ target\ returned\ after\ *,\ but\ its\ run-isolated\ worker\ could\ not\ be\ redeployed.) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 apo_stress_reboot_scope_is_active() {
     local stress_reboot_scope=$1
@@ -23,6 +35,61 @@ apo_stress_reboot_scope_is_active() {
             return 1
             ;;
     esac
+}
+
+apo_reboot_observation_scope_is_active() {
+    local reboot_scope=$1
+    case $reboot_scope in
+        candidate|final)
+            apo_stress_reboot_scope_is_active "$reboot_scope"
+            ;;
+        candidate-boot)
+            case $(apo_state_get CANDIDATE_STAGE '') in BOOT_*|STRESS_BOOT|STRESS) return 0 ;; *) return 1 ;; esac
+            ;;
+        final-boot)
+            [[ $(apo_state_get PHASE '') == FINAL_VALIDATION ]] || return 1
+            case $(apo_state_get FINAL_STAGE '') in PRE_STRESS_BOOT|ENDURANCE|BOOT_*) return 0 ;; *) return 1 ;; esac
+            ;;
+        candidate-health)
+            [[ $(apo_state_get CANDIDATE_STAGE '') == POST_STRESS_HEALTH ]]
+            ;;
+        final-health)
+            [[ $(apo_state_get PHASE '') == FINAL_VALIDATION && $(apo_state_get FINAL_STAGE '') == ENDURANCE ]]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+apo_transient_phase_retry_schedule() {
+    local retry_context=$1 original_class=$2 original_reason=$3 eligible=${4:-0}
+    local saved_context retry_count
+    [[ $eligible == 1 && $original_class == HARNESS_FAILURE && -n $original_reason ]] || return 1
+    saved_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
+    retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
+    [[ $retry_count =~ ^[0-9]+$ ]] || return 1
+    if [[ $saved_context != "$retry_context" ]]; then retry_count=0; fi
+    (( retry_count < APO_TRANSIENT_PHASE_RETRY_MAX )) || return 1
+    retry_count=$((retry_count + 1))
+    apo_state_set TRANSIENT_RETRY_CONTEXT "$retry_context"
+    apo_state_set TRANSIENT_RETRY_COUNT "$retry_count"
+    apo_state_set STATUS RUNNING
+    apo_state_set FAILURE_CLASS ''
+    apo_state_set FAILURE_REASON ''
+    apo_state_save
+    apo_event automatic-transport-retry WARN HARNESS_FAILURE "Recovered an unstructured transport loss in $retry_context; repeating the complete affected gate automatically (retry $retry_count/$APO_TRANSIENT_PHASE_RETRY_MAX): $original_reason"
+}
+
+apo_transient_phase_retry_clear() {
+    local completed_context=${1:-} saved_context
+    saved_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
+    [[ -z $saved_context || -z $completed_context || $saved_context == "$completed_context" ]] || return 0
+    if [[ -n $saved_context || $(apo_state_get TRANSIENT_RETRY_COUNT 0) != 0 ]]; then
+        apo_state_set TRANSIENT_RETRY_CONTEXT ''
+        apo_state_set TRANSIENT_RETRY_COUNT 0
+        apo_state_save
+    fi
 }
 
 apo_prepare_candidate() {
@@ -120,6 +187,7 @@ apo_clear_managed_tryboot() {
 
 apo_boot_candidate() {
     local cpu_mhz=$1 gpu_mhz=$2 context=$3 old_boot_id new_boot_id tryboot_flag expected_tryboot_hash ownership_token
+    APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE=0
     apo_prepare_candidate "$cpu_mhz" "$gpu_mhz" "$context" || return 1
     expected_tryboot_hash=$(apo_state_get TRYBOOT_OWNED_HASH '')
     ownership_token=$(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '')
@@ -141,6 +209,13 @@ apo_boot_candidate() {
     if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" "$context"; then
         if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
             APO_LAST_CLASS=HARNESS_FAILURE
+            if [[ -n ${APO_REBOOT_OBSERVED_BOOT_ID:-} ]] &&
+               apo_transient_worker_failure_is_retryable "$APO_LAST_CLASS" "$APO_LAST_REASON" 0; then
+                apo_state_set CANDIDATE_BOOT_ID "$APO_REBOOT_OBSERVED_BOOT_ID"
+                apo_state_set LAST_BOOT_ID "$APO_REBOOT_OBSERVED_BOOT_ID"
+                apo_state_save
+                APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE=1
+            fi
         else
             APO_LAST_CLASS=BOOT_FAILURE
             APO_LAST_REASON="No reboot/recovery reached SSH within ${APO_BOOT_TIMEOUT}s for $context."
@@ -168,7 +243,13 @@ apo_boot_candidate() {
     apo_state_set LAST_BOOT_ID "$new_boot_id"
     apo_state_save
     sleep "$APO_BOOT_SETTLE_SECONDS"
-    apo_health_check "$cpu_mhz" "$gpu_mhz" "$APO_TEST_VOLTAGE" "$context"
+    if apo_health_check "$cpu_mhz" "$gpu_mhz" "$APO_TEST_VOLTAGE" "$context"; then
+        return 0
+    fi
+    if apo_transient_worker_failure_is_retryable "$APO_LAST_CLASS" "$APO_LAST_REASON" "${APO_LAST_RESULT_STRUCTURED:-0}"; then
+        APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE=1
+    fi
+    return 1
 }
 
 apo_return_normal() {
@@ -184,16 +265,16 @@ apo_return_normal() {
         return 1
     }
     case $stress_reboot_scope in
-        none|candidate|final) ;;
+        none|candidate|final|candidate-boot|final-boot|candidate-health|final-health) ;;
         *)
             APO_LAST_CLASS=RECOVERY_FAILURE
-            APO_LAST_REASON='The stress-reboot observation scope is malformed.'
+            APO_LAST_REASON='The reboot-observation scope is malformed.'
             return 1
             ;;
     esac
     if (( force_normal_reboot == 1 )) && [[ $stress_reboot_scope != none ]]; then
         APO_LAST_CLASS=RECOVERY_FAILURE
-        APO_LAST_REASON='Forced graphical recovery and stress-reboot observation cannot be combined.'
+        APO_LAST_REASON='Forced graphical recovery and reboot observation cannot be combined.'
         return 1
     fi
     if (( force_normal_reboot == 1 )) && [[ ${APO_PROFILE:-} != batocera || ${APO_MODE_EFFECTIVE:-} != graphical ]]; then
@@ -241,7 +322,7 @@ apo_return_normal() {
                    [[ $expected_tryboot == 1 && -n $pending_boot_id &&
                       $current_boot_id != "$pending_boot_id" &&
                       $(apo_state_get CANDIDATE_BOOT_ID '') == "$pending_boot_id" ]] &&
-                   apo_stress_reboot_scope_is_active "$stress_reboot_scope"; then
+                   apo_reboot_observation_scope_is_active "$stress_reboot_scope"; then
                     APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=1
                     APO_RECOVERY_UNEXPECTED_REBOOT_FROM=$pending_boot_id
                     APO_RECOVERY_UNEXPECTED_REBOOT_TO=$current_boot_id
@@ -336,6 +417,22 @@ apo_recover_preserving_failure() {
     APO_LAST_CLASS=RECOVERY_FAILURE
     APO_LAST_REASON="Original $original_class: $original_reason; normal recovery failed with $recovery_class: $recovery_reason"
     return 1
+}
+
+apo_recover_observed_phase_failure() {
+    local recovery_context=$1 original_class=$2 original_reason=$3 eligible=${4:-0}
+    local observation_scope=${5:-none} promoted_class=${6:-BOOT_FAILURE} phase_description=${7:-candidate-gate}
+    if ! apo_recover_preserving_failure "$recovery_context" "$original_class" "$original_reason" 0 "$observation_scope"; then
+        return 1
+    fi
+    if [[ $original_class == HARNESS_FAILURE && $eligible == 1 &&
+          $APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT == 1 ]]; then
+        APO_LAST_CLASS=$promoted_class
+        APO_LAST_REASON="Candidate became unreachable without a structured result during $phase_description and rebooted unexpectedly from boot ${APO_RECOVERY_UNEXPECTED_REBOOT_FROM:-unknown} to verified normal boot ${APO_RECOVERY_UNEXPECTED_REBOOT_TO:-unknown}."
+        apo_state_set LAST_FAILURE_CLASS "$APO_LAST_CLASS"
+        apo_state_set LAST_FAILURE_REASON "$APO_LAST_REASON"
+        apo_state_save
+    fi
 }
 
 apo_recover_stress_failure() {
