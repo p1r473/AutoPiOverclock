@@ -61,9 +61,9 @@ apo_run_worker_capture() {
     set +e
     if declare -F apo_progress_capture_worker_stream >/dev/null 2>&1; then
         # The progress consumer is the final pipeline command. Run it in this
-        # shell so its cursor-anchor and telemetry state remain identical to the
+        # shell so its progress-line and telemetry state remain identical to the
         # parent after the worker exits; a subshell copy can otherwise leave the
-        # terminal and controller disagreeing about whether a row is reserved.
+        # terminal and controller disagreeing about whether a row is active.
         shopt -q lastpipe && lastpipe_was_set=1
         shopt -s lastpipe
         apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" 2>&1 | apo_progress_capture_worker_stream "$output_file"
