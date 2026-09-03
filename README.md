@@ -137,6 +137,46 @@ Every operational command requires `TARGET`. `--qualification-hours`, `--final-h
 
 Common transport options are `--identity-file FILE`, `--ssh-port PORT`, and `--output-dir DIR`. Advanced `run` options include `--config FILE`, `--mode auto|graphical|headless`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--yes`, and `--no-max-fan`. Transport/output options, named checkpoint restarts, strict plans, and the complete expert recovery/reporting interface are documented in [the CLI reference](docs/cli.md). They are not required for the normal two-command workflow; `reset TARGET` is available when a user wants to return to stock.
 
+## Configuration
+
+Configuration files are strict, data-only `KEY=VALUE` files. They are parsed, never sourced.
+
+```ini
+cpu_candidates_mhz=
+gpu_candidates_mhz=
+voltage_delta_uv=existing
+candidate_duration_seconds=600
+final_duration_seconds=86400
+max_temp_c=75
+telemetry_interval_seconds=5
+conservative_backoff_steps=1
+candidate_boots=2
+final_boots=3
+required_services=
+frontend_process=
+audio_sink_pattern=
+```
+
+Custom configuration is an advanced `run TARGET --config FILE` interface retained for development and support. The normal `autopioverclock overclock TARGET` command intentionally uses the fixed automatic policy above and accepts no custom clock plan. Explicit candidate lists must be strictly increasing; empty lists skip that domain, and at least one domain must contain candidates.
+
+`voltage_delta_uv=existing` preserves the target's existing value; AutoPiOverclock never silently raises voltage. `final_duration_seconds` accepts 3,600–604,800 seconds for the advanced explicit plan, candidate boots cannot be lower than two, and final boot/recovery cycles cannot be lower than three. The simple hour options are preferred for automatic tuning because they bind qualification, final, and edge timing visibly in one command.
+
+| Key | Meaning and accepted values |
+| --- | --- |
+| `cpu_candidates_mhz` | Strictly increasing comma-separated CPU clocks; each value 600–4000 MHz. Empty skips CPU tuning. |
+| `gpu_candidates_mhz` | Strictly increasing comma-separated V3D clocks; each value 200–3000 MHz. Empty skips GPU tuning. |
+| `voltage_delta_uv` | `existing`, or an explicit 0–100000 microvolt delta. |
+| `candidate_duration_seconds` | Stress duration for each short search candidate; 10–86400 seconds. |
+| `final_duration_seconds` | Combined endurance duration for an advanced explicit plan; 3600–604800 seconds. |
+| `max_temp_c` | Exclusive temperature ceiling; 40–95 °C. Reaching the ceiling fails the candidate. |
+| `telemetry_interval_seconds` | Temperature, clocks, throttle, and kernel-error sampling cadence; 1–60 seconds. Workload supervision still runs every second. |
+| `conservative_backoff_steps` | Explicit-plan positions to step down from the maximum observed pass; 0–10. Configuration-free auto uses its fixed MHz guards instead. |
+| `candidate_boots` | Candidate/normal recovery cycles before candidate stress; 2–10. |
+| `final_boots` | Post-endurance candidate/normal recovery cycles; 3–10. |
+| `required_services` | Optional comma-separated service names that must remain active. |
+| `frontend_process` | Optional single process name that must remain present. |
+| `audio_sink_pattern` | Optional literal substring required in the default audio-sink inspection. |
+
 ## What every candidate must prove
 
 - SSH returns after the expected boot.
