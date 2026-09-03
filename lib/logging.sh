@@ -43,14 +43,23 @@ apo_attach_artifacts_from_state() {
     APO_RUN_ID=$(apo_state_get RUN_ID)
     APO_RUN_PREFIX="$(dirname "$APO_STATE_FILE")/$(basename "${APO_STATE_FILE%.state}")"
     APO_OUTPUT_DIR=$(dirname "$APO_STATE_FILE")
-    APO_LOG_FILE=$(apo_state_get LOG_FILE "${APO_RUN_PREFIX}.log")
-    APO_CSV_FILE=$(apo_state_get CSV_FILE "${APO_RUN_PREFIX}.csv")
-    APO_JSONL_FILE=$(apo_state_get JSONL_FILE "${APO_RUN_PREFIX}.jsonl")
-    APO_JSON_FILE=$(apo_state_get JSON_FILE "${APO_RUN_PREFIX}.json")
-    APO_SUMMARY_FILE=$(apo_state_get SUMMARY_FILE "${APO_RUN_PREFIX}-summary.txt")
-    APO_EFFECTIVE_CONFIG_FILE=$(apo_state_get EFFECTIVE_CONFIG_FILE "${APO_RUN_PREFIX}.conf")
-    APO_DISCOVERY_FILE=$(apo_state_get DISCOVERY_FILE "${APO_RUN_PREFIX}-discovery.txt")
-    touch "$APO_LOG_FILE" "$APO_CSV_FILE" "$APO_JSONL_FILE" "$APO_SUMMARY_FILE"
+    # Artifact destinations are properties of the verified state pathname, not
+    # authority carried inside an editable state value. Reconstruct every path
+    # so a corrupt or imported state cannot make the controller touch or
+    # overwrite an unrelated file.
+    APO_LOG_FILE="${APO_RUN_PREFIX}.log"
+    APO_CSV_FILE="${APO_RUN_PREFIX}.csv"
+    APO_JSONL_FILE="${APO_RUN_PREFIX}.jsonl"
+    APO_JSON_FILE="${APO_RUN_PREFIX}.json"
+    APO_SUMMARY_FILE="${APO_RUN_PREFIX}-summary.txt"
+    APO_EFFECTIVE_CONFIG_FILE="${APO_RUN_PREFIX}.conf"
+    APO_DISCOVERY_FILE="${APO_RUN_PREFIX}-discovery.txt"
+    # Observers must not create or timestamp run artifacts. Mutating saved-run
+    # commands retain the historical repair behavior for missing core files.
+    case ${APO_COMMAND:-} in
+        status|report) ;;
+        *) touch -- "$APO_LOG_FILE" "$APO_CSV_FILE" "$APO_JSONL_FILE" "$APO_SUMMARY_FILE" ;;
+    esac
 }
 
 apo_log() {
@@ -116,7 +125,7 @@ apo_find_state_file() {
         candidate_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-latest.state"
         [[ -e $candidate_file ]] || return 1
         if [[ -L $candidate_file ]]; then
-            link_target=$(readlink "$candidate_file")
+            link_target=$(readlink "$candidate_file" 2>/dev/null) || return 1
             [[ $link_target != */* && -n $link_target ]] || return 1
             candidate_file="${APO_OUTPUT_DIR}/${link_target}"
         fi

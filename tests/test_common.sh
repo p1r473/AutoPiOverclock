@@ -10,6 +10,7 @@ source "$ROOT/lib/ssh.sh"
 [[ $APO_TRANSIENT_READ_ATTEMPTS == 30 ]]
 [[ $APO_TRANSIENT_READ_DELAY_SECONDS == 10 ]]
 [[ $APO_PREFLIGHT_SSH_TIMEOUT_SECONDS == 300 ]]
+[[ $APO_REBOOT_START_GRACE_SECONDS == 120 ]]
 
 apo_parse_target example-host
 [[ $APO_REMOTE_USER == "$(id -un)" ]]
@@ -194,6 +195,94 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     [[ $(wc -c < "$TRYBOOT_READ_FILE") == 30 ]]
 )
 
+# Every command that opens a remote control path must prove that the SSH target
+# is not the controller's currently running Linux system. The comparison occurs
+# before UID, Bash, or sudo probing, fails closed on missing identity evidence,
+# and accepts a distinct target.
+(
+    APO_REMOTE_TARGET=root@target
+    APO_PREFLIGHT_SSH_TIMEOUT_SECONDS=300
+    PREFLIGHT_READ_MARKER=$(mktemp)
+    trap 'rm -f "$PREFLIGHT_READ_MARKER"' EXIT
+    apo_wait_for_ssh() { [[ $1 == 300 && $2 == preflight-connect ]]; }
+    apo_local_boot_id_once() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
+    apo_remote_boot_id() { printf 'fedcba98-7654-3210-fedc-ba9876543210'; }
+    apo_ssh_read() {
+        printf x >> "$PREFLIGHT_READ_MARKER"
+        case $1 in
+            'id -u') printf 0 ;;
+            'command -v bash >/dev/null 2>&1 && printf yes || printf no') printf yes ;;
+            *) return 1 ;;
+        esac
+    }
+    apo_ssh_preflight
+    [[ $APO_REMOTE_IS_ROOT == 1 ]]
+    [[ $(wc -c < "$PREFLIGHT_READ_MARKER") == 2 ]]
+)
+(
+    APO_REMOTE_TARGET=root@controller
+    APO_PREFLIGHT_SSH_TIMEOUT_SECONDS=300
+    PREFLIGHT_READ_MARKER=$(mktemp)
+    PREFLIGHT_ERROR=$(mktemp)
+    trap 'rm -f "$PREFLIGHT_READ_MARKER" "$PREFLIGHT_ERROR"' EXIT
+    apo_wait_for_ssh() { :; }
+    apo_local_boot_id_once() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
+    apo_remote_boot_id() { printf '01234567-89AB-CDEF-0123-456789ABCDEF'; }
+    apo_ssh_read() { printf called > "$PREFLIGHT_READ_MARKER"; return 1; }
+    preflight_rc=0
+    if (apo_ssh_preflight) 2> "$PREFLIGHT_ERROR"; then
+        echo 'same-system preflight unexpectedly succeeded' >&2
+        exit 1
+    else
+        preflight_rc=$?
+    fi
+    [[ $preflight_rc == "$APO_EXIT_PREFLIGHT" ]]
+    [[ ! -s $PREFLIGHT_READ_MARKER ]]
+    grep -Fq 'Controller and target are the same running Linux system.' "$PREFLIGHT_ERROR"
+)
+(
+    APO_REMOTE_TARGET=root@target
+    APO_PREFLIGHT_SSH_TIMEOUT_SECONDS=300
+    PREFLIGHT_READ_MARKER=$(mktemp)
+    PREFLIGHT_ERROR=$(mktemp)
+    trap 'rm -f "$PREFLIGHT_READ_MARKER" "$PREFLIGHT_ERROR"' EXIT
+    apo_wait_for_ssh() { :; }
+    apo_local_boot_id_once() { return 1; }
+    apo_remote_boot_id() { printf 'fedcba98-7654-3210-fedc-ba9876543210'; }
+    apo_ssh_read() { printf called > "$PREFLIGHT_READ_MARKER"; return 1; }
+    preflight_rc=0
+    if (apo_ssh_preflight) 2> "$PREFLIGHT_ERROR"; then
+        echo 'missing local boot-ID preflight unexpectedly succeeded' >&2
+        exit 1
+    else
+        preflight_rc=$?
+    fi
+    [[ $preflight_rc == "$APO_EXIT_PREFLIGHT" ]]
+    [[ ! -s $PREFLIGHT_READ_MARKER ]]
+    grep -Fq 'Could not read a valid local Linux boot ID' "$PREFLIGHT_ERROR"
+)
+(
+    APO_REMOTE_TARGET=root@target
+    APO_PREFLIGHT_SSH_TIMEOUT_SECONDS=300
+    PREFLIGHT_READ_MARKER=$(mktemp)
+    PREFLIGHT_ERROR=$(mktemp)
+    trap 'rm -f "$PREFLIGHT_READ_MARKER" "$PREFLIGHT_ERROR"' EXIT
+    apo_wait_for_ssh() { :; }
+    apo_local_boot_id_once() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
+    apo_remote_boot_id() { return 1; }
+    apo_ssh_read() { printf called > "$PREFLIGHT_READ_MARKER"; return 1; }
+    preflight_rc=0
+    if (apo_ssh_preflight) 2> "$PREFLIGHT_ERROR"; then
+        echo 'missing remote boot-ID preflight unexpectedly succeeded' >&2
+        exit 1
+    else
+        preflight_rc=$?
+    fi
+    [[ $preflight_rc == "$APO_EXIT_PREFLIGHT" ]]
+    [[ ! -s $PREFLIGHT_READ_MARKER ]]
+    grep -Fq 'Could not read a valid boot ID from root@target' "$PREFLIGHT_ERROR"
+)
+
 # SSH/reboot waits use elapsed wall time, including time spent inside a failed
 # connection attempt.  A nominal 10-second timeout must not become four
 # 8-second ConnectTimeout attempts plus sleeps.
@@ -302,6 +391,51 @@ APO_LOG_FILE=''
     [[ $returned_boot == new-boot ]]
     [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 7 ]]
     [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
+)
+
+# If the last ordinary poll still sees the old boot immediately before
+# shutdown, the bounded reboot-start grace must observe that shutdown and hand
+# off to persistent monitoring instead of reporting a false no-reboot failure.
+(
+    SECONDS=0
+    APO_PUBLIC_COMMAND=overclock
+    APO_MUTATING_COMMAND=1
+    APO_PERSISTENT_SSH_RECOVERY=1
+    BOOT_ATTEMPT_FILE=$(mktemp)
+    RECOVERY_NOTICE_FILE=$(mktemp)
+    trap 'rm -f "$BOOT_ATTEMPT_FILE" "$RECOVERY_NOTICE_FILE"' EXIT
+    apo_remote_boot_id_once() {
+        printf x >> "$BOOT_ATTEMPT_FILE"
+        case $(wc -c < "$BOOT_ATTEMPT_FILE") in
+            1|2) printf old-boot ;;
+            5) printf new-boot ;;
+            *) return 1 ;;
+        esac
+    }
+    sleep() { SECONDS=$((SECONDS + $1)); }
+    returned_boot=$(apo_wait_for_new_boot old-boot 4 shutdown-at-timeout-fixture 2> "$RECOVERY_NOTICE_FILE")
+    [[ $returned_boot == new-boot ]]
+    [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 5 ]]
+    [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
+)
+
+# A reboot that never begins remains a bounded refusal. The start grace must
+# not turn a continuously reachable old boot into an indefinite monitor.
+(
+    SECONDS=0
+    APO_PERSISTENT_SSH_RECOVERY=1
+    BOOT_ATTEMPT_FILE=$(mktemp)
+    RECOVERY_NOTICE_FILE=$(mktemp)
+    trap 'rm -f "$BOOT_ATTEMPT_FILE" "$RECOVERY_NOTICE_FILE"' EXIT
+    apo_remote_boot_id_once() { printf x >> "$BOOT_ATTEMPT_FILE"; printf old-boot; }
+    sleep() { SECONDS=$((SECONDS + 60)); }
+    if apo_wait_for_new_boot old-boot 1 reboot-never-started-fixture 2> "$RECOVERY_NOTICE_FILE"; then
+        echo 'continuously reachable old boot unexpectedly succeeded' >&2
+        exit 1
+    fi
+    [[ $SECONDS == 180 ]]
+    [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 3 ]]
+    [[ ! -s $RECOVERY_NOTICE_FILE ]]
 )
 
 # Reboots invalidate a Debian worker stored under /tmp. The shared reboot

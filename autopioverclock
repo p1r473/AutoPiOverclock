@@ -122,7 +122,7 @@ Usage:
 
 Commands:
   prepare    Install and verify required dependencies and watchdog recovery
-  overclock  Automatically tune, validate, and apply the safe result
+  overclock  Automatically tune, validate, and apply the fully validated result
   test       Stability-test one exact CPU/GPU pair, then return to normal clocks
   reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
   run        Advanced tuning run with explicit plan/control options
@@ -167,7 +167,7 @@ Advanced options:
   --yes                    Skip the ordinary run confirmation; never apply confirmation
   --redact                 Redact status or report output
 
-See docs/cli.md for exact option/command compatibility and safety gates.
+Full reference: https://github.com/p1r473/AutoPiOverclock/blob/main/docs/cli.md
 USAGE
 }
 
@@ -1227,8 +1227,8 @@ apo_start_new_run() {
     apo_summary_line "Configured voltage delta: ${APO_CFG[VOLTAGE_DELTA_UV]}"
     apo_summary_line "Candidate duration: ${APO_CFG[CANDIDATE_DURATION_S]}s"
     apo_summary_line "CPU/GPU qualification duration: ${APO_QUALIFICATION_DURATION_S}s each"
-    apo_summary_line "Final duration: ${APO_CFG[FINAL_DURATION_S]}s"
-    apo_summary_line "Edge duration: ${APO_EDGE_DURATION_S}s ($([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled))"
+    apo_summary_line "Guarded-floor fallback duration: ${APO_CFG[FINAL_DURATION_S]}s"
+    apo_summary_line "Edge-first duration: ${APO_EDGE_DURATION_S}s ($([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled))"
     apo_summary_line "Duration policy: $APO_DURATION_POLICY"
     apo_summary_line "Temperature ceiling: ${APO_CFG[MAX_TEMP_C]}C"
     apo_summary_line "Telemetry interval: ${APO_CFG[TELEMETRY_INTERVAL_S]}s"
@@ -1246,8 +1246,8 @@ apo_start_new_run() {
         apo_summary_line "Automatic production guard: CPU ${APO_AUTO_CPU_GUARD_MHZ}MHz / GPU ${APO_AUTO_GPU_GUARD_MHZ}MHz"
         apo_summary_line "Isolated CPU qualification: ${APO_QUALIFICATION_DURATION_S}s at stock GPU"
         apo_summary_line "Isolated GPU qualification: ${APO_QUALIFICATION_DURATION_S}s at qualified CPU"
-        apo_summary_line "Production validation: ${APO_CFG[FINAL_DURATION_S]}s combined CPU/GPU/I/O"
-        apo_summary_line "Optional post-floor CPU +25MHz/${APO_EDGE_DURATION_S}s combined validation: $([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled)"
+        apo_summary_line "Guarded-floor fallback validation: ${APO_CFG[FINAL_DURATION_S]}s combined CPU/GPU/I/O"
+        apo_summary_line "Edge-first CPU +25MHz/${APO_EDGE_DURATION_S}s combined validation: $([[ $APO_EDGE_CPU_24H == 1 ]] && printf enabled || printf disabled)"
     fi
     apo_summary_line ''
     apo_event run-start INFO '' "command=$APO_ORIGIN_COMMAND version=$APO_VERSION"
@@ -1287,14 +1287,24 @@ apo_start_new_run() {
 apo_load_selected_run() {
     local state_file stored_target stored_profile stored_run_id expected_state_file
     state_file=$(apo_find_state_file "$APO_SELECTED_RUN_ID" || true)
-    [[ -n $state_file ]] || apo_die "No saved state found for $APO_TARGET_SLUG${APO_SELECTED_RUN_ID:+ run $APO_SELECTED_RUN_ID}." "$APO_EXIT_USAGE"
+    if [[ -z $state_file ]]; then
+        if apo_is_redacted_observer; then
+            apo_die 'No saved state found for the selected target and run.' "$APO_EXIT_USAGE"
+        fi
+        apo_die "No saved state found for $APO_TARGET_SLUG${APO_SELECTED_RUN_ID:+ run $APO_SELECTED_RUN_ID}." "$APO_EXIT_USAGE"
+    fi
     apo_state_load "$state_file"
     stored_run_id=$(apo_state_get RUN_ID '')
     apo_is_safe_run_id "$stored_run_id" || apo_die 'Saved state contains an invalid run ID.' "$APO_EXIT_INTERNAL"
     expected_state_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${stored_run_id}.state"
     [[ $state_file == "$expected_state_file" ]] || apo_die 'Saved state run ID does not match its selected state filename.' "$APO_EXIT_INTERNAL"
     stored_target=$(apo_state_get REMOTE_TARGET)
-    [[ $stored_target == "$APO_REMOTE_TARGET" ]] || apo_die "Selected state belongs to $stored_target, not $APO_REMOTE_TARGET." "$APO_EXIT_USAGE"
+    if [[ $stored_target != "$APO_REMOTE_TARGET" ]]; then
+        if apo_is_redacted_observer; then
+            apo_die 'Selected state belongs to a different target.' "$APO_EXIT_USAGE"
+        fi
+        apo_die "Selected state belongs to $stored_target, not $APO_REMOTE_TARGET." "$APO_EXIT_USAGE"
+    fi
     apo_attach_artifacts_from_state
     case $APO_COMMAND in status|report) return 0 ;; esac
     if [[ $(apo_state_get ORIGIN_COMMAND '') == reset ]]; then
@@ -1347,6 +1357,12 @@ apo_cleanup_handler() {
     elif declare -F apo_progress_clear_line >/dev/null 2>&1; then
         apo_progress_clear_line
     fi
+    # Local observers do not own the run and must remain read-only even when
+    # parsing or rendering fails. In particular, never finalize JSON or mark a
+    # concurrently running state interrupted from status/report cleanup.
+    case ${APO_COMMAND:-} in
+        status|report) exit "$exit_code" ;;
+    esac
     if [[ ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && ${APO_MUTATING_COMMAND:-0} == 1 ]]; then
         local tryboot_flag=''
         tryboot_flag=$(apo_remote_tryboot_flag_once || true)

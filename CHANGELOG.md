@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.41 — 2026-09-03
+
+- Enforced the separate-controller contract in shared SSH preflight by comparing validated local and remote running-kernel boot IDs before UID, Bash, sudo, deployment, or mutation checks. Self-targeting and unavailable identity evidence now fail closed.
+- Added a 120-second reboot-start confirmation window when the ordinary wait ends on a still-responsive old boot. A shutdown that begins at that boundary hands off to the existing persistent read-only SSH monitor, while a reboot that never starts still receives a bounded refusal.
+- Made saved-run artifact paths deterministic from the already validated state filename rather than editable state values. Local `status` and `report` observers no longer touch run artifacts, finalize JSON, change state, invoke recovery, or clean workers during exit handling.
+- Hardened public reports with target-neutral filenames, complete state-path/error hiding, omission of free-form reasons and storage details, and terminal-safe rendering of imported state values. Redacted path output no longer leaks a parent directory when a target name overlaps it; documentation still requires manual review before sharing.
+- Rebuilt the public README around the three-command workflow, explicit SSH identity, one Pi plus one Linux controller, automatic strategy, headless/cooling behavior, current one-board hardware evidence, and the exact managed apply block. Corrected installed help, edge-first run-summary labels, controller prerequisites, and progress-rendering claims without removing the advanced interface.
+
 ## 0.1.0-alpha.40 — 2026-09-02
 
 - Fixed deterministic Batocera 24-hour CPU/combined stress failures caused by OpenSSL's signed per-worker operation counter reaching 2,147,483,647 after roughly six hours at the former 16 KiB block size. The worker now uses one 1 MiB SHA-256 block, reducing the operation-count rate 64-fold while preserving all-core load and the exact requested elapsed duration.

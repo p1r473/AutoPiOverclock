@@ -8,7 +8,9 @@ APO_REMOTE_IS_ROOT=0
 : "${APO_TRANSIENT_READ_ATTEMPTS:=30}"
 : "${APO_TRANSIENT_READ_DELAY_SECONDS:=10}"
 : "${APO_PREFLIGHT_SSH_TIMEOUT_SECONDS:=300}"
-readonly APO_PERSISTENT_SSH_POLL_SECONDS APO_PERSISTENT_SSH_NOTICE_SECONDS
+: "${APO_REBOOT_START_GRACE_SECONDS:=120}"
+[[ $APO_REBOOT_START_GRACE_SECONDS =~ ^[1-9][0-9]*$ ]] || APO_REBOOT_START_GRACE_SECONDS=120
+readonly APO_PERSISTENT_SSH_POLL_SECONDS APO_PERSISTENT_SSH_NOTICE_SECONDS APO_REBOOT_START_GRACE_SECONDS
 
 apo_persistent_ssh_recovery_enabled() {
     [[ ${APO_PERSISTENT_SSH_RECOVERY:-0} == 1 ]]
@@ -145,10 +147,31 @@ apo_remote_root_stdin() {
     apo_ssh_exec_stdin "$wrapper"
 }
 
+apo_local_boot_id_once() {
+    local boot_id
+    [[ -r /proc/sys/kernel/random/boot_id ]] || return 1
+    IFS= read -r boot_id < /proc/sys/kernel/random/boot_id || return 1
+    boot_id=${boot_id//$'\r'/}
+    boot_id=${boot_id//$'\n'/}
+    [[ $boot_id =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || return 1
+    printf '%s' "$boot_id"
+}
+
+apo_require_separate_controller() {
+    local local_boot_id remote_boot_id
+    local_boot_id=$(apo_local_boot_id_once) ||
+        apo_die 'Could not read a valid local Linux boot ID, so a separate controller cannot be proved.' "$APO_EXIT_PREFLIGHT"
+    remote_boot_id=$(apo_remote_boot_id) ||
+        apo_die "Could not read a valid boot ID from $APO_REMOTE_TARGET after $APO_TRANSIENT_READ_ATTEMPTS attempts, so a separate controller cannot be proved." "$APO_EXIT_PREFLIGHT"
+    [[ ${local_boot_id,,} != "${remote_boot_id,,}" ]] ||
+        apo_die 'Controller and target are the same running Linux system. Use a separate Linux controller to operate on the Raspberry Pi target.' "$APO_EXIT_PREFLIGHT"
+}
+
 apo_ssh_preflight() {
     local uid has_bash sudo_ready
     apo_wait_for_ssh "$APO_PREFLIGHT_SSH_TIMEOUT_SECONDS" preflight-connect ||
         apo_die "Noninteractive SSH failed for $APO_REMOTE_TARGET. Configure key authentication and run prepare again." "$APO_EXIT_PREFLIGHT"
+    apo_require_separate_controller
     uid=$(apo_ssh_read 'id -u') || apo_die "Could not determine remote UID after $APO_TRANSIENT_READ_ATTEMPTS attempts." "$APO_EXIT_PREFLIGHT"
     has_bash=$(apo_ssh_read 'command -v bash >/dev/null 2>&1 && printf yes || printf no' || true)
     [[ $has_bash == yes ]] || apo_die 'Remote Bash is required.' "$APO_EXIT_PREFLIGHT"
@@ -284,7 +307,7 @@ apo_wait_for_ssh() {
 }
 
 apo_wait_for_new_boot() {
-    local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot} deadline remaining current='' next_notice last_observation=unreachable
+    local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot} deadline grace_deadline remaining current='' next_notice last_observation=unreachable
     deadline=$((SECONDS + timeout_seconds))
     while (( SECONDS < deadline )); do
         if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
@@ -299,11 +322,28 @@ apo_wait_for_new_boot() {
         (( remaining > 0 )) || break
         if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
     done
-    # A continuously reachable old boot means the requested reboot was not
-    # proved. If it disappeared before the deadline, however, keep observing:
-    # a slow target must not be abandoned merely because its old boot answered
-    # once while shutdown was beginning.
-    [[ $last_observation != old-boot ]] || return 1
+    # A final old-boot response can race with a slow shutdown. Give the reboot
+    # a bounded start-confirmation window: a new boot succeeds immediately and
+    # any loss of reachability hands off to the existing persistent monitor.
+    # If the old boot stays continuously reachable, refuse after the grace
+    # period instead of waiting forever for a reboot that never started.
+    if [[ $last_observation == old-boot ]]; then
+        grace_deadline=$((SECONDS + APO_REBOOT_START_GRACE_SECONDS))
+        while (( SECONDS < grace_deadline )); do
+            if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
+            current=$(apo_remote_boot_id_once 2>/dev/null || true)
+            if [[ -n $current ]]; then
+                if [[ $current != "$old_boot_id" ]]; then printf '%s' "$current"; return 0; fi
+            else
+                last_observation=unreachable
+                break
+            fi
+            remaining=$((grace_deadline - SECONDS))
+            (( remaining > 0 )) || break
+            if (( remaining < 3 )); then sleep "$remaining"; else sleep 3; fi
+        done
+        [[ $last_observation != old-boot ]] || return 1
+    fi
     apo_persistent_ssh_recovery_enabled || return 1
     apo_recovery_wait_begin "$context" "$timeout_seconds"
     next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))

@@ -47,6 +47,11 @@ apo_die() {
 apo_info_plain() { printf 'INFO: %s\n' "$*" >&2; }
 apo_warn_plain() { printf 'WARNING: %s\n' "$*" >&2; }
 
+apo_is_redacted_observer() {
+    [[ ${APO_REDACT:-0} == 1 ]] || return 1
+    case ${APO_COMMAND:-} in status|report) return 0 ;; *) return 1 ;; esac
+}
+
 apo_trim() {
     local value=${1-}
     value="${value#"${value%%[![:space:]]*}"}"

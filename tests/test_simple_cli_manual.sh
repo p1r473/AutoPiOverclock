@@ -137,14 +137,14 @@ for normal_command in prepare overclock reset; do
     grep -Fq "$documented_pattern" "$ROOT/docs/cli.md"
 done
 
-grep -Fq 'controller and target must be different machines' "$ROOT/README.md"
-grep -Fq '## How automatic overclocking works' "$ROOT/README.md"
-grep -Fq '**Search CPU first.**' "$ROOT/README.md"
-grep -Fq '**Search and qualify GPU.**' "$ROOT/README.md"
-grep -Fq '**Try the CPU edge first.**' "$ROOT/README.md"
-grep -Fq '**Validate one final result.**' "$ROOT/README.md"
+grep -Fq 'The controller and target must be different machines.' "$ROOT/README.md"
+grep -Fq '## Overclock strategy' "$ROOT/README.md"
+grep -Fq 'searches CPU first at the stock GPU clock' "$ROOT/README.md"
+grep -Fq 'searches GPU at the qualified CPU clock' "$ROOT/README.md"
+grep -Fq 'tests one final CPU edge 25 MHz higher for 24 hours by default' "$ROOT/README.md"
+grep -Fq 'accepts a passing edge as final' "$ROOT/README.md"
 grep -Fq -- '--qualification-hours 3 --final-hours 36 --edge-hours 18' "$ROOT/README.md"
-quick_start=$(sed -n '/^## Quick start$/,/^## Why this exists$/p' "$ROOT/README.md")
+quick_start=$(sed -n '/^## Quick start$/,/^## Overclock strategy$/p' "$ROOT/README.md")
 for install_line in \
     'git clone https://github.com/p1r473/AutoPiOverclock.git' \
     'cd AutoPiOverclock' \
@@ -154,9 +154,9 @@ for install_line in \
     grep -Fq "$install_line" <<< "$quick_start"
 done
 grep -Fq 'It does not connect to, modify, or reboot a target.' <<< "$quick_start"
-grep -Fq 'autopioverclock prepare pi-host' <<< "$quick_start"
-grep -Fq 'autopioverclock overclock pi-host' <<< "$quick_start"
-grep -Fq 'autopioverclock reset pi-host' <<< "$quick_start"
+grep -Fq 'autopioverclock prepare pi@pi-host' <<< "$quick_start"
+grep -Fq 'autopioverclock overclock pi@pi-host' <<< "$quick_start"
+grep -Fq 'autopioverclock reset pi@pi-host' <<< "$quick_start"
 grep -Fq 'Run every command on the separate Linux controller.' "$ROOT/docs/cli.md"
 grep -Fq 'The controller may be any supported Linux computer; it does not need to be a Raspberry Pi.' "$ROOT/docs/cli.md"
 grep -Fq 'the guarded floor is not also run.' "$ROOT/docs/cli.md"

@@ -45,16 +45,26 @@ apo_state_save() {
 }
 
 apo_state_load() {
-    local source_file=$1 state_key encoded_value decoded_value
-    [[ -f $source_file ]] || apo_die "State file not found: $source_file" "$APO_EXIT_USAGE"
+    local source_file=$1 source_label=$1 state_key encoded_value decoded_value state_fd
+    if apo_is_redacted_observer; then source_label='selected state'; fi
+    [[ -f $source_file && -r $source_file ]] || apo_die "State file not found or unreadable: $source_label" "$APO_EXIT_USAGE"
+    if ! exec {state_fd}<"$source_file" 2>/dev/null; then
+        apo_die "State file not found or unreadable: $source_label" "$APO_EXIT_USAGE"
+    fi
     APO_STATE=()
     while IFS=$'\t' read -r state_key encoded_value || [[ -n ${state_key:-} ]]; do
         [[ -n ${state_key:-} ]] || continue
-        apo_state_valid_key "$state_key" || apo_die "Invalid state key in $source_file: $state_key" "$APO_EXIT_INTERNAL"
-        decoded_value=$(apo_state_decode "$encoded_value") || apo_die "Corrupt state value for $state_key in $source_file" "$APO_EXIT_INTERNAL"
+        if ! apo_state_valid_key "$state_key"; then
+            if apo_is_redacted_observer; then
+                apo_die 'Invalid state key in selected state.' "$APO_EXIT_INTERNAL"
+            fi
+            apo_die "Invalid state key in $source_file: $state_key" "$APO_EXIT_INTERNAL"
+        fi
+        decoded_value=$(apo_state_decode "$encoded_value") || apo_die "Corrupt state value for $state_key in $source_label" "$APO_EXIT_INTERNAL"
         APO_STATE[$state_key]=$decoded_value
-    done < "$source_file"
-    [[ $(apo_state_get FORMAT_VERSION '') == 1 ]] || apo_die "Unsupported or missing state format in $source_file" "$APO_EXIT_INTERNAL"
+    done <&"$state_fd"
+    exec {state_fd}<&-
+    [[ $(apo_state_get FORMAT_VERSION '') == 1 ]] || apo_die "Unsupported or missing state format in $source_label" "$APO_EXIT_INTERNAL"
     APO_STATE_FILE=$source_file
 }
 
