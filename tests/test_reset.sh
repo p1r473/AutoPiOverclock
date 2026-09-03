@@ -207,6 +207,23 @@ for worker_file in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-work
         reset_stock_render_config "$stock_config" "$stock_rendered" || fail "$(basename "$worker_file") could not render an already-stock config"
         cmp "$stock_config" "$stock_rendered" || fail "$(basename "$worker_file") changed an already-stock config"
 
+        default_voltage_managed="$helper_root/default-voltage-managed.txt"
+        default_voltage_rendered="$helper_root/default-voltage-rendered.txt"
+        printf '%s\n' \
+            'dtparam=audio=on' \
+            "$CLOCK_MARKER_BEGIN" \
+            '# Run: default-voltage-run' \
+            '[all]' \
+            'arm_freq=3000' \
+            'gpu_freq=1100' \
+            "$CLOCK_MARKER_END" > "$default_voltage_managed"
+        reset_stock_validate_config "$default_voltage_managed" || fail "$(basename "$worker_file") rejected a managed block with implicit default voltage"
+        reset_stock_render_config "$default_voltage_managed" "$default_voltage_rendered" || fail "$(basename "$worker_file") could not remove a managed block with implicit default voltage"
+        grep -Fqx 'dtparam=audio=on' "$default_voltage_rendered" || fail "$(basename "$worker_file") dropped unrelated content around an implicit-voltage block"
+        if grep -Fq "$CLOCK_MARKER_BEGIN" "$default_voltage_rendered" || grep -Fq 'arm_freq=3000' "$default_voltage_rendered"; then
+            fail "$(basename "$worker_file") retained an implicit-voltage managed block"
+        fi
+
         printf 'include extras.txt\n' > "$helper_root/include.txt"
         if reset_stock_validate_config "$helper_root/include.txt"; then
             fail "$(basename "$worker_file") accepted an unbound include"

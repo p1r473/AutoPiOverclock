@@ -5,6 +5,18 @@ APO_APPLY_RECONCILE_RESULT=''
 
 apo_apply_valid_hash() { [[ ${1-} =~ ^[0-9a-f]{64}$ ]]; }
 
+apo_apply_voltage_render_mode() {
+    if [[ ${APO_TEST_VOLTAGE:-} == 0 && ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 &&
+          $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
+          ${APO_AUTO_BASELINE_VOLTAGE:-} == 0 &&
+          ${APO_AUTO_BASELINE_PROVENANCE:-} == verified-default &&
+          ${APO_AUTO_BASELINE_EVIDENCE:-} == none ]]; then
+        printf 'omit-default-zero'
+    else
+        printf 'explicit'
+    fi
+}
+
 apo_apply_backup_path() {
     local run_id=$1
     case ${APO_PROFILE:-} in
@@ -163,7 +175,7 @@ apo_apply_mark_applied() {
     apo_state_set APPLY_FAILURE_REASON ''
     apo_state_set APPLIED_AT "$(apo_now_iso)"
     apo_state_save
-    apo_summary_line "APPLIED: over_voltage_delta=$final_voltage, arm_freq=$final_cpu, $APO_GPU_KEY=$final_gpu"
+    apo_summary_line "APPLIED: CPU=$final_cpu MHz, $APO_GPU_KEY=$final_gpu MHz, validated voltage delta=$final_voltage uV"
     apo_event apply PASS '' "Validated clocks applied and verified after a normal reboot; backup=$backup_file"
     APO_APPLY_RECONCILE_RESULT=APPLIED
 }
@@ -305,7 +317,7 @@ apo_reconcile_interrupted_apply() {
 
 apo_apply_recommendation() {
     local validated validation_schema final_duration expected_duration edge_status final_cpu final_gpu original_hash expected_hash proposed_file current_file diff_file remote_proposed
-    local expected_confirmation old_boot_id backup_file apply_log reported_backup reported_hash diff_rc apply_failure
+    local expected_confirmation old_boot_id backup_file apply_log reported_backup reported_hash diff_rc apply_failure voltage_render_mode
     apo_apply_assert_tryboot_clear || apo_die "$APO_LAST_REASON" "$APO_EXIT_APPLY"
     validated=$(apo_state_get VALIDATED 0)
     validation_schema=$(apo_state_get VALIDATION_SCHEMA '')
@@ -344,9 +356,10 @@ apo_apply_recommendation() {
     proposed_file="${APO_RUN_PREFIX}-apply-proposed-config.txt"
     current_file="${APO_RUN_PREFIX}-apply-current-config.txt"
     diff_file="${APO_RUN_PREFIX}-apply.diff"
+    voltage_render_mode=$(apo_apply_voltage_render_mode)
     apo_remote_root_read_file "$current_file" "cat $(apo_sh_quote "$APO_BOOT_CONFIG")" ||
         apo_die "The current permanent config could not be read after $APO_TRANSIENT_READ_ATTEMPTS attempts." "$APO_EXIT_APPLY"
-    apo_remote_worker_read_file "$proposed_file" "$APO_REMOTE_WORKER" render-permanent "$final_cpu" "$final_gpu" "$APO_GPU_KEY" "$APO_TEST_VOLTAGE" "$APO_RUN_ID" ||
+    apo_remote_worker_read_file "$proposed_file" "$APO_REMOTE_WORKER" render-permanent "$final_cpu" "$final_gpu" "$APO_GPU_KEY" "$APO_TEST_VOLTAGE" "$APO_RUN_ID" "$voltage_render_mode" ||
         apo_die "The proposed permanent config could not be rendered after $APO_TRANSIENT_READ_ATTEMPTS attempts." "$APO_EXIT_APPLY"
     [[ -s $proposed_file ]] || apo_die 'The proposed permanent config rendered empty.' "$APO_EXIT_APPLY"
     expected_hash=$(sha256sum "$proposed_file" | awk 'NR == 1 {print $1}')
@@ -367,7 +380,7 @@ apo_apply_recommendation() {
         apo_state_set APPLY_EXPECTED_HASH "$expected_hash"
         apo_state_set APPLY_BACKUP ''
         apo_apply_mark_applied "$expected_hash" "$final_cpu" "$final_gpu" "$APO_TEST_VOLTAGE" 'not-needed'
-        apo_summary_line "APPLIED/VERIFIED: permanent config already matched over_voltage_delta=$APO_TEST_VOLTAGE, arm_freq=$final_cpu, $APO_GPU_KEY=$final_gpu"
+        apo_summary_line "APPLIED/VERIFIED: permanent config already matched CPU=$final_cpu MHz, $APO_GPU_KEY=$final_gpu MHz, validated voltage delta=$APO_TEST_VOLTAGE uV"
         return 0
     elif (( diff_rc != 1 )); then
         apo_die 'Could not generate the permanent-config diff.' "$APO_EXIT_APPLY"

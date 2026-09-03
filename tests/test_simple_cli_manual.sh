@@ -53,7 +53,11 @@ if "$ROOT/autopioverclock" apply tron --output-dir "$CONTINUATION_OUTPUT" --run-
     echo 'a manual stability result was accepted for permanent apply' >&2
     exit 1
 fi
-grep -Fq 'can never be permanently applied' "$TEMP_DIR/manual-apply.err"
+if ! grep -Fq 'can never be permanently applied' "$TEMP_DIR/manual-apply.err"; then
+    echo 'manual apply rejection did not explain that the evidence is non-applicable:' >&2
+    cat "$TEMP_DIR/manual-apply.err" >&2
+    exit 1
+fi
 
 for missing_target_command in prepare overclock test reset run resume status recover apply report; do
     if "$ROOT/autopioverclock" "$missing_target_command" >/dev/null 2>&1; then
@@ -128,7 +132,7 @@ for retained_option in --config --mode --run-id --install-missing --repair-watch
 done
 
 for documented_command in prepare overclock test reset run resume status recover apply report; do
-    documented_pattern=$(printf '| `%s TARGET` |' "$documented_command")
+    documented_pattern=$(printf '| `%s TARGET' "$documented_command")
     grep -Fq "$documented_pattern" "$ROOT/README.md"
 done
 
@@ -138,13 +142,22 @@ for normal_command in prepare overclock reset; do
 done
 
 grep -Fq 'The controller and target must be different machines.' "$ROOT/README.md"
-grep -Fq '## Overclock strategy' "$ROOT/README.md"
-grep -Fq 'searches CPU first at the stock GPU clock' "$ROOT/README.md"
-grep -Fq 'searches GPU at the qualified CPU clock' "$ROOT/README.md"
-grep -Fq 'tests one final CPU edge 25 MHz higher for 24 hours by default' "$ROOT/README.md"
-grep -Fq 'accepts a passing edge as final' "$ROOT/README.md"
+for required_heading in \
+    '## Supported targets' \
+    '## Current validation status' \
+    '## How automatic overclocking works' \
+    '## Commands' \
+    '## What every candidate must prove' \
+    '## Recovery and resume' \
+    '## Results'; do
+    grep -Fq "$required_heading" "$ROOT/README.md"
+done
+grep -Fq 'Searches CPU from 2500 through 3200 MHz' "$ROOT/README.md"
+grep -Fq 'Searches GPU/V3D through 1200 MHz' "$ROOT/README.md"
+grep -Fq 'Tests CPU exactly 25 MHz above the guarded result for 24 hours' "$ROOT/README.md"
+grep -Fq 'A full pass becomes the final result.' "$ROOT/README.md"
 grep -Fq -- '--qualification-hours 3 --final-hours 36 --edge-hours 18' "$ROOT/README.md"
-quick_start=$(sed -n '/^## Quick start$/,/^## Overclock strategy$/p' "$ROOT/README.md")
+quick_start=$(sed -n '/^## Quick start$/,/^## Supported targets$/p' "$ROOT/README.md")
 for install_line in \
     'git clone https://github.com/p1r473/AutoPiOverclock.git' \
     'cd AutoPiOverclock' \
@@ -156,7 +169,10 @@ done
 grep -Fq 'It does not connect to, modify, or reboot a target.' <<< "$quick_start"
 grep -Fq 'autopioverclock prepare pi@pi-host' <<< "$quick_start"
 grep -Fq 'autopioverclock overclock pi@pi-host' <<< "$quick_start"
-grep -Fq 'autopioverclock reset pi@pi-host' <<< "$quick_start"
+if grep -Fq 'autopioverclock reset pi@pi-host' <<< "$quick_start"; then
+    echo 'README quick start presented reset as an everyday required command' >&2
+    exit 1
+fi
 grep -Fq 'Run every command on the separate Linux controller.' "$ROOT/docs/cli.md"
 grep -Fq 'The controller may be any supported Linux computer; it does not need to be a Raspberry Pi.' "$ROOT/docs/cli.md"
 grep -Fq 'the guarded floor is not also run.' "$ROOT/docs/cli.md"

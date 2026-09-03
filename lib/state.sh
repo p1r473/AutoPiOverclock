@@ -48,7 +48,7 @@ apo_state_load() {
     local source_file=$1 source_label=$1 state_key encoded_value decoded_value state_fd
     if apo_is_redacted_observer; then source_label='selected state'; fi
     [[ -f $source_file && -r $source_file ]] || apo_die "State file not found or unreadable: $source_label" "$APO_EXIT_USAGE"
-    if ! exec {state_fd}<"$source_file" 2>/dev/null; then
+    if ! { exec {state_fd}<"$source_file"; } 2>/dev/null; then
         apo_die "State file not found or unreadable: $source_label" "$APO_EXIT_USAGE"
     fi
     APO_STATE=()

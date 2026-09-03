@@ -391,13 +391,19 @@ reset_recent_throttle() {
 
 render_clock_config() {
     local source_file=$1 destination_file=$2 cpu_mhz=$3 gpu_mhz=$4 gpu_key=$5 voltage_uv=$6 run_id=$7
+    local voltage_render_mode=${8:-explicit}
+    [[ $voltage_render_mode == explicit || $voltage_render_mode == omit-default-zero ]] || return 1
+    [[ $voltage_render_mode != omit-default-zero || $voltage_uv == 0 ]] || return 1
     awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" '
         $0==begin {inside=1; next}
         $0==end {inside=0; next}
         !inside {print}
     ' "$source_file" > "$destination_file" || return 1
-    printf '\n%s\n# Run: %s\n[all]\nover_voltage_delta=%s\narm_freq=%s\n%s=%s\n%s\n' \
-        "$CLOCK_MARKER_BEGIN" "$run_id" "$voltage_uv" "$cpu_mhz" "$gpu_key" "$gpu_mhz" "$CLOCK_MARKER_END" >> "$destination_file"
+    printf '\n%s\n# Run: %s\n[all]\n' "$CLOCK_MARKER_BEGIN" "$run_id" >> "$destination_file" || return 1
+    if [[ $voltage_render_mode == explicit ]]; then
+        printf 'over_voltage_delta=%s\n' "$voltage_uv" >> "$destination_file" || return 1
+    fi
+    printf 'arm_freq=%s\n%s=%s\n%s\n' "$cpu_mhz" "$gpu_key" "$gpu_mhz" "$CLOCK_MARKER_END" >> "$destination_file"
 }
 
 render_tryboot_config() {
@@ -1376,9 +1382,9 @@ cmd_stress() {
 }
 
 cmd_render_permanent() {
-    local cpu_mhz=$1 gpu_mhz=$2 gpu_key=$3 voltage_uv=$4 run_id=$5 boot_config
+    local cpu_mhz=$1 gpu_mhz=$2 gpu_key=$3 voltage_uv=$4 run_id=$5 voltage_render_mode=${6:-explicit} boot_config
     boot_config=$(find_boot_config) || return 1
-    render_clock_config "$boot_config" /dev/stdout "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id"
+    render_clock_config "$boot_config" /dev/stdout "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" "$voltage_render_mode"
 }
 
 RESET_STOCK_LAST_REASON=''
@@ -1395,13 +1401,17 @@ reset_stock_safe_id() {
 }
 
 reset_stock_managed_block_valid() {
-    local run_line=${1-} section_line=${2-} voltage_line=${3-} cpu_line=${4-} gpu_line=${5-} managed_run
-    (( $# == 5 )) || return 1
+    local run_line=${1-} section_line=${2-} voltage_line='' cpu_line='' gpu_line='' managed_run
+    case $# in
+        4) cpu_line=$3; gpu_line=$4 ;;
+        5) voltage_line=$3; cpu_line=$4; gpu_line=$5 ;;
+        *) return 1 ;;
+    esac
     [[ $run_line == '# Run: '* ]] || return 1
     managed_run=${run_line#\# Run: }
     reset_stock_safe_id "$managed_run" || return 1
     [[ $section_line == '[all]' ]] || return 1
-    [[ $voltage_line =~ ^over_voltage_delta=-?[0-9]+$ ]] || return 1
+    [[ -z $voltage_line || $voltage_line =~ ^over_voltage_delta=-?[0-9]+$ ]] || return 1
     [[ $cpu_line =~ ^arm_freq=[0-9]+$ ]] || return 1
     [[ $gpu_line =~ ^(gpu_freq|v3d_freq)=[0-9]+$ ]]
 }

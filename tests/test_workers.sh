@@ -119,6 +119,14 @@ for worker_name in debian batocera; do
         render_clock_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/permanent.txt" 2900 1000 v3d_freq 0 fan-fixture
         ! grep -Fq -- "$CANDIDATE_FAN_COMMENT" "$FAN_TEST_ROOT/permanent.txt"
         ! grep -Fq "dtparam=fan_temp0=0" "$FAN_TEST_ROOT/permanent.txt"
+        grep -Fqx "over_voltage_delta=0" "$FAN_TEST_ROOT/permanent.txt"
+        render_clock_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/permanent-default-voltage.txt" 2900 1000 v3d_freq 0 fan-fixture omit-default-zero
+        ! grep -Fq "over_voltage_delta=" "$FAN_TEST_ROOT/permanent-default-voltage.txt"
+        grep -Fqx "arm_freq=2900" "$FAN_TEST_ROOT/permanent-default-voltage.txt"
+        grep -Fqx "v3d_freq=1000" "$FAN_TEST_ROOT/permanent-default-voltage.txt"
+        render_clock_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/permanent-nonzero-voltage.txt" 2900 1000 v3d_freq 50000 fan-fixture explicit
+        [[ $(grep -Fxc "over_voltage_delta=50000" "$FAN_TEST_ROOT/permanent-nonzero-voltage.txt") == 1 ]]
+        if render_clock_config "$FAN_TEST_ROOT/config.txt" "$FAN_TEST_ROOT/invalid-voltage-mode.txt" 2900 1000 v3d_freq 50000 fan-fixture omit-default-zero; then exit 1; fi
         for preserved_line in \
             "dtparam=fan_temp0=50000" "dtparam=fan_temp0_speed=75" \
             "dtparam=fan_temp1_speed=128" "dtparam=fan_temp2_speed=192" \

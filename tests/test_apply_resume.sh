@@ -29,6 +29,20 @@ apo_event() { :; }
 apo_summary_line() { :; }
 apo_warn() { :; }
 
+APO_STATE=()
+APO_TEST_VOLTAGE=0
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_AUTO_BASELINE_VOLTAGE=0
+APO_AUTO_BASELINE_PROVENANCE=verified-default
+APO_AUTO_BASELINE_EVIDENCE=none
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+[[ $(apo_apply_voltage_render_mode) == omit-default-zero ]]
+APO_AUTO_BASELINE_PROVENANCE=explicit-override
+[[ $(apo_apply_voltage_render_mode) == explicit ]]
+APO_AUTO_BASELINE_PROVENANCE=verified-default
+APO_TEST_VOLTAGE=50000
+[[ $(apo_apply_voltage_render_mode) == explicit ]]
+
 reset_apply_fixture() {
     APO_STATE=()
     APO_PROFILE=debian
@@ -601,6 +615,7 @@ apo_state_set VALIDATED 1
 apo_state_set VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
 apo_state_set STATUS PASS
 apo_state_set PHASE COMPLETE
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
 apo_state_set CFG_FINAL_DURATION_S "$APO_MIN_FINAL_DURATION_S"
 apo_state_set VALIDATION_DURATION_S "$APO_MIN_FINAL_DURATION_S"
 APO_BOOT_CONFIG=/boot/config.txt
@@ -624,6 +639,7 @@ apo_remote_root() {
 }
 apo_remote_worker() {
     [[ $2 == render-permanent ]] || return 98
+    [[ ${8-} == omit-default-zero ]] || return 96
     printf 'different proposed fixture config\n'
 }
 apo_confirm_exact() {

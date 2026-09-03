@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.42 — 2026-09-03
+
+- Fixed the alpha.41 state-loader descriptor bug that could permanently silence stderr in the calling shell and make the simple CLI fixture fail without its expected diagnostic.
+- Restored the README's supported-target, validation-status, automatic-strategy, complete command, candidate-proof, recovery/resume, and results sections while keeping the normal quick start to `prepare TARGET` and `overclock TARGET`.
+- Stopped adding a redundant zero voltage-delta assignment to newly applied configuration-free automatic results. Pi 5 voltage discovery and safety checks, explicit/nonzero advanced plans, candidate evidence, and strict reset compatibility with existing managed blocks remain intact.
+
 ## 0.1.0-alpha.41 — 2026-09-03
 
 - Enforced the separate-controller contract in shared SSH preflight by comparing validated local and remote running-kernel boot IDs before UID, Bash, sudo, deployment, or mutation checks. Self-targeting and unavailable identity evidence now fail closed.
