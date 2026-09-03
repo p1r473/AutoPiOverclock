@@ -13,6 +13,7 @@ PERSISTENT_ROOT=/userdata/system/autopioverclock
 MUTATION_LOCK_DIR=/run/autopioverclock-mutation.lock
 MUTATION_LOCK_HELD=0
 MUTATION_LOCK_OWNER=''
+OPENSSL_CPU_BLOCK_BYTES=1048576
 
 b64() { printf '%s' "${1-}" | base64 | tr -d '\n'; }
 emit_data() { printf 'APO_DATA\t%s\t%s\n' "$1" "$(b64 "${2-}")"; }
@@ -1698,10 +1699,12 @@ cmd_stress() {
     kernel_lines=$(kernel_log | wc -l)
     start_seconds=$SECONDS; expected_end=$((start_seconds + duration)); hard_deadline=$((expected_end + 60)); next_log=$start_seconds
     completion_tolerance=$(stress_completion_tolerance "$duration")
-    # OpenSSL applies -seconds to every default buffer size.  Constrain the
-    # benchmark to one large block so the requested duration is the total wall
-    # time, including when CPU and GPU stress run together.
-    if [[ $stress_kind == cpu || $stress_kind == combined ]]; then openssl speed -elapsed -seconds "$duration" -bytes 16384 -multi "$(nproc)" sha256 >"$cpu_output" 2>&1 & stress_cpu_pid=$!; fi
+    # OpenSSL applies -seconds to every default buffer size, and each multi
+    # worker records its operation count in a signed 32-bit counter.  Use one
+    # 1 MiB block: this keeps the requested duration as the total wall time and
+    # lowers the operation rate 64-fold versus 16 KiB, preventing the counter
+    # from ending a 24-hour CPU/combined run early on a fast Pi 5.
+    if [[ $stress_kind == cpu || $stress_kind == combined ]]; then openssl speed -elapsed -seconds "$duration" -bytes "$OPENSSL_CPU_BLOCK_BYTES" -multi "$(nproc)" sha256 >"$cpu_output" 2>&1 & stress_cpu_pid=$!; fi
     if [[ $stress_kind == gpu || $stress_kind == combined ]]; then launch_gpu_test "$launcher_file" "$gpu_output" "$mode"; fi
     if [[ $io_check == 1 ]]; then mkdir -p "$PERSISTENT_ROOT"; start_io_activity "$stress_io_file"; fi
 
