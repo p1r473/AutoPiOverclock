@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.40 — 2026-09-02
+
+- Fixed deterministic Batocera 24-hour CPU/combined stress failures caused by OpenSSL's signed per-worker operation counter reaching 2,147,483,647 after roughly six hours at the former 16 KiB block size. The worker now uses one 1 MiB SHA-256 block, reducing the operation-count rate 64-fold while preserving all-core load and the exact requested elapsed duration.
+- Added a worker regression that pins the single-block, elapsed-time, all-core command and its 1 MiB counter-safe block size. Existing early-exit, duration-tolerance, recovery, and complete-gate retry rules remain fail-closed.
+- Documented why the Batocera block size is part of long-duration correctness. Existing schema-10 tuning states remain directly resumable because the change corrects only the uploaded worker workload and does not reinterpret saved clock or recovery evidence.
+
 ## 0.1.0-alpha.39 — 2026-09-01
 
 - Replaced one-shot controller reads with one shared validated retry policy: scalar SSH facts, exact files, boot IDs, firmware tryboot state, profile/discovery evidence, worker presence, apply inputs, and protected permanent hashes now receive 30 attempts separated by 10 seconds before they can become unavailable evidence. A valid protected-hash mismatch still stops on its first observation.
