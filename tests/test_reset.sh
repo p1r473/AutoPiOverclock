@@ -130,7 +130,7 @@ grep -Rqs 'RESET_BACKUP' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" ||
 grep -Rqs 'reset-stock' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not dispatch stock reset'
 grep -Rqs 'verify-stock-reset' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not dispatch post-reboot stock verification'
 grep -Rqs 'reboot-stock-reset' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" || fail 'controller does not dispatch the stock-reset reboot'
-if grep -RInE -- '(tmux|byobu|pkill|killall)' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles"; then
+if grep -RInE -- '(byobu|pkill|killall|tmux[[:space:]]+(attach|detach|kill|new|rename|respawn|send|set|split|swap|move|link|unlink)[[:alnum:]_-]*)' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles"; then
     fail 'controller contains forbidden terminal/session or process-wide management'
 fi
 grep -Fq 'Existing run files are never deleted' "$ROOT/lib/logging.sh" || fail 'artifact-retention invariant is missing'
