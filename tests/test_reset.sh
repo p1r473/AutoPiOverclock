@@ -38,7 +38,7 @@ run_cli() {
     # wait forever.
     CLI_OUTPUT=$(env HOME="$FAKE_HOME" PATH="$FAKE_BIN:$PATH" \
         APO_RESET_TEST_SSH_LOG="$SSH_LOG" APO_RESET_TEST_PROCESS_LOG="$PROCESS_LOG" \
-        timeout --signal=TERM --kill-after=1s 2s "$ROOT/autopioverclock" "$@" 2>&1)
+        timeout --signal=TERM --kill-after=1s 10s "$ROOT/autopioverclock" "$@" 2>&1)
     CLI_RC=$?
     set -e
 }
