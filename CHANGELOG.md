@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.44 — 2026-09-04
+
+- Fixed a blank startup delay before `run-start` when a successful `prepare` audit was newer than the applied result used by `--cpu-only` or `--gpu-only`. Continuation selection now screens only the small metadata subset it needs and fully validates only a matching candidate instead of base64-decoding every value in every retained state.
+- Cached the platform-specific base64 decode option once per controller process, removing repeated capability probes from state loading without weakening data-only parsing or full validation of selected state.
+- Clarified both terminal output and the CLI reference: an already tuned target needs `reset` before a fresh full search, but a matching retained applied result can be extended directly in one-domain mode. Added regression coverage with a later prepare audit and many irrelevant malformed historical payloads.
+
 ## 0.1.0-alpha.43 — 2026-09-04
 
 - Added `overclock TARGET --cpu-only|--gpu-only` and independent `--cpu-start-at`/`--gpu-start-at` controls. One-domain runs extend a retained applied result, hold the other verified clock, retain the full recovery/qualification/final/apply pipeline, and include the documented domain ceiling even when a chosen start is offset from its coarse ladder.

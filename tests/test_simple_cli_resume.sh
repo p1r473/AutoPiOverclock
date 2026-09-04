@@ -244,6 +244,20 @@ for cleanup_case in comment-only project-zero-removed; do
         PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
         STATUS PASS PHASE COMPLETE NORMAL_CPU 2950 NORMAL_GPU 1125 NORMAL_VOLTAGE 0 \
         PERMANENT_HASH "$prepare_hash"
+
+    # Retained artifact directories can contain many unrelated audits. Their
+    # unneeded payloads must not be decoded merely to find the matching applied
+    # source. These deliberately malformed, irrelevant values prove that the
+    # metadata screen skips them while the selected source still receives a
+    # complete strict load below.
+    for distractor_index in {01..40}; do
+        distractor_state="$PREPARE_SOURCE_OUTPUT/tron-20260904-13${distractor_index}00-deadbeef${distractor_index}00.state"
+        write_state_fixture "$distractor_state" \
+            FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "20260904-13${distractor_index}00-deadbeef${distractor_index}00" \
+            REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND reset READ_ONLY_RUN 0 \
+            STATUS PASS PHASE COMPLETE
+        printf 'IRRELEVANT_BROKEN_VALUE\t%%%s\n' "$distractor_index" >> "$distractor_state"
+    done
     ln -s "$(basename "$PREPARE_STATE")" "$PREPARE_SOURCE_OUTPUT/tron-latest.state"
     (
         export APO_CLI_LIBRARY_ONLY=1

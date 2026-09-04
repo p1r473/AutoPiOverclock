@@ -14,7 +14,7 @@ The transport does not read `~/.ssh/config`. Use a real hostname or IP plus an e
 
 | Controller command | Complete behavior |
 |---|---|
-| `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. On an already tuned host it completes setup, then directs the one required reset. |
+| `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. An already tuned host needs `reset` only for a fresh full search; an eligible retained applied result can be extended directly with `--cpu-only` or `--gpu-only`. |
 | `overclock TARGET [--cpu-only | --gpu-only] [--cpu-start-at MHZ] [--gpu-start-at MHZ]` | Rediscover the baseline, prove tryboot recovery, tune both domains by default, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. Optional domain/start flags narrow where the automatic search runs without selecting a final clock. |
 | `test TARGET` | Test one exact CPU/GPU pair for a requested number of minutes through the same tryboot, watchdog, maximum-cooling, health, boot-cycle, protected-hash, and normal-recovery gates. It retains evidence but never validates or applies the clocks. |
 | `reset TARGET` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |

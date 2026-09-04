@@ -584,6 +584,7 @@ apo_public_overclock_select_continuation() {
     local prepare_hash prepare_cpu prepare_gpu prepare_voltage prepare_profile prepare_boot_config prepare_tryboot_config prepare_gpu_key
     local prepare_fallback_state=''
     local -a state_files=()
+    local -A state_screen=()
     local state_index
     [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
     requested_final=$APO_FINAL_DURATION_S
@@ -754,6 +755,21 @@ apo_public_overclock_select_continuation() {
         for ((state_index=${#state_files[@]} - 1; state_index >= 0; state_index--)); do
             state_file=${state_files[$state_index]}
             [[ $state_file != "${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-latest.state" && -f $state_file ]] || continue
+            apo_state_load_fields "$state_file" state_screen \
+                FORMAT_VERSION RUN_SCHEMA REMOTE_TARGET ORIGIN_COMMAND READ_ONLY_RUN \
+                CFG_AUTO_GENERATED_CANDIDATES CFG_SWEEP_DOMAIN CFG_CPU_START_AT CFG_GPU_START_AT \
+                STATUS PHASE || continue
+            [[ ${state_screen[FORMAT_VERSION]:-} == 1 &&
+               ${state_screen[RUN_SCHEMA]:-} == "$APO_CURRENT_RUN_SCHEMA" &&
+               ${state_screen[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" &&
+               ${state_screen[ORIGIN_COMMAND]:-} == overclock &&
+               ${state_screen[READ_ONLY_RUN]:-0} == 0 &&
+               ${state_screen[CFG_AUTO_GENERATED_CANDIDATES]:-0} == 1 &&
+               ${state_screen[CFG_SWEEP_DOMAIN]:-all} == "$APO_SWEEP_DOMAIN" &&
+               ${state_screen[CFG_CPU_START_AT]:-} == "$APO_CPU_START_AT" &&
+               ${state_screen[CFG_GPU_START_AT]:-} == "$APO_GPU_START_AT" &&
+               ( ${state_screen[STATUS]:-} == RUNNING || ${state_screen[STATUS]:-} == INTERRUPTED ) &&
+               ${state_screen[PHASE]:-} != PREPARE && ${state_screen[PHASE]:-} != PREPARED ]] || continue
             apo_state_load "$state_file"
             [[ $(apo_state_get FORMAT_VERSION '') == 1 &&
                $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
@@ -803,6 +819,21 @@ apo_public_overclock_select_continuation() {
         for ((state_index=${#state_files[@]} - 1; state_index >= 0; state_index--)); do
             state_file=${state_files[$state_index]}
             [[ $state_file != "${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-latest.state" && -f $state_file ]] || continue
+            apo_state_load_fields "$state_file" state_screen \
+                FORMAT_VERSION RUN_SCHEMA REMOTE_TARGET ORIGIN_COMMAND STATUS PHASE APPLY_STATUS \
+                FINAL_CPU FINAL_GPU PERMANENT_HASH PROFILE BOOT_CONFIG TRYBOOT_CONFIG GPU_KEY || continue
+            [[ ${state_screen[FORMAT_VERSION]:-} == 1 &&
+               ${state_screen[RUN_SCHEMA]:-} == "$APO_CURRENT_RUN_SCHEMA" &&
+               ${state_screen[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" &&
+               ${state_screen[ORIGIN_COMMAND]:-} == overclock &&
+               ${state_screen[STATUS]:-} == PASS && ${state_screen[PHASE]:-} == COMPLETE &&
+               ${state_screen[APPLY_STATUS]:-} == APPLIED &&
+               ${state_screen[FINAL_CPU]:-} == "$prepare_cpu" &&
+               ${state_screen[FINAL_GPU]:-} == "$prepare_gpu" &&
+               ${state_screen[PROFILE]:-} == "$prepare_profile" &&
+               ${state_screen[BOOT_CONFIG]:-} == "$prepare_boot_config" &&
+               ${state_screen[TRYBOOT_CONFIG]:-} == "$prepare_tryboot_config" &&
+               ${state_screen[GPU_KEY]:-} == "$prepare_gpu_key" ]] || continue
             apo_state_load "$state_file"
             apo_domain_sweep_source_is_eligible || continue
             [[ $(apo_state_get FINAL_CPU '') == "$prepare_cpu" &&
@@ -1457,9 +1488,10 @@ apo_start_new_run() {
             apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. The stock host is ready to overclock.'
         else
             apo_state_phase COMPLETE HOST_PREPARED PASS
-            apo_summary_line "HOST PREPARED: dependencies and watchdog recovery are ready; permanent clocks must be reset before tuning."
-            apo_summary_line "Next: autopioverclock reset $APO_RAW_TARGET"
-            apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. Run reset once before overclocking this currently tuned host.'
+            apo_summary_line 'HOST PREPARED: dependencies and watchdog recovery are ready; explicit clocks are currently active.'
+            apo_summary_line "Fresh full search: autopioverclock reset $APO_RAW_TARGET"
+            apo_summary_line "Extend a retained applied result without resetting: autopioverclock overclock $APO_RAW_TARGET --cpu-only or --gpu-only"
+            apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. Reset only before a fresh full search; a retained applied result can continue with --cpu-only or --gpu-only without resetting.'
         fi
         return 0
     fi

@@ -2,15 +2,49 @@
 # Atomic non-executable state. Values are base64 encoded and never sourced.
 
 declare -Ag APO_STATE=()
+APO_STATE_BASE64_DECODE_OPTION=''
 
 readonly APO_CURRENT_RUN_SCHEMA=10
 readonly APO_CURRENT_VALIDATION_SCHEMA=8
 
 apo_state_valid_key() { [[ ${1-} =~ ^[A-Z][A-Z0-9_]*$ ]]; }
 apo_state_encode() { printf '%s' "${1-}" | base64 | tr -d '\n'; }
+apo_state_decode_policy_init() {
+    [[ -z $APO_STATE_BASE64_DECODE_OPTION ]] || return 0
+    if base64 --help 2>&1 | grep -q -- '--decode'; then
+        APO_STATE_BASE64_DECODE_OPTION=--decode
+    else
+        APO_STATE_BASE64_DECODE_OPTION=-D
+    fi
+}
 apo_state_decode() {
-    if base64 --help 2>&1 | grep -q -- '--decode'; then printf '%s' "${1-}" | base64 --decode 2>/dev/null;
-    else printf '%s' "${1-}" | base64 -D 2>/dev/null; fi
+    apo_state_decode_policy_init
+    printf '%s' "${1-}" | base64 "$APO_STATE_BASE64_DECODE_OPTION" 2>/dev/null
+}
+
+# Selection paths often need only a small metadata subset from many retained
+# runs. Decode only those named fields; a candidate that survives this screen
+# is still loaded and validated in full before it can authorize any action.
+apo_state_load_fields() {
+    local source_file=$1 output_name=$2 state_key encoded_value decoded_value requested_key
+    local -n output_fields=$output_name
+    local -A requested_fields=()
+    shift 2
+    [[ -f $source_file && -r $source_file ]] || return 1
+    (( $# > 0 )) || return 1
+    for requested_key in "$@"; do
+        apo_state_valid_key "$requested_key" || return 1
+        requested_fields[$requested_key]=1
+    done
+    output_fields=()
+    apo_state_decode_policy_init
+    while IFS=$'\t' read -r state_key encoded_value || [[ -n ${state_key:-} ]]; do
+        [[ -n ${state_key:-} ]] || continue
+        apo_state_valid_key "$state_key" || return 1
+        [[ -v requested_fields[$state_key] ]] || continue
+        decoded_value=$(apo_state_decode "$encoded_value") || return 1
+        output_fields[$state_key]=$decoded_value
+    done < "$source_file"
 }
 
 apo_state_set() {
@@ -52,6 +86,7 @@ apo_state_load() {
         apo_die "State file not found or unreadable: $source_label" "$APO_EXIT_USAGE"
     fi
     APO_STATE=()
+    apo_state_decode_policy_init
     while IFS=$'\t' read -r state_key encoded_value || [[ -n ${state_key:-} ]]; do
         [[ -n ${state_key:-} ]] || continue
         if ! apo_state_valid_key "$state_key"; then
