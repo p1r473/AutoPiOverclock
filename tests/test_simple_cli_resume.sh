@@ -334,7 +334,7 @@ if (
     echo 'a latest prepare audit selected an applied source across different boot paths' >&2
     exit 1
 fi
-grep -Fq 'latest prepare audit does not match any retained applied result' "$TEMP_DIR/domain-prepare-path-mismatch.out"
+grep -Fq 'latest host-baseline audit does not match any retained applied result' "$TEMP_DIR/domain-prepare-path-mismatch.out"
 
 if (
     export APO_CLI_LIBRARY_ONLY=1

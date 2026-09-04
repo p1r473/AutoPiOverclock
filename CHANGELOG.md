@@ -1,10 +1,16 @@
 # Changelog
 
+## 0.1.0-alpha.45 — 2026-09-04
+
+- Added `restore TARGET [--run-id RUN_ID]` for the case where a user manually edits or replaces an applied AutoPiOverclock boot config. Restore selects the newest eligible retained applied result by default, requires its current-schema completed validation and hash-bound proposed-config artifact, displays the exact replacement diff, and backs up the live config before mutation.
+- Restore reuses the serialized permanent-config apply/rollback path, forces a fresh normal reboot, and verifies the retained clocks, config hash, health, watchdog, and clear tryboot state. A failed verification restores and verifies the pre-restore backup rather than accepting an uncertain permanent state; all earlier artifacts remain unchanged and a separate restore audit is retained.
+- Documented the distinct meanings of `recover`, `restore`, and `reset`, taught one-domain continuation to look through a successful restore audit to its applied source, and fixed the command table so option alternatives cannot split the Markdown row.
+
 ## 0.1.0-alpha.44 — 2026-09-04
 
 - Fixed a blank startup delay before `run-start` when a successful `prepare` audit was newer than the applied result used by `--cpu-only` or `--gpu-only`. Continuation selection now screens only the small metadata subset it needs and fully validates only a matching candidate instead of base64-decoding every value in every retained state.
 - Cached the platform-specific base64 decode option once per controller process, removing repeated capability probes from state loading without weakening data-only parsing or full validation of selected state.
-- Clarified both terminal output and the CLI reference: an already tuned target needs `reset` before a fresh full search, but a matching retained applied result can be extended directly in one-domain mode. Added regression coverage with a later prepare audit and many irrelevant malformed historical payloads.
+- Clarified both terminal output and the CLI reference: an already tuned target needs `reset` before a fresh full search, but a matching retained applied result can be extended directly in one-domain mode. Corrected the Markdown command-table syntax so mutually exclusive options do not split a row into extra columns. Added regression coverage with a later prepare audit and many irrelevant malformed historical payloads.
 
 ## 0.1.0-alpha.43 — 2026-09-04
 

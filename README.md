@@ -82,14 +82,14 @@ Graphical and headless operation are supported. The controller must be a separat
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-09-04, `alpha.44` keeps `prepare` and `overclock` as the two everyday commands, with `reset` available when a user wants to return to stock and start over. Automatic tuning searches and qualifies CPU first, then searches and qualifies GPU, and runs one 24-hour combined final validation. One-domain and later-candidate starts retain the same safety pipeline. A fully recovered CPU or GPU boot/stability failure during qualification causes only the identified domain to step down by 25 MHz. A CPU- or GPU-specific final failure also lowers only the identified domain; a genuinely ambiguous full-mode failure tests CPU-only, GPU-only, then paired 25 MHz reductions so a stable domain is not lowered unnecessarily. Transient reads and safely recovered harness failures receive bounded retries, while real active config drift, ownership ambiguity, and uncertain recovery still stop. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware.
+As of 2026-09-04, `alpha.45` keeps `prepare` and `overclock` as the two everyday commands, with `reset` available when a user wants to return to stock and start over. Automatic tuning searches and qualifies CPU first, then searches and qualifies GPU, and runs one 24-hour combined final validation. One-domain and later-candidate starts retain the same safety pipeline. A fully recovered CPU or GPU boot/stability failure during qualification causes only the identified domain to step down by 25 MHz. A CPU- or GPU-specific final failure also lowers only the identified domain; a genuinely ambiguous full-mode failure tests CPU-only, GPU-only, then paired 25 MHz reductions so a stable domain is not lowered unnecessarily. Transient reads and safely recovered harness failures receive bounded retries, while real active config drift, ownership ambiguity, and uncertain recovery still stop. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware.
 
 | Evidence | Current status |
 | --- | --- |
-| Bash fixture suite | 19 scripted suites cover the normal/manual-test interface, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
+| Bash fixture suite | 20 scripted suites cover the normal/manual-test interface, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, restore, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | The workflow runs all fixture suites and ShellCheck; see the live badge for the current published `main` result. |
-| Debian-family Raspberry Pi 5 run | One Debian 13 Pi 5 completed and applied a retained **alpha.39** result at **CPU 3100 MHz and V3D 1175 MHz with the firmware-default voltage state**. Each domain qualification ran for two hours; combined CPU/GPU/I/O validation ran for 24 hours; three additional candidate/normal boot cycles passed; maximum recorded temperature was 59.3 C with `throttled=0x0`; and the apply verification reboot passed. This proves that retained result, not alpha.44's current search and backoff paths. |
-| Batocera Raspberry Pi 5 run | Recovery and watchdog preparation have been exercised, but complete `alpha.44` end-to-end validation remains pending. |
+| Debian-family Raspberry Pi 5 run | One Debian 13 Pi 5 completed and applied a retained **alpha.39** result at **CPU 3100 MHz and V3D 1175 MHz with the firmware-default voltage state**. Each domain qualification ran for two hours; combined CPU/GPU/I/O validation ran for 24 hours; three additional candidate/normal boot cycles passed; maximum recorded temperature was 59.3 C with `throttled=0x0`; and the apply verification reboot passed. This proves that retained result, not alpha.45's current search and backoff paths. |
+| Batocera Raspberry Pi 5 run | Recovery and watchdog preparation have been exercised, but complete `alpha.45` end-to-end validation remains pending. |
 | Default 24-hour combined final validation | Proven on the retained Debian run above; no Batocera PASS claim until current-version artifacts complete and are reviewed. |
 
 Do not infer a general production recommendation from one board, a candidate pass, an active run, or this table. Only a run that reaches `COMPLETE`, records `Validated: 1` under the current validation schema, and finishes `overclock` with `APPLY_STATUS=APPLIED` is installed by the normal workflow. The standalone expert `apply` command retains its separate confirmation.
@@ -123,13 +123,14 @@ autopioverclock overclock pi@pi-host --qualification-hours 3 --final-hours 36
 | Command | Purpose |
 | --- | --- |
 | `prepare TARGET` | Install and verify dependencies and watchdog recovery. Add `--dry-run` for read-only discovery and plan generation. |
-| `overclock TARGET [--cpu-only | --gpu-only] [--cpu-start-at MHZ] [--gpu-start-at MHZ]` | Tune both domains, or extend an eligible applied result by tuning one domain while holding the other at its retained verified clock; optional starts skip earlier coarse candidates. |
+| `overclock TARGET [OPTIONS]` | Tune both domains, or extend an eligible applied result with `--cpu-only` or `--gpu-only`; optional `--cpu-start-at` and `--gpu-start-at` values skip earlier coarse candidates. |
 | `test TARGET` | Test one exact `--cpu`/`--gpu` pair for `--minutes`; recover normally and retain evidence without applying it. |
 | `reset TARGET` | Back up the boot config, remove tuning, reboot, and verify stock clocks. |
 | `run TARGET` | Use the advanced prepare, recovery-proof, sweep, selection, and validation interface. |
 | `resume TARGET` | Recover when necessary and continue saved progress. |
 | `status TARGET` | Show local state for the selected or latest run; supports redaction. |
 | `recover TARGET` | Return the target to permanent normal configuration and verify health. |
+| `restore TARGET` | Restore the newest retained, fully validated applied config after a manual change; accepts `--run-id` for an older result. |
 | `apply TARGET` | Apply only a fully validated result after an exact diff and typed confirmation. |
 | `report TARGET` | Generate a concise run report; supports redaction. |
 
@@ -219,7 +220,7 @@ autopioverclock resume pi@pi-host --run-id RUN_ID
 autopioverclock recover pi@pi-host --run-id RUN_ID
 ```
 
-Without `--run-id`, `resume`, `recover`, `status`, and `report` select the target's latest retained state. Use an explicit run ID when you intentionally want an older run; a reset audit also advances the target's `*-latest` links. Rerunning the same `autopioverclock overclock TARGET` command—including its domain mode and starting-point flags—continues the matching latest eligible interrupted run.
+Without `--run-id`, `resume`, `recover`, `status`, and `report` select the target's latest retained state. `restore` instead finds the newest eligible fully validated applied result because a later prepare, reset, failed run, or restore audit may own the latest link. Use an explicit run ID when you intentionally want an older result. Rerunning the same `autopioverclock overclock TARGET` command—including its domain mode and starting-point flags—continues the matching latest eligible interrupted run.
 
 For a current automatic overclock that has not started final validation, `resume` can deliberately repeat a retained checkpoint while taking all clocks from saved evidence:
 
@@ -251,7 +252,7 @@ Reset then forces a permanent-config reboot and accepts success only after a new
 
 Reset does not run `tmux`, Byobu, job-control, or process-wide kill commands. If another controller still owns the per-target lock, reset fails without signaling that process or its terminal session; stop that one foreground controller yourself and repeat `autopioverclock reset TARGET`.
 
-`recover` returns one retained run to its saved protected normal config and stops. `reset` removes permanent tuning and verifies firmware-stock clocks. Neither deletes prior run artifacts.
+`recover` abandons or cleans up a selected run's temporary `tryboot` candidate and proves the permanent config already protected by that run; it does not restore an overwritten permanent file. `restore` backs up the current permanent config, reinstalls a retained fully validated applied config, reboots, and verifies it. `reset` removes permanent tuning and verifies firmware-stock clocks. None deletes prior run artifacts.
 
 ## Results
 

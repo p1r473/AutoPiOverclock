@@ -59,7 +59,7 @@ if ! grep -Fq 'can never be permanently applied' "$TEMP_DIR/manual-apply.err"; t
     exit 1
 fi
 
-for missing_target_command in prepare overclock test reset run resume status recover apply report; do
+for missing_target_command in prepare overclock test reset run resume status recover restore apply report; do
     if "$ROOT/autopioverclock" "$missing_target_command" >/dev/null 2>&1; then
         echo "$missing_target_command accepted a missing target" >&2
         exit 1
@@ -123,7 +123,7 @@ for command_line in \
     grep -Fq "$command_line" <<< "$help_output"
 done
 
-for advanced_command in run resume status recover apply report; do
+for advanced_command in run resume status recover restore apply report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
@@ -131,7 +131,7 @@ for retained_option in --config --mode --run-id --install-missing --repair-watch
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 
-for documented_command in prepare overclock test reset run resume status recover apply report; do
+for documented_command in prepare overclock test reset run resume status recover restore apply report; do
     documented_pattern=$(printf '| `%s TARGET' "$documented_command")
     grep -Fq "$documented_pattern" "$ROOT/README.md"
 done

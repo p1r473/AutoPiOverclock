@@ -19,6 +19,7 @@ TESTS=(
     test_interrupted_state.sh
     test_apply_resume.sh
     test_reset.sh
+    test_restore.sh
     test_package.sh
     test_public_safety.sh
 )

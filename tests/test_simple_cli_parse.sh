@@ -162,6 +162,26 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
 )
 
 parse_fixture reset reset reset reset tron
+parse_fixture restore restore '' restore tron
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli restore tron --run-id 20260901-195530-ad946cde6c24975f
+    [[ $APO_COMMAND == restore && $APO_ORIGIN_COMMAND == restore ]]
+    [[ $APO_SELECTED_RUN_ID == 20260901-195530-ad946cde6c24975f ]]
+)
+for invalid_restore_args in '--yes' '--dry-run' '--no-max-fan' '--qualification-hours 2' '--gpu-only'; do
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        # Fixed fixture tokens contain no shell metacharacters.
+        # shellcheck disable=SC2086
+        apo_parse_cli restore tron $invalid_restore_args
+    ) >/dev/null 2>&1; then
+        echo "restore accepted invalid options: $invalid_restore_args" >&2
+        exit 1
+    fi
+done
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"

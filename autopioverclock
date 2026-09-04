@@ -39,6 +39,8 @@ source "${APO_ROOT}/lib/reset.sh"
 source "${APO_ROOT}/lib/candidates.sh"
 # shellcheck source=lib/apply.sh
 source "${APO_ROOT}/lib/apply.sh"
+# shellcheck source=lib/restore.sh
+source "${APO_ROOT}/lib/restore.sh"
 # shellcheck source=lib/report.sh
 source "${APO_ROOT}/lib/report.sh"
 
@@ -142,6 +144,7 @@ Usage:
                                   [--qualification-hours HOURS] [--final-hours HOURS]
   autopioverclock status TARGET [--run-id RUN_ID] [--redact]
   autopioverclock recover TARGET [--run-id RUN_ID]
+  autopioverclock restore TARGET [--run-id RUN_ID]
   autopioverclock apply TARGET [--run-id RUN_ID]
   autopioverclock report TARGET [--run-id RUN_ID] [--redact]
 
@@ -154,6 +157,7 @@ Commands:
   resume     Recover when needed and continue a selected saved run
   status     Show local state for a selected or latest run
   recover    Return a selected run to verified permanent normal configuration
+  restore    Restore a retained fully validated applied config after manual edits
   apply      Apply a selected fully validated result with typed confirmation
   report     Generate a concise report for a selected or latest run
 
@@ -234,7 +238,7 @@ apo_parse_cli() {
             APO_PUBLIC_COMMAND=reset
             index=1
             ;;
-        run|resume|status|recover|apply|report)
+        run|resume|status|recover|restore|apply|report)
             APO_COMMAND=${arguments[0]}
             APO_ORIGIN_COMMAND=${arguments[0]}
             index=1
@@ -401,6 +405,9 @@ apo_parse_cli() {
         (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_ASSUME_YES == 0 )) || apo_die '--yes is not valid with reset TARGET; reset does not prompt.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with reset TARGET.' "$APO_EXIT_USAGE"
+    fi
+    if [[ $APO_COMMAND == restore ]]; then
+        (( APO_ASSUME_YES == 0 )) || apo_die '--yes is not valid with restore TARGET; the explicit restore command is its authorization.' "$APO_EXIT_USAGE"
     fi
     if [[ $APO_PUBLIC_COMMAND == prepare ]]; then
         (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'prepare TARGET uses automatic host discovery; custom plans belong to the advanced run command.' "$APO_EXIT_USAGE"
@@ -737,7 +744,7 @@ apo_public_overclock_select_continuation() {
         APO_MAX_FAN=$saved_max_fan
         return 0
     fi
-    if [[ $APO_SWEEP_DOMAIN != all && $origin == prepare && $status == PASS && $phase == COMPLETE ]]; then
+    if [[ $APO_SWEEP_DOMAIN != all && ( $origin == prepare || $origin == restore ) && $status == PASS && $phase == COMPLETE ]]; then
         prepare_hash=$(apo_state_get PERMANENT_HASH '')
         prepare_cpu=$(apo_state_get NORMAL_CPU '')
         prepare_gpu=$(apo_state_get NORMAL_GPU '')
@@ -749,7 +756,7 @@ apo_public_overclock_select_continuation() {
         shopt -s nullglob
         state_files=("${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"*.state)
         shopt -u nullglob
-        # A later prepare audit may own the latest link after an interrupted
+        # A later prepare or restore audit may own the latest link after an interrupted
         # one-domain run. Resume only an exact saved command/config baseline;
         # unlike applied-source fallback below, no config drift is accepted.
         for ((state_index=${#state_files[@]} - 1; state_index >= 0; state_index--)); do
@@ -853,11 +860,11 @@ apo_public_overclock_select_continuation() {
         if [[ -n $prepare_fallback_state ]]; then
             apo_state_load "$prepare_fallback_state"
             apo_capture_domain_sweep_source "$prepare_fallback_state" ||
-                apo_die 'The retained applied fallback selected behind the latest prepare audit failed eligibility checks.' "$APO_EXIT_USAGE"
+                apo_die 'The retained applied fallback selected behind the latest host-baseline audit failed eligibility checks.' "$APO_EXIT_USAGE"
             APO_COMMAND=run
             return 0
         fi
-        apo_die 'The latest prepare audit does not match any retained applied result eligible for domain-only tuning.' "$APO_EXIT_USAGE"
+        apo_die 'The latest host-baseline audit does not match any retained applied result eligible for domain-only tuning.' "$APO_EXIT_USAGE"
     fi
     APO_STATE=()
     APO_STATE_FILE=''
@@ -1536,6 +1543,9 @@ apo_load_selected_run() {
     if [[ $(apo_state_get ORIGIN_COMMAND '') == reset ]]; then
         apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/report, or run autopioverclock reset TARGET again.' "$APO_EXIT_USAGE"
     fi
+    if [[ $(apo_state_get ORIGIN_COMMAND '') == restore ]]; then
+        apo_die 'A validated-config restore audit is not a tuning run. Inspect it with status/report, rerun autopioverclock restore TARGET if needed, or select the original overclock run explicitly.' "$APO_EXIT_USAGE"
+    fi
     if [[ $APO_COMMAND == apply && $(apo_state_get ORIGIN_COMMAND '') == test ]]; then
         apo_die 'A manual stability test is evidence only and can never be permanently applied. Use overclock TARGET for conservative selection and full validation.' "$APO_EXIT_USAGE"
     fi
@@ -1649,11 +1659,11 @@ main() {
         APO_RESTART_EDGE_DURATION_S=$APO_EDGE_DURATION_S
     fi
     apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync chmod mkdir mv readlink rm
-    case $APO_COMMAND in run|prepare|resume|recover|reset|apply) apo_acquire_lock ;; esac
+    case $APO_COMMAND in run|prepare|resume|recover|restore|reset|apply) apo_acquire_lock ;; esac
     apo_public_overclock_select_continuation
     apo_public_test_select_continuation
     case $APO_COMMAND in
-        run|prepare|resume|recover|reset|apply|post-floor-edge|post-floor-final)
+        run|prepare|resume|recover|restore|reset|apply|post-floor-edge|post-floor-final)
             (( APO_DRY_RUN == 1 )) || APO_PERSISTENT_SSH_RECOVERY=1
             ;;
     esac
@@ -1683,6 +1693,12 @@ main() {
             # tryboot candidate state.
             APO_MUTATING_COMMAND=0
             apo_reset_stock
+            ;;
+        restore)
+            # Restore has its own permanent-config backup/reconcile protocol
+            # and never claims ownership of a tryboot candidate.
+            APO_MUTATING_COMMAND=0
+            apo_restore_validated_config
             ;;
         status)
             apo_load_selected_run

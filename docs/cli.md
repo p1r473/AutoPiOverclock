@@ -15,9 +15,10 @@ The transport does not read `~/.ssh/config`. Use a real hostname or IP plus an e
 | Controller command | Complete behavior |
 |---|---|
 | `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. An already tuned host needs `reset` only for a fresh full search; an eligible retained applied result can be extended directly with `--cpu-only` or `--gpu-only`. |
-| `overclock TARGET [--cpu-only | --gpu-only] [--cpu-start-at MHZ] [--gpu-start-at MHZ]` | Rediscover the baseline, prove tryboot recovery, tune both domains by default, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. Optional domain/start flags narrow where the automatic search runs without selecting a final clock. |
+| `overclock TARGET [OPTIONS]` | Rediscover the baseline, prove tryboot recovery, tune both domains by default, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. `--cpu-only`, `--gpu-only`, and the starting-clock options narrow the automatic search without selecting a final clock. |
 | `test TARGET` | Test one exact CPU/GPU pair for a requested number of minutes through the same tryboot, watchdog, maximum-cooling, health, boot-cycle, protected-hash, and normal-recovery gates. It retains evidence but never validates or applies the clocks. |
 | `reset TARGET` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |
+| `restore TARGET` | Back up the current boot config and restore the newest retained, fully validated applied config after an out-of-band change; add `--run-id` to select an older applied result. |
 
 The final sequence is automatic:
 
@@ -104,13 +105,16 @@ autopioverclock status TARGET [--run-id RUN_ID]
 autopioverclock report TARGET [--run-id RUN_ID]
 autopioverclock resume TARGET [--run-id RUN_ID]
 autopioverclock recover TARGET [--run-id RUN_ID]
+autopioverclock restore TARGET [--run-id RUN_ID]
 autopioverclock apply TARGET [--run-id RUN_ID]
 autopioverclock reset TARGET
 ```
 
 The `run TARGET` command and strict `--config FILE` plans remain for development and expert use. Advanced options include `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--run-id`, `--redact`, and `--yes`; a new advanced run may also use `--no-max-fan`. `prepare TARGET --dry-run` retains read-only discovery and plan generation. These are not required by the normal two-command workflow; `reset TARGET` remains available when a user wants to return to stock. The explicit public `overclock` command starts without a second ordinary prompt; all safety, validation, and recovery gates remain mandatory.
 
-Standalone advanced `apply` still requires a current-schema `PASS`/`COMPLETE` result whose retained endurance evidence exactly matches its immutable saved final duration, displays the exact diff, and requires typed confirmation. Manual `test` records are ineligible regardless of their requested duration. `status` and `report` remain local; `resume`, `recover`, and `apply` fail closed when saved context is incomplete or stale.
+Standalone advanced `apply` still requires a current-schema `PASS`/`COMPLETE` result whose retained endurance evidence exactly matches its immutable saved final duration, displays the exact diff, and requires typed confirmation. Manual `test` records are ineligible regardless of their requested duration. `status` and `report` remain local; `resume`, `recover`, `restore`, and `apply` fail closed when saved context is incomplete or stale.
+
+`recover`, `restore`, and `reset` solve different problems. `recover` returns a selected run from temporary tryboot state to the permanent config that run already protects and verifies health; it does not rewrite an out-of-band permanent-config edit. `restore` selects the newest eligible fully validated applied result (or the exact `--run-id`), verifies its retained config artifact and clear tryboot ownership, displays the replacement diff, creates a new deterministic backup, restores the validated bytes, reboots, and verifies clocks, hash, watchdog, and health. A failed restore verification rolls back to the pre-restore backup. `reset` removes permanent tuning and verifies Raspberry Pi 5 stock clocks. Each retains its own audit and preserves every earlier artifact.
 
 ## Reset guarantees
 

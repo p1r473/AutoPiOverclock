@@ -96,6 +96,21 @@ fi
 
 while IFS= read -r script_file; do bash -n "$script_file"; done < <(find "$ROOT" -type f \( -name '*.sh' -o -name autopioverclock \) -not -path '*/.git/*' | LC_ALL=C sort)
 for required in README.md LICENSE SECURITY.md CONTRIBUTING.md CHANGELOG.md .github/workflows/ci.yml tools/build-batocera-bundle.sh; do [[ -f "$ROOT/$required" ]]; done
+if ! awk '
+    /^\|/ {
+        field_count = split($0, fields, "`")
+        for (field_index = 2; field_index <= field_count; field_index += 2) {
+            if (index(fields[field_index], "|")) {
+                print FILENAME ":" FNR ":" $0
+                invalid = 1
+            }
+        }
+    }
+    END { exit invalid }
+' "$ROOT/README.md" "$ROOT"/docs/*.md; then
+    echo 'a literal pipe inside a Markdown table code span would split the rendered row' >&2
+    exit 1
+fi
 grep -q 'git -C "$ROOT" archive' "$ROOT/tools/package.sh"
 grep -q 'status --porcelain --untracked-files=normal' "$ROOT/tools/package.sh"
 grep -q "trap 'exit 143' TERM" "$ROOT/autopioverclock"
