@@ -714,9 +714,15 @@ if grep -Eq 'apo_return_normal.*\|\|[[:space:]]*true' "$ROOT/lib/recovery.sh" "$
 fi
 
 # A checkpoint interrupted before discovery has no profile context. It remains
-# inspectable through status/report, while resume refuses before any SSH action.
+# inspectable through status/summary/report, while resume refuses before any
+# SSH action. Status now includes a live read-only probe, so this local fixture
+# supplies a deterministic unavailable transport instead of touching DNS.
 PARTIAL_DIR=$(mktemp -d)
 trap 'rm -rf "$PARTIAL_DIR"' EXIT
+PARTIAL_BIN="$PARTIAL_DIR/bin"
+mkdir -p "$PARTIAL_BIN"
+printf '#!/usr/bin/env bash\nexit 255\n' > "$PARTIAL_BIN/ssh"
+chmod 755 "$PARTIAL_BIN/ssh"
 PARTIAL_STATE="$PARTIAL_DIR/example-host-partial.state"
 ROOT="$ROOT" PARTIAL_STATE="$PARTIAL_STATE" PARTIAL_DIR="$PARTIAL_DIR" STORED_TARGET="$(id -un)@example-host" bash -c '
     set -Eeuo pipefail
@@ -737,8 +743,12 @@ ROOT="$ROOT" PARTIAL_STATE="$PARTIAL_STATE" PARTIAL_DIR="$PARTIAL_DIR" STORED_TA
     apo_state_set SUBPHASE INITIAL
     apo_state_save
 '
-STATUS_OUTPUT=$("$ROOT/autopioverclock" status example-host --output-dir "$PARTIAL_DIR" --run-id partial)
+STATUS_OUTPUT=$(PATH="$PARTIAL_BIN:$PATH" APO_STATUS_CAPTURE_ATTEMPTS=1 APO_STATUS_CAPTURE_DELAY_SECONDS=0 \
+    "$ROOT/autopioverclock" status example-host --output-dir "$PARTIAL_DIR" --run-id partial)
 [[ $STATUS_OUTPUT == *'Phase:          PREPARE'* ]]
+SUMMARY_OUTPUT=$(PATH="$PARTIAL_BIN:$PATH" APO_STATUS_CAPTURE_ATTEMPTS=1 APO_STATUS_CAPTURE_DELAY_SECONDS=0 \
+    "$ROOT/autopioverclock" summary example-host --output-dir "$PARTIAL_DIR" --run-id partial)
+[[ $SUMMARY_OUTPUT == *'Run story'* ]]
 "$ROOT/autopioverclock" report example-host --output-dir "$PARTIAL_DIR" --run-id partial >/dev/null
 [[ -s $PARTIAL_DIR/example-host-partial-report.txt ]]
 if "$ROOT/autopioverclock" resume example-host --output-dir "$PARTIAL_DIR" --run-id partial >"$PARTIAL_DIR/resume.out" 2>&1; then

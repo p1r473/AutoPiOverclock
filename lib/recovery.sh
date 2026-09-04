@@ -498,11 +498,11 @@ apo_record_failure_after_recovery() {
 
 apo_prove_tryboot_recovery() {
     apo_state_phase TRYBOOT_PROOF CANDIDATE_BOOT RUNNING
-    apo_boot_candidate "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" tryboot-proof-candidate || {
+    apo_boot_candidate "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" baseline-safety-proof || {
         local candidate_class=$APO_LAST_CLASS candidate_reason=$APO_LAST_REASON
-        apo_record_failure_after_recovery tryboot-proof-fallback "$candidate_class" "$candidate_reason"
+        apo_record_failure_after_recovery baseline-safety-fallback "$candidate_class" "$candidate_reason"
         return 1
     }
-    apo_return_normal tryboot-proof-normal || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return 1; }
-    apo_event tryboot-proof PASS '' 'Tryboot candidate and normal recovery were both verified.'
+    apo_return_normal baseline-safety-normal || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return 1; }
+    apo_event baseline-safety-proof PASS '' 'The installed baseline completed a temporary tryboot and verified normal recovery before clock sweeping began.'
 }

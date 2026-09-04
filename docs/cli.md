@@ -15,7 +15,7 @@ The transport does not read `~/.ssh/config`. Use a real hostname or IP plus an e
 | Controller command | Complete behavior |
 |---|---|
 | `prepare TARGET` | Detect the supported Pi 5 platform and mode, install missing stress dependencies, install or repair watchdog recovery when required, and reboot for activation when needed. An already tuned host needs `reset` only for a fresh full search; an eligible retained applied result can be extended directly with `--cpu-only` or `--gpu-only`. |
-| `overclock TARGET [OPTIONS]` | Rediscover the baseline, prove tryboot recovery, tune both domains by default, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. `--cpu-only`, `--gpu-only`, and the starting-clock options narrow the automatic search without selecting a final clock. |
+| `overclock TARGET [OPTIONS]` | Rediscover the baseline, complete the baseline safety proof, tune both domains by default, retain/display the exact permanent diff, apply the validated result, reboot, and verify it. `--cpu-only`, `--gpu-only`, and the starting-clock options narrow the automatic search without selecting a final clock. |
 | `test TARGET` | Test one exact CPU/GPU pair for a requested number of minutes through the same tryboot, watchdog, maximum-cooling, health, boot-cycle, protected-hash, and normal-recovery gates. It retains evidence but never validates or applies the clocks. |
 | `reset TARGET` | Preserve a verified boot-config backup, safely handle project-owned tryboot evidence, remove explicit permanent tuning, reboot, and verify stock clocks. All prior artifacts remain. |
 | `restore TARGET` | Back up the current boot config and restore the newest retained, fully validated applied config after an out-of-band change; add `--run-id` to select an older applied result. |
@@ -30,7 +30,7 @@ Full automatic tuning searches CPU in 100 MHz coarse steps and GPU in 50 MHz coa
 
 `overclock TARGET --cpu-only` holds GPU/V3D at the clock from the target's latest eligible applied AutoPiOverclock result and sweeps and qualifies only CPU; `--gpu-only` does the converse. The flags are mutually exclusive and require that retained applied result, whose live clock and configuration are freshly re-proved before use. The held clock is a verified baseline, not a claim that its domain is already maximized or the selected-domain boundary. Each mode runs the resulting pair through the same combined final validation, apply, reboot, verification, maximum-cooling, retry, and recovery pipeline.
 
-`--cpu-start-at MHZ` and `--gpu-start-at MHZ` accept 25 MHz increments above the protected current clock and begin the corresponding automatic ladder at a later candidate; they do not force a final clock or count skipped clocks as passes. CPU is capped at 3200 MHz and GPU at 1200 MHz. Full mode accepts either or both only from a stock target; an already applied target uses the matching one-domain mode. CPU-only rejects `--gpu-start-at`, and GPU-only rejects `--cpu-start-at`. If the first requested candidate fails, safe 25 MHz refinement may probe below that start to find the highest passing clock above the verified baseline. The domain ceiling is appended when an offset starting point does not land on it through the normal coarse step.
+`--cpu-start-at MHZ` and `--gpu-start-at MHZ` accept 25 MHz increments above the protected current clock and begin the corresponding automatic ladder at a later candidate; they do not force a final clock or count skipped clocks as passes. Before that first new candidate, the baseline safety proof intentionally boots and recovers the currently installed pair. CPU is capped at 3200 MHz and GPU at 1200 MHz. Full mode accepts either or both only from a stock target; an already applied target uses the matching one-domain mode. CPU-only rejects `--gpu-start-at`, and GPU-only rejects `--cpu-start-at`. If the first requested candidate fails, safe 25 MHz refinement may probe below that start to find the highest passing clock above the verified baseline. The domain ceiling is appended when an offset starting point does not land on it through the normal coarse step.
 
 ```bash
 autopioverclock overclock TARGET --cpu-only --cpu-start-at 2900
@@ -101,8 +101,9 @@ The safety engine retains these commands so an interrupted or unusual run can be
 
 ```bash
 autopioverclock run TARGET [OPTIONS]
-autopioverclock status TARGET [--run-id RUN_ID]
-autopioverclock report TARGET [--run-id RUN_ID]
+autopioverclock status TARGET [--run-id RUN_ID] [--redact]
+autopioverclock summary TARGET [--run-id RUN_ID] [--redact]
+autopioverclock report TARGET [--run-id RUN_ID] [--redact]
 autopioverclock resume TARGET [--run-id RUN_ID]
 autopioverclock recover TARGET [--run-id RUN_ID]
 autopioverclock restore TARGET [--run-id RUN_ID]
@@ -112,7 +113,11 @@ autopioverclock reset TARGET
 
 The `run TARGET` command and strict `--config FILE` plans remain for development and expert use. Advanced options include `--mode`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--run-id`, `--redact`, and `--yes`; a new advanced run may also use `--no-max-fan`. `prepare TARGET --dry-run` retains read-only discovery and plan generation. These are not required by the normal two-command workflow; `reset TARGET` remains available when a user wants to return to stock. The explicit public `overclock` command starts without a second ordinary prompt; all safety, validation, and recovery gates remain mandatory.
 
-Standalone advanced `apply` still requires a current-schema `PASS`/`COMPLETE` result whose retained endurance evidence exactly matches its immutable saved final duration, displays the exact diff, and requires typed confirmation. Manual `test` records are ineligible regardless of their requested duration. `status` and `report` remain local; `resume`, `recover`, `restore`, and `apply` fail closed when saved context is incomplete or stale.
+Standalone advanced `apply` still requires a current-schema `PASS`/`COMPLETE` result whose retained endurance evidence exactly matches its immutable saved final duration, displays the exact diff, and requires typed confirmation. Manual `test` records are ineligible regardless of their requested duration. `status` and `summary` perform a short read-only live query without acquiring the target's controller lock or changing boot configuration/project run artifacts; `report` remains local. `resume`, `recover`, `restore`, and `apply` fail closed when saved context is incomplete or stale.
+
+`status TARGET` reports the target's live active and measured CPU/GPU clocks, quick throttle evidence, temperature, uptime, tryboot state, controller-lock state, and a plain verdict such as `IN PROGRESS`, `STOCK / RESET`, `OVERCLOCKED / VALIDATED`, `OVERCLOCKED / UNVERIFIED`, or `RECOVERY NEEDED`, followed by the selected saved operation when one exists. Without `--run-id`, it uses the latest operation.
+
+`summary TARGET` gives the narrative view: sweep passes and boundaries, qualification decisions, selected pair, saved test lengths, final retries/isolation history, validation/application result, and the appropriate next action. Without `--run-id`, it selects the newest retained `overclock`, advanced `run`, or manual `test` state, so a later prepare, reset, or restore audit does not hide the tuning story. An explicit run ID selects that exact retained state.
 
 `recover`, `restore`, and `reset` solve different problems. `recover` returns a selected run from temporary tryboot state to the permanent config that run already protects and verifies health; it does not rewrite an out-of-band permanent-config edit. `restore` selects the newest eligible fully validated applied result (or the exact `--run-id`), verifies its retained config artifact and clear tryboot ownership, displays the replacement diff, creates a new deterministic backup, restores the validated bytes, reboots, and verifies clocks, hash, watchdog, and health. A failed restore verification rolls back to the pre-restore backup. `reset` removes permanent tuning and verifies Raspberry Pi 5 stock clocks. Each retains its own audit and preserves every earlier artifact.
 

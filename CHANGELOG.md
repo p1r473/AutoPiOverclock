@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.46 — 2026-09-04
+
+- Added a read-only live `status TARGET` view with active and measured CPU/GPU clocks, quick throttle health, tryboot state, controller activity, retained-validation matching, and plain stock/overclock/recovery verdicts. It neither acquires the controller lock nor changes boot configuration or project run artifacts.
+- Added `summary TARGET` for the newest retained tuning story: passes, boundaries, qualification choices, final isolation/retries, validation/application proof, and next action. Its default selection ignores newer prepare, reset, and restore audits; `--run-id` still selects an exact run.
+- Renamed the user-facing pre-sweep tryboot phase to `baseline safety proof` while preserving the internal `TRYBOOT_PROOF` checkpoint for saved-state compatibility. Clarified that `--cpu-start-at` and `--gpu-start-at` control the first new sweep candidate only; the currently installed pair is deliberately booted first to prove safe tryboot recovery.
+- Added fixture coverage for observer verdicts, tuning-state selection, live clock presentation, redaction, no-state behavior, worker snapshot dispatch, and byte-preserved saved state. The complete suite now contains 21 scripted fixtures.
+
 ## 0.1.0-alpha.45 — 2026-09-04
 
 - Added `restore TARGET [--run-id RUN_ID]` for the case where a user manually edits or replaces an applied AutoPiOverclock boot config. Restore selects the newest eligible retained applied result by default, requires its current-schema completed validation and hash-bound proposed-config artifact, displays the exact replacement diff, and backs up the live config before mutation.

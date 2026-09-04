@@ -85,7 +85,7 @@ apo_state_load "$FIRST_STATE"
 # side effect into a visible regression marker.
 OBSERVER_MARKER="$TEMP_DIR/observer-cleanup-mutated"
 FIRST_STATE_HASH=$(sha256sum "$FIRST_STATE" | awk '{print $1}')
-for observer_command in status report; do
+for observer_command in status summary report; do
     observer_status=0
     if (
         APO_CLI_LIBRARY_ONLY=1
@@ -189,7 +189,7 @@ grep -Fq 'Maximum fan cooling during tuning: disabled' "$TEMP_DIR/fixture-report
 grep -Fq 'Automatic gate retries: 0/5, context=none' "$TEMP_DIR/fixture-report-report.txt"
 grep -Fq 'Report file:' <<< "$report_output"
 
-# Every state scalar rendered by status/report passes through one terminal-safe
+# Every state scalar rendered by status/summary/report passes through one terminal-safe
 # boundary. Printable UTF-8 is retained; line breaks, ANSI escapes, and other
 # controls cannot forge additional output lines or terminal instructions.
 SCALAR_INJECTION=$'printable-value\nFORGED-SCALAR\r\e[31mRED\e[0m\tTAB\001CTRL\177'

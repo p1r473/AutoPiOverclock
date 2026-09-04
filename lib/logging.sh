@@ -57,7 +57,7 @@ apo_attach_artifacts_from_state() {
     # Observers must not create or timestamp run artifacts. Mutating saved-run
     # commands retain the historical repair behavior for missing core files.
     case ${APO_COMMAND:-} in
-        status|report) ;;
+        status|summary|report) ;;
         *) touch -- "$APO_LOG_FILE" "$APO_CSV_FILE" "$APO_JSONL_FILE" "$APO_SUMMARY_FILE" ;;
     esac
 }

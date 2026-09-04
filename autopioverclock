@@ -143,6 +143,7 @@ Usage:
   autopioverclock resume TARGET [--run-id RUN_ID] [--restart-from CHECKPOINT]
                                   [--qualification-hours HOURS] [--final-hours HOURS]
   autopioverclock status TARGET [--run-id RUN_ID] [--redact]
+  autopioverclock summary TARGET [--run-id RUN_ID] [--redact]
   autopioverclock recover TARGET [--run-id RUN_ID]
   autopioverclock restore TARGET [--run-id RUN_ID]
   autopioverclock apply TARGET [--run-id RUN_ID]
@@ -155,7 +156,8 @@ Commands:
   reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
   run        Advanced tuning run with explicit plan/control options
   resume     Recover when needed and continue a selected saved run
-  status     Show local state for a selected or latest run
+  status     Show live clocks, health, tryboot, controller, and saved-run state
+  summary    Explain the latest tuning decisions, boundaries, retries, and result
   recover    Return a selected run to verified permanent normal configuration
   restore    Restore a retained fully validated applied config after manual edits
   apply      Apply a selected fully validated result with typed confirmation
@@ -199,7 +201,7 @@ Advanced options:
   --dry-run                Read-only discovery and plan generation
   --run-id RUN_ID          Select a retained run for saved-run commands
   --yes                    Skip the ordinary run confirmation; never apply confirmation
-  --redact                 Redact status or report output
+  --redact                 Redact status, summary, or report output
 
 Full reference: https://github.com/p1r473/AutoPiOverclock/blob/main/docs/cli.md
 USAGE
@@ -238,7 +240,7 @@ apo_parse_cli() {
             APO_PUBLIC_COMMAND=reset
             index=1
             ;;
-        run|resume|status|recover|restore|apply|report)
+        run|resume|status|summary|recover|restore|apply|report)
             APO_COMMAND=${arguments[0]}
             APO_ORIGIN_COMMAND=${arguments[0]}
             index=1
@@ -444,7 +446,7 @@ apo_parse_cli() {
             (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan is valid only with a new run or overclock TARGET.' "$APO_EXIT_USAGE"
             ;;
     esac
-    case $APO_COMMAND in report|status) ;; *) (( APO_REDACT == 0 )) || apo_die '--redact is valid only with report or status.' "$APO_EXIT_USAGE" ;; esac
+    case $APO_COMMAND in report|status|summary) ;; *) (( APO_REDACT == 0 )) || apo_die '--redact is valid only with report, status, or summary.' "$APO_EXIT_USAGE" ;; esac
     apo_parse_target "$target"
     apo_ssh_init
 }
@@ -1539,12 +1541,12 @@ apo_load_selected_run() {
         apo_die "Selected state belongs to $stored_target, not $APO_REMOTE_TARGET." "$APO_EXIT_USAGE"
     fi
     apo_attach_artifacts_from_state
-    case $APO_COMMAND in status|report) return 0 ;; esac
+    case $APO_COMMAND in status|summary|report) return 0 ;; esac
     if [[ $(apo_state_get ORIGIN_COMMAND '') == reset ]]; then
-        apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/report, or run autopioverclock reset TARGET again.' "$APO_EXIT_USAGE"
+        apo_die 'A stock-reset audit cannot be resumed, recovered, or applied as a tuning run. Inspect it with status/summary/report, or run autopioverclock reset TARGET again.' "$APO_EXIT_USAGE"
     fi
     if [[ $(apo_state_get ORIGIN_COMMAND '') == restore ]]; then
-        apo_die 'A validated-config restore audit is not a tuning run. Inspect it with status/report, rerun autopioverclock restore TARGET if needed, or select the original overclock run explicitly.' "$APO_EXIT_USAGE"
+        apo_die 'A validated-config restore audit is not a tuning run. Inspect it with status/summary/report, rerun autopioverclock restore TARGET if needed, or select the original overclock run explicitly.' "$APO_EXIT_USAGE"
     fi
     if [[ $APO_COMMAND == apply && $(apo_state_get ORIGIN_COMMAND '') == test ]]; then
         apo_die 'A manual stability test is evidence only and can never be permanently applied. Use overclock TARGET for conservative selection and full validation.' "$APO_EXIT_USAGE"
@@ -1552,8 +1554,8 @@ apo_load_selected_run() {
     stored_profile=$(apo_state_get PROFILE '')
     if [[ -z $stored_profile ]]; then
         case $APO_COMMAND in
-            status|report) return 0 ;;
-            *) apo_die 'The saved run was interrupted before target discovery produced a recoverable profile context. Remote mutation is refused; inspect it with status/report and start a new run after confirming a normal boot.' "$APO_EXIT_PREFLIGHT" ;;
+            status|summary|report) return 0 ;;
+            *) apo_die 'The saved run was interrupted before target discovery produced a recoverable profile context. Remote mutation is refused; inspect it with status/summary/report and start a new run after confirming a normal boot.' "$APO_EXIT_PREFLIGHT" ;;
         esac
     fi
     apo_restore_context_from_state
@@ -1562,6 +1564,35 @@ apo_load_selected_run() {
             apo_die 'The selected run could not be upgraded to the duration-aware run schema.' "$APO_EXIT_HARNESS"
     fi
     apo_progress_start_session
+}
+
+apo_load_observer_run() {
+    local state_file selected_run
+    local -A observer_fields=()
+    if [[ $APO_COMMAND == summary && -z $APO_SELECTED_RUN_ID ]]; then
+        state_file=$(apo_find_latest_tuning_state_file || true)
+        if [[ -n $state_file ]]; then
+            apo_state_load_fields "$state_file" observer_fields FORMAT_VERSION RUN_ID TARGET_SLUG ||
+                apo_die 'The newest retained tuning state could not be screened safely.' "$APO_EXIT_INTERNAL"
+            [[ ${observer_fields[FORMAT_VERSION]:-} == 1 &&
+               ${observer_fields[TARGET_SLUG]:-} == "$APO_TARGET_SLUG" ]] ||
+                apo_die 'The newest retained tuning state does not match the selected target.' "$APO_EXIT_INTERNAL"
+            selected_run=${observer_fields[RUN_ID]:-}
+            apo_is_safe_run_id "$selected_run" ||
+                apo_die 'The newest retained tuning state contains an invalid run ID.' "$APO_EXIT_INTERNAL"
+            APO_SELECTED_RUN_ID=$selected_run
+        fi
+    fi
+    state_file=$(apo_find_state_file "$APO_SELECTED_RUN_ID" || true)
+    if [[ -z $state_file ]]; then
+        if [[ -n $APO_SELECTED_RUN_ID ]]; then
+            apo_load_selected_run
+        fi
+        APO_STATE=()
+        APO_STATE_FILE=''
+        return 0
+    fi
+    apo_load_selected_run
 }
 
 apo_prepare_remote_for_saved_run() {
@@ -1595,9 +1626,9 @@ apo_cleanup_handler() {
     fi
     # Local observers do not own the run and must remain read-only even when
     # parsing or rendering fails. In particular, never finalize JSON or mark a
-    # concurrently running state interrupted from status/report cleanup.
+    # concurrently running state interrupted from status/summary/report cleanup.
     case ${APO_COMMAND:-} in
-        status|report) exit "$exit_code" ;;
+        status|summary|report) exit "$exit_code" ;;
     esac
     if [[ ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && ${APO_MUTATING_COMMAND:-0} == 1 ]]; then
         local tryboot_flag=''
@@ -1701,8 +1732,14 @@ main() {
             apo_restore_validated_config
             ;;
         status)
-            apo_load_selected_run
+            apo_load_observer_run
+            apo_status_collect
             apo_print_status
+            ;;
+        summary)
+            apo_load_observer_run
+            apo_status_collect
+            apo_print_summary
             ;;
         report)
             apo_load_selected_run
@@ -1752,7 +1789,7 @@ main() {
                 apo_die 'A read-only prepare/dry-run state cannot be resumed into a mutating tuning run. Start a new run with an approved tuning plan.' "$APO_EXIT_USAGE"
             fi
             if [[ $(apo_state_get PHASE '') == PREPARE ]]; then
-                apo_die "This run was interrupted during preflight${APO_STATE[WATCHDOG_REPAIR_STATUS]:+ (watchdog repair status: ${APO_STATE[WATCHDOG_REPAIR_STATUS]}, old hash: ${APO_STATE[WATCHDOG_REPAIR_OLD_HASH]:-missing}, expected hash: ${APO_STATE[WATCHDOG_REPAIR_EXPECTED_HASH]:-missing})}. Resume refuses to adopt any preflight config change as a new baseline; inspect status/report and start a new run after verifying the target's normal boot." "$APO_EXIT_PREFLIGHT"
+                apo_die "This run was interrupted during preflight${APO_STATE[WATCHDOG_REPAIR_STATUS]:+ (watchdog repair status: ${APO_STATE[WATCHDOG_REPAIR_STATUS]}, old hash: ${APO_STATE[WATCHDOG_REPAIR_OLD_HASH]:-missing}, expected hash: ${APO_STATE[WATCHDOG_REPAIR_EXPECTED_HASH]:-missing})}. Resume refuses to adopt any preflight config change as a new baseline; inspect status/summary/report and start a new run after verifying the target's normal boot." "$APO_EXIT_PREFLIGHT"
             fi
             if [[ $(apo_state_get PHASE) == PREPARED && -z $(apo_state_get ORIGIN_COMMAND '') ]]; then
                 apo_die 'This legacy PREPARED state does not prove that mutating preflight completed. Start a new run instead of resuming it.' "$APO_EXIT_USAGE"

@@ -163,6 +163,9 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
 
 parse_fixture reset reset reset reset tron
 parse_fixture restore restore '' restore tron
+parse_fixture status status '' status tron
+parse_fixture summary summary '' summary tron
+parse_fixture report report '' report tron
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"

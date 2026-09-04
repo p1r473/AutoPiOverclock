@@ -69,7 +69,7 @@ Candidate, qualification, and final-validation operations are checkpointed as ex
 
 `telemetry_interval_seconds` is limited to 1–60 seconds and controls target-side sampling during stress. Every sample rechecks temperature, current/new throttle evidence, requested-clock attainment, kernel faults, and supervised workload state; the worker's hard deadline remains separate from the sampling cadence. Workload and Bash supervisor clocks are independent, so only a clean exit within 0.1% of the requested duration—bounded to 3–30 seconds—is accepted as complete. Earlier clean exits and every nonzero exit remain failures.
 
-An interrupted preflight, failed preflight, or declined tuning confirmation remains readable through `status` and `report`, including any watchdog-repair hashes. It is not mutably resumable: resolve the finding and start a new `run`, because partial dependency or watchdog changes must not become a trusted permanent baseline without a new normal-boot preflight.
+An interrupted preflight, failed preflight, or declined tuning confirmation remains readable through `status`, `summary`, and `report`, including any watchdog-repair hashes. `status` and `summary` use only short read-only SSH observations and do not acquire the controller lock or change boot configuration/project run artifacts. The interrupted preflight is not mutably resumable: resolve the finding and start a new `run`, because partial dependency or watchdog changes must not become a trusted permanent baseline without a new normal-boot preflight.
 
 ## Permanent apply
 

@@ -29,12 +29,12 @@ Every candidate attempt also receives a fresh 256-bit ownership token. The contr
 ## State phases
 
 ```text
-PREPARE → TRYBOOT_PROOF → GPU_SMOKE → CPU_SWEEP/refinement
+PREPARE → TRYBOOT_PROOF (displayed as baseline safety proof) → GPU_SMOKE → CPU_SWEEP/refinement
         → CPU_QUALIFICATION(saved duration, stock GPU) → GPU_SWEEP/refinement
         → GPU_QUALIFICATION(saved duration, qualified CPU)
         → COMBINED_FINAL(saved final duration) → COMPLETE
 
-PREPARE → TRYBOOT_PROOF → GPU_SMOKE → MANUAL_TEST(one exact CPU/GPU pair) → COMPLETE
+PREPARE → TRYBOOT_PROOF (displayed as baseline safety proof) → GPU_SMOKE → MANUAL_TEST(one exact CPU/GPU pair) → COMPLETE
 ```
 
 Skipped explicit-plan domains are bypassed. Within each candidate, state records the candidate identity and a generic `BOOT_n`/`NORMAL_n` substage across the configured `candidate_boots` cycles, followed by the stress boot, stress, post-stress health, and final normal recovery. Automatic refinement indices, failure boundaries, highest passes, exact saved-duration CPU/GPU qualification identities, starting points, and ordered final anchor/isolation history are resumable. One-domain mode bypasses the unselected sweep and qualification while holding that domain at the freshly re-proved clock from an eligible applied result. Every automatic run seeks one accepted saved-duration combined CPU/GPU/I/O final workload, return to normal, the configured `final_boots` post-stress `BOOT_n`/`NORMAL_n` cycles, and final hash verification. CPU-specific evidence lowers only CPU, and GPU-specific evidence lowers only GPU. A proved ambiguous full-mode failure saves the pair as its anchor and tries CPU 25 MHz lower. Only continued ambiguous evidence advances to restored CPU with GPU 25 MHz lower, then to both lower; exact evidence from any trial immediately follows its identified domain, while three ambiguous failures advance the paired reduction to the next anchor. Each changed domain is requalified before its fresh full final attempt. One-domain mode changes only its selected domain and stops if exact evidence identifies the held domain. A genuine failure invalidates the entire attempt, including one near the end, and no elapsed time is credited. The public defaults are 2 hours per qualification and 24 hours for final validation.
@@ -47,6 +47,6 @@ The controller's interactive bar derives total remaining work from saved sweep i
 
 Controller policy passes `telemetry_interval_seconds` and the saved normal/candidate cooling context to each target worker. Candidate tryboot rendering adds a test-only Pi 5 maximum-fan block by default; `--no-max-fan` selects the normal context for a new run and is then immutable across resume. Workers sample and log temperature, throttle state, active clocks, detected `pwmfan` PWM/RPM state, new kernel errors, and supervised stress processes at the bounded cadence while retaining an independent hard shutdown deadline. Under the default policy, a detected fan that is not at PWM 255 aborts as harness uncertainty. Normal and permanent clock rendering never imports the candidate fan block, so pre-existing fan directives return automatically after every normal boot and remain in the applied result.
 
-An interrupted `PREPARE` is different: dependency or watchdog remediation may have only partially changed the target. Its state remains available to `status` and `report`, but mutating resume is refused so the controller cannot silently adopt an unverified permanent configuration as its new baseline.
+An interrupted `PREPARE` is different: dependency or watchdog remediation may have only partially changed the target. Its state remains available to `status`, `summary`, and `report`, but mutating resume is refused so the controller cannot silently adopt an unverified permanent configuration as its new baseline.
 
 The `reset TARGET` path does not consume or erase a prior tuning run. It allocates a standalone audit run, acquires the same controller/target mutation locks, rejects foreign tryboot evidence and unbound includes, checkpoints the expected old/new hashes and no-clobber persistent backup, then performs an ordinary permanent-config reboot. Completion requires a changed boot ID, the exact new hash, no tryboot state, verified firmware-stock clocks, clear current throttle/power state, and the active watchdog chain. It does not claim tuning's broader health gates. Terminal multiplexers and unrelated controller processes are outside its authority. Only the command-first form is accepted, and its target is mandatory.

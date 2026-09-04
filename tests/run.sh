@@ -10,6 +10,7 @@ TESTS=(
     test_common.sh
     test_config.sh
     test_state_logging.sh
+    test_observers.sh
     test_classify.sh
     test_workers.sh
     test_tryboot_lifecycle.sh

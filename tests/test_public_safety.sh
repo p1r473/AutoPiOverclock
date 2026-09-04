@@ -34,7 +34,7 @@ for unsafe_run_id in . ..; do
         exit 1
     fi
 done
-grep -q 'case $APO_COMMAND in status|report) return 0' "$ROOT/autopioverclock"
+grep -q 'case $APO_COMMAND in status|summary|report) return 0' "$ROOT/autopioverclock"
 grep -q 'smoke_duration=20' "$ROOT/lib/candidates.sh"
 grep -q 'GPU_SMOKE' "$ROOT/lib/candidates.sh"
 grep -q 'Existing run files are never deleted' "$ROOT/lib/logging.sh"

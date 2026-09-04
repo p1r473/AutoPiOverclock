@@ -777,6 +777,62 @@ stress_ng_gpu_strategy() {
     return 1
 }
 
+# Read-only, compact live evidence for the controller-side status/summary
+# commands. This deliberately avoids dependency, watchdog, or boot mutation.
+cmd_status_snapshot() {
+    local boot_config tryboot_config gpu_key=v3d_freq config_cpu config_gpu measured_cpu measured_gpu
+    local permanent_hash tryboot_exists tryboot_type tryboot_hash tryboot_flag throttle recent temp boot_id uptime_seconds
+    boot_config=$(find_boot_config) || { emit_result HARNESS_FAILURE 'The permanent boot config could not be located.'; return 1; }
+    tryboot_config="$(dirname "$boot_config")/tryboot.txt"
+    audit_permanent_tuning_config "$boot_config"
+    inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
+    config_cpu=$(active_config_value arm_freq)
+    config_gpu=$(active_config_value "$gpu_key")
+    measured_cpu=$(clock_mhz arm)
+    measured_gpu=$(clock_mhz v3d)
+    permanent_hash=$(permanent_config_snapshot_hash "$boot_config" || true)
+    if [[ ! $PERMANENT_TUNING_CONFIG_HASH =~ ^[0-9a-f]{64}$ ||
+          $permanent_hash != "$PERMANENT_TUNING_CONFIG_HASH" ]]; then
+        permanent_hash=''
+        PERMANENT_TUNING_PROVENANCE=ambiguous
+        PERMANENT_TUNING_EVIDENCE='permanent-config-changed-during-live-snapshot'
+    fi
+    tryboot_flag=$(od -An -tx1 /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d ' \n' || true)
+    [[ $tryboot_flag == 00000000 || $tryboot_flag == 00000001 ]] || tryboot_flag=unavailable
+    throttle=$(permanent_throttle)
+    recent=$(recent_throttle)
+    temp=$(current_temp)
+    boot_id=$(tr -d '\r\n' < /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    uptime_seconds=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || true)
+
+    emit_data PROFILE debian
+    emit_data BOOT_CONFIG "$boot_config"
+    emit_data TRYBOOT_CONFIG "$tryboot_config"
+    emit_data GPU_KEY "$gpu_key"
+    emit_data CONFIG_CPU "$config_cpu"
+    emit_data CONFIG_GPU "$config_gpu"
+    emit_data MEASURED_CPU "$measured_cpu"
+    emit_data MEASURED_GPU "$measured_gpu"
+    emit_data PERMANENT_HASH "$permanent_hash"
+    emit_data PERMANENT_TUNING_PROVENANCE "$PERMANENT_TUNING_PROVENANCE"
+    emit_data PERMANENT_TUNING_EVIDENCE "$PERMANENT_TUNING_EVIDENCE"
+    emit_data TRYBOOT_EXISTS "$tryboot_exists"
+    emit_data TRYBOOT_TYPE "$tryboot_type"
+    emit_data TRYBOOT_HASH "$tryboot_hash"
+    emit_data TRYBOOT_FLAG "$tryboot_flag"
+    emit_data THROTTLED "$throttle"
+    emit_data RECENT_THROTTLED "$recent"
+    emit_data TEMP "$temp"
+    emit_data BOOT_ID "$boot_id"
+    emit_data UPTIME_SECONDS "$uptime_seconds"
+
+    [[ $config_cpu =~ ^[0-9]+$ && $config_gpu =~ ^[0-9]+$ && $permanent_hash =~ ^[0-9a-f]{64}$ ]] || {
+        emit_result HARNESS_FAILURE 'The live clock/config snapshot is incomplete.'
+        return 1
+    }
+    emit_result PASS 'Live clock/config snapshot completed.'
+}
+
 cmd_discover() {
     local boot_config tryboot_config boot_mount model compatible os_id os_version gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
     local boot_watchdog kernel_watchdog runtime_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source display_baseline display_present audio_baseline permanent_hash
@@ -2161,6 +2217,7 @@ main() {
     shift || true
     case $command_name in
         discover) cmd_discover "$@" ;;
+        status-snapshot) cmd_status_snapshot "$@" ;;
         health) cmd_health "$@" ;;
         plan-candidate) cmd_plan_candidate "$@" ;;
         prepare-candidate) run_with_mutation_lock "${11:-}" RECOVERY_FAILURE cmd_prepare_candidate "$@" ;;
