@@ -43,6 +43,8 @@ apo_state_load_fields() {
         apo_state_valid_key "$state_key" || return 1
         [[ -v requested_fields[$state_key] ]] || continue
         decoded_value=$(apo_state_decode "$encoded_value") || return 1
+        # The nameref resolves to an associative array; this is not arithmetic.
+        # shellcheck disable=SC2004
         output_fields[$state_key]=$decoded_value
     done < "$source_file"
 }
