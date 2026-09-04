@@ -6,15 +6,15 @@ Batocera is Buildroot-based and does not provide a normal package manager. AutoP
 
 Before any GPU sweep, the controller runs a 20-second smoke test at normal clocks. In graphical mode the worker:
 
-1. Retains the known-good connector/mode/frontend and audio baselines.
+1. Retains the known-good connector/mode/frontend baseline and observes the current audio identity.
 2. Binds the running EmulationStation process to one verified `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY`; missing, unsafe, or ambiguous socket evidence fails closed.
 3. Leaves EmulationStation and its compositor running and launches `glmark2-es2-wayland --off-screen --size=1280x720` through that live session, without taking DRM master or switching VTs.
 4. Requires a hardware V3D `GL_RENDERER`, a positive `glmark2 Score`, zero exit, requested-clock attainment, and clean temperature, throttle, and current-boot kernel-log evidence.
-5. Re-runs the ordinary graphical/audio health gate after the smoke test before accepting the harness.
+5. Re-runs the ordinary graphical health gate and any explicitly requested audio constraint after the smoke test before accepting the harness.
 
 Wayland connection, canvas initialization, or missing runtime files are a `HARNESS_FAILURE`, not evidence that the clock itself is unstable. The frontend is never stopped for graphical stress, so there is no KMS/VT teardown or frontend-restart recovery boundary. Headless mode remains isolated and uses off-screen `glmark2-es2-drm` without a graphical-session requirement.
 
-Graphical discovery also captures the current default audio-sink identity automatically. Every graphical candidate, recovery boot, and apply health gate requires that sink to remain available and unchanged; `audio_sink_pattern`, when configured, is an additional constraint rather than the baseline mechanism. Missing or changed audio readiness by itself is a retryable `HARNESS_FAILURE`, never a CPU or GPU clock boundary.
+Graphical discovery captures the current default audio-sink identity automatically. Later candidate, recovery, and apply health gates compare that inferred identity for diagnostics, but a missing or changed sink warns and continues when `audio_sink_pattern` is unset. When `audio_sink_pattern` is configured, its literal match is an enforced `HARNESS_FAILURE` constraint. Neither case is CPU or GPU clock-boundary evidence.
 
 ## Portable payload
 

@@ -145,6 +145,16 @@ if apo_gpu_harness_smoke; then exit 1; fi
 APO_STATE=()
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
 
+# Tron regression: a saved candidate boot may have exhausted its old audio-only
+# retry budget before alpha.47. Once the same boot gate succeeds under the new
+# advisory inferred-audio policy, that exact durable retry counter is cleared.
+apo_state_set TRANSIENT_RETRY_CONTEXT cpu-2950_gpu-1200-boot-1
+apo_state_set TRANSIENT_RETRY_COUNT 5
+apo_candidate_boot_or_preserve_failure 2950 1200 cpu-2950_gpu-1200-boot-1 cpu-2950_gpu-1200-boot-1-recovery
+[[ -z $(apo_state_get TRANSIENT_RETRY_CONTEXT '') ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 0 ]]
+ACTIONS=()
+
 # Resume a candidate after its second of four configured boot cycles. Earlier
 # boot gates must not be replayed; only cycles 2-4 and later gates run.
 apo_state_set CANDIDATE_LABEL cpu-3000_gpu-800
@@ -1576,9 +1586,9 @@ if apo_structured_stress_failure_domain 'Stress processes returned nonzero (CPU=
     exit 1
 fi
 
-# A structured audio-readiness miss is a retryable harness problem. After
-# normal recovery the controller repeats the complete final boot gate and must
-# not enter clock backoff or ambiguous-domain isolation.
+# A retained pre-alpha.47 structured audio-readiness miss remains a retryable
+# harness problem. After normal recovery the controller repeats the complete
+# final boot gate and must not enter clock backoff or ambiguous-domain isolation.
 APO_STATE=()
 seed_valid_refined_auto_floor_plan
 apo_state_set FINAL_STAGE PRE_STRESS_BOOT
@@ -1737,6 +1747,93 @@ apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'late GPU-only fin
 [[ $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
 [[ -z $(apo_state_get VALIDATION_DURATION_S '') && -z $(apo_state_get FINAL_STAGE '') ]]
 [[ $(apo_state_get FINAL_BACKOFF_HISTORY) == DOMAIN_GPU:2950/1175\>2950/1150 ]]
+apo_refined_validate_final_backoff_state
+
+# Monkeebutt regression: a GPU-only 1200 MHz final stability failure may back
+# down the last 25 MHz to the retained applied 3100/1175 source. It must not be
+# treated as transient or terminal at the floor: GPU qualification and then a
+# fresh complete final are still required, with the failure evidence retained.
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=gpu
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_NORMAL_CPU=3100
+APO_NORMAL_GPU=1175
+APO_AUTO_BASELINE_CPU=3100
+APO_AUTO_BASELINE_GPU=1175
+APO_FINAL_DURATION_S=86400
+apo_state_set SOURCE_APPLIED_CPU 3100
+apo_state_set SOURCE_APPLIED_GPU 1175
+apo_refined_seed_inherited_domain
+apo_state_set SAFE_GPU 1200
+apo_state_set RECOMMENDED_CPU 3100
+apo_state_set RECOMMENDED_GPU 1200
+apo_state_set FINAL_TARGET_CPU 3100
+apo_state_set FINAL_TARGET_GPU 1200
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3100
+apo_state_set GPU_QUALIFICATION_TARGET 1200
+apo_state_set GPU_QUALIFIED_CPU 3100
+apo_state_set GPU_QUALIFIED_CLOCK 1200
+apo_state_set VALIDATION_DURATION_S 11689
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE \
+    'A new kernel, power, GPU, USB, storage, or filesystem error appeared during stress.'
+[[ $(apo_state_get RECOMMENDED_CPU) == 3100 && $(apo_state_get RECOMMENDED_GPU) == 1175 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == INHERITED && $(apo_state_get CPU_QUALIFIED_CLOCK) == 3100 ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == NOT_STARTED && $(apo_state_get GPU_QUALIFICATION_TARGET) == 1175 ]]
+[[ $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+[[ -z $(apo_state_get VALIDATION_DURATION_S '') && -z $(apo_state_get FINAL_STAGE '') ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT) == 1 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == DOMAIN_GPU:3100/1200\>3100/1175 ]]
+[[ $(apo_state_get FINAL_BACKOFF_LAST_CLASS) == STABILITY_FAILURE ]]
+[[ $(apo_state_get FINAL_BACKOFF_LAST_REASON) == 'A new kernel, power, GPU, USB, storage, or filesystem error appeared during stress.' ]]
+apo_refined_validate_final_backoff_state
+
+# The floor fallback is symmetric for CPU-only runs and accepts a recovered
+# final BOOT_FAILURE without changing the inherited GPU clock.
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=cpu
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_NORMAL_CPU=3100
+APO_NORMAL_GPU=1175
+APO_AUTO_BASELINE_CPU=3100
+APO_AUTO_BASELINE_GPU=1175
+APO_FINAL_DURATION_S=86400
+apo_state_set SOURCE_APPLIED_CPU 3100
+apo_state_set SOURCE_APPLIED_GPU 1175
+apo_refined_seed_inherited_domain
+apo_state_set SAFE_CPU 3125
+apo_state_set RECOMMENDED_CPU 3125
+apo_state_set RECOMMENDED_GPU 1175
+apo_state_set FINAL_TARGET_CPU 3125
+apo_state_set FINAL_TARGET_GPU 1175
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3125
+apo_state_set CPU_QUALIFIED_CLOCK 3125
+apo_state_set FINAL_STAGE PRE_STRESS_BOOT
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+apo_final_schedule_stress_backoff PRE_STRESS_BOOT BOOT_FAILURE 'CPU-only final boot health failed after verified recovery.'
+[[ $(apo_state_get RECOMMENDED_CPU) == 3100 && $(apo_state_get RECOMMENDED_GPU) == 1175 ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == INHERITED && $(apo_state_get GPU_QUALIFIED_CLOCK) == 1175 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == NOT_STARTED && $(apo_state_get CPU_QUALIFICATION_TARGET) == 3100 ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ -z $(apo_state_get VALIDATION_DURATION_S '') && -z $(apo_state_get FINAL_STAGE '') ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == DOMAIN_CPU:3125/1175\>3100/1175 ]]
+[[ $(apo_state_get FINAL_BACKOFF_LAST_CLASS) == BOOT_FAILURE ]]
+[[ $(apo_state_get FINAL_BACKOFF_LAST_REASON) == 'CPU-only final boot health failed after verified recovery.' ]]
 apo_refined_validate_final_backoff_state
 
 APO_STATE=()

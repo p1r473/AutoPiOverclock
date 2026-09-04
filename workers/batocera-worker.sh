@@ -1207,6 +1207,9 @@ application_health_ready() {
     APPLICATION_READINESS_LAST_AUDIO=''
     check_required_processes "$required_processes" || { APPLICATION_READINESS_LAST_FAILURE=process; return 1; }
     check_required_services "$required_services" || { APPLICATION_READINESS_LAST_FAILURE=service; return 1; }
+    if [[ $mode == graphical ]]; then
+        check_graphical "$baseline" || { APPLICATION_READINESS_LAST_FAILURE=graphical; return 1; }
+    fi
     if [[ -n $audio_match ]]; then
         batocera_environment
         probe_timeout=$(bounded_probe_timeout 6) || { APPLICATION_READINESS_LAST_FAILURE=audio-match; return 1; }
@@ -1214,19 +1217,16 @@ application_health_ready() {
             APPLICATION_READINESS_LAST_FAILURE=audio-match
             return 1
         fi
-    fi
-    if [[ $mode == graphical ]]; then
+    elif [[ $mode == graphical ]]; then
         current_audio=$(audio_identity || true)
         APPLICATION_READINESS_LAST_AUDIO=$current_audio
-        if [[ -z $current_audio ]]; then
-            APPLICATION_READINESS_LAST_FAILURE=audio-unavailable
-            return 1
+        if [[ -z $audio_baseline ]]; then
+            printf '%s\n' 'WARNING: No automatically captured graphical audio baseline is available; continuing because audio_sink_pattern is not configured.' >&2
+        elif [[ -z $current_audio ]]; then
+            printf 'WARNING: The automatically captured graphical audio output %s is not currently observable; continuing because audio_sink_pattern is not configured.\n' "$audio_baseline" >&2
+        elif [[ $current_audio != "$audio_baseline" ]]; then
+            printf 'WARNING: The automatically captured graphical audio output changed from %s to %s; continuing because audio_sink_pattern is not configured.\n' "$audio_baseline" "$current_audio" >&2
         fi
-        if [[ $current_audio != "$audio_baseline" ]]; then
-            APPLICATION_READINESS_LAST_FAILURE=audio-changed
-            return 1
-        fi
-        check_graphical "$baseline" || { APPLICATION_READINESS_LAST_FAILURE=graphical; return 1; }
     fi
     return 0
 }
@@ -1303,9 +1303,6 @@ cmd_health() {
     if [[ -n $extra_ping ]]; then ping -c 2 -W 2 "$extra_ping" >/dev/null 2>&1 || { emit_result BOOT_FAILURE "Configured ping target is unreachable in $context." "$temp"; return 1; }; fi
     if [[ -n $audio_match ]]; then
         command -v wpctl >/dev/null 2>&1 || { emit_result HARNESS_FAILURE 'AUDIO_SINK_MATCH was configured but wpctl is unavailable.' "$temp"; return 1; }
-    fi
-    if [[ $mode == graphical ]]; then
-        [[ -n $audio_baseline ]] || { emit_result HARNESS_FAILURE "No saved graphical audio baseline is available in $context." "$temp"; return 1; }
     fi
     if ! wait_application_health "$mode" "$baseline" "$required_processes" "$required_services" "$audio_match" "$audio_baseline"; then
         emit_application_health_failure "$context" "$temp" "$audio_baseline"

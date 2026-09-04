@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.47 — 2026-09-04
+
+- Made automatically discovered graphical audio advisory after discovery: if the saved default sink is temporarily absent or changes after a reboot, the worker records a warning and continues once process, service, and display health pass. An explicitly configured `audio_sink_pattern` remains a strict `HARNESS_FAILURE` constraint.
+- Fixed one-domain final backoff at the inherited applied floor. A recovered selected-domain final boot or stability failure at the last 25 MHz now retains the rejected boundary, requalifies the selected domain at the proven source pair, and repeats the complete final validation instead of stopping.
+- Added Debian/Batocera audio-policy fixtures and a regression for the observed GPU-only 1200-to-1175 MHz final fallback. No run-state or validation proof is reinterpreted.
+
 ## 0.1.0-alpha.46 — 2026-09-04
 
 - Added a read-only live `status TARGET` view with active and measured CPU/GPU clocks, quick throttle health, tryboot state, controller activity, retained-validation matching, and plain stock/overclock/recovery verdicts. It neither acquires the controller lock nor changes boot configuration or project run artifacts.

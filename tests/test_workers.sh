@@ -26,32 +26,85 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" AUDIO_ATTEMPTS
     [[ $(<"$AUDIO_ATTEMPTS_FILE") == 3 ]]
 '
 
-# Debian graphical health always requires the automatically discovered audio
-# baseline. Missing, unavailable, or changed audio evidence is a retryable
-# harness-readiness failure, not proof that the candidate failed to boot.
-APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
-    set -Eeuo pipefail
-    source "$WORKER"
-    check_required_processes() { :; }
-    check_required_services() { :; }
-    check_display() { :; }
-    audio_identity() { return 1; }
-    if application_health_ready graphical fixture-display "" "" "" ""; then exit 1; fi
-    [[ $APPLICATION_READINESS_LAST_FAILURE == audio-baseline-missing ]]
-    if application_health_ready graphical fixture-display "" "" "" fixture-audio; then exit 1; fi
-    [[ $APPLICATION_READINESS_LAST_FAILURE == audio-unavailable ]]
-'
+# Automatically captured graphical audio is advisory after reboot. Once the
+# process, service, and display gates pass, a missing saved baseline, an
+# unavailable sink, or a changed sink warns once and does not enter the nested
+# readiness retry loop. This behavior is identical on both target profiles.
+for worker_name in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" WORKER_NAME="$worker_name" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        check_required_processes() { :; }
+        check_required_services() { :; }
+        if [[ $WORKER_NAME == debian ]]; then
+            check_display() { :; }
+        else
+            check_graphical() { :; }
+        fi
+        sleep() { printf "nested-audio-retry\n" >&2; }
+        AUDIO_FIXTURE=
+        audio_identity() { printf "%s" "$AUDIO_FIXTURE"; }
 
-# Audio readiness is observation infrastructure. It can delay or change after
-# SSH returns, so neither profile may promote an audio-only miss into a clock
-# boundary. Real process, service, and graphical/display misses remain boot
-# failures.
+        AUDIO_FIXTURE=current-audio
+        output=$(wait_application_health graphical fixture-display "" "" "" "" 2>&1)
+        [[ $output == *"No automatically captured graphical audio baseline is available"* ]]
+        [[ $output != *nested-audio-retry* ]]
+
+        AUDIO_FIXTURE=
+        output=$(wait_application_health graphical fixture-display "" "" "" expected-audio 2>&1)
+        [[ $output == *"expected-audio is not currently observable"* ]]
+        [[ $output != *nested-audio-retry* ]]
+
+        AUDIO_FIXTURE=changed-audio
+        output=$(wait_application_health graphical fixture-display "" "" "" expected-audio 2>&1)
+        [[ $output == *"changed from expected-audio to changed-audio"* ]]
+        [[ $output != *nested-audio-retry* ]]
+
+        AUDIO_FIXTURE=expected-audio
+        output=$(wait_application_health graphical fixture-display "" "" "" expected-audio 2>&1)
+        [[ -z $output ]]
+    '
+done
+
+# An explicit audio_sink_pattern remains a required harness constraint. A
+# mismatch is fatal even though the automatically captured baseline is advisory.
+for worker_name in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" WORKER_NAME="$worker_name" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        check_required_processes() { :; }
+        check_required_services() { :; }
+        if [[ $WORKER_NAME == debian ]]; then
+            check_display() { :; }
+            audio_inspect() { printf "%s\n" "$EXPLICIT_AUDIO_FIXTURE"; }
+        else
+            check_graphical() { :; }
+            batocera_environment() { :; }
+            bounded_probe_timeout() { printf 6; }
+            timeout() { shift; "$@"; }
+            wpctl() { printf "%s\n" "$EXPLICIT_AUDIO_FIXTURE"; }
+        fi
+        EXPLICIT_AUDIO_FIXTURE=other-audio
+        if application_health_ready graphical fixture-display "" "" required-audio expected-audio; then exit 1; fi
+        [[ $APPLICATION_READINESS_LAST_FAILURE == audio-match ]]
+        output=$(emit_application_health_failure candidate-health 42.0 expected-audio)
+        [[ $output == *"APO_RESULT_CLASS=HARNESS_FAILURE"* ]]
+
+        EXPLICIT_AUDIO_FIXTURE="default required-audio sink"
+        application_health_ready graphical fixture-display "" "" required-audio expected-audio
+        [[ -z $APPLICATION_READINESS_LAST_FAILURE ]]
+    '
+done
+
+# An explicitly requested audio constraint is harness infrastructure, never a
+# clock boundary. Real process, service, and graphical/display misses remain
+# boot failures.
 for worker_name in debian batocera; do
     if [[ $worker_name == debian ]]; then
-        audio_failures='audio-inspection audio-match audio-baseline-missing audio-unavailable audio-changed'
+        audio_failures='audio-inspection audio-match'
         graphical_failure=display
     else
-        audio_failures='audio-match audio-unavailable audio-changed'
+        audio_failures='audio-match'
         graphical_failure=graphical
     fi
     APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" \

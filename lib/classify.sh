@@ -130,7 +130,7 @@ apo_run_worker_capture() {
         [[ -n $expected_boot_id ]] || break
         current_boot_id=$(apo_remote_boot_id 2>/dev/null || true)
         [[ $current_boot_id == "$expected_boot_id" ]] || break
-        apo_event "${phase}-transport-retry" WARN HARNESS_FAILURE "The read-only $worker_command gate returned incomplete transport evidence on the same boot; repeating it automatically (attempt $((attempt + 1))/$max_attempts)."
+        apo_event "${phase}-transport-retry" WARN HARNESS_FAILURE "The read-only $worker_command gate returned retryable harness evidence on the same boot; repeating it automatically (attempt $((attempt + 1))/$max_attempts)."
         if declare -F apo_transient_read_delay >/dev/null 2>&1; then apo_transient_read_delay; else sleep 10; fi
     done
     apo_state_set LAST_FAILURE_CLASS "$APO_LAST_CLASS"

@@ -2964,7 +2964,25 @@ apo_refined_schedule_stress_backoff() {
     esac
 
     [[ $next_cpu != "$current_cpu" || $next_gpu != "$current_gpu" ]] || return 1
-    (( next_cpu > floor_cpu || next_gpu > floor_gpu )) || return 1
+    # A selected-domain final failure may consume the last 25 MHz of headroom
+    # and land exactly on the retained applied source. That source still has to
+    # pass the affected qualification and a brand-new complete final before it
+    # can complete this run. Other paths must retain an actual overclock above
+    # the floor; in particular, qualification failures do not silently turn
+    # into source-clock retests.
+    case $domain in
+        DOMAIN_CPU)
+            [[ $sweep_domain == cpu ]] || return 1
+            (( next_cpu > floor_cpu || next_gpu > floor_gpu )) ||
+                [[ $next_cpu == "$floor_cpu" && $next_gpu == "$floor_gpu" ]] || return 1
+            ;;
+        DOMAIN_GPU)
+            [[ $sweep_domain == gpu ]] || return 1
+            (( next_cpu > floor_cpu || next_gpu > floor_gpu )) ||
+                [[ $next_cpu == "$floor_cpu" && $next_gpu == "$floor_gpu" ]] || return 1
+            ;;
+        *) (( next_cpu > floor_cpu || next_gpu > floor_gpu )) || return 1 ;;
+    esac
     count=$(apo_state_get FINAL_BACKOFF_COUNT 0)
     [[ $count =~ ^[0-9]+$ ]] || return 1
     count=$((count + 1))

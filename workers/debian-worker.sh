@@ -982,6 +982,9 @@ application_health_ready() {
     APPLICATION_READINESS_LAST_AUDIO=''
     check_required_processes "$required_processes" || { APPLICATION_READINESS_LAST_FAILURE=process; return 1; }
     check_required_services "$required_services" || { APPLICATION_READINESS_LAST_FAILURE=service; return 1; }
+    if [[ $mode == graphical ]]; then
+        check_display "$baseline" || { APPLICATION_READINESS_LAST_FAILURE=display; return 1; }
+    fi
     if [[ -n $audio_match ]]; then
         current_audio_inspect=$(audio_inspect || true)
         if [[ -z $current_audio_inspect ]]; then
@@ -992,23 +995,16 @@ application_health_ready() {
             APPLICATION_READINESS_LAST_FAILURE=audio-match
             return 1
         fi
-    fi
-    if [[ $mode == graphical ]]; then
-        if [[ -z $audio_baseline ]]; then
-            APPLICATION_READINESS_LAST_FAILURE=audio-baseline-missing
-            return 1
-        fi
+    elif [[ $mode == graphical ]]; then
         current_audio=$(audio_identity || true)
         APPLICATION_READINESS_LAST_AUDIO=$current_audio
-        if [[ -z $current_audio ]]; then
-            APPLICATION_READINESS_LAST_FAILURE=audio-unavailable
-            return 1
+        if [[ -z $audio_baseline ]]; then
+            printf '%s\n' 'WARNING: No automatically captured graphical audio baseline is available; continuing because audio_sink_pattern is not configured.' >&2
+        elif [[ -z $current_audio ]]; then
+            printf 'WARNING: The automatically captured graphical audio output %s is not currently observable; continuing because audio_sink_pattern is not configured.\n' "$audio_baseline" >&2
+        elif [[ $current_audio != "$audio_baseline" ]]; then
+            printf 'WARNING: The automatically captured graphical audio output changed from %s to %s; continuing because audio_sink_pattern is not configured.\n' "$audio_baseline" "$current_audio" >&2
         fi
-        if [[ $current_audio != "$audio_baseline" ]]; then
-            APPLICATION_READINESS_LAST_FAILURE=audio-changed
-            return 1
-        fi
-        check_display "$baseline" || { APPLICATION_READINESS_LAST_FAILURE=display; return 1; }
     fi
     return 0
 }
