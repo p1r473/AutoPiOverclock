@@ -27,8 +27,8 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" AUDIO_ATTEMPTS
 '
 
 # Debian graphical health always requires the automatically discovered audio
-# baseline. A missing baseline is a harness defect; a captured output that
-# disappears is a boot-health failure.
+# baseline. Missing, unavailable, or changed audio evidence is a retryable
+# harness-readiness failure, not proof that the candidate failed to boot.
 APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     set -Eeuo pipefail
     source "$WORKER"
@@ -41,6 +41,38 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     if application_health_ready graphical fixture-display "" "" "" fixture-audio; then exit 1; fi
     [[ $APPLICATION_READINESS_LAST_FAILURE == audio-unavailable ]]
 '
+
+# Audio readiness is observation infrastructure. It can delay or change after
+# SSH returns, so neither profile may promote an audio-only miss into a clock
+# boundary. Real process, service, and graphical/display misses remain boot
+# failures.
+for worker_name in debian batocera; do
+    if [[ $worker_name == debian ]]; then
+        audio_failures='audio-inspection audio-match audio-baseline-missing audio-unavailable audio-changed'
+        graphical_failure=display
+    else
+        audio_failures='audio-match audio-unavailable audio-changed'
+        graphical_failure=graphical
+    fi
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" \
+        AUDIO_FAILURES="$audio_failures" GRAPHICAL_FAILURE="$graphical_failure" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        for readiness_failure in $AUDIO_FAILURES; do
+            APPLICATION_READINESS_LAST_FAILURE=$readiness_failure
+            APPLICATION_READINESS_LAST_AUDIO=changed-audio
+            output=$(emit_application_health_failure candidate-health 42.0 expected-audio)
+            [[ $output == *"APO_RESULT_CLASS=HARNESS_FAILURE"* ]]
+            [[ $output != *"APO_RESULT_CLASS=BOOT_FAILURE"* ]]
+            [[ $output != *"APO_RESULT_CLASS=STABILITY_FAILURE"* ]]
+        done
+        for readiness_failure in process service "$GRAPHICAL_FAILURE"; do
+            APPLICATION_READINESS_LAST_FAILURE=$readiness_failure
+            output=$(emit_application_health_failure candidate-health 42.0 expected-audio)
+            [[ $output == *"APO_RESULT_CLASS=BOOT_FAILURE"* ]]
+        done
+    '
+done
 
 # A Debian/Raspberry Pi OS target with no connector and no audio stack is a
 # valid headless host. Its health gate must not call either graphical probe.
@@ -171,6 +203,196 @@ for worker_name in debian batocera; do
         rm -rf "$FAN_TEST_ROOT/hwmon/hwmon0"
         candidate_fan_max_ready "$FAN_TEST_ROOT/hwmon"
         [[ $FAN_PWM_LAST_COUNT == 0 && $FAN_PWM_LAST_STATUS == not-detected ]]
+    '
+done
+
+# Permanent rendering replaces only exact project-owned clock blocks and exact
+# stale recovery/watchdog-disable artifacts. It must not clean up user prose,
+# blank lines, section headers, reset-preserved settings, or the live managed
+# watchdog block by inference.
+for worker_name in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" \
+        PRESERVE_ROOT="$TEMP_DIR/permanent-preserve-$worker_name" WORKER_NAME="$worker_name" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        mkdir -p "$PRESERVE_ROOT"
+        source_config="$PRESERVE_ROOT/source.txt"
+        expected_config="$PRESERVE_ROOT/expected.txt"
+        rendered_config="$PRESERVE_ROOT/rendered.txt"
+
+        if [[ $WORKER_NAME == batocera ]]; then
+            cat > "$source_config" <<CONF
+# Tron user header: preserve exactly
+[all]
+
+# AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
+# User explanation for the original overclock
+# TRON_RECOVERY_DISABLED kernel_watchdog_timeout=180
+# TRON RECOVERY: disable firmware-to-OS watchdog handoff
+[all]
+# AUTOPIOVERCLOCK-WATCHDOG-DISABLED kernel_watchdog_timeout=0
+# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG
+[all]
+# AUTOPIOVERCLOCK-WATCHDOG-DISABLED kernel_watchdog_timeout=77
+kernel_watchdog_timeout=180
+# END AUTOPIOVERCLOCK MANAGED WATCHDOG
+# User section after watchdog
+[pi5]
+dtoverlay=vc4-kms-v3d
+
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: old-tron-run
+[all]
+over_voltage_delta=0
+arm_freq=2950
+v3d_freq=1125
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+
+# Tron user tail: preserve exactly
+CONF
+            cat > "$expected_config" <<CONF
+# Tron user header: preserve exactly
+[all]
+
+# AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
+# User explanation for the original overclock
+[all]
+# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG
+[all]
+# AUTOPIOVERCLOCK-WATCHDOG-DISABLED kernel_watchdog_timeout=77
+kernel_watchdog_timeout=180
+# END AUTOPIOVERCLOCK MANAGED WATCHDOG
+# User section after watchdog
+[pi5]
+dtoverlay=vc4-kms-v3d
+
+
+# Tron user tail: preserve exactly
+
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: preserve-fixture
+[all]
+arm_freq=3000
+v3d_freq=1150
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+CONF
+            gpu_key=v3d_freq
+        else
+            cat > "$source_config" <<CONF
+# Debian user header: preserve exactly
+[all]
+# AUTOPIOVERCLOCK-STOCK-DISABLED arm_freq=2900
+# AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
+# User cooling note
+dtparam=fan_temp0=50000
+# AUTOPIOVERCLOCK-WATCHDOG-DISABLED kernel_watchdog_timeout=30
+# BEGIN AUTOPIOVERCLOCK WATCHDOG
+[all]
+kernel_watchdog_timeout=60
+# END AUTOPIOVERCLOCK WATCHDOG
+
+[pi5]
+# User KMS note
+dtoverlay=vc4-kms-v3d
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: old-debian-run-one
+[all]
+over_voltage_delta=0
+arm_freq=3000
+gpu_freq=1100
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+# User comment between prior project blocks
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: old-debian-run-two
+[all]
+over_voltage_delta=0
+arm_freq=3050
+gpu_freq=1125
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+
+# Debian user tail: preserve exactly
+CONF
+            cat > "$expected_config" <<CONF
+# Debian user header: preserve exactly
+[all]
+# AUTOPIOVERCLOCK-STOCK-DISABLED arm_freq=2900
+# AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
+# User cooling note
+dtparam=fan_temp0=50000
+# BEGIN AUTOPIOVERCLOCK WATCHDOG
+[all]
+kernel_watchdog_timeout=60
+# END AUTOPIOVERCLOCK WATCHDOG
+
+[pi5]
+# User KMS note
+dtoverlay=vc4-kms-v3d
+# User comment between prior project blocks
+
+# Debian user tail: preserve exactly
+
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: preserve-fixture
+[all]
+arm_freq=3000
+gpu_freq=1150
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+CONF
+            gpu_key=gpu_freq
+        fi
+
+        source_hash=$(sha256sum "$source_config" | awk "NR == 1 {print \$1}")
+        render_clock_config "$source_config" "$rendered_config" 3000 1150 "$gpu_key" 0 preserve-fixture omit-default-zero
+        cmp "$expected_config" "$rendered_config" || {
+            diff -u "$expected_config" "$rendered_config" >&2 || true
+            exit 1
+        }
+        rerendered_config="$PRESERVE_ROOT/rerendered.txt"
+        render_clock_config "$rendered_config" "$rerendered_config" 3000 1150 "$gpu_key" 0 preserve-fixture omit-default-zero
+        cmp "$rendered_config" "$rerendered_config" || {
+            echo "$WORKER_NAME permanent clock rendering grew or changed on an identical second render" >&2
+            diff -u "$rendered_config" "$rerendered_config" >&2 || true
+            exit 1
+        }
+        [[ $(sha256sum "$source_config" | awk "NR == 1 {print \$1}") == "$source_hash" ]]
+        [[ $(grep -Fxc "$CLOCK_MARKER_BEGIN" "$rendered_config") == 1 ]]
+        ! grep -Fq "over_voltage_delta=0" "$rendered_config"
+
+        malformed_config="$PRESERVE_ROOT/malformed-watchdog.txt"
+        malformed_render="$PRESERVE_ROOT/malformed-watchdog-rendered.txt"
+        for malformed_case in nested-begin stray-end missing-end; do
+            case $malformed_case in
+                nested-begin)
+                    cat > "$malformed_config" <<"CONF"
+[all]
+# BEGIN AUTOPIOVERCLOCK WATCHDOG
+kernel_watchdog_timeout=60
+# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG
+kernel_watchdog_timeout=180
+# END AUTOPIOVERCLOCK MANAGED WATCHDOG
+# END AUTOPIOVERCLOCK WATCHDOG
+CONF
+                    ;;
+                stray-end)
+                    cat > "$malformed_config" <<"CONF"
+[all]
+kernel_watchdog_timeout=60
+# END AUTOPIOVERCLOCK WATCHDOG
+CONF
+                    ;;
+                missing-end)
+                    cat > "$malformed_config" <<"CONF"
+[all]
+# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG
+kernel_watchdog_timeout=180
+CONF
+                    ;;
+            esac
+            if render_clock_config "$malformed_config" "$malformed_render" 3000 1150 "$gpu_key" 0 preserve-fixture omit-default-zero; then
+                echo "$WORKER_NAME render accepted malformed watchdog markers: $malformed_case" >&2
+                exit 1
+            fi
+        done
     '
 done
 
@@ -824,6 +1046,77 @@ set -e
 [[ $DEBIAN_EARLY_CPU_OUTPUT == *'APO_RESULT_CLASS=HARNESS_FAILURE'* ]]
 DEBIAN_EARLY_CPU_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); print; exit}' <<< "$DEBIAN_EARLY_CPU_OUTPUT")
 [[ $(printf '%s' "$DEBIAN_EARLY_CPU_REASON_B64" | base64 --decode) == 'CPU stress exited early with rc=0.' ]]
+
+# A combined-stress poll must reap both children before attributing a failure.
+# Exactly one nonzero result is domain-specific; two nonzero results stay
+# ambiguous, and two clean early exits remain harness uncertainty.
+for WORKER_NAME in debian batocera; do
+    for SIMULTANEOUS_CASE in cpu gpu both clean; do
+        case $SIMULTANEOUS_CASE in
+            cpu) SIM_CPU_RC=11; SIM_GPU_RC=0; EXPECTED_CLASS=STABILITY_FAILURE; EXPECTED_REASON='CPU stress exited early with rc=11.' ;;
+            gpu) SIM_CPU_RC=0; SIM_GPU_RC=12; EXPECTED_CLASS=STABILITY_FAILURE; EXPECTED_REASON='GPU stress exited early with rc=12.' ;;
+            both) SIM_CPU_RC=11; SIM_GPU_RC=12; EXPECTED_CLASS=STABILITY_FAILURE; EXPECTED_REASON='CPU and GPU stress exited early with rc=11/12.' ;;
+            clean) SIM_CPU_RC=0; SIM_GPU_RC=0; EXPECTED_CLASS=HARNESS_FAILURE; EXPECTED_REASON='CPU and GPU stress exited early with rc=0/0.' ;;
+        esac
+        SIM_WORKER="$ROOT/workers/${WORKER_NAME}-worker.sh"
+        set +e
+        SIMULTANEOUS_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$SIM_WORKER" \
+            WORKER_NAME="$WORKER_NAME" SIM_CPU_RC="$SIM_CPU_RC" SIM_GPU_RC="$SIM_GPU_RC" bash -c '
+            set -u -o pipefail
+            source "$WORKER"
+            current_temp() { printf 50; }
+            current_throttle() { printf "throttled=0x0"; }
+            clock_mhz() { case $1 in arm) printf 2400 ;; *) printf 800 ;; esac; }
+            kernel_log() { :; }
+            kernel_error_lines() { :; }
+            if [[ $WORKER_NAME == debian ]]; then
+                stress_ng_has_gpu() { return 0; }
+                v3d_render_node() { printf /dev/dri/renderD128; }
+                stress_ng_gpu_strategy() { printf explicit-v3d-device; }
+                stress-ng() {
+                    if [[ ${1:-} == --cpu ]]; then
+                        command /bin/sleep 0.3
+                        printf "CPU fixture output\n"
+                        return "$SIM_CPU_RC"
+                    fi
+                    command /bin/sleep 0.3
+                    printf "GPU fixture output\n"
+                    return "$SIM_GPU_RC"
+                }
+            else
+                openssl() {
+                    command /bin/sleep 0.3
+                    printf "CPU fixture output\n"
+                    return "$SIM_CPU_RC"
+                }
+                find_glmark_binary() { printf /bin/true; }
+                find_glmark_data() { printf /tmp; }
+                find_glmark_library_dirs() { :; }
+                gpu_stack_probe() { printf "render_node=/dev/dri/renderD128;driver=v3d"; }
+                write_glmark_launcher() { : > "$1"; }
+                launch_gpu_test() {
+                    local launcher_file=$1 output_file=$2 mode=$3
+                    : "$launcher_file" "$mode"
+                    (
+                        command /bin/sleep 0.3
+                        printf "    GL_RENDERER: V3D 7.1\nglmark2 Score: 42\n" >> "$output_file"
+                        exit "$SIM_GPU_RC"
+                    ) &
+                    stress_gpu_pid=$!
+                }
+            fi
+            sleep() { command /bin/sleep 0.7; SECONDS=$((SECONDS + $1)); }
+            cmd_stress combined 20 75 headless "" 0 2400 800 throttled=0x0 60
+        ' 2>&1)
+        SIMULTANEOUS_RC=$?
+        set -e
+        [[ $SIMULTANEOUS_RC -ne 0 ]]
+        [[ $SIMULTANEOUS_OUTPUT == *"APO_RESULT_CLASS=$EXPECTED_CLASS"* ]]
+        SIMULTANEOUS_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); print; exit}' <<< "$SIMULTANEOUS_OUTPUT")
+        [[ $(printf '%s' "$SIMULTANEOUS_REASON_B64" | base64 --decode) == "$EXPECTED_REASON" ]]
+        [[ $SIMULTANEOUS_OUTPUT == *"CPU_RC=$SIM_CPU_RC GPU_RC=$SIM_GPU_RC"* ]]
+    done
+done
 
 # The workload and Bash supervisor have independent second counters. A clean
 # result within the bounded completion tolerance is complete, not an early

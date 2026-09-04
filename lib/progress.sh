@@ -82,6 +82,18 @@ apo_progress_csv_count() {
     printf '%s' "$count"
 }
 
+apo_progress_sweep_domain() {
+    local domain
+    domain=$(apo_state_get CFG_SWEEP_DOMAIN "${APO_SWEEP_DOMAIN:-all}")
+    case $domain in all|cpu|gpu) printf '%s' "$domain" ;; *) printf all ;; esac
+}
+
+apo_progress_domain_is_selected() {
+    local domain=${1,,} sweep_domain
+    sweep_domain=$(apo_progress_sweep_domain)
+    [[ $sweep_domain == all || $sweep_domain == "$domain" ]]
+}
+
 apo_progress_candidate_cost() {
     local duration=${APO_CFG[CANDIDATE_DURATION_S]:-600} boots=${APO_CFG[CANDIDATE_BOOTS]:-2}
     printf '%s' "$((duration + ((boots * 2 + 2) * APO_PROGRESS_BOOT_ESTIMATE_S)))"
@@ -94,7 +106,10 @@ apo_progress_qualification_cost() {
 
 apo_progress_domain_remaining_count() {
     local domain=$1 phase=${2:-} index boundary refine_csv refine_index refine_complete guard_verified coarse_count remaining=0
+    local refine_reserve selection_policy
     local candidates_name
+    apo_progress_domain_is_selected "$domain" || { printf 0; return; }
+    selection_policy=$(apo_state_get CFG_SELECTION_POLICY "${APO_SELECTION_POLICY:-guarded-v1}")
     case $domain in
         CPU)
             candidates_name=APO_CPU_CANDIDATES
@@ -104,6 +119,7 @@ apo_progress_domain_remaining_count() {
             refine_index=$(apo_state_get CPU_REFINE_INDEX 0)
             refine_complete=$(apo_state_get CPU_REFINE_COMPLETE 0)
             guard_verified=$(apo_state_get CPU_GUARD_VERIFIED 0)
+            refine_reserve=$((APO_AUTO_CPU_STEP_MHZ / APO_AUTO_REFINE_STEP_MHZ - 1))
             ;;
         GPU)
             candidates_name=APO_GPU_CANDIDATES
@@ -113,6 +129,7 @@ apo_progress_domain_remaining_count() {
             refine_index=$(apo_state_get GPU_REFINE_INDEX 0)
             refine_complete=$(apo_state_get GPU_REFINE_COMPLETE 0)
             guard_verified=$(apo_state_get GPU_GUARD_VERIFIED 0)
+            refine_reserve=$((APO_AUTO_GPU_STEP_MHZ / APO_AUTO_REFINE_STEP_MHZ - 1))
             ;;
         *) printf 0; return ;;
     esac
@@ -133,15 +150,16 @@ apo_progress_domain_remaining_count() {
                 [[ $refine_index =~ ^[0-9]+$ ]] || refine_index=0
                 (( refine_index < coarse_count )) && remaining=$((remaining + coarse_count - refine_index))
             elif [[ -n $boundary ]]; then
-                # A 100 MHz coarse gap can introduce at most three 25 MHz tests.
-                remaining=$((remaining + 3))
+                remaining=$((remaining + refine_reserve))
             elif [[ $phase == BEFORE || $phase == CURRENT ]]; then
                 # Until the sweep proves its ceiling or boundary, reserve the
                 # maximum possible refinement work and remove it dynamically.
-                remaining=$((remaining + 3))
+                remaining=$((remaining + refine_reserve))
             fi
         fi
-        [[ $guard_verified == 1 ]] || remaining=$((remaining + 1))
+        if [[ $selection_policy != refined-max-25 && $guard_verified != 1 ]]; then
+            remaining=$((remaining + 1))
+        fi
     fi
     printf '%s' "$remaining"
 }
@@ -220,17 +238,23 @@ apo_progress_future_validation_tests() {
 }
 
 apo_progress_estimate_remaining_tests() {
-    local phase subphase count=0 edge_status
+    local phase subphase count=0 edge_status sweep_domain
     phase=$(apo_state_get PHASE PREPARE)
     subphase=$(apo_state_get SUBPHASE '')
+    sweep_domain=$(apo_progress_sweep_domain)
     case $phase in
         PREPARE|PREPARED|TRYBOOT_PROOF)
             if (( ${APO_MANUAL_TEST:-0} == 1 )); then count=2
             else
-                count=$(apo_progress_domain_remaining_count CPU BEFORE)
-                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
-                if (( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
-                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 ) )) && count=$((count + 1))
+                if [[ $sweep_domain != gpu ]]; then
+                    count=$(apo_progress_domain_remaining_count CPU BEFORE)
+                    (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
+                fi
+                if [[ $sweep_domain != cpu ]] &&
+                   (( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then
+                    count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE)))
+                    (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
+                fi
                 count=$((count + $(apo_progress_future_validation_tests)))
             fi
             ;;
@@ -238,23 +262,29 @@ apo_progress_estimate_remaining_tests() {
             count=1
             if (( ${APO_MANUAL_TEST:-0} == 1 )); then count=$((count + 1))
             else
-                count=$((count + $(apo_progress_domain_remaining_count CPU BEFORE)))
-                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
-                if (( ${APO_NEED_GPU:-0} == 1 )); then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
-                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_NEED_GPU:-0} == 1 )) && count=$((count + 1))
+                if [[ $sweep_domain != gpu ]]; then
+                    count=$((count + $(apo_progress_domain_remaining_count CPU BEFORE)))
+                    (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
+                fi
+                if [[ $sweep_domain != cpu && ${APO_NEED_GPU:-0} == 1 ]]; then
+                    count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE)))
+                    (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
+                fi
                 count=$((count + $(apo_progress_future_validation_tests)))
             fi
             ;;
         CPU_SWEEP)
             count=$(apo_progress_domain_remaining_count CPU CURRENT)
             (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
-            if (( ${APO_NEED_GPU:-0} == 1 )); then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
-            (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_NEED_GPU:-0} == 1 )) && count=$((count + 1))
+            if [[ $sweep_domain != cpu && ${APO_NEED_GPU:-0} == 1 ]]; then
+                count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE)))
+                (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && count=$((count + 1))
+            fi
             count=$((count + $(apo_progress_future_validation_tests)))
             ;;
         CPU_QUALIFICATION)
             count=1
-            if (( ${APO_NEED_GPU:-0} == 1 )); then
+            if [[ $sweep_domain != cpu && ${APO_NEED_GPU:-0} == 1 ]]; then
                 if [[ $(apo_state_get GPU_GUARD_VERIFIED 0) != 1 ]]; then count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE))); fi
                 count=$((count + 1))
             fi
@@ -268,10 +298,11 @@ apo_progress_estimate_remaining_tests() {
         SELECTION)
             if [[ $subphase == CPU && ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 ]]; then
                 count=$((count + 1))
-                if (( ${APO_NEED_GPU:-0} == 1 )); then
+                if [[ $sweep_domain != cpu && ${APO_NEED_GPU:-0} == 1 ]]; then
                     count=$((count + $(apo_progress_domain_remaining_count GPU BEFORE) + 1))
                 fi
-            elif (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
+            elif [[ $sweep_domain != cpu ]] &&
+                 (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
                 count=$((count + 1))
             fi
             count=$((count + $(apo_progress_future_validation_tests)))
@@ -298,17 +329,21 @@ apo_progress_estimate_remaining_tests() {
 }
 
 apo_progress_future_tuning_cost() {
-    local from_phase=$1 candidate_cost qualification_cost cpu_count=0 gpu_count=0 remaining=0
+    local from_phase=$1 candidate_cost qualification_cost cpu_count=0 gpu_count=0 remaining=0 sweep_domain
     candidate_cost=$(apo_progress_candidate_cost)
     qualification_cost=$(apo_progress_qualification_cost)
     (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) || qualification_cost=0
+    sweep_domain=$(apo_progress_sweep_domain)
     case $from_phase in
         CPU)
-            cpu_count=$(apo_progress_domain_remaining_count CPU BEFORE)
-            remaining=$((remaining + cpu_count * candidate_cost + qualification_cost))
+            if [[ $sweep_domain != gpu ]]; then
+                cpu_count=$(apo_progress_domain_remaining_count CPU BEFORE)
+                remaining=$((remaining + cpu_count * candidate_cost + qualification_cost))
+            fi
             ;;
     esac
-    if (( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) && [[ $from_phase != FINAL ]]; then
+    if [[ $sweep_domain != cpu && $from_phase != FINAL ]] &&
+       (( ${APO_NEED_GPU:-0} == 1 || ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then
         gpu_count=$(apo_progress_domain_remaining_count GPU BEFORE)
         remaining=$((remaining + gpu_count * candidate_cost + qualification_cost))
     fi
@@ -317,9 +352,10 @@ apo_progress_future_tuning_cost() {
 }
 
 apo_progress_estimate_remaining_seconds() {
-    local elapsed=${1:-0} duration=${2:-0} phase subphase candidate_cost qualification_cost count remaining=0
+    local elapsed=${1:-0} duration=${2:-0} phase subphase candidate_cost qualification_cost count remaining=0 sweep_domain
     phase=$(apo_state_get PHASE PREPARE)
     subphase=$(apo_state_get SUBPHASE '')
+    sweep_domain=$(apo_progress_sweep_domain)
     candidate_cost=$(apo_progress_candidate_cost)
     qualification_cost=$(apo_progress_qualification_cost)
     (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )) || qualification_cost=0
@@ -352,7 +388,7 @@ apo_progress_estimate_remaining_seconds() {
             remaining=$((count * candidate_cost - elapsed))
             (( remaining < 0 )) && remaining=0
             remaining=$((remaining + qualification_cost))
-            if (( ${APO_NEED_GPU:-0} == 1 )); then
+            if [[ $sweep_domain != cpu && ${APO_NEED_GPU:-0} == 1 ]]; then
                 count=$(apo_progress_domain_remaining_count GPU BEFORE)
                 remaining=$((remaining + count * candidate_cost + qualification_cost))
             fi
@@ -361,7 +397,7 @@ apo_progress_estimate_remaining_seconds() {
         CPU_QUALIFICATION)
             remaining=$((qualification_cost - elapsed))
             (( remaining < 0 )) && remaining=0
-            if (( ${APO_NEED_GPU:-0} == 1 )); then
+            if [[ $sweep_domain != cpu && ${APO_NEED_GPU:-0} == 1 ]]; then
                 if [[ $(apo_state_get GPU_GUARD_VERIFIED 0) != 1 ]]; then
                     count=$(apo_progress_domain_remaining_count GPU BEFORE)
                     remaining=$((remaining + count * candidate_cost))
@@ -380,11 +416,11 @@ apo_progress_estimate_remaining_seconds() {
         SELECTION)
             if [[ $subphase == CPU ]]; then
                 remaining=$qualification_cost
-                if (( ${APO_NEED_GPU:-0} == 1 )); then
+                if [[ $sweep_domain != cpu && ${APO_NEED_GPU:-0} == 1 ]]; then
                     count=$(apo_progress_domain_remaining_count GPU BEFORE)
                     remaining=$((remaining + count * candidate_cost + qualification_cost))
                 fi
-            elif (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
+            elif [[ $sweep_domain != cpu ]] && (( ${APO_REQUIRE_GPU_STRESS:-0} == 1 )); then
                 remaining=$qualification_cost
             fi
             remaining=$((remaining + $(apo_progress_initial_final_sequence_cost)))
@@ -441,8 +477,27 @@ apo_progress_resolve_clock() {
     printf '%s' "${value:-?}"
 }
 
+apo_progress_tmux_min_client_columns() {
+    local session_id='' client_columns='' minimum_columns=''
+    local -a target_args=()
+    [[ -n ${TMUX:-} ]] || return 1
+    command -v tmux >/dev/null 2>&1 || return 1
+    [[ -z ${TMUX_PANE:-} ]] || target_args=(-t "$TMUX_PANE")
+    session_id=$(tmux display-message -p "${target_args[@]}" '#{session_id}' 2>/dev/null) || return 1
+    [[ -n $session_id ]] || return 1
+    while IFS= read -r client_columns; do
+        [[ $client_columns =~ ^[0-9]+$ ]] || continue
+        (( client_columns > 1 )) || continue
+        if [[ -z $minimum_columns ]] || (( client_columns < minimum_columns )); then
+            minimum_columns=$client_columns
+        fi
+    done < <(tmux list-clients -t "$session_id" -F '#{client_width}' 2>/dev/null || true)
+    [[ -n $minimum_columns ]] || return 1
+    printf '%s' "$minimum_columns"
+}
+
 apo_progress_terminal_columns() {
-    local columns=''
+    local columns='' tmux_columns=''
     # COLUMNS is only a launch-time snapshot for many non-interactive scripts and
     # becomes stale when an attached pane or mobile client is resized. Query the
     # controlling terminal first so every repaint uses the live pane width.
@@ -453,6 +508,13 @@ apo_progress_terminal_columns() {
     if [[ ! $columns =~ ^[0-9]+$ ]] && command -v tput >/dev/null 2>&1; then columns=$(tput cols 2>/dev/null || true); fi
     [[ $columns =~ ^[0-9]+$ ]] || columns=120
     (( columns > 1 )) || columns=2
+    # tmux exposes one logical pane width through stty, but a newly attached
+    # phone can have a narrower physical viewport than another attached client.
+    # Use the smallest attached-client width so a repaint cannot strand an old
+    # row through client-side reflow. These tmux queries are read-only.
+    if tmux_columns=$(apo_progress_tmux_min_client_columns); then
+        (( tmux_columns < columns )) && columns=$tmux_columns
+    fi
     printf '%s' "$columns"
 }
 

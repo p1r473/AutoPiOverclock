@@ -15,7 +15,8 @@ You need:
 
 - one 64-bit Raspberry Pi 5 to overclock;
 - one separate Linux controller, such as a PC, server, VM, or another Pi;
-- key-based SSH access from the controller to the target; and
+- key-based SSH access from the controller to the target;
+- a target SSH user that is root or has noninteractive passwordless `sudo`; and
 - adequate power and cooling.
 
 The controller and target must be different machines.
@@ -60,7 +61,7 @@ autopioverclock overclock pi@pi-host
 Every operational command requires a target. AutoPiOverclock intentionally ignores `~/.ssh/config`; use `--identity-file FILE` or `--ssh-port PORT` when needed.
 
 > [!IMPORTANT]
-> Batocera may require `prepare` to install a bounded network-loss watchdog. Review [the Batocera preparation notes](docs/batocera.md#watchdog-preparation) before approving that change.
+> Batocera may require `prepare` to build its graphical payload on an ARM64 Debian-family controller and install a bounded network-loss watchdog. Review [the Batocera notes](docs/batocera.md) before approving those changes.
 
 ## Supported targets
 
@@ -81,15 +82,15 @@ Graphical and headless operation are supported. The controller must be a separat
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-09-03, `alpha.42` keeps `prepare` and `overclock` as the two everyday commands, with `reset` available when a user wants to return to stock and start over. The expert recovery engine remains available underneath. Automatic tuning searches CPU first, qualifies CPU at stock GPU, then searches and qualifies GPU at that CPU. It next tries the +25 MHz CPU edge for 24 hours; a pass completes the run, while a safe rejection starts one fresh 24-hour guarded-floor fallback instead. Explicit whole-hour overrides and named checkpoint restarts are bound to retained state and never accept hardcoded replacement clocks. Eligible recovered boot/stability failures—including a linked longer-final pair—back off and continue automatically. Transient reads receive a multi-minute retry window, safe same-boot checks receive repeated attempts, and safely recovered harness failures repeat their complete gate up to five times. An exactly proved autonomous reboot becomes a boundary, while real hash drift, ownership ambiguity, and uncertain recovery still stop. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware.
+As of 2026-09-04, `alpha.43` keeps `prepare` and `overclock` as the two everyday commands, with `reset` available when a user wants to return to stock and start over. Automatic tuning searches and qualifies CPU first, then searches and qualifies GPU, and runs one 24-hour combined final validation. One-domain and later-candidate starts retain the same safety pipeline. A fully recovered CPU or GPU boot/stability failure during qualification causes only the identified domain to step down by 25 MHz. A CPU- or GPU-specific final failure also lowers only the identified domain; a genuinely ambiguous full-mode failure tests CPU-only, GPU-only, then paired 25 MHz reductions so a stable domain is not lowered unnecessarily. Transient reads and safely recovered harness failures receive bounded retries, while real active config drift, ownership ambiguity, and uncertain recovery still stop. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware.
 
 | Evidence | Current status |
 | --- | --- |
 | Bash fixture suite | 19 scripted suites cover the normal/manual-test interface, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, watchdog installation, selection, resume, apply, reset, packaging, and public-safety contracts. |
-| GitHub CI and ShellCheck | Passing for the current `main` commit; see the live badge. |
-| Debian-family Raspberry Pi 5 run | One Debian 13 Pi 5 completed and applied a retained default-policy result at **CPU 3100 MHz and V3D 1175 MHz with the firmware-default voltage state**. Each domain qualification ran for two hours; combined CPU/GPU/I/O validation ran for 24 hours; three additional candidate/normal boot cycles passed; maximum recorded temperature was 59.3 C with `throttled=0x0`; and the apply verification reboot passed. |
-| Batocera Raspberry Pi 5 run | Recovery and watchdog preparation have been exercised, but complete `alpha.42` end-to-end validation remains pending. |
-| Default 24-hour edge-first final sequence | Proven on the retained Debian run above; no Batocera PASS claim until current-version artifacts complete and are reviewed. |
+| GitHub CI and ShellCheck | The workflow runs all fixture suites and ShellCheck; see the live badge for the current published `main` result. |
+| Debian-family Raspberry Pi 5 run | One Debian 13 Pi 5 completed and applied a retained **alpha.39** result at **CPU 3100 MHz and V3D 1175 MHz with the firmware-default voltage state**. Each domain qualification ran for two hours; combined CPU/GPU/I/O validation ran for 24 hours; three additional candidate/normal boot cycles passed; maximum recorded temperature was 59.3 C with `throttled=0x0`; and the apply verification reboot passed. This proves that retained result, not alpha.43's new search and backoff paths. |
+| Batocera Raspberry Pi 5 run | Recovery and watchdog preparation have been exercised, but complete `alpha.43` end-to-end validation remains pending. |
+| Default 24-hour combined final validation | Proven on the retained Debian run above; no Batocera PASS claim until current-version artifacts complete and are reviewed. |
 
 Do not infer a general production recommendation from one board, a candidate pass, an active run, or this table. Only a run that reaches `COMPLETE`, records `Validated: 1` under the current validation schema, and finishes `overclock` with `APPLY_STATUS=APPLIED` is installed by the normal workflow. The standalone expert `apply` command retains its separate confirmation.
 
@@ -98,32 +99,31 @@ Do not infer a general production recommendation from one board, a candidate pas
 The normal `autopioverclock overclock TARGET` strategy is deliberately ordered so a GPU result is never used to guess a CPU boundary, and vice versa:
 
 1. **Prove the stock baseline and recovery path.** The controller verifies the protected permanent config, stock clocks, watchdog chain, normal boot, and owned `tryboot` lifecycle before searching.
-2. **Search CPU first.** Searches CPU from 2500 through 3200 MHz in 100 MHz steps with 10-minute candidates. A real boot/stability boundary is refined in 25 MHz steps.
-3. **Back off and qualify CPU.** The selected CPU is candidate-tested 50 MHz below the boundary or ceiling, then qualified with GPU held at stock. The default is two hours; `--qualification-hours HOURS` changes both domain qualifications.
-4. **Search and qualify GPU.** Searches GPU/V3D through 1200 MHz in 50 MHz steps only after CPU qualification passes, refines a real boundary in 25 MHz steps, and tests its 25 MHz guard. That GPU is then qualified at the already-qualified CPU for the same saved qualification duration.
-5. **Try the CPU edge first.** Tests CPU exactly 25 MHz above the guarded result for 24 hours by default under combined CPU, GPU, and I/O load, with the qualified GPU unchanged. If that clock is already at a known failure boundary, the unsafe attempt is skipped. `--edge-hours HOURS` changes this duration.
-6. **Validate one final result.** A full pass becomes the final result. The lower floor is not also run. If the edge is skipped or safely rejected, the exact guarded pair starts one fresh 24-hour combined validation controlled by `--final-hours HOURS`.
-7. **Recover, retry, and back off automatically.** A safely recovered structured or unstructured harness failure repeats the complete affected boot, stress, or health gate up to five times. A proved CPU-qualification failure lowers CPU by 50 MHz; a proved GPU-qualification failure lowers GPU by 25 MHz. A guarded-pair failure cannot identify one domain, so every still-overclocked domain is lowered by its guard and both qualifications are repeated. The reduced pair receives a fresh final sequence. Exhausted harness retries or any recovery uncertainty stop rather than being mislabeled as a clock boundary.
-8. **Apply only completed evidence.** The exact permanent diff is retained and shown, then the one final validated result is applied, rebooted, and re-proved. Maximum PWM fan cooling is temporary during candidate boots; the user's original fan policy returns on normal boots and after application.
+2. **Search CPU first.** Searches CPU from 2500 through 3200 MHz in 100 MHz steps with 10-minute candidates, then refines the failure gap in 25 MHz steps to the highest actual pass.
+3. **Qualify CPU.** The highest passing CPU is qualified for two hours by default with GPU held at the protected baseline (stock in a normal full run). A fully recovered CPU boot/stability failure steps CPU down 25 MHz and repeats the complete qualification.
+4. **Search and qualify GPU.** Searches GPU/V3D through 1200 MHz in 50 MHz steps only after CPU qualification passes, then refines in 25 MHz steps to the highest actual pass. GPU is qualified at the selected CPU; a fully recovered GPU boot/stability failure steps GPU down 25 MHz and repeats the complete qualification.
+5. **Validate one final result.** The selected pair runs one fresh 24-hour combined CPU/GPU/I/O validation by default. Exact CPU evidence lowers only CPU; exact GPU evidence lowers only GPU. If the domain is ambiguous, the pair becomes the anchor and CPU 25 MHz lower is tried first. If that attempt also fails ambiguously, CPU is restored and GPU 25 MHz lower is tried; another ambiguous failure tries both 25 MHz lower. Exact evidence from any trial immediately follows the exact-domain rule instead. Each changed domain is requalified before a fresh full final run; if all three trials fail ambiguously, the paired reduction becomes the next anchor and isolation repeats. One-domain mode can lower and requalify only its selected domain; exact evidence against the held domain stops. This avoids sacrificing a stable domain. Even a failure near the end invalidates that attempt, so elapsed time is never credited.
+6. **Recover and retry automatically.** A safely recovered structured or unstructured harness failure repeats the complete affected boot, stress, or health gate up to five times. Exhausted harness retries or any recovery uncertainty stop rather than being mislabeled as a clock boundary.
+7. **Apply only completed evidence.** The exact permanent diff is retained and shown, then the validated result is applied, rebooted, and re-proved. Maximum PWM fan cooling is temporary during candidate boots; the user's original fan policy returns on normal boots and after application.
 
-The recommended public policy is two hours for each qualification, 24 hours for the edge attempt, and 24 hours for the guarded-floor fallback if the edge does not pass. The two 24-hour workloads are alternatives: a passing edge does not trigger another floor run. Custom whole-hour values from 1–168 are explicit test conditions: they are stored with the run, drive the progress ETA and apply gate, and appear as `custom` in status/report. Shortening them trades confidence for time; it does not make the workload stronger.
+`--cpu-only` and `--gpu-only` are mutually exclusive one-domain modes. They require and extend the target's latest eligible applied AutoPiOverclock result. CPU-only holds GPU/V3D at that retained, freshly re-proved clock; GPU-only holds CPU at that retained, freshly re-proved clock. The held clock is a verified baseline, not a claim that its domain is already maximized. Only the selected domain is swept and qualified. A fully recovered final boot/stability failure can lower only that selected domain by 25 MHz; exact evidence against the held domain stops. The pair still receives the same combined final validation, automatic apply, reboot verification, cooling, watchdog, retry, and recovery safeguards. `--cpu-start-at MHZ` and `--gpu-start-at MHZ` accept 25 MHz increments above the protected current clock and begin their automatic sweeps at a later candidate without forcing a final clock. Full mode accepts both from a stock target, while an already applied target uses the matching one-domain mode. Earlier coarse candidates are skipped initially, but if the first requested candidate fails, 25 MHz refinement may probe below that start to find the highest pass above the verified baseline. The CPU ceiling is 3200 MHz and the GPU ceiling is 1200 MHz; either ceiling is still tested when the chosen start does not align with the coarse ladder.
+
+The recommended public policy is two hours for each applicable qualification and one 24-hour final validation. `--qualification-hours HOURS` and `--final-hours HOURS` accept whole-hour values from 1–168; shorter tests reduce confidence and are recorded as custom policy.
 
 Maximum Pi PWM fan cooling is temporary during testing; the target's normal fan settings return afterward. Use `--no-max-fan` only when passive/external cooling or the normal fan policy is intentionally part of the test. Reduced cooling can reduce sustained performance or stability. Headless Debian-family targets require neither a display nor audio hardware.
 
 The saved test lengths can be changed with whole-hour values from 1 through 168:
 
 ```bash
-autopioverclock overclock pi@pi-host --qualification-hours 3 --final-hours 36 --edge-hours 18
+autopioverclock overclock pi@pi-host --qualification-hours 3 --final-hours 36
 ```
-
-Shorter tests reduce confidence and are recorded as a custom policy.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `prepare TARGET` | Install and verify dependencies and watchdog recovery. Add `--dry-run` for read-only discovery and plan generation. |
-| `overclock TARGET` | Automatically tune, validate, apply, reboot, and verify the target. |
+| `overclock TARGET [--cpu-only | --gpu-only] [--cpu-start-at MHZ] [--gpu-start-at MHZ]` | Tune both domains, or extend an eligible applied result by tuning one domain while holding the other at its retained verified clock; optional starts skip earlier coarse candidates. |
 | `test TARGET` | Test one exact `--cpu`/`--gpu` pair for `--minutes`; recover normally and retain evidence without applying it. |
 | `reset TARGET` | Back up the boot config, remove tuning, reboot, and verify stock clocks. |
 | `run TARGET` | Use the advanced prepare, recovery-proof, sweep, selection, and validation interface. |
@@ -133,7 +133,13 @@ Shorter tests reduce confidence and are recorded as a custom policy.
 | `apply TARGET` | Apply only a fully validated result after an exact diff and typed confirmation. |
 | `report TARGET` | Generate a concise run report; supports redaction. |
 
-Every operational command requires `TARGET`. `--qualification-hours`, `--final-hours`, and `--edge-hours` customize the isolated qualifications, guarded-floor fallback, and edge attempt. `--edge-cpu-24h` remains compatible with older instructions but is unnecessary because the 24-hour edge is now the default. Maximum cooling is the default; `--no-max-fan` opts a new tuning or manual-test run out while preserving every normal thermal/throttle gate.
+Every operational command requires `TARGET`. `--cpu-only` and `--gpu-only` cannot be combined; CPU-only rejects `--gpu-start-at`, and GPU-only rejects `--cpu-start-at`. Full mode may use either or both starting points only from stock; starting points must be 25 MHz multiples above the protected current clock and no higher than the documented domain ceiling. `--restart-from` is full-mode only; repeat the same one-domain command to continue a one-domain checkpoint. `--qualification-hours` and `--final-hours` customize the long tests. Maximum cooling is the default; `--no-max-fan` opts a new tuning or manual-test run out while preserving every normal thermal/throttle gate.
+
+```bash
+autopioverclock overclock pi@pi-host --cpu-only --cpu-start-at 2900
+autopioverclock overclock pi@pi-host --gpu-only --gpu-start-at 1050
+autopioverclock overclock pi@pi-host --cpu-start-at 2900 --gpu-start-at 1050
+```
 
 Common transport options are `--identity-file FILE`, `--ssh-port PORT`, and `--output-dir DIR`. Advanced `run` options include `--config FILE`, `--mode auto|graphical|headless`, `--install-missing`, `--repair-watchdogs`, `--dry-run`, `--yes`, and `--no-max-fan`. Transport/output options, named checkpoint restarts, strict plans, and the complete expert recovery/reporting interface are documented in [the CLI reference](docs/cli.md). They are not required for the normal two-command workflow; `reset TARGET` is available when a user wants to return to stock.
 
@@ -159,7 +165,7 @@ audio_sink_pattern=
 
 Custom configuration is an advanced `run TARGET --config FILE` interface retained for development and support. The normal `autopioverclock overclock TARGET` command intentionally uses the fixed automatic policy above and accepts no custom clock plan. Explicit candidate lists must be strictly increasing; empty lists skip that domain, and at least one domain must contain candidates.
 
-`voltage_delta_uv=existing` preserves the target's existing value; AutoPiOverclock never silently raises voltage. `final_duration_seconds` accepts 3,600–604,800 seconds for the advanced explicit plan, candidate boots cannot be lower than two, and final boot/recovery cycles cannot be lower than three. The simple hour options are preferred for automatic tuning because they bind qualification, final, and edge timing visibly in one command.
+`voltage_delta_uv=existing` preserves the target's existing value; AutoPiOverclock never silently raises voltage. `final_duration_seconds` accepts 3,600–604,800 seconds for the advanced explicit plan, candidate boots cannot be lower than two, and final boot/recovery cycles cannot be lower than three. The simple hour options are preferred for automatic tuning because they bind qualification and final timing visibly in one command.
 
 | Key | Meaning and accepted values |
 | --- | --- |
@@ -170,7 +176,7 @@ Custom configuration is an advanced `run TARGET --config FILE` interface retaine
 | `final_duration_seconds` | Combined endurance duration for an advanced explicit plan; 3600–604800 seconds. |
 | `max_temp_c` | Exclusive temperature ceiling; 40–95 °C. Reaching the ceiling fails the candidate. |
 | `telemetry_interval_seconds` | Temperature, clocks, throttle, and kernel-error sampling cadence; 1–60 seconds. Workload supervision still runs every second. |
-| `conservative_backoff_steps` | Explicit-plan positions to step down from the maximum observed pass; 0–10. Configuration-free auto uses its fixed MHz guards instead. |
+| `conservative_backoff_steps` | Explicit-plan positions to step down from the maximum observed pass; 0–10. Automatic tuning instead refines to the highest pass and uses 25 MHz qualification backoff or final-pair isolation. |
 | `candidate_boots` | Candidate/normal recovery cycles before candidate stress; 2–10. |
 | `final_boots` | Post-endurance candidate/normal recovery cycles; 3–10. |
 | `required_services` | Optional comma-separated service names that must remain active. |
@@ -192,7 +198,7 @@ Custom configuration is an advanced `run TARGET --config FILE` interface retaine
 - Permanent configuration retains its original SHA-256 hash.
 - The following recovery boot clears `tryboot` and passes normal health checks.
 
-GPU harness failures are kept separate from clock-stability failures. A required graphical or headless backend that cannot launch, bind the hardware V3D renderer, complete with its required success evidence, or preserve any applicable display/audio baseline is a `HARNESS_FAILURE`, not proof that the tested GPU clock is unstable. A positive score is required when glmark2 is the selected workload. Batocera graphical testing uses an off-screen Wayland workload on the live EmulationStation compositor; it does not take DRM master or stop and restore the frontend.
+GPU harness failures are kept separate from clock-stability failures. A required graphical or headless backend that cannot launch, bind the hardware V3D renderer, complete with its required success evidence, or preserve any applicable display/audio baseline is a `HARNESS_FAILURE`, not proof that the tested GPU clock is unstable. Audio readiness loss by itself follows the safe harness retry/recovery policy and never creates a CPU or GPU boundary. A positive score is required when glmark2 is the selected workload. Batocera graphical testing uses an off-screen Wayland workload on the live EmulationStation compositor; it does not take DRM master or stop and restore the frontend.
 
 Stress timing is fail-closed. Batocera CPU load uses exactly one 1 MiB SHA-256 benchmark measured in elapsed time, so the requested duration is the total workload duration rather than a per-buffer-size duration. The larger block also keeps OpenSSL's signed per-worker operation counter from ending a 24-hour Pi 5 test early; it does not shorten the requested stress time. Because each workload and its Bash supervisor use independent whole-second clocks, a clean exit within 0.1% of the requested duration is accepted only inside a 3–30 second bound; an earlier clean exit or any nonzero exit is still rejected. Workloads retain a separate 60-second shutdown deadline after their requested duration, and controller SSH/reboot budgets include wall time spent inside connection attempts instead of silently stretching a nominal recovery timeout.
 
@@ -213,19 +219,19 @@ autopioverclock resume pi@pi-host --run-id RUN_ID
 autopioverclock recover pi@pi-host --run-id RUN_ID
 ```
 
-Without `--run-id`, `resume`, `recover`, `status`, and `report` select the target's latest retained state. Use an explicit run ID when you intentionally want an older run; a reset audit also advances the target's `*-latest` links. Rerunning `autopioverclock overclock TARGET` continues that target's latest eligible interrupted automatic run.
+Without `--run-id`, `resume`, `recover`, `status`, and `report` select the target's latest retained state. Use an explicit run ID when you intentionally want an older run; a reset audit also advances the target's `*-latest` links. Rerunning the same `autopioverclock overclock TARGET` command—including its domain mode and starting-point flags—continues the matching latest eligible interrupted run.
 
 For a current automatic overclock that has not started final validation, `resume` can deliberately repeat a retained checkpoint while taking all clocks from saved evidence:
 
 ```bash
-autopioverclock resume pi@pi-host --restart-from cpu-qualification --qualification-hours 2 --final-hours 24 --edge-hours 24
-autopioverclock resume pi@pi-host --restart-from gpu-qualification --qualification-hours 2 --final-hours 24 --edge-hours 24
-autopioverclock resume pi@pi-host --restart-from final --final-hours 24 --edge-hours 24
+autopioverclock resume pi@pi-host --restart-from cpu-qualification --qualification-hours 2 --final-hours 24
+autopioverclock resume pi@pi-host --restart-from gpu-qualification --qualification-hours 2 --final-hours 24
+autopioverclock resume pi@pi-host --restart-from final --final-hours 24
 ```
 
-The accepted checkpoints are `current`, `cpu-qualification`, `gpu-qualification`, and `final`. The command line changes only durations and the restart point; it never supplies replacement CPU/GPU clocks, and any omitted duration retains its saved value. Prerequisite qualifications must already match the retained guarded pair, and an active final sequence cannot be rewound or relabeled. Directly resuming an overclock keeps the same unattended extended-SSH monitoring and automatic final apply as `overclock TARGET`.
+The accepted checkpoints are `current`, `cpu-qualification`, `gpu-qualification`, and `final`. The command line changes only durations and the restart point; it never supplies replacement CPU/GPU result clocks, and any omitted duration retains its saved value. Prerequisite qualifications must already match the retained selected pair, and an active final sequence cannot be rewound or relabeled. Directly resuming an overclock keeps the same unattended extended-SSH monitoring and automatic final apply as `overclock TARGET`.
 
-For a completed applied result, only `--restart-from final` is allowed; a longer requested final creates a linked fresh validation using the retained clocks and verified pre-apply stock backup. If those clocks then produce a fully recovered boot/stability failure, the linked run keeps stock active, reduces the ambiguous pair by the normal 50 MHz CPU and 25 MHz GPU guards, requalifies both domains, and continues with equal-duration edge-first/floor alternatives. Plain `resume TARGET` performs the same transition for a retained recovered failure and also adopts exact safely recovered unstructured worker-loss or clean-early-exit checkpoints for bounded automatic retry. Exhausted harness uncertainty or recovery uncertainty still stops. Evidence tied to an interrupted candidate boot is repeated when it cannot be preserved safely, and an older safety schema cannot bypass newer gates.
+For a completed applied result, only `--restart-from final` is allowed; a longer requested final creates a linked fresh validation using the retained clocks and verified pre-apply stock backup. A fully recovered ambiguous full-mode boot/stability failure keeps stock active and follows the CPU-only, GPU-only, then paired 25 MHz isolation sequence only while evidence remains ambiguous; exact evidence switches immediately to its identified domain. A one-domain run reduces and requalifies only its selected domain and stops on exact evidence against the held domain. Every attempt runs the complete saved final duration from zero. Plain `resume TARGET` also adopts exact safely recovered unstructured worker-loss or clean-early-exit checkpoints for bounded automatic retry. Exhausted harness or recovery uncertainty still stops, and an older safety schema cannot bypass newer gates.
 
 ### Reset a target to verified stock defaults
 
@@ -235,7 +241,7 @@ Reset is command-first:
 autopioverclock reset pi@pi-host
 ```
 
-No postfix reset spelling is accepted. Reset is noninteractive, so it neither needs nor accepts `--yes`. It also rejects run-selection, tuning, dependency, watchdog, dry-run, edge-validation, fan-policy, mode, and redaction flags; only transport/output selectors may accompany it.
+No postfix reset spelling is accepted. Reset is noninteractive, so it neither needs nor accepts `--yes`. It also rejects run-selection, tuning, dependency, watchdog, dry-run, duration, fan-policy, mode, and redaction flags; only transport/output selectors may accompany it.
 
 Before changing the permanent root boot config, reset requires a regular non-symlink config, a stable expected hash, no active `include` directive, and no foreign or ambiguous `tryboot.txt`/quarantine path. It writes a hash-verified, no-clobber backup under `/var/lib/autopioverclock/backups/` on Debian-family systems or `/userdata/system/autopioverclock/backups/` on Batocera. Standalone boost, fixed-clock, `*_freq`/`*_freq_min`, and `over_voltage*` lines are retained as comments prefixed with `# AUTOPIOVERCLOCK-STOCK-DISABLED`; the clock directives and markers in one structurally valid AutoPiOverclock managed block are removed while its `[all]` section boundary is retained, with the complete original bytes in the verified backup.
 

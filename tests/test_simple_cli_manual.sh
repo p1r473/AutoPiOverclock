@@ -127,7 +127,7 @@ for advanced_command in run resume status recover apply report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --cpu --gpu --minutes --qualification-hours --final-hours --edge-hours --restart-from; do
+for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-start-at --gpu-start-at; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 
@@ -137,7 +137,7 @@ for documented_command in prepare overclock test reset run resume status recover
 done
 
 for normal_command in prepare overclock reset; do
-    documented_pattern=$(printf '| `%s TARGET` |' "$normal_command")
+    documented_pattern=$(printf '| `%s TARGET' "$normal_command")
     grep -Fq "$documented_pattern" "$ROOT/docs/cli.md"
 done
 
@@ -154,9 +154,9 @@ for required_heading in \
 done
 grep -Fq 'Searches CPU from 2500 through 3200 MHz' "$ROOT/README.md"
 grep -Fq 'Searches GPU/V3D through 1200 MHz' "$ROOT/README.md"
-grep -Fq 'Tests CPU exactly 25 MHz above the guarded result for 24 hours' "$ROOT/README.md"
-grep -Fq 'A full pass becomes the final result.' "$ROOT/README.md"
-grep -Fq -- '--qualification-hours 3 --final-hours 36 --edge-hours 18' "$ROOT/README.md"
+grep -Fq 'refines the failure gap in 25 MHz steps to the highest actual pass' "$ROOT/README.md"
+grep -Fq 'one fresh 24-hour combined CPU/GPU/I/O validation by default' "$ROOT/README.md"
+grep -Fq -- '--qualification-hours 3 --final-hours 36' "$ROOT/README.md"
 quick_start=$(sed -n '/^## Quick start$/,/^## Supported targets$/p' "$ROOT/README.md")
 for install_line in \
     'git clone https://github.com/p1r473/AutoPiOverclock.git' \
@@ -175,7 +175,7 @@ if grep -Fq 'autopioverclock reset pi@pi-host' <<< "$quick_start"; then
 fi
 grep -Fq 'Run every command on the separate Linux controller.' "$ROOT/docs/cli.md"
 grep -Fq 'The controller may be any supported Linux computer; it does not need to be a Raspberry Pi.' "$ROOT/docs/cli.md"
-grep -Fq 'the guarded floor is not also run.' "$ROOT/docs/cli.md"
+grep -Fq 'Every attempt starts a fresh full `--final-hours` run' "$ROOT/docs/cli.md"
 grep -Fq 'Headless Raspberry Pi OS/Debian requires neither a desktop nor audio hardware' "$ROOT/docs/cli.md"
 grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
 grep -Fq 'ssh -o BatchMode=yes "$TARGET" true' "$ROOT/README.md"

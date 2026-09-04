@@ -395,9 +395,76 @@ render_clock_config() {
     [[ $voltage_render_mode == explicit || $voltage_render_mode == omit-default-zero ]] || return 1
     [[ $voltage_render_mode != omit-default-zero || $voltage_uv == 0 ]] || return 1
     awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" '
-        $0==begin {inside=1; next}
-        $0==end {inside=0; next}
-        !inside {print}
+        function stripped(value) {
+            sub(/\r$/, "", value)
+            return value
+        }
+        function stale_project_artifact(value, lower) {
+            value=stripped(value)
+            lower=tolower(value)
+            sub(/^[[:space:]]*/, "", lower)
+            return value ~ /^[[:space:]]*#[[:space:]]*AUTOPIOVERCLOCK-WATCHDOG-DISABLED[[:space:]]+(kernel_watchdog_timeout|watchdog[.]open_timeout)[[:space:]]*=/ ||
+                   value ~ /^[[:space:]]*#[[:space:]]*TRON_RECOVERY_DISABLED[[:space:]]+(kernel_watchdog_timeout|watchdog[.]open_timeout)[[:space:]]*=/ ||
+                   lower == "# tron recovery: disable firmware-to-os watchdog handoff"
+        }
+        function watchdog_block_begin(value) {
+            value=stripped(value)
+            return value == "# BEGIN AUTOPIOVERCLOCK WATCHDOG" ||
+                   value == "# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG"
+        }
+        function watchdog_block_end(value) {
+            value=stripped(value)
+            return value == "# END AUTOPIOVERCLOCK WATCHDOG" ||
+                   value == "# END AUTOPIOVERCLOCK MANAGED WATCHDOG"
+        }
+        {
+            lines[NR]=$0
+            semantic=stripped($0)
+            if (semantic==begin) {
+                if (inside) invalid=1
+                inside=1
+                drop[NR]=1
+                next
+            }
+            if (semantic==end) {
+                if (!inside) invalid=1
+                inside=0
+                drop[NR]=1
+                next
+            }
+            if (inside) {
+                drop[NR]=1
+                next
+            }
+            if (watchdog_block_begin(semantic)) {
+                if (watchdog_inside) invalid=1
+                watchdog_inside=1
+                next
+            }
+            if (watchdog_block_end(semantic)) {
+                if (!watchdog_inside) invalid=1
+                watchdog_inside=0
+                next
+            }
+            if (!watchdog_inside && stale_project_artifact(semantic)) {
+                drop[NR]=1
+            }
+        }
+        END {
+            if (invalid || inside || watchdog_inside) exit 1
+            kept_count=0
+            last_content=0
+            for (line_number=1; line_number<=NR; line_number++) {
+                if (!drop[line_number]) {
+                    kept[++kept_count]=lines[line_number]
+                    semantic=stripped(lines[line_number])
+                    if (semantic !~ /^[[:space:]]*$/) last_content=kept_count
+                }
+            }
+            for (line_number=1; line_number<=last_content; line_number++) {
+                print kept[line_number]
+            }
+        }
     ' "$source_file" > "$destination_file" || return 1
     printf '\n%s\n# Run: %s\n[all]\n' "$CLOCK_MARKER_BEGIN" "$run_id" >> "$destination_file" || return 1
     if [[ $voltage_render_mode == explicit ]]; then
@@ -915,10 +982,10 @@ emit_application_health_failure() {
         process) emit_result BOOT_FAILURE "A required process is missing in $context." "$temp" ;;
         service) emit_result BOOT_FAILURE "A required service is not active in $context." "$temp" ;;
         audio-inspection) emit_result HARNESS_FAILURE 'AUDIO_SINK_MATCH was configured but default-sink inspection is unavailable.' "$temp" ;;
-        audio-match) emit_result BOOT_FAILURE "Default audio sink does not match the configured requirement in $context." "$temp" ;;
+        audio-match) emit_result HARNESS_FAILURE "Default audio sink does not match the configured requirement in $context." "$temp" ;;
         audio-baseline-missing) emit_result HARNESS_FAILURE "No Debian audio-output baseline was supplied for graphical validation in $context." "$temp" ;;
-        audio-unavailable) emit_result BOOT_FAILURE "The captured audio output is unavailable in $context." "$temp" ;;
-        audio-changed) emit_result BOOT_FAILURE "The captured audio output changed in $context: expected $audio_baseline, found ${APPLICATION_READINESS_LAST_AUDIO:-missing}." "$temp" ;;
+        audio-unavailable) emit_result HARNESS_FAILURE "The captured audio output is unavailable in $context." "$temp" ;;
+        audio-changed) emit_result HARNESS_FAILURE "The captured audio output changed in $context: expected $audio_baseline, found ${APPLICATION_READINESS_LAST_AUDIO:-missing}." "$temp" ;;
         display) emit_result BOOT_FAILURE "Graphical baseline did not recover within 60 seconds in $context." "$temp" ;;
         *) emit_result BOOT_FAILURE "Application readiness did not recover within 60 seconds in $context." "$temp" ;;
     esac
@@ -936,6 +1003,10 @@ cmd_health() {
     active_voltage=$(active_config_value over_voltage_delta)
     [[ -n $active_voltage ]] || { active_config_interface_ready && active_voltage=0; }
     [[ -n $active_cpu && -n $active_gpu && -n $active_voltage ]] || { emit_result HARNESS_FAILURE "Active CPU/GPU/voltage configuration telemetry is unavailable in $context."; return 1; }
+    if [[ $active_cpu != "$expected_cpu" && $active_gpu != "$expected_gpu" ]]; then
+        emit_result BOOT_FAILURE "CPU and GPU config mismatch in $context: expected $expected_cpu/$expected_gpu, found ${active_cpu:-missing}/${active_gpu:-missing}."
+        return 1
+    fi
     [[ $active_cpu == "$expected_cpu" ]] || { emit_result BOOT_FAILURE "CPU config mismatch in $context: expected $expected_cpu, found ${active_cpu:-missing}."; return 1; }
     [[ $active_gpu == "$expected_gpu" ]] || { emit_result BOOT_FAILURE "GPU config mismatch in $context: expected $expected_gpu, found ${active_gpu:-missing}."; return 1; }
     [[ $active_voltage == "$expected_voltage" ]] || { emit_result BOOT_FAILURE "Voltage delta mismatch in $context: expected $expected_voltage, found $active_voltage."; return 1; }
@@ -1241,7 +1312,7 @@ cmd_stress() {
     local start_seconds expected_end hard_deadline completion_tolerance now_seconds next_log max_seen=0 temp throttle new_errors
     local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
-    local cpu_alive=0 gpu_alive=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
+    local cpu_alive=0 gpu_alive=0 cpu_dead=0 gpu_dead=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
     : "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
@@ -1314,15 +1385,50 @@ cmd_stress() {
             failure_reason="Filesystem activity failed during load with rc=$io_rc."
             break
         fi
-        # Classify individual early exits before considering the aggregate
-        # all-dead state.  CPU-only/GPU-only and simultaneous clean exits must
+        # Reap every worker found dead in the same supervision poll before
+        # assigning one failing domain. Otherwise the CPU-first check can hide
+        # a simultaneous GPU failure and make ambiguous combined evidence look
+        # CPU-specific. CPU-only/GPU-only and simultaneous clean exits must
         # never bypass the requested-duration gate.
         # The workload and Bash supervisor use independent whole-second clocks.
         # Permit a clean child to finish within 0.1% of the requested duration
         # (bounded to 3-30 seconds); nonzero exits still fail after wait.
         if (( now_seconds < expected_end - completion_tolerance )); then
-            if [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]]; then wait "$stress_cpu_pid"; cpu_rc=$?; stress_cpu_pid=''; failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE); failure_reason="CPU stress exited early with rc=$cpu_rc."; break; fi
-            if [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]]; then wait "$stress_gpu_pid"; gpu_rc=$?; stress_gpu_pid=''; if grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi; failure_reason="GPU stress exited early with rc=$gpu_rc."; break; fi
+            cpu_dead=0; gpu_dead=0
+            [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]] && cpu_dead=1
+            [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]] && gpu_dead=1
+            if (( cpu_dead == 1 || gpu_dead == 1 )); then
+                if (( cpu_dead == 1 )); then
+                    if wait "$stress_cpu_pid"; then cpu_rc=0; else cpu_rc=$?; fi
+                    stress_cpu_pid=''
+                fi
+                if (( gpu_dead == 1 )); then
+                    if wait "$stress_gpu_pid"; then gpu_rc=0; else gpu_rc=$?; fi
+                    stress_gpu_pid=''
+                fi
+                if (( cpu_dead == 1 && gpu_dead == 1 )); then
+                    if (( cpu_rc == 0 && gpu_rc == 0 )); then
+                        failure_class=HARNESS_FAILURE
+                        failure_reason='CPU and GPU stress exited early with rc=0/0.'
+                    elif (( cpu_rc != 0 && gpu_rc == 0 )); then
+                        failure_class=STABILITY_FAILURE
+                        failure_reason="CPU stress exited early with rc=$cpu_rc."
+                    elif (( cpu_rc == 0 && gpu_rc != 0 )); then
+                        if grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
+                        failure_reason="GPU stress exited early with rc=$gpu_rc."
+                    else
+                        failure_class=STABILITY_FAILURE
+                        failure_reason="CPU and GPU stress exited early with rc=$cpu_rc/$gpu_rc."
+                    fi
+                elif (( cpu_dead == 1 )); then
+                    failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE)
+                    failure_reason="CPU stress exited early with rc=$cpu_rc."
+                else
+                    if (( gpu_rc == 0 )) || grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
+                    failure_reason="GPU stress exited early with rc=$gpu_rc."
+                fi
+                break
+            fi
         fi
         if (( cpu_alive == 0 && gpu_alive == 0 )); then workloads_complete=1; fi
 

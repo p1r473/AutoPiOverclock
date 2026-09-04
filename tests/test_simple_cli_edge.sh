@@ -20,9 +20,8 @@ write_state_fixture() {
 CONTINUATION_OUTPUT="$TEMP_DIR/continuation-output"
 mkdir -p "$CONTINUATION_OUTPUT"
 
-# A compatibility later-edge request reuses a retained, applied ordinary floor
-# instead of rediscovering the tuned host or repeating its historical final.
-# Headless is a first-class retained mode for this path.
+# Removed public edge flags must not start a new edge run. Retained applied
+# results remain readable and a flag-free invocation keeps existing behavior.
 APPLIED_FLOOR_RUN=20260827-010203-2222222222222222
 APPLIED_FLOOR_STATE="$CONTINUATION_OUTPUT/tron-${APPLIED_FLOOR_RUN}.state"
 write_state_fixture "$APPLIED_FLOOR_STATE" \
@@ -37,27 +36,27 @@ write_state_fixture "$APPLIED_FLOOR_STATE" \
     FINAL_TARGET_CPU 3100 FINAL_TARGET_GPU 1150 NORMAL_CPU 3100 NORMAL_GPU 1150 \
     PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ln -sfn "$(basename "$APPLIED_FLOOR_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
-(
+if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-cpu-24h
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == post-floor-edge ]]
-    [[ $APO_POST_FLOOR_EDGE_SOURCE_STATE == "$APPLIED_FLOOR_STATE" ]]
-    [[ $APO_EDGE_CPU_24H == 1 ]]
-    [[ $APO_POST_FLOOR_EDGE_MAX_FAN == 1 ]]
-    [[ $(apo_state_get MODE_EFFECTIVE) == headless ]]
-)
-(
+) 2>"$TEMP_DIR/removed-edge-alias.err"; then
+    echo 'removed --edge-cpu-24h was accepted by overclock' >&2
+    exit 1
+fi
+grep -Fq 'Unknown option: --edge-cpu-24h' "$TEMP_DIR/removed-edge-alias.err"
+if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-cpu-24h --no-max-fan
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == post-floor-edge ]]
-    [[ $APO_POST_FLOOR_EDGE_MAX_FAN == 0 ]]
-)
+) >/dev/null 2>&1; then
+    echo 'removed --edge-cpu-24h was accepted with --no-max-fan' >&2
+    exit 1
+fi
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -68,9 +67,7 @@ ln -sfn "$(basename "$APPLIED_FLOOR_STATE")" "$CONTINUATION_OUTPUT/tron-latest.s
     [[ $APO_SELECTED_RUN_ID == "$APPLIED_FLOOR_RUN" ]]
 )
 
-# A current-schema floor validated with an explicit shorter plan remains
-# eligible for a separately requested custom-duration edge without relabeling
-# or repeating the completed floor.
+# The removed custom edge-duration spelling is rejected too.
 CUSTOM_FLOOR_RUN=20260827-010203-4444444444444444
 CUSTOM_FLOOR_STATE="$CONTINUATION_OUTPUT/tron-${CUSTOM_FLOOR_RUN}.state"
 write_state_fixture "$CUSTOM_FLOOR_STATE" \
@@ -87,16 +84,16 @@ write_state_fixture "$CUSTOM_FLOOR_STATE" \
     FINAL_TARGET_CPU 3050 FINAL_TARGET_GPU 1125 NORMAL_CPU 3050 NORMAL_GPU 1125 \
     PERMANENT_HASH cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 ln -sfn "$(basename "$CUSTOM_FLOOR_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
-(
+if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-hours 12
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == post-floor-edge ]]
-    [[ $APO_POST_FLOOR_EDGE_SOURCE_STATE == "$CUSTOM_FLOOR_STATE" ]]
-    [[ $APO_POST_FLOOR_EDGE_DURATION_S == 43200 ]]
-)
+) >/dev/null 2>&1; then
+    echo 'removed --edge-hours was accepted by overclock' >&2
+    exit 1
+fi
 
 INELIGIBLE_FLOOR_RUN=20260827-010203-3333333333333333
 INELIGIBLE_FLOOR_STATE="$CONTINUATION_OUTPUT/tron-${INELIGIBLE_FLOOR_RUN}.state"
@@ -122,7 +119,7 @@ if (
     echo 'an ineligible applied floor silently ignored a later edge request' >&2
     exit 1
 fi
-grep -Fq 'Later edge validation requires a retained' "$TEMP_DIR/ineligible-edge.err"
+grep -Fq 'Unknown option: --edge-cpu-24h' "$TEMP_DIR/ineligible-edge.err"
 
 PREPARE_RUN=20260827-010204-abcdef0123456789
 PREPARE_STATE="$CONTINUATION_OUTPUT/tron-${PREPARE_RUN}.state"

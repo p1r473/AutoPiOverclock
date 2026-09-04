@@ -112,7 +112,7 @@ if (
     echo 'an active ordinary run accepted a late immutable edge-plan change' >&2
     exit 1
 fi
-grep -Fq 'Finish it first, then repeat overclock TARGET with --edge-hours HOURS' "$TEMP_DIR/active-edge-change.err"
+grep -Fq 'Unknown option: --edge-cpu-24h' "$TEMP_DIR/active-edge-change.err"
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -130,14 +130,14 @@ grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fa
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24 --edge-hours 24
+    apo_parse_cli overclock tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_continuation
     [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
     [[ $APO_RESTART_PENDING == 1 && $APO_RESTART_FROM == cpu-qualification ]]
     [[ $APO_RESTART_QUALIFICATION_DURATION_S == 7200 ]]
     [[ $APO_RESTART_FINAL_DURATION_S == 86400 && $APO_RESTART_EDGE_DURATION_S == 86400 ]]
-    [[ $APO_EDGE_CPU_24H == 1 && $APO_EDGE_ORDER == edge-first ]]
+    [[ $APO_EDGE_CPU_24H == 0 && $APO_EDGE_ORDER == floor-first ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
@@ -150,8 +150,8 @@ grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fa
     [[ $APO_RESTART_EDGE_DURATION_S == 86400 ]]
 )
 
-# The compatibility flag has literal 24-hour semantics. It cannot silently
-# continue a custom-duration edge run as though the user had requested 12h.
+# A retained legacy edge run remains resumable when the user supplies no
+# removed edge option; the saved internal plan remains authoritative.
 EDGE_CONTINUATION_OUTPUT="$TEMP_DIR/edge-continuation-output"
 mkdir -p "$EDGE_CONTINUATION_OUTPUT"
 EDGE_CONTINUATION_RUN=20260827-010203-1111111111111111
@@ -181,7 +181,158 @@ if (
     echo 'the literal 24-hour compatibility flag silently continued a 12-hour edge run' >&2
     exit 1
 fi
-grep -Fq -- '--edge-cpu-24h means exactly 24 hours' "$TEMP_DIR/edge-alias-duration-change.err"
+grep -Fq 'Unknown option: --edge-cpu-24h' "$TEMP_DIR/edge-alias-duration-change.err"
+
+# A domain-only run starts a new linked run only from a complete, applied,
+# current-schema automatic result with clear tryboot ownership and stock lineage.
+DOMAIN_SOURCE_OUTPUT="$TEMP_DIR/domain-source-output"
+mkdir -p "$DOMAIN_SOURCE_OUTPUT"
+DOMAIN_SOURCE_RUN=20260903-120000-0123456789abcdef
+DOMAIN_SOURCE_STATE="$DOMAIN_SOURCE_OUTPUT/tron-${DOMAIN_SOURCE_RUN}.state"
+write_state_fixture "$DOMAIN_SOURCE_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$DOMAIN_SOURCE_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all \
+    STATUS PASS PHASE COMPLETE FINAL_STAGE COMPLETE VALIDATED 1 VALIDATION_SCHEMA 8 \
+    APPLY_STATUS APPLIED FINAL_CPU 2950 FINAL_GPU 1125 RECOMMENDED_CPU 2950 RECOMMENDED_GPU 1125 \
+    FINAL_TARGET_CPU 2950 FINAL_TARGET_GPU 1125 NORMAL_CPU 2950 NORMAL_GPU 1125 \
+    NORMAL_VOLTAGE 0 TEST_VOLTAGE 0 PERMANENT_HASH bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    APPLY_EXPECTED_HASH bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    AUTO_BASELINE_CPU 2400 AUTO_BASELINE_GPU 960 AUTO_BASELINE_VOLTAGE 0 \
+    AUTO_BASELINE_PROVENANCE verified-default AUTO_BASELINE_EVIDENCE none \
+    TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 TRYBOOT_OWNED_HASH '' \
+    TRYBOOT_RESERVATION_HASH '' TRYBOOT_OWNERSHIP_TOKEN '' TRYBOOT_QUARANTINE_PATH ''
+ln -s "$(basename "$DOMAIN_SOURCE_STATE")" "$DOMAIN_SOURCE_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+    APO_OUTPUT_DIR=$DOMAIN_SOURCE_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == run && $APO_SWEEP_DOMAIN == gpu ]]
+    [[ $APO_DOMAIN_SOURCE_STATE == "$DOMAIN_SOURCE_STATE" ||
+       $APO_DOMAIN_SOURCE_STATE == "$DOMAIN_SOURCE_OUTPUT/tron-latest.state" ]]
+    [[ $APO_SOURCE_APPLIED_RUN_ID == "$DOMAIN_SOURCE_RUN" ]]
+    [[ $APO_SOURCE_APPLIED_CPU == 2950 && $APO_SOURCE_APPLIED_GPU == 1125 ]]
+    [[ $APO_SOURCE_APPLIED_PERMANENT_HASH == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]]
+    [[ -z ${APO_STATE_FILE:-} && ${#APO_STATE[@]} == 0 ]]
+)
+
+# A later successful prepare audit must not hide the retained applied source
+# merely because the user removed comments from the live permanent config. The
+# selector binds the matching platform/clock tuple; discovery later performs
+# the strict source-artifact/live-config comparison before any mutation.
+for cleanup_case in comment-only project-zero-removed; do
+    PREPARE_SOURCE_OUTPUT="$TEMP_DIR/domain-source-after-prepare-$cleanup_case"
+    mkdir -p "$PREPARE_SOURCE_OUTPUT"
+    cp "$DOMAIN_SOURCE_STATE" "$PREPARE_SOURCE_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")"
+    case $cleanup_case in
+        comment-only)
+            PREPARE_RUN=20260904-120001-abcdef0123456789
+            prepare_hash=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+            ;;
+        project-zero-removed)
+            PREPARE_RUN=20260904-120002-abcdef0123456789
+            prepare_hash=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+            ;;
+    esac
+    PREPARE_STATE="$PREPARE_SOURCE_OUTPUT/tron-${PREPARE_RUN}.state"
+    write_state_fixture "$PREPARE_STATE" \
+        FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$PREPARE_RUN" \
+        REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND prepare READ_ONLY_RUN 1 \
+        PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+        STATUS PASS PHASE COMPLETE NORMAL_CPU 2950 NORMAL_GPU 1125 NORMAL_VOLTAGE 0 \
+        PERMANENT_HASH "$prepare_hash"
+    ln -s "$(basename "$PREPARE_STATE")" "$PREPARE_SOURCE_OUTPUT/tron-latest.state"
+    (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+        APO_OUTPUT_DIR=$PREPARE_SOURCE_OUTPUT
+        apo_public_overclock_select_continuation
+        [[ $APO_COMMAND == run && $APO_SWEEP_DOMAIN == gpu ]]
+        [[ $APO_DOMAIN_SOURCE_STATE == "$PREPARE_SOURCE_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")" ]]
+        [[ $APO_SOURCE_APPLIED_RUN_ID == "$DOMAIN_SOURCE_RUN" ]]
+        [[ $APO_SOURCE_APPLIED_CPU == 2950 && $APO_SOURCE_APPLIED_GPU == 1125 ]]
+    )
+done
+
+# Repeating an interrupted one-domain command resumes that exact run even when
+# a later successful prepare audit owns the latest link. The prepare audit must
+# prove the same permanent hash, live tuple, profile, and boot paths.
+PREPARE_REPEAT_OUTPUT="$TEMP_DIR/domain-repeat-after-prepare"
+mkdir -p "$PREPARE_REPEAT_OUTPUT"
+cp "$DOMAIN_SOURCE_STATE" "$PREPARE_REPEAT_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")"
+DOMAIN_REPEAT_RUN=20260904-140000-0011223344556677
+DOMAIN_REPEAT_STATE="$PREPARE_REPEAT_OUTPUT/tron-${DOMAIN_REPEAT_RUN}.state"
+write_state_fixture "$DOMAIN_REPEAT_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$DOMAIN_REPEAT_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN gpu CFG_CPU_START_AT '' CFG_GPU_START_AT 1150 \
+    CFG_MAX_FAN 1 CFG_EDGE_CPU_24H 0 CFG_EDGE_ORDER floor-first \
+    CFG_QUALIFICATION_DURATION_S 7200 CFG_FINAL_DURATION_S 86400 \
+    CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY default \
+    STATUS INTERRUPTED PHASE GPU_SWEEP APPLY_STATUS NOT_APPLIED \
+    NORMAL_CPU 2950 NORMAL_GPU 1125 NORMAL_VOLTAGE 0 \
+    PERMANENT_HASH ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+PREPARE_REPEAT_RUN=20260904-150000-8899aabbccddeeff
+PREPARE_REPEAT_STATE="$PREPARE_REPEAT_OUTPUT/tron-${PREPARE_REPEAT_RUN}.state"
+write_state_fixture "$PREPARE_REPEAT_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$PREPARE_REPEAT_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND prepare READ_ONLY_RUN 1 \
+    PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+    STATUS PASS PHASE COMPLETE NORMAL_CPU 2950 NORMAL_GPU 1125 NORMAL_VOLTAGE 0 \
+    PERMANENT_HASH ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+ln -s "$(basename "$PREPARE_REPEAT_STATE")" "$PREPARE_REPEAT_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+    APO_OUTPUT_DIR=$PREPARE_REPEAT_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$DOMAIN_REPEAT_RUN" ]]
+    [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_START_AT == 1150 ]]
+    [[ $APO_QUALIFICATION_DURATION_S == 7200 && $APO_FINAL_DURATION_S == 86400 ]]
+)
+
+# A hash-mismatched fallback is never inferred across a different boot path.
+PREPARE_MISMATCH_OUTPUT="$TEMP_DIR/domain-source-after-prepare-path-mismatch"
+mkdir -p "$PREPARE_MISMATCH_OUTPUT"
+cp "$DOMAIN_SOURCE_STATE" "$PREPARE_MISMATCH_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")"
+PREPARE_MISMATCH_RUN=20260904-130000-fedcba9876543210
+PREPARE_MISMATCH_STATE="$PREPARE_MISMATCH_OUTPUT/tron-${PREPARE_MISMATCH_RUN}.state"
+write_state_fixture "$PREPARE_MISMATCH_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$PREPARE_MISMATCH_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND prepare READ_ONLY_RUN 1 \
+    PROFILE batocera BOOT_CONFIG /boot/other-config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+    STATUS PASS PHASE COMPLETE NORMAL_CPU 2950 NORMAL_GPU 1125 NORMAL_VOLTAGE 0 \
+    PERMANENT_HASH eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+ln -s "$(basename "$PREPARE_MISMATCH_STATE")" "$PREPARE_MISMATCH_OUTPUT/tron-latest.state"
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+    APO_OUTPUT_DIR=$PREPARE_MISMATCH_OUTPUT
+    apo_public_overclock_select_continuation
+) >"$TEMP_DIR/domain-prepare-path-mismatch.out" 2>&1; then
+    echo 'a latest prepare audit selected an applied source across different boot paths' >&2
+    exit 1
+fi
+grep -Fq 'latest prepare audit does not match any retained applied result' "$TEMP_DIR/domain-prepare-path-mismatch.out"
+
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --cpu-only
+    APO_OUTPUT_DIR=$TEMP_DIR/no-domain-source-output
+    mkdir -p "$APO_OUTPUT_DIR"
+    apo_public_overclock_select_continuation
+) >/dev/null 2>&1; then
+    echo 'CPU-only tuning started without a retained applied source' >&2
+    exit 1
+fi
 
 # A completed, applied historical 8-hour floor with a safely rejected edge can
 # start one linked fresh 24-hour floor validation. The source clocks and exact

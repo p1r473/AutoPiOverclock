@@ -335,7 +335,7 @@ apo_apply_recommendation() {
         *) apo_die 'Permanent apply found an incomplete or malformed edge-test disposition.' "$APO_EXIT_APPLY" ;;
     esac
     [[ $final_duration == "$expected_duration" ]] ||
-        apo_die 'Permanent apply duration evidence does not match the immutable saved qualification/final/edge plan.' "$APO_EXIT_APPLY"
+        apo_die 'Permanent apply duration evidence does not match the immutable saved validation plan.' "$APO_EXIT_APPLY"
     case $(apo_state_get APPLY_STATUS NOT_APPLIED) in
         APPLIED) apo_info 'This run is already applied.'; return 0 ;;
         APPLYING)

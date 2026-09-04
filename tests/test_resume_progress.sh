@@ -622,7 +622,7 @@ apo_run_tuning
 [[ " ${ACTIONS[*]} " == *' stress:combined:final-endurance '* ]]
 [[ " ${ACTIONS[*]} " != *' final-cpu-only '* ]]
 [[ " ${ACTIONS[*]} " != *' final-gpu-only '* ]]
-[[ " ${ACTIONS[*]} " == *' qualify:cpu:2950/800:7200 '* ]]
+[[ " ${ACTIONS[*]} " == *' qualify:cpu:2950/875:7200 '* ]]
 [[ " ${ACTIONS[*]} " == *' qualify:gpu:2950/875:7200 '* ]]
 apo_validate_auto_resume_state
 
@@ -1239,5 +1239,730 @@ APO_AUTO_BASELINE_VOLTAGE=''
 APO_AUTO_BASELINE_PROVENANCE=''
 APO_AUTO_BASELINE_EVIDENCE=''
 apo_validate_auto_resume_state
+
+# The refined-max policy reaches the highest clock that actually passed the
+# canonical 25 MHz refinement ladder. It does not subtract a hidden guard.
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=all
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_EDGE_CPU_24H=0
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_NORMAL_VOLTAGE=0
+APO_TEST_VOLTAGE=0
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=960
+APO_AUTO_BASELINE_VOLTAGE=0
+APO_AUTO_BASELINE_PROVENANCE='verified-default'
+APO_AUTO_BASELINE_EVIDENCE=none
+APO_CPU_START_AT=''
+APO_GPU_START_AT=''
+APO_CPU_CANDIDATES=(2500 2600 2700 2800 2900 3000 3100 3200)
+APO_GPU_CANDIDATES=(1000 1050 1100 1150 1200)
+APO_CFG[CPU_CANDIDATES]=2500,2600,2700,2800,2900,3000,3100,3200
+APO_CFG[GPU_CANDIDATES]=1000,1050,1100,1150,1200
+APO_CFG[BACKOFF_STEPS]=0
+APO_CFG[VOLTAGE_DELTA_UV]=existing
+apo_state_set CFG_SELECTION_POLICY refined-max-25
+apo_state_set CFG_SWEEP_DOMAIN all
+apo_state_set CPU_INDEX 7
+apo_state_set PASSED_CPUS 2500,2600,2700,2800,2900,3000,3100,3125,3150,3175
+apo_state_set CPU_FAILURE_BOUNDARY 3200
+apo_state_set CPU_REFINE_CANDIDATES 3125,3150,3175
+apo_state_set CPU_REFINE_INDEX 3
+apo_state_set CPU_REFINE_COMPLETE 1
+apo_state_set CPU_GUARD_TARGET 3175
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 3175
+apo_state_set GPU_INDEX 4
+apo_state_set PASSED_GPUS 1000,1050,1100,1150,1175
+apo_state_set GPU_FAILURE_BOUNDARY 1200
+apo_state_set GPU_REFINE_CANDIDATES 1175
+apo_state_set GPU_REFINE_INDEX 1
+apo_state_set GPU_REFINE_COMPLETE 1
+apo_state_set GPU_GUARD_TARGET 1175
+apo_state_set GPU_GUARD_VERIFIED 1
+apo_state_set SAFE_GPU 1175
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3175
+apo_state_set CPU_QUALIFIED_CLOCK 3175
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3175
+apo_state_set GPU_QUALIFICATION_TARGET 1175
+apo_state_set GPU_QUALIFIED_CPU 3175
+apo_state_set GPU_QUALIFIED_CLOCK 1175
+apo_state_set RECOMMENDED_CPU 3175
+apo_state_set RECOMMENDED_GPU 1175
+apo_state_set FINAL_TARGET_CPU 3175
+apo_state_set FINAL_TARGET_GPU 1175
+apo_state_set FINAL_BACKOFF_COUNT 0
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+apo_state_set FLOOR_VALIDATED 0
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set FINAL_STAGE ''
+apo_state_set STATUS RUNNING
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_state_set RECOVERY_WAIT_STATUS IDLE
+apo_state_set RECOVERY_WAIT_CONTEXT ''
+apo_state_set RECOVERY_WAIT_STARTED_AT ''
+apo_state_set RECOVERY_WAIT_TIMEOUTS 0
+apo_validate_auto_resume_state
+
+# A checkpoint restart for the refined policy changes only the requested
+# qualification/final durations. It must not resurrect the removed edge pass.
+apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+apo_state_set ORIGIN_COMMAND overclock
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_state_set POST_FLOOR_EDGE 0
+apo_state_set POST_FLOOR_FINAL 0
+apo_state_set PHASE CPU_QUALIFICATION
+apo_state_set STATUS INTERRUPTED
+APO_RESTART_QUALIFICATION_DURATION_S=10800
+APO_RESTART_FINAL_DURATION_S=86400
+APO_RESTART_EDGE_DURATION_S=43200
+apo_restart_active_automatic_state current
+[[ $APO_EDGE_CPU_24H == 0 && $APO_EDGE_ORDER == floor-first ]]
+[[ $APO_EDGE_DURATION_S == 86400 ]]
+[[ $(apo_state_get CFG_EDGE_CPU_24H) == 0 && $(apo_state_get CFG_EDGE_ORDER) == floor-first ]]
+[[ $(apo_state_get CFG_EDGE_DURATION_S) == 86400 && $(apo_state_get CFG_FINAL_DURATION_S) == 86400 ]]
+
+# Exercise the production sweep/refinement implementation directly. CPU uses
+# 100 MHz coarse steps and GPU uses 50 MHz; both refine the last gap by 25 MHz
+# and select the exact highest pass.
+APO_VALIDATE_AUTO_RESUME_STATE_SAVED=$(declare -f apo_validate_auto_resume_state)
+apo_validate_auto_resume_state() { :; }
+apo_test_candidate() {
+    local cpu=$1 gpu=$2
+    if (( cpu == 2600 || cpu == 2575 || gpu == 1050 )); then
+        APO_LAST_CLASS=STABILITY_FAILURE
+        APO_LAST_REASON='fixture boundary'
+        return 1
+    fi
+}
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=all
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=960
+APO_CPU_CANDIDATES=(2500 2600)
+APO_GPU_CANDIDATES=(1000 1050)
+apo_sweep_cpu
+[[ $(apo_state_get CPU_FAILURE_BOUNDARY) == 2575 ]]
+[[ $(apo_state_get PASSED_CPUS) == 2500,2525,2550 ]]
+[[ $(apo_state_get SAFE_CPU) == 2550 && $(apo_state_get CPU_GUARD_TARGET) == 2550 ]]
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFIED_CLOCK 2550
+apo_sweep_gpu
+[[ $(apo_state_get GPU_FAILURE_BOUNDARY) == 1050 ]]
+[[ $(apo_state_get PASSED_GPUS) == 1000,1025 ]]
+[[ $(apo_state_get SAFE_GPU) == 1025 && $(apo_state_get GPU_GUARD_TARGET) == 1025 ]]
+
+# Reaching the configured ceiling without a failure selects that exact tested
+# ceiling; it does not manufacture a boundary or subtract a safety step.
+apo_test_candidate() { :; }
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=all
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=960
+APO_CPU_CANDIDATES=(2500 2600)
+apo_sweep_cpu
+[[ $(apo_state_get PASSED_CPUS) == 2500,2600 ]]
+[[ -z $(apo_state_get CPU_FAILURE_BOUNDARY '') ]]
+[[ $(apo_state_get SAFE_CPU) == 2600 && $(apo_state_get CPU_GUARD_TARGET) == 2600 ]]
+eval "$APO_VALIDATE_AUTO_RESUME_STATE_SAVED"
+unset APO_VALIDATE_AUTO_RESUME_STATE_SAVED
+
+seed_valid_refined_auto_floor_plan() {
+    seed_valid_guarded_auto_floor_plan
+    APO_SELECTION_POLICY=refined-max-25
+    APO_SWEEP_DOMAIN=all
+    APO_EDGE_CPU_24H=0
+    APO_EDGE_ORDER=floor-first
+    APO_CPU_START_AT=''
+    APO_GPU_START_AT=''
+    APO_CFG[FINAL_DURATION_S]=86400
+    apo_state_set CFG_SELECTION_POLICY refined-max-25
+    apo_state_set CFG_SWEEP_DOMAIN all
+    apo_state_set CPU_GUARD_TARGET 3025
+    apo_state_set SAFE_CPU 3025
+    apo_state_set CPU_QUALIFICATION_STATUS PASS
+    apo_state_set CPU_QUALIFICATION_TARGET 3025
+    apo_state_set CPU_QUALIFIED_CLOCK 3025
+    apo_state_set GPU_QUALIFICATION_STATUS PASS
+    apo_state_set GPU_QUALIFICATION_CPU 3025
+    apo_state_set GPU_QUALIFICATION_TARGET 900
+    apo_state_set GPU_QUALIFIED_CPU 3025
+    apo_state_set GPU_QUALIFIED_CLOCK 900
+    apo_state_set RECOMMENDED_CPU 3025
+    apo_state_set RECOMMENDED_GPU 900
+    apo_state_set FINAL_TARGET_CPU 3025
+    apo_state_set FINAL_TARGET_GPU 900
+    apo_state_set FINAL_STAGE ENDURANCE
+    apo_state_set PHASE FINAL_VALIDATION
+    apo_state_set STATUS RUNNING
+    apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+    apo_state_set FLOOR_VALIDATED 0
+}
+
+mark_refined_current_pair_ready_for_final() {
+    local cpu gpu phase trial
+    cpu=$(apo_state_get RECOMMENDED_CPU)
+    gpu=$(apo_state_get RECOMMENDED_GPU)
+    phase=$(apo_state_get PHASE)
+    trial=$(apo_state_get FINAL_BACKOFF_TRIAL '')
+    case $phase in
+        CPU_QUALIFICATION)
+            apo_state_set CPU_QUALIFICATION_STATUS PASS
+            apo_state_set CPU_QUALIFICATION_TARGET "$cpu"
+            apo_state_set CPU_QUALIFIED_CLOCK "$cpu"
+            if [[ $trial == PAIR ]]; then
+                apo_state_set GPU_QUALIFICATION_STATUS PASS
+                apo_state_set GPU_QUALIFICATION_CPU "$cpu"
+                apo_state_set GPU_QUALIFICATION_TARGET "$gpu"
+                apo_state_set GPU_QUALIFIED_CPU "$cpu"
+                apo_state_set GPU_QUALIFIED_CLOCK "$gpu"
+            fi
+            ;;
+        GPU_QUALIFICATION)
+            apo_state_set GPU_QUALIFICATION_STATUS PASS
+            apo_state_set GPU_QUALIFICATION_CPU "$cpu"
+            apo_state_set GPU_QUALIFICATION_TARGET "$gpu"
+            apo_state_set GPU_QUALIFIED_CPU "$cpu"
+            apo_state_set GPU_QUALIFIED_CLOCK "$gpu"
+            ;;
+        *)
+            echo "cannot qualify refined trial from phase $phase" >&2
+            exit 1
+            ;;
+    esac
+    apo_state_set FINAL_TARGET_CPU "$cpu"
+    apo_state_set FINAL_TARGET_GPU "$gpu"
+    apo_state_set FINAL_STAGE ENDURANCE
+    apo_state_set PHASE FINAL_VALIDATION
+    apo_validate_auto_resume_state
+}
+
+advance_refined_ambiguous_sequence_to_pair() {
+    apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous anchor failure'
+    mark_refined_current_pair_ready_for_final
+    apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'CPU isolation final failed'
+    mark_refined_current_pair_ready_for_final
+    apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'GPU isolation final failed'
+    mark_refined_current_pair_ready_for_final
+}
+
+# CPU isolation must lower only CPU while actually exercising the held GPU at
+# the saved pair. Using the normal/stock GPU here would not test the ambiguous
+# final failure that selected this isolation trial.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous held-GPU fixture'
+APO_TEST_CANDIDATE_SAVED=$(declare -f apo_test_candidate)
+QUALIFIED_PAIR=''
+apo_test_candidate() { QUALIFIED_PAIR="$1/$2"; }
+apo_qualify_cpu
+[[ $QUALIFIED_PAIR == 3000/900 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 3000 && $(apo_state_get RECOMMENDED_GPU) == 900 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == PASS ]]
+apo_validate_auto_resume_state
+eval "$APO_TEST_CANDIDATE_SAVED"
+unset APO_TEST_CANDIDATE_SAVED
+
+# Exact evidence against the held domain during an isolation qualification
+# switches immediately to that domain. The unrelated trial reduction is
+# restored to the saved anchor and the outer tuning loop is told to dispatch
+# the newly scheduled qualification instead of continuing the wrong loop.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous CPU-trial fixture'
+APO_TEST_CANDIDATE_SAVED=$(declare -f apo_test_candidate)
+apo_test_candidate() {
+    APO_LAST_CLASS=BOOT_FAILURE
+    APO_LAST_REASON='GPU config mismatch in cpu-isolation: expected 900, found 875.'
+    APO_CANDIDATE_FAILURE_DOMAIN=GPU
+    return 1
+}
+qualification_rc=0
+apo_qualify_cpu || qualification_rc=$?
+[[ $qualification_rc == 2 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 3025 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == TRIAL_CPU:3025/900\>3000/900,EXACT_GPU:3000/900\>3025/875 ]]
+apo_validate_auto_resume_state
+eval "$APO_TEST_CANDIDATE_SAVED"
+
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous CPU-trial fixture'
+mark_refined_current_pair_ready_for_final
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous GPU-trial fixture'
+apo_test_candidate() {
+    APO_LAST_CLASS=BOOT_FAILURE
+    APO_LAST_REASON='CPU config mismatch in gpu-isolation: expected 3025, found 3000.'
+    APO_CANDIDATE_FAILURE_DOMAIN=CPU
+    return 1
+}
+qualification_rc=0
+apo_qualify_gpu || qualification_rc=$?
+[[ $qualification_rc == 2 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 3000 && $(apo_state_get RECOMMENDED_GPU) == 900 ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == TRIAL_CPU:3025/900\>3000/900,TRIAL_GPU:3000/900\>3025/875,EXACT_CPU:3025/875\>3000/900 ]]
+apo_validate_auto_resume_state
+eval "$APO_TEST_CANDIDATE_SAVED"
+unset APO_TEST_CANDIDATE_SAVED
+
+# Initial CPU-qualification backoff is converted into the same pair-bound
+# 25 MHz history before GPU qualification/final validation can resume.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_state_set CPU_QUALIFICATION_TARGET 3000
+apo_state_set CPU_QUALIFIED_CLOCK 3000
+apo_state_set CPU_QUALIFICATION_HISTORY 'CPU:3025>3000'
+apo_state_set CPU_QUALIFICATION_LAST_CLASS STABILITY_FAILURE
+apo_state_set CPU_QUALIFICATION_LAST_REASON 'CPU qualification fixture failure'
+apo_state_set GPU_QUALIFICATION_CPU 3000
+apo_state_set GPU_QUALIFIED_CPU 3000
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set FINAL_TARGET_CPU 3000
+apo_materialize_cpu_qualification_backoff
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == QUAL_CPU:3025/900\>3000/900 ]]
+[[ $(apo_state_get FINAL_BACKOFF_CPU) == 3000 && $(apo_state_get FINAL_BACKOFF_GPU) == 900 ]]
+apo_validate_auto_resume_state
+
+# Exact structured worker evidence backs only its identified domain down by
+# 25 MHz, clears any ambiguous-isolation state, and remains fully resumable.
+[[ $(apo_structured_stress_failure_domain 'CPU stress exited early with rc=1.') == CPU ]]
+[[ $(apo_structured_stress_failure_domain 'CPU stress returned rc=2.') == CPU ]]
+[[ $(apo_structured_stress_failure_domain 'GPU stress exited early with rc=3.') == GPU ]]
+[[ $(apo_structured_stress_failure_domain 'GPU stress returned rc=4 after V3D initialization.') == GPU ]]
+[[ $(apo_structured_stress_failure_domain 'Stress process returned nonzero (CPU=5 GPU=0).') == CPU ]]
+[[ $(apo_structured_stress_failure_domain 'Stress process returned nonzero (CPU=0 GPU=6).') == GPU ]]
+[[ $(apo_structured_stress_failure_domain 'Requested CPU clock 3100MHz was never observed within 25MHz under load.') == CPU ]]
+[[ $(apo_structured_stress_failure_domain 'Requested GPU clock 1175MHz was never observed within 25MHz under load.') == GPU ]]
+[[ $(apo_structured_boot_failure_domain 'CPU config mismatch in final-pre-stress-boot: expected 3100, found 3075.') == CPU ]]
+[[ $(apo_structured_boot_failure_domain 'GPU config mismatch in final-pre-stress-boot: expected 1175, found 1150.') == GPU ]]
+if apo_structured_boot_failure_domain 'CPU and GPU config mismatch in final-pre-stress-boot: expected 3100/1175, found 2400/960.' >/dev/null; then
+    echo 'multi-domain boot mismatch was falsely attributed to one clock domain' >&2
+    exit 1
+fi
+if apo_structured_boot_failure_domain 'Active clocks or voltage changed while application readiness was settling in final-pre-stress-boot.' >/dev/null; then
+    echo 'ambiguous post-readiness clock change was falsely attributed to one clock domain' >&2
+    exit 1
+fi
+if apo_structured_stress_failure_domain 'The worker failed without a structured result.' >/dev/null; then
+    echo 'unstructured transport loss was falsely attributed to one clock domain' >&2
+    exit 1
+fi
+if apo_structured_stress_failure_domain 'Stress process returned nonzero (CPU=7 GPU=8).' >/dev/null; then
+    echo 'multi-domain worker failure was falsely attributed to one clock domain' >&2
+    exit 1
+fi
+if apo_structured_stress_failure_domain 'CPU and GPU stress exited early with rc=7/8.' >/dev/null; then
+    echo 'simultaneous worker deaths were falsely attributed to one clock domain' >&2
+    exit 1
+fi
+if apo_structured_stress_failure_domain 'Stress processes returned nonzero (CPU=7 GPU=8).' >/dev/null; then
+    echo 'simultaneous Batocera completion failures were falsely attributed to one clock domain' >&2
+    exit 1
+fi
+
+# A structured audio-readiness miss is a retryable harness problem. After
+# normal recovery the controller repeats the complete final boot gate and must
+# not enter clock backoff or ambiguous-domain isolation.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_state_set FINAL_STAGE PRE_STRESS_BOOT
+APO_RECOVER_OBSERVED_PHASE_FAILURE_SAVED=$(declare -f apo_recover_observed_phase_failure)
+APO_FINAL_SCHEDULE_STRESS_BACKOFF_SAVED=$(declare -f apo_final_schedule_stress_backoff)
+AUDIO_BACKOFF_CALLED=0
+apo_recover_observed_phase_failure() {
+    APO_LAST_CLASS=$2
+    APO_LAST_REASON=$3
+    return 0
+}
+apo_final_schedule_stress_backoff() {
+    AUDIO_BACKOFF_CALLED=1
+    return 0
+}
+audio_retry_rc=0
+apo_final_record_failure final-audio-recovery HARNESS_FAILURE \
+    'The captured audio output changed in final-pre-stress-boot: expected sink-a, found sink-b.' \
+    boot 1 1 || audio_retry_rc=$?
+[[ $audio_retry_rc == 3 ]]
+[[ $AUDIO_BACKOFF_CALLED == 0 ]]
+[[ $(apo_state_get TRANSIENT_RETRY_CONTEXT) == final-PRE_STRESS_BOOT-boot ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT 0) == 0 ]]
+eval "$APO_RECOVER_OBSERVED_PHASE_FAILURE_SAVED"
+eval "$APO_FINAL_SCHEDULE_STRESS_BACKOFF_SAVED"
+unset APO_RECOVER_OBSERVED_PHASE_FAILURE_SAVED APO_FINAL_SCHEDULE_STRESS_BACKOFF_SAVED
+
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_validate_auto_resume_state
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'CPU stress returned rc=1.' CPU
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == EXACT_CPU:3025/900\>3000/900 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 3000 && $(apo_state_get RECOMMENDED_GPU) == 900 ]]
+[[ -z $(apo_state_get FINAL_BACKOFF_TRIAL '') && -z $(apo_state_get FINAL_BACKOFF_ANCHOR_CPU '') ]]
+apo_validate_auto_resume_state
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3000
+apo_state_set CPU_QUALIFIED_CLOCK 3000
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set FINAL_STAGE ENDURANCE
+apo_validate_auto_resume_state
+
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'GPU stress returned rc=2 after V3D initialization.' GPU
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == EXACT_CPU:3025/900\>3000/900,EXACT_GPU:3000/900\>3000/875 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 3000 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == PASS && $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+apo_validate_auto_resume_state
+
+# Exact evidence discovered during an isolation trial restores the unrelated
+# trial-reduced domain to its anchor. This avoids leaving a proven 25 MHz on
+# the table while requalifying only the clock domain that actually failed.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous anchor failure'
+mark_refined_current_pair_ready_for_final
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'Requested GPU clock 900MHz was never observed within 25MHz under load.' GPU
+[[ $(apo_state_get RECOMMENDED_CPU) == 3025 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == TRIAL_CPU:3025/900\>3000/900,EXACT_GPU:3000/900\>3025/875 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == PASS && $(apo_state_get CPU_QUALIFIED_CLOCK) == 3025 ]]
+[[ $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+[[ -z $(apo_state_get FINAL_BACKOFF_TRIAL '') && -z $(apo_state_get FINAL_BACKOFF_ANCHOR_CPU '') ]]
+apo_validate_auto_resume_state
+
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous anchor failure'
+mark_refined_current_pair_ready_for_final
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'CPU isolation final failed'
+mark_refined_current_pair_ready_for_final
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'Requested CPU clock 3025MHz was never observed within 25MHz under load.' CPU
+[[ $(apo_state_get RECOMMENDED_CPU) == 3000 && $(apo_state_get RECOMMENDED_GPU) == 900 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == TRIAL_CPU:3025/900\>3000/900,TRIAL_GPU:3000/900\>3025/875,EXACT_CPU:3025/875\>3000/900 ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == PASS && $(apo_state_get GPU_QUALIFIED_CLOCK) == 900 ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ -z $(apo_state_get FINAL_BACKOFF_TRIAL '') && -z $(apo_state_get FINAL_BACKOFF_ANCHOR_GPU '') ]]
+apo_validate_auto_resume_state
+
+# A paired trial follows the same rule. The exact failing clock takes another
+# 25 MHz step from the failed pair, while the unrelated clock returns to the
+# original anchor before the affected-domain qualification restarts.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+advance_refined_ambiguous_sequence_to_pair
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'CPU stress returned rc=9.' CPU
+[[ $(apo_state_get RECOMMENDED_CPU) == 2975 && $(apo_state_get RECOMMENDED_GPU) == 900 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == TRIAL_CPU:3025/900\>3000/900,TRIAL_GPU:3000/900\>3025/875,TRIAL_PAIR:3025/875\>3000/875,EXACT_CPU:3000/875\>2975/900 ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == PASS && $(apo_state_get GPU_QUALIFIED_CLOCK) == 900 ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+apo_validate_auto_resume_state
+
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+advance_refined_ambiguous_sequence_to_pair
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'GPU stress returned rc=9 after V3D initialization.' GPU
+[[ $(apo_state_get RECOMMENDED_CPU) == 3025 && $(apo_state_get RECOMMENDED_GPU) == 850 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == TRIAL_CPU:3025/900\>3000/900,TRIAL_GPU:3000/900\>3025/875,TRIAL_PAIR:3025/875\>3000/875,EXACT_GPU:3000/875\>3025/850 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == PASS && $(apo_state_get CPU_QUALIFIED_CLOCK) == 3025 ]]
+[[ $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+apo_validate_auto_resume_state
+
+# If the CPU isolation qualification itself proves unstable, that exact CPU
+# evidence supersedes the ambiguous anchor: lower CPU another 25 MHz and clear
+# every anchor/trial field before resume.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous final fixture'
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL) == CPU ]]
+apo_cpu_qualification_schedule_backoff STABILITY_FAILURE 'CPU isolation qualification failed'
+[[ $(apo_state_get RECOMMENDED_CPU) == 2975 && $(apo_state_get RECOMMENDED_GPU) == 900 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == TRIAL_CPU:3025/900\>3000/900,QUAL_CPU:3000/900\>2975/900 ]]
+[[ -z $(apo_state_get FINAL_BACKOFF_TRIAL '') && -z $(apo_state_get FINAL_BACKOFF_ANCHOR_CPU '') ]]
+[[ -z $(apo_state_get FINAL_BACKOFF_ANCHOR_GPU '') && -z $(apo_state_get FINAL_BACKOFF_ANCHOR_CPU_QUALIFIED_CLOCK '') ]]
+apo_validate_auto_resume_state
+
+# A domain-only sweep seeds the untouched clock as inherited and never moves
+# it. A final failure lowers only the selected domain by exactly 25 MHz and
+# clears all prior final-duration credit.
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=gpu
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_NORMAL_CPU=2950
+APO_NORMAL_GPU=1125
+APO_FINAL_DURATION_S=86400
+apo_refined_seed_inherited_domain
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == INHERITED ]]
+[[ $(apo_state_get SAFE_CPU) == 2950 && $(apo_state_get CPU_QUALIFIED_CLOCK) == 2950 ]]
+apo_state_set SAFE_GPU 1175
+apo_state_set RECOMMENDED_CPU 2950
+apo_state_set RECOMMENDED_GPU 1175
+apo_state_set FINAL_TARGET_CPU 2950
+apo_state_set FINAL_TARGET_GPU 1175
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 2950
+apo_state_set GPU_QUALIFICATION_TARGET 1175
+apo_state_set GPU_QUALIFIED_CPU 2950
+apo_state_set GPU_QUALIFIED_CLOCK 1175
+apo_state_set VALIDATION_DURATION_S 82800
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+if apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'CPU stress returned rc=7.' CPU; then
+    echo 'GPU-only run incorrectly changed its inherited CPU after exact CPU evidence' >&2
+    exit 1
+fi
+[[ $(apo_state_get RECOMMENDED_CPU) == 2950 && $(apo_state_get RECOMMENDED_GPU) == 1175 ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT 0) == 0 ]]
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'late GPU-only final failure'
+[[ $(apo_state_get RECOMMENDED_CPU) == 2950 && $(apo_state_get RECOMMENDED_GPU) == 1150 ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == INHERITED ]]
+[[ $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+[[ -z $(apo_state_get VALIDATION_DURATION_S '') && -z $(apo_state_get FINAL_STAGE '') ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == DOMAIN_GPU:2950/1175\>2950/1150 ]]
+apo_refined_validate_final_backoff_state
+
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=cpu
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_NORMAL_CPU=3000
+APO_NORMAL_GPU=1175
+APO_FINAL_DURATION_S=86400
+apo_refined_seed_inherited_domain
+apo_state_set SAFE_CPU 3150
+apo_state_set RECOMMENDED_CPU 3150
+apo_state_set RECOMMENDED_GPU 1175
+apo_state_set FINAL_TARGET_CPU 3150
+apo_state_set FINAL_TARGET_GPU 1175
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3150
+apo_state_set CPU_QUALIFIED_CLOCK 3150
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+if apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'GPU stress returned rc=7 after V3D initialization.' GPU; then
+    echo 'CPU-only run incorrectly changed its inherited GPU after exact GPU evidence' >&2
+    exit 1
+fi
+[[ $(apo_state_get RECOMMENDED_CPU) == 3150 && $(apo_state_get RECOMMENDED_GPU) == 1175 ]]
+[[ $(apo_state_get FINAL_BACKOFF_COUNT 0) == 0 ]]
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'late CPU-only final failure'
+[[ $(apo_state_get RECOMMENDED_CPU) == 3125 && $(apo_state_get RECOMMENDED_GPU) == 1175 ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == INHERITED ]]
+[[ $(apo_state_get GPU_QUALIFIED_CLOCK) == 1175 && $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY) == DOMAIN_CPU:3150/1175\>3125/1175 ]]
+apo_refined_validate_final_backoff_state
+
+# A full-mode ambiguous combined-final failure isolates one domain at a time:
+# CPU -25, then GPU -25 from the saved anchor, then both -25. If all three
+# fresh full-duration trials fail, that lower pair becomes the next anchor and
+# the sequence repeats. No partial final duration is retained.
+APO_STATE=()
+seed_valid_refined_auto_floor_plan
+APO_FINAL_DURATION_S=86400
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+apo_validate_auto_resume_state
+apo_state_set VALIDATION_DURATION_S 86399
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'ambiguous anchor failure'
+[[ $(apo_state_get RECOMMENDED_CPU) == 3000 && $(apo_state_get RECOMMENDED_GPU) == 900 ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL) == CPU && $(apo_state_get FINAL_BACKOFF_ANCHOR_CPU) == 3025 ]]
+[[ $(apo_state_get PHASE) == CPU_QUALIFICATION && -z $(apo_state_get VALIDATION_DURATION_S '') ]]
+apo_validate_auto_resume_state
+
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3000
+apo_state_set CPU_QUALIFIED_CLOCK 3000
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set PHASE FINAL_VALIDATION
+apo_validate_auto_resume_state
+apo_state_set VALIDATION_DURATION_S 86399
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'CPU isolation final failed'
+[[ $(apo_state_get RECOMMENDED_CPU) == 3025 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL) == GPU && $(apo_state_get PHASE) == GPU_QUALIFICATION ]]
+[[ -z $(apo_state_get VALIDATION_DURATION_S '') ]]
+apo_validate_auto_resume_state
+
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3025
+apo_state_set GPU_QUALIFICATION_TARGET 875
+apo_state_set GPU_QUALIFIED_CPU 3025
+apo_state_set GPU_QUALIFIED_CLOCK 875
+apo_state_set FINAL_TARGET_CPU 3025
+apo_state_set FINAL_TARGET_GPU 875
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set PHASE FINAL_VALIDATION
+apo_validate_auto_resume_state
+apo_state_set VALIDATION_DURATION_S 86399
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'GPU isolation final failed'
+[[ $(apo_state_get RECOMMENDED_CPU) == 3000 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL) == PAIR && $(apo_state_get PHASE) == CPU_QUALIFICATION ]]
+[[ -z $(apo_state_get VALIDATION_DURATION_S '') ]]
+apo_validate_auto_resume_state
+
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3000
+apo_state_set CPU_QUALIFIED_CLOCK 3000
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3000
+apo_state_set GPU_QUALIFICATION_TARGET 875
+apo_state_set GPU_QUALIFIED_CPU 3000
+apo_state_set GPU_QUALIFIED_CLOCK 875
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 875
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set PHASE FINAL_VALIDATION
+apo_validate_auto_resume_state
+apo_state_set VALIDATION_DURATION_S 86399
+apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'paired final failed'
+[[ $(apo_state_get RECOMMENDED_CPU) == 2975 && $(apo_state_get RECOMMENDED_GPU) == 875 ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL) == CPU ]]
+[[ $(apo_state_get FINAL_BACKOFF_ANCHOR_CPU) == 3000 && $(apo_state_get FINAL_BACKOFF_ANCHOR_GPU) == 875 ]]
+[[ -z $(apo_state_get VALIDATION_DURATION_S '') ]]
+apo_validate_auto_resume_state
+
+# A longer-final continuation under the refined policy enters the same
+# CPU-then-GPU isolation sequence. It must not switch to the legacy edge-first
+# state machine after a safely recovered failure.
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=all
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_EDGE_CPU_24H=0
+APO_EDGE_ORDER=floor-first
+APO_EDGE_DURATION_S=86400
+APO_FINAL_DURATION_S=86400
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=960
+apo_state_set SAFE_CPU 3000
+apo_state_set SAFE_GPU 1100
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 1100
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 1100
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3000
+apo_state_set CPU_QUALIFIED_CLOCK 3000
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3000
+apo_state_set GPU_QUALIFICATION_TARGET 1100
+apo_state_set GPU_QUALIFIED_CPU 3000
+apo_state_set GPU_QUALIFIED_CLOCK 1100
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+apo_state_set FLOOR_VALIDATED 0
+apo_state_set POST_FLOOR_FINAL 1
+apo_state_set POST_FLOOR_FINAL_STAGE VALIDATING
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+apo_post_floor_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'refined longer-final fixture failure'
+[[ $(apo_state_get POST_FLOOR_FINAL_STAGE) == BACKOFF_TUNING ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL) == CPU ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 2975 && $(apo_state_get RECOMMENDED_GPU) == 1100 ]]
+[[ $APO_EDGE_CPU_24H == 0 && $APO_EDGE_ORDER == floor-first ]]
+
+# If the first requested domain-only candidate fails and 25 MHz refinement has
+# no intermediate value to try, the existing applied result is explicitly
+# preserved instead of being relabeled as a newly validated result.
+APO_STATE=()
+APO_SELECTION_POLICY=refined-max-25
+APO_SWEEP_DOMAIN=gpu
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_EDGE_CPU_24H=0
+APO_NORMAL_CPU=2950
+APO_NORMAL_GPU=1175
+APO_NORMAL_VOLTAGE=0
+APO_TEST_VOLTAGE=0
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=960
+APO_AUTO_BASELINE_VOLTAGE=0
+APO_AUTO_BASELINE_PROVENANCE='verified-default'
+APO_AUTO_BASELINE_EVIDENCE=none
+APO_CPU_START_AT=''
+APO_GPU_START_AT=1200
+APO_CPU_CANDIDATES=()
+APO_GPU_CANDIDATES=(1200)
+APO_CFG[CPU_CANDIDATES]=''
+APO_CFG[GPU_CANDIDATES]=1200
+APO_CFG[BACKOFF_STEPS]=0
+APO_CFG[VOLTAGE_DELTA_UV]=existing
+apo_state_set CFG_SELECTION_POLICY refined-max-25
+apo_state_set CFG_SWEEP_DOMAIN gpu
+apo_state_set SOURCE_APPLIED_RUN_ID 20260901-195530-ad946cde6c24975f
+apo_state_set SOURCE_APPLIED_PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+apo_state_set SOURCE_APPLIED_LIVE_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+apo_state_set SOURCE_APPLIED_HASH_RELATION exact
+apo_state_set SOURCE_APPLIED_HASH_EVIDENCE live-hash-equals-retained-applied-hash
+apo_state_set SOURCE_APPLIED_CPU 2950
+apo_state_set SOURCE_APPLIED_GPU 1175
+apo_state_set SOURCE_APPLIED_VOLTAGE 0
+apo_state_set PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_refined_seed_inherited_domain
+apo_state_set GPU_INDEX 0
+apo_state_set PASSED_GPUS ''
+apo_state_set GPU_FAILURE_BOUNDARY 1200
+apo_state_set GPU_REFINE_CANDIDATES ''
+apo_state_set GPU_REFINE_INDEX 0
+apo_state_set GPU_REFINE_COMPLETE 1
+apo_state_set GPU_GUARD_TARGET 1175
+apo_state_set GPU_GUARD_VERIFIED 1
+apo_state_set SAFE_GPU 1175
+apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+apo_state_set GPU_QUALIFICATION_CPU ''
+apo_state_set GPU_QUALIFICATION_TARGET ''
+apo_state_set GPU_QUALIFIED_CPU ''
+apo_state_set GPU_QUALIFIED_CLOCK ''
+apo_final_initialize_backoff_state
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+apo_state_set FLOOR_VALIDATED 0
+apo_state_set PHASE SELECTION
+apo_state_set SUBPHASE GPU
+apo_state_set STATUS RUNNING
+apo_state_set RECOVERY_WAIT_STATUS IDLE
+apo_state_set RECOVERY_WAIT_CONTEXT ''
+apo_state_set RECOVERY_WAIT_STARTED_AT ''
+apo_state_set RECOVERY_WAIT_TIMEOUTS 0
+if apo_select_conservative_clocks; then
+    echo 'domain-only no-improvement result was falsely accepted as a new validation' >&2
+    exit 1
+fi
+[[ $(apo_state_get FAILURE_CLASS) == STABILITY_FAILURE ]]
+[[ $(apo_state_get FAILURE_REASON) == *'previously validated applied source remains active and unchanged'* ]]
+[[ $(apo_state_get VALIDATED 0) == 0 ]]
 
 printf 'test_resume_progress: PASS\n'

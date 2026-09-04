@@ -159,22 +159,80 @@ apo_config_auto_ladder() {
     printf '%s' "$ladder"
 }
 
+apo_config_auto_ladder_from_exact() {
+    local start=$1 step=$2 maximum=$3 minimum=${4:-0} candidate last=0 ladder=''
+    [[ $start =~ ^[1-9][0-9]{0,3}$ && $step =~ ^[1-9][0-9]{0,3}$ &&
+       $maximum =~ ^[1-9][0-9]{0,3}$ && $minimum =~ ^(0|[1-9][0-9]{0,3})$ ]] || return 1
+    (( start >= minimum && start <= maximum && step <= APO_CPU_CLOCK_MAX_MHZ && minimum <= maximum )) || return 1
+    candidate=$start
+    while (( candidate <= maximum )); do
+        ladder=$(apo_append_csv "$ladder" "$candidate")
+        last=$candidate
+        candidate=$((candidate + step))
+    done
+    # A user-selected start need not align with the coarse 100/50 MHz ladder.
+    # Always test the documented ceiling instead of silently leaving a shorter
+    # untested gap at the top of the selected domain.
+    if (( last < maximum )); then
+        ladder=$(apo_append_csv "$ladder" "$maximum")
+    fi
+    printf '%s' "$ladder"
+}
+
 apo_config_resolve_auto_candidates() {
     local normal_cpu=$1 normal_gpu=$2 normal_voltage=$3 provenance=${4:-missing} evidence=${5:-missing}
+    local sweep_domain=${APO_SWEEP_DOMAIN:-all} cpu_start=${APO_CPU_START_AT:-} gpu_start=${APO_GPU_START_AT:-}
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
-        apo_config_require_stock_auto_baseline "$normal_cpu" "$normal_gpu" "$normal_voltage" "$provenance" "$evidence"
+        if [[ $sweep_domain == all ]]; then
+            apo_config_require_stock_auto_baseline "$normal_cpu" "$normal_gpu" "$normal_voltage" "$provenance" "$evidence"
+        else
+            [[ $sweep_domain == cpu || $sweep_domain == gpu ]] ||
+                apo_die 'Automatic sweep domain is malformed.' "$APO_EXIT_INTERNAL"
+            [[ ${APO_SOURCE_APPLIED_RUN_ID:-} != '' && ${APO_SOURCE_APPLIED_PERMANENT_HASH:-} =~ ^[0-9a-f]{64}$ ]] ||
+                apo_die 'Domain-only automatic tuning is missing its retained applied-source binding.' "$APO_EXIT_INTERNAL"
+        fi
     fi
     (( APO_AUTO_CANDIDATES_PENDING == 1 )) || return 0
-    APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_cpu" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") ||
-        apo_die 'Could not derive automatic CPU candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
-    APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_gpu" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") ||
-        apo_die 'Could not derive automatic GPU/V3D candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
+    if [[ $sweep_domain != gpu ]]; then
+        if [[ -n $cpu_start ]]; then
+            apo_validate_uint_range "$cpu_start" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
+                apo_die 'The requested automatic CPU starting clock is malformed.' "$APO_EXIT_USAGE"
+            (( cpu_start > normal_cpu )) ||
+                apo_die "--cpu-start-at must be above the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
+            APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$cpu_start" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") ||
+                apo_die 'Could not derive automatic CPU candidates from --cpu-start-at.' "$APO_EXIT_INTERNAL"
+        else
+            APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_cpu" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") ||
+                apo_die 'Could not derive automatic CPU candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
+        fi
+    else
+        APO_CFG[CPU_CANDIDATES]=''
+    fi
+    if [[ $sweep_domain != cpu ]]; then
+        if [[ -n $gpu_start ]]; then
+            apo_validate_uint_range "$gpu_start" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
+                apo_die 'The requested automatic GPU starting clock is malformed.' "$APO_EXIT_USAGE"
+            (( gpu_start > normal_gpu )) ||
+                apo_die "--gpu-start-at must be above the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
+            APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$gpu_start" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") ||
+                apo_die 'Could not derive automatic GPU/V3D candidates from --gpu-start-at.' "$APO_EXIT_INTERNAL"
+        else
+            APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_gpu" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") ||
+                apo_die 'Could not derive automatic GPU/V3D candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
+        fi
+    else
+        APO_CFG[GPU_CANDIDATES]=''
+    fi
     # Automatic refinement and its explicit MHz guard replace list-index backoff.
     APO_CFG[BACKOFF_STEPS]=0
     APO_AUTO_CANDIDATES_PENDING=0
     apo_config_validate
     if [[ ${APO_COMMAND:-prepare} == run && ${APO_DRY_RUN:-0} == 0 && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
-        apo_die "The discovered CPU and GPU clocks are already at or above the automatic ceilings (${APO_AUTO_CPU_MAX_MHZ}/${APO_AUTO_GPU_MAX_MHZ} MHz). Supply an explicit --config plan." "$APO_EXIT_USAGE"
+        case $sweep_domain in
+            cpu) apo_die "The protected current CPU clock is already at or above the automatic ceiling (${APO_AUTO_CPU_MAX_MHZ} MHz)." "$APO_EXIT_USAGE" ;;
+            gpu) apo_die "The protected current GPU/V3D clock is already at or above the automatic ceiling (${APO_AUTO_GPU_MAX_MHZ} MHz)." "$APO_EXIT_USAGE" ;;
+            *) apo_die "The discovered CPU and GPU clocks are already at or above the automatic ceilings (${APO_AUTO_CPU_MAX_MHZ}/${APO_AUTO_GPU_MAX_MHZ} MHz). Supply an explicit --config plan." "$APO_EXIT_USAGE" ;;
+        esac
     fi
 }
 
@@ -269,6 +327,7 @@ apo_config_guided_candidates() {
 
 apo_config_load_for_new_run() {
     apo_config_defaults
+    APO_SELECTION_POLICY=refined-max-25
     if (( ${APO_MANUAL_TEST:-0} == 1 )); then
         APO_CFG[CPU_CANDIDATES]=$APO_MANUAL_CPU
         APO_CFG[GPU_CANDIDATES]=$APO_MANUAL_GPU
@@ -286,7 +345,7 @@ apo_config_load_for_new_run() {
     fi
     if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
         (( APO_AUTO_GENERATED_CANDIDATES == 1 )) ||
-            apo_die '--edge-cpu-24h requires configuration-free automatic candidates.' "$APO_EXIT_USAGE"
+            apo_die 'Retained edge-validation state requires configuration-free automatic candidates.' "$APO_EXIT_USAGE"
     fi
     if [[ ${APO_COMMAND:-prepare} == run && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
         if (( APO_AUTO_CANDIDATES_PENDING == 1 )); then
@@ -312,6 +371,10 @@ apo_config_store_in_state() {
         apo_state_set "CFG_${internal_key}" "${APO_CFG[$internal_key]}"
     done
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES "$APO_AUTO_GENERATED_CANDIDATES"
+    apo_state_set CFG_SWEEP_DOMAIN "${APO_SWEEP_DOMAIN:-all}"
+    apo_state_set CFG_SELECTION_POLICY "${APO_SELECTION_POLICY:-refined-max-25}"
+    apo_state_set CFG_CPU_START_AT "${APO_CPU_START_AT:-}"
+    apo_state_set CFG_GPU_START_AT "${APO_GPU_START_AT:-}"
     apo_state_set CFG_EDGE_CPU_24H "${APO_EDGE_CPU_24H:-0}"
     apo_state_set CFG_EDGE_ORDER "${APO_EDGE_ORDER:-floor-first}"
     apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
@@ -353,6 +416,91 @@ apo_config_restore_from_state() {
     APO_AUTO_GENERATED_CANDIDATES=$(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0)
     [[ $APO_AUTO_GENERATED_CANDIDATES == 0 || $APO_AUTO_GENERATED_CANDIDATES == 1 ]] ||
         apo_die 'Saved automatic-candidate marker is malformed.' "$APO_EXIT_INTERNAL"
+    APO_SWEEP_DOMAIN=$(apo_state_get CFG_SWEEP_DOMAIN all)
+    [[ $APO_SWEEP_DOMAIN == all || $APO_SWEEP_DOMAIN == cpu || $APO_SWEEP_DOMAIN == gpu ]] ||
+        apo_die 'Saved sweep-domain plan is malformed.' "$APO_EXIT_INTERNAL"
+    APO_SELECTION_POLICY=$(apo_state_get CFG_SELECTION_POLICY guarded-v1)
+    [[ $APO_SELECTION_POLICY == guarded-v1 || $APO_SELECTION_POLICY == refined-max-25 ]] ||
+        apo_die 'Saved automatic selection policy is malformed.' "$APO_EXIT_INTERNAL"
+    APO_CPU_START_AT=$(apo_state_get CFG_CPU_START_AT '')
+    APO_GPU_START_AT=$(apo_state_get CFG_GPU_START_AT '')
+    [[ -z $APO_CPU_START_AT ]] || apo_validate_uint_range "$APO_CPU_START_AT" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
+        apo_die 'Saved CPU starting clock is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_START_AT ]] || apo_validate_uint_range "$APO_GPU_START_AT" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
+        apo_die 'Saved GPU starting clock is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_START_AT ]] || (( 10#$APO_CPU_START_AT % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved CPU starting clock is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_START_AT ]] || (( 10#$APO_GPU_START_AT % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved GPU starting clock is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ $APO_SWEEP_DOMAIN != cpu || -z $APO_GPU_START_AT ]] ||
+        apo_die 'Saved CPU-only plan contains a GPU starting clock.' "$APO_EXIT_INTERNAL"
+    [[ $APO_SWEEP_DOMAIN != gpu || -z $APO_CPU_START_AT ]] ||
+        apo_die 'Saved GPU-only plan contains a CPU starting clock.' "$APO_EXIT_INTERNAL"
+    APO_SOURCE_APPLIED_RUN_ID=$(apo_state_get SOURCE_APPLIED_RUN_ID '')
+    APO_SOURCE_APPLIED_PERMANENT_HASH=$(apo_state_get SOURCE_APPLIED_PERMANENT_HASH '')
+    APO_SOURCE_APPLIED_LIVE_HASH=$(apo_state_get SOURCE_APPLIED_LIVE_HASH '')
+    APO_SOURCE_APPLIED_HASH_RELATION=$(apo_state_get SOURCE_APPLIED_HASH_RELATION '')
+    APO_SOURCE_APPLIED_HASH_EVIDENCE=$(apo_state_get SOURCE_APPLIED_HASH_EVIDENCE '')
+    APO_SOURCE_APPLIED_CPU=$(apo_state_get SOURCE_APPLIED_CPU '')
+    APO_SOURCE_APPLIED_GPU=$(apo_state_get SOURCE_APPLIED_GPU '')
+    APO_SOURCE_APPLIED_VOLTAGE=$(apo_state_get SOURCE_APPLIED_VOLTAGE '')
+    APO_SOURCE_APPLIED_PROFILE=$(apo_state_get SOURCE_APPLIED_PROFILE '')
+    APO_SOURCE_APPLIED_BOOT_CONFIG=$(apo_state_get SOURCE_APPLIED_BOOT_CONFIG '')
+    APO_SOURCE_APPLIED_TRYBOOT_CONFIG=$(apo_state_get SOURCE_APPLIED_TRYBOOT_CONFIG '')
+    APO_SOURCE_APPLIED_GPU_KEY=$(apo_state_get SOURCE_APPLIED_GPU_KEY '')
+    APO_SOURCE_AUTO_BASELINE_CPU=$(apo_state_get SOURCE_AUTO_BASELINE_CPU '')
+    APO_SOURCE_AUTO_BASELINE_GPU=$(apo_state_get SOURCE_AUTO_BASELINE_GPU '')
+    APO_SOURCE_AUTO_BASELINE_VOLTAGE=$(apo_state_get SOURCE_AUTO_BASELINE_VOLTAGE '')
+    APO_SOURCE_AUTO_BASELINE_PROVENANCE=$(apo_state_get SOURCE_AUTO_BASELINE_PROVENANCE '')
+    APO_SOURCE_AUTO_BASELINE_EVIDENCE=$(apo_state_get SOURCE_AUTO_BASELINE_EVIDENCE '')
+    if [[ $APO_SWEEP_DOMAIN != all ]]; then
+        apo_is_safe_run_id "$APO_SOURCE_APPLIED_RUN_ID" || apo_die 'Saved domain-only plan has an invalid applied source run ID.' "$APO_EXIT_INTERNAL"
+        [[ $APO_SOURCE_APPLIED_PERMANENT_HASH =~ ^[0-9a-f]{64}$ ]] ||
+            apo_die 'Saved domain-only plan has an invalid applied source hash.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$APO_SOURCE_APPLIED_CPU" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" ||
+            apo_die 'Saved domain-only plan has an invalid applied CPU clock.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$APO_SOURCE_APPLIED_GPU" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" ||
+            apo_die 'Saved domain-only plan has an invalid applied GPU clock.' "$APO_EXIT_INTERNAL"
+        apo_is_int "$APO_SOURCE_APPLIED_VOLTAGE" ||
+            apo_die 'Saved domain-only plan has an invalid applied voltage delta.' "$APO_EXIT_INTERNAL"
+        [[ $APO_SOURCE_APPLIED_PROFILE == debian || $APO_SOURCE_APPLIED_PROFILE == batocera ]] ||
+            apo_die 'Saved domain-only plan has an invalid applied source profile.' "$APO_EXIT_INTERNAL"
+        [[ $APO_SOURCE_APPLIED_BOOT_CONFIG == /* && $APO_SOURCE_APPLIED_TRYBOOT_CONFIG == /* ]] ||
+            apo_die 'Saved domain-only plan has invalid applied source boot paths.' "$APO_EXIT_INTERNAL"
+        [[ $APO_SOURCE_APPLIED_GPU_KEY == gpu_freq || $APO_SOURCE_APPLIED_GPU_KEY == v3d_freq ]] ||
+            apo_die 'Saved domain-only plan has an invalid applied source GPU key.' "$APO_EXIT_INTERNAL"
+        apo_config_stock_auto_baseline_ready "$APO_SOURCE_AUTO_BASELINE_CPU" "$APO_SOURCE_AUTO_BASELINE_GPU" \
+            "$APO_SOURCE_AUTO_BASELINE_VOLTAGE" "$APO_SOURCE_AUTO_BASELINE_PROVENANCE" \
+            "$APO_SOURCE_AUTO_BASELINE_EVIDENCE" ||
+            apo_die 'Saved domain-only plan has invalid stock-baseline lineage.' "$APO_EXIT_INTERNAL"
+        if [[ $(apo_state_get PHASE '') != PREPARE ]]; then
+            [[ $APO_SOURCE_APPLIED_LIVE_HASH =~ ^[0-9a-f]{64}$ ]] ||
+                apo_die 'Saved domain-only plan has an invalid adopted live-config hash.' "$APO_EXIT_INTERNAL"
+            case $APO_SOURCE_APPLIED_HASH_RELATION in
+                exact)
+                    [[ $APO_SOURCE_APPLIED_HASH_EVIDENCE == live-hash-equals-retained-applied-hash &&
+                       $APO_SOURCE_APPLIED_LIVE_HASH == "$APO_SOURCE_APPLIED_PERMANENT_HASH" ]] ||
+                        apo_die 'Saved exact applied-source hash relation is inconsistent.' "$APO_EXIT_INTERNAL"
+                    ;;
+                comment-only)
+                    [[ $APO_SOURCE_APPLIED_HASH_EVIDENCE == source-artifact-hash-and-managed-block-verified-active-lines-identical &&
+                       $APO_SOURCE_APPLIED_LIVE_HASH != "$APO_SOURCE_APPLIED_PERMANENT_HASH" ]] ||
+                        apo_die 'Saved comment-only applied-source hash relation is inconsistent.' "$APO_EXIT_INTERNAL"
+                    ;;
+                comment-only-project-zero-removed)
+                    [[ $APO_SOURCE_APPLIED_HASH_EVIDENCE == source-artifact-hash-and-managed-block-verified-active-lines-identical-after-project-zero-removal &&
+                       $APO_SOURCE_APPLIED_LIVE_HASH != "$APO_SOURCE_APPLIED_PERMANENT_HASH" &&
+                       $APO_SOURCE_APPLIED_VOLTAGE == 0 ]] ||
+                        apo_die 'Saved project-zero-removal source relation is inconsistent.' "$APO_EXIT_INTERNAL"
+                    ;;
+                *) apo_die 'Saved domain-only plan has a malformed applied-source hash relation.' "$APO_EXIT_INTERNAL" ;;
+            esac
+            if [[ $(apo_state_get APPLY_STATUS NOT_APPLIED) != APPLIED ]]; then
+                [[ $APO_SOURCE_APPLIED_LIVE_HASH == "$(apo_state_get PERMANENT_HASH '')" ]] ||
+                    apo_die 'Saved domain-only plan is no longer bound to its adopted live permanent-config hash.' "$APO_EXIT_INTERNAL"
+            fi
+        fi
+    fi
     APO_EDGE_CPU_24H=$(apo_state_get CFG_EDGE_CPU_24H 0)
     [[ $APO_EDGE_CPU_24H == 0 || $APO_EDGE_CPU_24H == 1 ]] ||
         apo_die 'Saved edge-CPU marker is malformed.' "$APO_EXIT_INTERNAL"
@@ -393,8 +541,14 @@ apo_write_effective_config() {
         printf '# candidate_max_fan=%s (controller policy; use --no-max-fan to opt out on a new run)\n' \
             "$([[ ${APO_MAX_FAN:-1} == 1 ]] && printf enabled || printf disabled)"
         if (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then
+            printf '# automatic_sweep_domain=%s\n' "${APO_SWEEP_DOMAIN:-all}"
+            printf '# automatic_selection_policy=%s\n' "${APO_SELECTION_POLICY:-refined-max-25}"
+            printf '# automatic_cpu_start_at_mhz=%s\n' "${APO_CPU_START_AT:-auto}"
+            printf '# automatic_gpu_start_at_mhz=%s\n' "${APO_GPU_START_AT:-auto}"
             printf '# automatic_domain_qualification_seconds=%s\n' "$APO_QUALIFICATION_DURATION_S"
-            printf '# automatic_edge_seconds=%s (used only when edge validation is requested)\n' "$APO_EDGE_DURATION_S"
+            if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
+                printf '# legacy_automatic_edge_seconds=%s\n' "$APO_EDGE_DURATION_S"
+            fi
             printf '# automatic_duration_policy=%s\n' "$APO_DURATION_POLICY"
             printf '# automatic_final_workload=combined CPU/GPU/I/O\n'
         fi

@@ -21,11 +21,25 @@ APO_NEED_GPU=0
 APO_REQUIRE_GPU_STRESS=1
 APO_EDGE_CPU_24H=0
 APO_MANUAL_TEST=0
+APO_SWEEP_DOMAIN=all
+APO_SELECTION_POLICY=refined-max-25
 APO_CPU_CANDIDATES=()
 APO_GPU_CANDIDATES=()
 apo_state_set PHASE PREPARE
 apo_state_set SUBPHASE INITIAL
-[[ $(apo_progress_estimate_remaining_tests) == 27 ]]
+[[ $(apo_progress_estimate_remaining_tests) == 23 ]]
+
+# A one-domain continuation never budgets a sweep or qualification for the
+# held applied domain. It still budgets one combined final validation.
+APO_SWEEP_DOMAIN=cpu
+apo_state_set CFG_SWEEP_DOMAIN cpu
+apo_state_set CFG_SELECTION_POLICY refined-max-25
+[[ $(apo_progress_estimate_remaining_tests) == 13 ]]
+APO_SWEEP_DOMAIN=gpu
+apo_state_set CFG_SWEEP_DOMAIN gpu
+[[ $(apo_progress_estimate_remaining_tests) == 11 ]]
+APO_SWEEP_DOMAIN=all
+apo_state_set CFG_SWEEP_DOMAIN all
 [[ $(apo_progress_qualification_cost) == 7560 ]]
 [[ $(apo_progress_final_full_cost 28800) == 29280 ]]
 APO_QUALIFICATION_DURATION_S=3600
@@ -125,6 +139,37 @@ compact_payload=${compact_payload%"$progress_restore"}
 [[ $compact_line != *$'\n'* ]]
 [[ $compact_line != *$'\033[1A'* ]]
 [[ $compact_line != *$'\033[1B'* ]]
+
+# A tmux pane can retain a wide logical PTY while a phone attaches with a much
+# narrower client viewport. The renderer must use the smallest attached client
+# width without changing tmux state or changing the non-tmux fallback.
+tmux() {
+    case ${1:-} in
+        display-message) printf '$fixture-session\n' ;;
+        list-clients) printf '%s\n' "${APO_TEST_TMUX_CLIENT_WIDTHS:-}" ;;
+        *) return 1 ;;
+    esac
+}
+TMUX=fixture-socket
+TMUX_PANE=%7
+COLUMNS=300
+APO_TEST_TMUX_CLIENT_WIDTHS=$'320\n90'
+[[ $(apo_progress_tmux_min_client_columns) == 90 ]]
+[[ $(apo_progress_terminal_columns) == 90 ]]
+APO_PROGRESS_LINE_ACTIVE=0
+apo_progress_render 150 600 2> "$progress_file"
+tmux_client_line=$(< "$progress_file")
+tmux_client_payload=${tmux_client_line#"$progress_control"}
+tmux_client_payload=${tmux_client_payload%"$progress_restore"}
+(( ${#tmux_client_payload} <= 90 - APO_PROGRESS_RIGHT_MARGIN ))
+[[ $tmux_client_line != *$'\n'* ]]
+[[ $tmux_client_line != *$'\r'* ]]
+[[ $tmux_client_line != *$'\033[1A'* ]]
+[[ $tmux_client_line != *$'\033[1B'* ]]
+unset TMUX TMUX_PANE APO_TEST_TMUX_CLIENT_WIDTHS
+unset -f tmux
+COLUMNS=123
+[[ $(apo_progress_terminal_columns) == 123 ]]
 
 # A pane width large enough to select the old verbose layout, but small enough
 # to make that content brush the right edge, now chooses the medium layout.

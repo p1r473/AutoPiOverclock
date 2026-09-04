@@ -32,12 +32,13 @@ parse_fixture run overclock overclock overclock tron
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --edge-cpu-24h
+    apo_parse_cli overclock tron --cpu-start-at 3000 --gpu-start-at 1150
     [[ $APO_COMMAND == run ]]
     [[ $APO_AUTO_APPLY == 1 ]]
     [[ $APO_ASSUME_YES == 1 ]]
-    [[ $APO_EDGE_CPU_24H == 1 ]]
-    [[ $APO_EDGE_DURATION_S == 86400 ]]
+    [[ $APO_EDGE_CPU_24H == 0 ]]
+    [[ $APO_SWEEP_DOMAIN == all ]]
+    [[ $APO_CPU_START_AT == 3000 && $APO_GPU_START_AT == 1150 ]]
     [[ $APO_MAX_FAN == 1 ]]
     [[ $APO_MODE_REQUESTED == auto ]]
     [[ -z $APO_CONFIG_FILE ]]
@@ -45,20 +46,44 @@ parse_fixture run overclock overclock overclock tron
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --qualification-hours 3 --final-hours 6 --edge-hours 12
+    apo_parse_cli overclock tron --qualification-hours 3 --final-hours 6
     [[ $APO_QUALIFICATION_DURATION_S == 10800 ]]
     [[ $APO_FINAL_DURATION_S == 21600 ]]
-    [[ $APO_EDGE_DURATION_S == 43200 && $APO_EDGE_CPU_24H == 1 ]]
-    [[ $APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 && $APO_FINAL_HOURS_OPTION_SEEN == 1 && $APO_EDGE_HOURS_OPTION_SEEN == 1 ]]
+    [[ $APO_EDGE_CPU_24H == 0 ]]
+    [[ $APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 && $APO_FINAL_HOURS_OPTION_SEEN == 1 ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli resume tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24 --edge-hours 24
+    apo_parse_cli overclock tron --cpu-only --cpu-start-at 3150
+    [[ $APO_SWEEP_DOMAIN == cpu && $APO_CPU_START_AT == 3150 && -z $APO_GPU_START_AT ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+    [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_START_AT == 1150 && -z $APO_CPU_START_AT ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24
     [[ $APO_COMMAND == resume && $APO_RESTART_FROM == cpu-qualification ]]
     [[ $APO_RESTART_FROM_OPTION_SEEN == 1 ]]
-    [[ $APO_QUALIFICATION_DURATION_S == 7200 && $APO_FINAL_DURATION_S == 86400 && $APO_EDGE_DURATION_S == 86400 ]]
+    [[ $APO_QUALIFICATION_DURATION_S == 7200 && $APO_FINAL_DURATION_S == 86400 ]]
 )
+for removed_edge_args in '--edge-hours 24' '--edge-cpu-24h'; do
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        # Fixed fixture tokens contain no shell metacharacters.
+        # shellcheck disable=SC2086
+        apo_parse_cli resume tron $removed_edge_args
+    ) >/dev/null 2>&1; then
+        echo "resume accepted removed edge options: $removed_edge_args" >&2
+        exit 1
+    fi
+done
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -83,6 +108,34 @@ for invalid_duration_args in \
         exit 1
     fi
 done
+for invalid_domain_args in \
+    '--cpu-only --gpu-only' \
+    '--cpu-start-at 3010' \
+    '--gpu-start-at 1160' \
+    '--cpu-only --gpu-start-at 1150' \
+    '--gpu-only --cpu-start-at 3000' \
+    '--cpu-only --restart-from final' \
+    '--edge-cpu-24h' \
+    '--edge-hours 24'; do
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        # Fixed fixture tokens contain no shell metacharacters.
+        # shellcheck disable=SC2086
+        apo_parse_cli overclock tron $invalid_domain_args
+    ) >/dev/null 2>&1; then
+        echo "overclock accepted an invalid domain/legacy-edge plan: $invalid_domain_args" >&2
+        exit 1
+    fi
+done
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli prepare tron --cpu-start-at 3000
+) >/dev/null 2>&1; then
+    echo 'prepare accepted an overclock starting-clock option' >&2
+    exit 1
+fi
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"

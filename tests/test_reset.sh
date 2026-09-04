@@ -80,10 +80,8 @@ assert_reset_option_rejected --mode --mode auto
 assert_reset_option_rejected --install-missing --install-missing
 assert_reset_option_rejected --repair-watchdogs --repair-watchdogs
 assert_reset_option_rejected --dry-run --dry-run
-assert_reset_option_rejected --edge-cpu-24h --edge-cpu-24h
 assert_reset_option_rejected --qualification-hours --qualification-hours 3
 assert_reset_option_rejected --final-hours --final-hours 6
-assert_reset_option_rejected --edge-hours --edge-hours 12
 assert_reset_option_rejected --no-max-fan --no-max-fan
 assert_reset_option_rejected --redact --redact
 assert_reset_option_rejected --reset --reset

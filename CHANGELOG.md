@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-alpha.43 — 2026-09-04
+
+- Added `overclock TARGET --cpu-only|--gpu-only` and independent `--cpu-start-at`/`--gpu-start-at` controls. One-domain runs extend a retained applied result, hold the other verified clock, retain the full recovery/qualification/final/apply pipeline, and include the documented domain ceiling even when a chosen start is offset from its coarse ladder.
+- Replaced the automatic guard/optional-edge selection with symmetric refinement to the highest observed 25 MHz pass, two-hour domain qualifications, and one uninterrupted 24-hour combined final by default. A proved CPU- or GPU-specific final failure lowers only that domain; genuinely ambiguous combined failures try CPU-only, GPU-only, then paired 25 MHz reductions and repeat from the new anchor until a complete final passes.
+- Kept audio readiness failures out of clock-boundary evidence. Graphical discovery now retries a missing default sink, and later audio loss remains a structured, boundedly retryable harness failure rather than forcing CPU or GPU backoff; headless Debian-family targets still require no display or audio hardware.
+- Hardened exact-domain evidence: boot-health clock mismatches and one-domain worker failures identify only the proved CPU or GPU domain, while simultaneous CPU/GPU exits remain ambiguous. Isolation trials restore an unaffected anchor clock before exact-domain backoff, and controller fixtures prove that audio harness failures retry without changing clocks.
+- Made automatic apply produce one compact, structurally validated and idempotent managed-clocks block while preserving unrelated boot configuration and the managed watchdog block. Stale project recovery comments are removed, firmware-default zero voltage is not re-emitted, malformed/nested project markers fail closed, and a domain-only continuation can safely accept verified comment-only cleanup of its exact retained applied artifact without accepting active-setting drift.
+- Fixed one-domain continuation when a later successful `prepare` audit owns the latest link: a matching interrupted run is resumed first, otherwise the newest tuple/path-compatible applied source reaches strict hash reconciliation. Reset/failed latest states, active-setting drift, and mismatched boot paths are never skipped.
+- Made TTY progress use the narrowest attached client width in the current tmux session, preventing a wide Byobu pane from repainting past a phone viewport without changing any tmux state.
+- Extended resumable state validation, reports, progress estimates, CLI/docs, and fixtures for domain selection, later starts, exact-domain backoff, ordered ambiguous isolation, source-hash lineage, clean configuration rendering, and legacy-state compatibility. Existing state and validation schema numbers remain unchanged because no prior proof is reinterpreted.
+
 ## 0.1.0-alpha.42 — 2026-09-03
 
 - Fixed the alpha.41 state-loader descriptor bug that could permanently silence stderr in the calling shell and make the simple CLI fixture fail without its expected diagnostic.

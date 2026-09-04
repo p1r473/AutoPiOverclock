@@ -14,7 +14,7 @@ Before any GPU sweep, the controller runs a 20-second smoke test at normal clock
 
 Wayland connection, canvas initialization, or missing runtime files are a `HARNESS_FAILURE`, not evidence that the clock itself is unstable. The frontend is never stopped for graphical stress, so there is no KMS/VT teardown or frontend-restart recovery boundary. Headless mode remains isolated and uses off-screen `glmark2-es2-drm` without a graphical-session requirement.
 
-Graphical discovery also captures the current default audio-sink identity automatically. Every graphical candidate, recovery boot, and apply health gate requires that sink to remain available and unchanged; `audio_sink_pattern`, when configured, is an additional constraint rather than the baseline mechanism.
+Graphical discovery also captures the current default audio-sink identity automatically. Every graphical candidate, recovery boot, and apply health gate requires that sink to remain available and unchanged; `audio_sink_pattern`, when configured, is an additional constraint rather than the baseline mechanism. Missing or changed audio readiness by itself is a retryable `HARNESS_FAILURE`, never a CPU or GPU clock boundary.
 
 ## Portable payload
 

@@ -37,6 +37,8 @@ APO_STORAGE_LAYOUT=''
 APO_NEED_GPU=0
 APO_REQUIRE_GPU_STRESS=0
 APO_WORKER_DEPLOYED=0
+APO_GRAPHICAL_AUDIO_DISCOVERY_ATTEMPTS=5
+APO_AUDIO_DISCOVERY_ATTEMPTS_USED=0
 
 apo_probe_profile() {
     local detected
@@ -214,6 +216,55 @@ apo_choose_mode() {
     esac
 }
 
+apo_retry_graphical_audio_baseline() {
+    local attempt key discovered_audio
+    local -a bound_keys=(
+        PROFILE MODEL COMPATIBLE ARCH OS_ID OS_VERSION
+        BOOT_CONFIG TRYBOOT_CONFIG TRYBOOT_EXISTS TRYBOOT_TYPE TRYBOOT_HASH BOOT_MOUNT
+        GPU_KEY NORMAL_CPU NORMAL_GPU NORMAL_VOLTAGE NORMAL_VOLTAGE_SOURCE
+        PERMANENT_TUNING_PROVENANCE PERMANENT_TUNING_EVIDENCE PERMANENT_HASH
+        ROOT_SOURCE BOOT_SOURCE DISPLAY_BASELINE DISPLAY_PRESENT DISPLAY_CONNECTED
+    )
+    local -A initial_discovery=()
+
+    APO_AUDIO_DISCOVERY_ATTEMPTS_USED=0
+    [[ $APO_MODE_EFFECTIVE == graphical ]] || return 0
+    APO_AUDIO_DISCOVERY_ATTEMPTS_USED=1
+    [[ -z ${APO_DISCOVERY[AUDIO_BASELINE]:-} ]] || return 0
+
+    for key in "${!APO_DISCOVERY[@]}"; do
+        initial_discovery[$key]=${APO_DISCOVERY[$key]}
+    done
+
+    for (( attempt=2; attempt<=APO_GRAPHICAL_AUDIO_DISCOVERY_ATTEMPTS; attempt++ )); do
+        apo_event discovery-audio-retry WARN HARNESS_FAILURE \
+            "Graphical audio was not ready during discovery; repeating the complete read-only capture (attempt $attempt/$APO_GRAPHICAL_AUDIO_DISCOVERY_ATTEMPTS)."
+        apo_transient_read_delay
+        apo_discovery_capture
+        APO_AUDIO_DISCOVERY_ATTEMPTS_USED=$attempt
+
+        for key in "${bound_keys[@]}"; do
+            [[ ${APO_DISCOVERY[$key]:-} == "${initial_discovery[$key]:-}" ]] ||
+                apo_die "Target discovery field $key changed while waiting for the graphical audio baseline; refusing to combine evidence from different target/configuration states." "$APO_EXIT_PREFLIGHT"
+        done
+        discovered_audio=${APO_DISCOVERY[AUDIO_BASELINE]:-}
+
+        # The retry exists only to recover the audio observation. Keep every
+        # other field from the first internally consistent discovery capture.
+        APO_DISCOVERY=()
+        for key in "${!initial_discovery[@]}"; do
+            APO_DISCOVERY[$key]=${initial_discovery[$key]}
+        done
+        if [[ -n $discovered_audio ]]; then
+            APO_DISCOVERY[AUDIO_BASELINE]=$discovered_audio
+            apo_event discovery-audio-retry PASS '' \
+                "Graphical audio became available on read-only discovery attempt $attempt/$APO_GRAPHICAL_AUDIO_DISCOVERY_ATTEMPTS."
+            return 0
+        fi
+    done
+    return 0
+}
+
 apo_store_discovery_state() {
     local key
     apo_state_set PROFILE "$APO_PROFILE"
@@ -235,6 +286,23 @@ apo_store_discovery_state() {
     apo_state_set AUTO_BASELINE_VOLTAGE "$APO_AUTO_BASELINE_VOLTAGE"
     apo_state_set AUTO_BASELINE_PROVENANCE "$APO_AUTO_BASELINE_PROVENANCE"
     apo_state_set AUTO_BASELINE_EVIDENCE "$APO_AUTO_BASELINE_EVIDENCE"
+    apo_state_set SOURCE_APPLIED_RUN_ID "${APO_SOURCE_APPLIED_RUN_ID:-}"
+    apo_state_set SOURCE_APPLIED_PERMANENT_HASH "${APO_SOURCE_APPLIED_PERMANENT_HASH:-}"
+    apo_state_set SOURCE_APPLIED_LIVE_HASH "${APO_SOURCE_APPLIED_LIVE_HASH:-}"
+    apo_state_set SOURCE_APPLIED_HASH_RELATION "${APO_SOURCE_APPLIED_HASH_RELATION:-}"
+    apo_state_set SOURCE_APPLIED_HASH_EVIDENCE "${APO_SOURCE_APPLIED_HASH_EVIDENCE:-}"
+    apo_state_set SOURCE_APPLIED_CPU "${APO_SOURCE_APPLIED_CPU:-}"
+    apo_state_set SOURCE_APPLIED_GPU "${APO_SOURCE_APPLIED_GPU:-}"
+    apo_state_set SOURCE_APPLIED_VOLTAGE "${APO_SOURCE_APPLIED_VOLTAGE:-}"
+    apo_state_set SOURCE_APPLIED_PROFILE "${APO_SOURCE_APPLIED_PROFILE:-}"
+    apo_state_set SOURCE_APPLIED_BOOT_CONFIG "${APO_SOURCE_APPLIED_BOOT_CONFIG:-}"
+    apo_state_set SOURCE_APPLIED_TRYBOOT_CONFIG "${APO_SOURCE_APPLIED_TRYBOOT_CONFIG:-}"
+    apo_state_set SOURCE_APPLIED_GPU_KEY "${APO_SOURCE_APPLIED_GPU_KEY:-}"
+    apo_state_set SOURCE_AUTO_BASELINE_CPU "${APO_SOURCE_AUTO_BASELINE_CPU:-}"
+    apo_state_set SOURCE_AUTO_BASELINE_GPU "${APO_SOURCE_AUTO_BASELINE_GPU:-}"
+    apo_state_set SOURCE_AUTO_BASELINE_VOLTAGE "${APO_SOURCE_AUTO_BASELINE_VOLTAGE:-}"
+    apo_state_set SOURCE_AUTO_BASELINE_PROVENANCE "${APO_SOURCE_AUTO_BASELINE_PROVENANCE:-}"
+    apo_state_set SOURCE_AUTO_BASELINE_EVIDENCE "${APO_SOURCE_AUTO_BASELINE_EVIDENCE:-}"
     apo_state_set TEST_VOLTAGE "$APO_TEST_VOLTAGE"
     apo_state_set PERMANENT_HASH "$APO_PERMANENT_CONFIG_HASH"
     apo_state_set THROTTLE_BASELINE "$APO_THROTTLE_BASELINE"
@@ -250,7 +318,167 @@ apo_store_discovery_state() {
     apo_state_save
 }
 
+apo_domain_source_managed_clock_zero_mode() {
+    local config_file=$1 expected_run=$2 expected_cpu=$3 expected_gpu=$4 expected_gpu_key=$5 expected_voltage=$6
+    [[ -f $config_file && ! -L $config_file && -r $config_file ]] || return 1
+    awk -v begin='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS' \
+        -v end='# END AUTOPIOVERCLOCK MANAGED CLOCKS' \
+        -v run_line="# Run: $expected_run" \
+        -v cpu_line="arm_freq=$expected_cpu" \
+        -v gpu_line="$expected_gpu_key=$expected_gpu" \
+        -v voltage_line="over_voltage_delta=$expected_voltage" \
+        -v expected_voltage="$expected_voltage" '
+        {
+            semantic=$0
+            sub(/\r$/, "", semantic)
+            lower=tolower(semantic)
+            if (index(lower, "autopioverclock managed clocks") && semantic != begin && semantic != end) invalid=1
+            if (semantic == begin) {
+                if (inside || blocks > 0) invalid=1
+                inside=1
+                blocks++
+                next
+            }
+            if (semantic == end) {
+                if (!inside) invalid=1
+                inside=0
+                next
+            }
+            if (inside) block[++block_lines]=semantic
+        }
+        END {
+            if (invalid || inside || blocks != 1 || block_lines < 4 || block_lines > 5) exit 1
+            line_number=1
+            if (block[line_number++] != run_line || block[line_number++] != "[all]") exit 1
+            zero_mode="absent"
+            if (block[line_number] == voltage_line) {
+                zero_mode="present"
+                line_number++
+            } else if (expected_voltage != "0") {
+                exit 1
+            }
+            if (block[line_number++] != cpu_line || block[line_number++] != gpu_line || line_number != block_lines + 1) exit 1
+            print zero_mode
+        }
+    ' "$config_file"
+}
+
+apo_domain_source_active_snapshot() {
+    local config_file=$1 output_file=$2 drop_project_zero=${3:-0}
+    awk -v begin='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS' \
+        -v end='# END AUTOPIOVERCLOCK MANAGED CLOCKS' \
+        -v drop_project_zero="$drop_project_zero" '
+        {
+            semantic=$0
+            sub(/\r$/, "", semantic)
+            if (semantic == begin) { inside=1; next }
+            if (semantic == end) { inside=0; next }
+            trimmed=semantic
+            sub(/^[[:space:]]*/, "", trimmed)
+            if (trimmed == "" || substr(trimmed, 1, 1) == "#") next
+            if (drop_project_zero == 1 && inside && semantic == "over_voltage_delta=0") next
+            print semantic
+        }
+    ' "$config_file" > "$output_file"
+}
+
+apo_reconcile_domain_sweep_source_hash() {
+    local source_state=${APO_DOMAIN_SOURCE_STATE:-} source_artifact live_snapshot source_hash live_hash
+    local source_zero_mode live_zero_mode source_active live_active source_without_zero
+    local -a cleanup_files=()
+    APO_SOURCE_APPLIED_LIVE_HASH=$APO_PERMANENT_CONFIG_HASH
+    if [[ $APO_PERMANENT_CONFIG_HASH == "${APO_SOURCE_APPLIED_PERMANENT_HASH:-}" ]]; then
+        APO_SOURCE_APPLIED_HASH_RELATION=exact
+        APO_SOURCE_APPLIED_HASH_EVIDENCE=live-hash-equals-retained-applied-hash
+        return 0
+    fi
+
+    [[ -n $source_state && $source_state == *.state && -f $source_state && ! -L $source_state ]] ||
+        apo_die 'The retained applied source state is unavailable for strict permanent-config reconciliation.' "$APO_EXIT_RECOVERY"
+    source_artifact="${source_state%.state}-apply-proposed-config.txt"
+    [[ -f $source_artifact && ! -L $source_artifact && -r $source_artifact ]] ||
+        apo_die 'The retained applied source config artifact is unavailable; permanent-config drift cannot be reconciled safely.' "$APO_EXIT_RECOVERY"
+    source_hash=$(sha256sum "$source_artifact" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $source_hash == "$APO_SOURCE_APPLIED_PERMANENT_HASH" ]] ||
+        apo_die 'The retained applied source config artifact no longer matches its recorded hash.' "$APO_EXIT_RECOVERY"
+
+    [[ -n ${APO_RUN_PREFIX:-} ]] || apo_die 'Applied-source reconciliation is missing its run artifact prefix.' "$APO_EXIT_INTERNAL"
+    live_snapshot="${APO_RUN_PREFIX}-source-live-config.txt"
+    apo_remote_root_read_file "$live_snapshot" "cat $(apo_sh_quote "$APO_BOOT_CONFIG")" ||
+        apo_die 'The live permanent config could not be captured for strict applied-source reconciliation.' "$APO_EXIT_RECOVERY"
+    chmod 600 "$live_snapshot"
+    live_hash=$(sha256sum "$live_snapshot" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $live_hash == "$APO_PERMANENT_CONFIG_HASH" ]] ||
+        apo_die 'The live permanent config changed between discovery and applied-source reconciliation.' "$APO_EXIT_RECOVERY"
+
+    source_zero_mode=$(apo_domain_source_managed_clock_zero_mode "$source_artifact" \
+        "$APO_SOURCE_APPLIED_RUN_ID" "$APO_SOURCE_APPLIED_CPU" "$APO_SOURCE_APPLIED_GPU" \
+        "$APO_SOURCE_APPLIED_GPU_KEY" "$APO_SOURCE_APPLIED_VOLTAGE" || true)
+    live_zero_mode=$(apo_domain_source_managed_clock_zero_mode "$live_snapshot" \
+        "$APO_SOURCE_APPLIED_RUN_ID" "$APO_SOURCE_APPLIED_CPU" "$APO_SOURCE_APPLIED_GPU" \
+        "$APO_SOURCE_APPLIED_GPU_KEY" "$APO_SOURCE_APPLIED_VOLTAGE" || true)
+    [[ $source_zero_mode == present || $source_zero_mode == absent ]] ||
+        apo_die 'The retained applied source contains malformed or mismatched AutoPiOverclock clock markers.' "$APO_EXIT_RECOVERY"
+    [[ $live_zero_mode == present || $live_zero_mode == absent ]] ||
+        apo_die 'The live permanent config contains malformed or mismatched AutoPiOverclock clock markers.' "$APO_EXIT_RECOVERY"
+
+    source_active=$(mktemp "${APO_RUN_PREFIX}-source-active.XXXXXX") ||
+        apo_die 'Could not create a local applied-source reconciliation file.' "$APO_EXIT_INTERNAL"
+    live_active=$(mktemp "${APO_RUN_PREFIX}-live-active.XXXXXX") || {
+        rm -f -- "$source_active"
+        apo_die 'Could not create a local live-config reconciliation file.' "$APO_EXIT_INTERNAL"
+    }
+    source_without_zero=$(mktemp "${APO_RUN_PREFIX}-source-no-zero.XXXXXX") || {
+        rm -f -- "$source_active" "$live_active"
+        apo_die 'Could not create a local zero-normalized reconciliation file.' "$APO_EXIT_INTERNAL"
+    }
+    cleanup_files=("$source_active" "$live_active" "$source_without_zero")
+    apo_domain_source_active_snapshot "$source_artifact" "$source_active" 0 &&
+        apo_domain_source_active_snapshot "$live_snapshot" "$live_active" 0 &&
+        apo_domain_source_active_snapshot "$source_artifact" "$source_without_zero" 1 || {
+            rm -f -- "${cleanup_files[@]}"
+            apo_die 'Could not derive strict active-line evidence for applied-source reconciliation.' "$APO_EXIT_RECOVERY"
+        }
+
+    if cmp -s -- "$source_active" "$live_active"; then
+        APO_SOURCE_APPLIED_HASH_RELATION=comment-only
+        APO_SOURCE_APPLIED_HASH_EVIDENCE=source-artifact-hash-and-managed-block-verified-active-lines-identical
+    elif [[ $APO_SOURCE_APPLIED_VOLTAGE == 0 && $APO_NORMAL_VOLTAGE == 0 &&
+            $source_zero_mode == present && $live_zero_mode == absent ]] &&
+         cmp -s -- "$source_without_zero" "$live_active"; then
+        APO_SOURCE_APPLIED_HASH_RELATION=comment-only-project-zero-removed
+        APO_SOURCE_APPLIED_HASH_EVIDENCE=source-artifact-hash-and-managed-block-verified-active-lines-identical-after-project-zero-removal
+    else
+        rm -f -- "${cleanup_files[@]}"
+        apo_die 'The live permanent config has active drift beyond a strictly verified comment-only change.' "$APO_EXIT_RECOVERY"
+    fi
+    rm -f -- "${cleanup_files[@]}"
+}
+
+apo_verify_domain_sweep_source_discovery() {
+    [[ ${APO_SWEEP_DOMAIN:-all} != all ]] || return 0
+    apo_is_safe_run_id "${APO_SOURCE_APPLIED_RUN_ID:-}" ||
+        apo_die 'Domain-only tuning is missing a valid retained applied-source run ID.' "$APO_EXIT_INTERNAL"
+    [[ ${APO_SOURCE_APPLIED_PERMANENT_HASH:-} =~ ^[0-9a-f]{64}$ ]] ||
+        apo_die 'Domain-only tuning is missing a valid retained applied-source hash.' "$APO_EXIT_INTERNAL"
+    [[ $APO_NORMAL_CPU == "${APO_SOURCE_APPLIED_CPU:-}" &&
+       $APO_NORMAL_GPU == "${APO_SOURCE_APPLIED_GPU:-}" &&
+       $APO_NORMAL_VOLTAGE == "${APO_SOURCE_APPLIED_VOLTAGE:-}" ]] ||
+        apo_die "The live clock tuple (${APO_NORMAL_CPU}/${APO_NORMAL_GPU}/${APO_NORMAL_VOLTAGE}) does not match the retained applied tuple (${APO_SOURCE_APPLIED_CPU:-missing}/${APO_SOURCE_APPLIED_GPU:-missing}/${APO_SOURCE_APPLIED_VOLTAGE:-missing})." "$APO_EXIT_RECOVERY"
+    [[ $APO_PROFILE == "${APO_SOURCE_APPLIED_PROFILE:-}" &&
+       $APO_BOOT_CONFIG == "${APO_SOURCE_APPLIED_BOOT_CONFIG:-}" &&
+       $APO_TRYBOOT_CONFIG == "${APO_SOURCE_APPLIED_TRYBOOT_CONFIG:-}" &&
+       $APO_GPU_KEY == "${APO_SOURCE_APPLIED_GPU_KEY:-}" ]] ||
+        apo_die 'Live profile or boot-path discovery does not match the retained applied source selected for domain-only tuning.' "$APO_EXIT_RECOVERY"
+    apo_config_stock_auto_baseline_ready "${APO_SOURCE_AUTO_BASELINE_CPU:-}" "${APO_SOURCE_AUTO_BASELINE_GPU:-}" \
+        "${APO_SOURCE_AUTO_BASELINE_VOLTAGE:-}" "${APO_SOURCE_AUTO_BASELINE_PROVENANCE:-}" \
+        "${APO_SOURCE_AUTO_BASELINE_EVIDENCE:-}" ||
+        apo_die 'The retained applied source has lost its verified stock-baseline lineage.' "$APO_EXIT_INTERNAL"
+    apo_reconcile_domain_sweep_source_hash
+}
+
 apo_context_from_discovery() {
+    local audio_attempt_suffix=''
     APO_BOOT_CONFIG=${APO_DISCOVERY[BOOT_CONFIG]:-}
     APO_TRYBOOT_CONFIG=${APO_DISCOVERY[TRYBOOT_CONFIG]:-}
     APO_INITIAL_TRYBOOT_EXISTS=${APO_DISCOVERY[TRYBOOT_EXISTS]:-}
@@ -288,13 +516,22 @@ apo_context_from_discovery() {
     [[ $APO_NORMAL_GPU =~ ^[1-9][0-9]{0,8}$ ]] || apo_die "Discovery returned an invalid normal GPU clock: $APO_NORMAL_GPU" "$APO_EXIT_PREFLIGHT"
     apo_is_int "$APO_NORMAL_VOLTAGE" || apo_die "Discovery returned an invalid normal voltage delta: $APO_NORMAL_VOLTAGE" "$APO_EXIT_PREFLIGHT"
     [[ $APO_PERMANENT_CONFIG_HASH =~ ^[0-9a-f]{64}$ ]] || apo_die 'Discovery returned an invalid permanent-config hash.' "$APO_EXIT_PREFLIGHT"
+    apo_verify_domain_sweep_source_discovery
     apo_config_resolve_auto_candidates "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
-        APO_AUTO_BASELINE_CPU=$APO_NORMAL_CPU
-        APO_AUTO_BASELINE_GPU=$APO_NORMAL_GPU
-        APO_AUTO_BASELINE_VOLTAGE=$APO_NORMAL_VOLTAGE
-        APO_AUTO_BASELINE_PROVENANCE=$APO_PERMANENT_TUNING_PROVENANCE
-        APO_AUTO_BASELINE_EVIDENCE=$APO_PERMANENT_TUNING_EVIDENCE
+        if [[ ${APO_SWEEP_DOMAIN:-all} == all ]]; then
+            APO_AUTO_BASELINE_CPU=$APO_NORMAL_CPU
+            APO_AUTO_BASELINE_GPU=$APO_NORMAL_GPU
+            APO_AUTO_BASELINE_VOLTAGE=$APO_NORMAL_VOLTAGE
+            APO_AUTO_BASELINE_PROVENANCE=$APO_PERMANENT_TUNING_PROVENANCE
+            APO_AUTO_BASELINE_EVIDENCE=$APO_PERMANENT_TUNING_EVIDENCE
+        else
+            APO_AUTO_BASELINE_CPU=$APO_SOURCE_AUTO_BASELINE_CPU
+            APO_AUTO_BASELINE_GPU=$APO_SOURCE_AUTO_BASELINE_GPU
+            APO_AUTO_BASELINE_VOLTAGE=$APO_SOURCE_AUTO_BASELINE_VOLTAGE
+            APO_AUTO_BASELINE_PROVENANCE=$APO_SOURCE_AUTO_BASELINE_PROVENANCE
+            APO_AUTO_BASELINE_EVIDENCE=$APO_SOURCE_AUTO_BASELINE_EVIDENCE
+        fi
     else
         APO_AUTO_BASELINE_CPU=''
         APO_AUTO_BASELINE_GPU=''
@@ -319,10 +556,13 @@ apo_context_from_discovery() {
         done
     fi
     if [[ $APO_MODE_EFFECTIVE == graphical && -z $APO_AUDIO_BASELINE ]]; then
+        if (( APO_AUDIO_DISCOVERY_ATTEMPTS_USED > 1 )); then
+            audio_attempt_suffix=" after $APO_AUDIO_DISCOVERY_ATTEMPTS_USED read-only discovery attempts"
+        fi
         case $APO_PROFILE in
-            debian) apo_die 'Debian graphical mode requires a healthy audio-output baseline, but neither a default PipeWire/PulseAudio sink nor ALSA playback hardware could be captured.' "$APO_EXIT_HARNESS" ;;
-            batocera) apo_die 'Batocera graphical mode requires a healthy default audio-sink baseline, but none could be captured.' "$APO_EXIT_HARNESS" ;;
-            *) apo_die 'Graphical mode requires a healthy audio-output baseline, but none could be captured.' "$APO_EXIT_HARNESS" ;;
+            debian) apo_die "Debian graphical mode requires a healthy audio-output baseline, but neither a default PipeWire/PulseAudio sink nor ALSA playback hardware could be captured${audio_attempt_suffix}." "$APO_EXIT_HARNESS" ;;
+            batocera) apo_die "Batocera graphical mode requires a healthy default audio-sink baseline, but none could be captured${audio_attempt_suffix}." "$APO_EXIT_HARNESS" ;;
+            *) apo_die "Graphical mode requires a healthy audio-output baseline, but none could be captured${audio_attempt_suffix}." "$APO_EXIT_HARNESS" ;;
         esac
     fi
 }
@@ -447,7 +687,7 @@ apo_watchdog_preflight() {
 
 apo_finalize_discovered_config() {
     APO_NEED_GPU=$(( ${#APO_GPU_CANDIDATES[@]} > 0 ? 1 : 0 ))
-    if (( APO_NEED_GPU == 1 )) || [[ $APO_MODE_EFFECTIVE == graphical ]]; then APO_REQUIRE_GPU_STRESS=1; else APO_REQUIRE_GPU_STRESS=0; fi
+    if (( APO_NEED_GPU == 1 )) || [[ $APO_MODE_EFFECTIVE == graphical || ${APO_SWEEP_DOMAIN:-all} != all ]]; then APO_REQUIRE_GPU_STRESS=1; else APO_REQUIRE_GPU_STRESS=0; fi
     apo_config_store_in_state
     apo_state_save
     apo_write_effective_config "$APO_EFFECTIVE_CONFIG_FILE"
@@ -466,6 +706,7 @@ apo_prepare_target() {
     [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" ]] || apo_die 'Profile probe and worker discovery disagree.' "$APO_EXIT_PREFLIGHT"
     apo_validate_pi5
     apo_choose_mode
+    apo_retry_graphical_audio_baseline
     apo_context_from_discovery
     apo_finalize_discovered_config
     local throttle=${APO_DISCOVERY[THROTTLED]:-} temp=${APO_DISCOVERY[TEMP]:-} baseline_boot_id audio_summary

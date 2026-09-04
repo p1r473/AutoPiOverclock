@@ -57,14 +57,19 @@ if "$ROOT/autopioverclock" -h >/dev/null 2>&1; then
     exit 1
 fi
 approved_options=$(printf '%s\n' \
-    --cpu --edge-cpu-24h --edge-hours --final-hours --gpu --help --identity-file --minutes --no-max-fan \
-    --output-dir --qualification-hours --restart-from --ssh-port --version | LC_ALL=C sort)
+    --cpu --cpu-only --cpu-start-at --final-hours --gpu --gpu-only --gpu-start-at --help --identity-file --minutes \
+    --no-max-fan --output-dir --qualification-hours --restart-from --ssh-port --version | LC_ALL=C sort)
 documented_options=$(awk '/^Common options:/{capture=1; next} /^Advanced options:/{capture=0} capture' "$ROOT/autopioverclock" |
     grep -oE -- '--[a-z][a-z0-9-]*' | LC_ALL=C sort -u)
 [[ $documented_options == "$approved_options" ]] || {
     printf 'primary CLI options differ from the simple-workflow whitelist\nexpected:\n%s\nactual:\n%s\n' "$approved_options" "$documented_options" >&2
     exit 1
 }
+if grep -RInE -- 'APO_EDGE_(HOURS|CPU_24H)_OPTION_SEEN|--edge-(hours|cpu-24h)' \
+        "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles" "$ROOT/workers" "$ROOT/assets" "$ROOT/tools"; then
+    echo 'removed public edge-option handling or guidance remains in production code' >&2
+    exit 1
+fi
 grep -Fq 'SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh' "$ROOT/Makefile"
 if grep -Eq '^[[:space:]]*external-sources=true' "$ROOT/.shellcheckrc"; then
     echo 'the global ShellCheck config defeats the bounded CLI-fixture lint policy' >&2
@@ -203,13 +208,67 @@ if grep -Fq 'skip default-sink identity checks' "$ROOT/lib/detect.sh"; then
     echo 'Debian graphical preparation still documents skipped audio validation' >&2
     exit 1
 fi
-(
-    APO_ROOT=$ROOT
-    source "$ROOT/lib/common.sh"
-    source "$ROOT/lib/detect.sh"
-    APO_MODE_REQUESTED=auto
-    APO_DISCOVERY=([DISPLAY_PRESENT]=0 [DISPLAY_CONNECTED]=0 [AUDIO_BASELINE]='')
-    apo_choose_mode
-    [[ $APO_MODE_EFFECTIVE == headless ]]
-)
+
+audio_discovery_retry_fixture() {
+    local profile=$1 mode=$2 success_attempt=$3
+    local display_baseline=''
+    [[ $mode == graphical ]] && display_baseline='connector=card1-HDMI-A-1;mode=1280x800;enabled=enabled'
+    (
+        APO_ROOT=$ROOT
+        source "$ROOT/lib/common.sh"
+        source "$ROOT/lib/config.sh"
+        source "$ROOT/lib/detect.sh"
+        apo_config_defaults
+        APO_COMMAND=prepare
+        APO_DRY_RUN=0
+        APO_PROFILE=$profile
+        APO_MODE_EFFECTIVE=$mode
+        APO_DISCOVERY=(
+            [PROFILE]="$profile"
+            [BOOT_CONFIG]=/boot/config.txt
+            [TRYBOOT_CONFIG]=/boot/tryboot.txt
+            [TRYBOOT_EXISTS]=0
+            [TRYBOOT_TYPE]=absent
+            [TRYBOOT_HASH]=unavailable
+            [BOOT_MOUNT]=/boot
+            [GPU_KEY]=v3d_freq
+            [NORMAL_CPU]=2400
+            [NORMAL_GPU]=960
+            [NORMAL_VOLTAGE]=0
+            [PERMANENT_HASH]=$(printf 'b%.0s' {1..64})
+            [DISPLAY_BASELINE]="$display_baseline"
+            [DISPLAY_PRESENT]="$([[ $mode == graphical ]] && printf 1 || printf 0)"
+            [DISPLAY_CONNECTED]="$([[ $mode == graphical ]] && printf 1 || printf 0)"
+            [AUDIO_BASELINE]=''
+        )
+        retry_captures=0
+        apo_event() { :; }
+        apo_transient_read_delay() { :; }
+        apo_discovery_capture() {
+            retry_captures=$((retry_captures + 1))
+            if (( success_attempt > 0 && retry_captures + 1 >= success_attempt )); then
+                APO_DISCOVERY[AUDIO_BASELINE]="${profile}-fixture-audio"
+            fi
+        }
+        apo_retry_graphical_audio_baseline
+        context_rc=0
+        (apo_context_from_discovery) >/dev/null 2>&1 || context_rc=$?
+        printf '%s|%s|%s|%s\n' "$retry_captures" "$APO_AUDIO_DISCOVERY_ATTEMPTS_USED" "${APO_DISCOVERY[AUDIO_BASELINE]:-}" "$context_rc"
+        (( context_rc == 0 )) || return "$context_rc"
+    )
+}
+
+# The first discovery capture counts as attempt one. A transient graphical
+# audio miss is retried read-only until it appears, while a persistent miss
+# fails only after five total captures. Headless targets never retry audio.
+for audio_profile in debian batocera; do
+    [[ $(audio_discovery_retry_fixture "$audio_profile" graphical 3) == "2|3|${audio_profile}-fixture-audio|0" ]]
+    persistent_audio_result=''
+    if persistent_audio_result=$(audio_discovery_retry_fixture "$audio_profile" graphical 0 2>/dev/null); then
+        echo "$audio_profile graphical preparation accepted a missing audio baseline after five discovery attempts" >&2
+        exit 1
+    fi
+    [[ $persistent_audio_result == 4\|5\|\|* ]]
+    [[ $(audio_discovery_retry_fixture "$audio_profile" headless 0) == '0|0||0' ]]
+done
 printf 'test_public_safety: PASS\n'
