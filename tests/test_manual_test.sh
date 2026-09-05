@@ -47,7 +47,24 @@ apo_config_restore_from_state
 
 APO_RUN_ID=manual-fixture
 apo_write_effective_config "$TEMP_DIR/manual.conf"
-grep -Fq '# manual_stability_test=CPU:3100MHz GPU:1150MHz duration:90min; never eligible for permanent apply' "$TEMP_DIR/manual.conf"
+grep -Fq '# manual_stability_test=CPU:3100MHz GPU:1150MHz duration:5400s; never eligible for permanent apply' "$TEMP_DIR/manual.conf"
+
+# Exact tests may use the same 1-168 hour range as final validation without
+# widening the advanced automatic candidate-duration limit.
+APO_MANUAL_MINUTES=10080
+APO_MANUAL_DURATION_S=604800
+apo_config_load_for_new_run
+[[ ${APO_CFG[CANDIDATE_DURATION_S]} == 604800 ]]
+apo_config_validate
+APO_STATE=()
+apo_config_store_in_state
+APO_MANUAL_TEST=0
+APO_MANUAL_MINUTES=''
+APO_MANUAL_DURATION_S=''
+apo_config_restore_from_state
+[[ $APO_MANUAL_MINUTES == 10080 && $APO_MANUAL_DURATION_S == 604800 ]]
+APO_MANUAL_MINUTES=90
+APO_MANUAL_DURATION_S=5400
 
 APO_STATE=()
 APO_STATE_FILE="$TEMP_DIR/manual.state"

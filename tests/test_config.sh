@@ -130,7 +130,7 @@ apo_state_load "$TEMP_DIR/debian-auto.state"
 [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 0 ]]
 [[ ${APO_STATE[CFG_EDGE_ORDER]} == floor-first ]]
 [[ ${APO_STATE[CFG_QUALIFICATION_DURATION_S]} == 7200 ]]
-[[ ${APO_STATE[CFG_FINAL_DURATION_S]} == 86400 ]]
+[[ ${APO_STATE[CFG_FINAL_DURATION_S]} == 172800 ]]
 [[ ${APO_STATE[CFG_EDGE_DURATION_S]} == 86400 ]]
 [[ ${APO_STATE[CFG_DURATION_POLICY]} == default ]]
 [[ ${APO_STATE[CFG_MAX_FAN]} == 1 ]]
@@ -154,7 +154,7 @@ resolve_discovered_auto_plan debian 2400 960 0
     APO_MAX_FAN=0
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 2400 960 0
-    [[ ${APO_CFG[FINAL_DURATION_S]} == 86400 ]]
+    [[ ${APO_CFG[FINAL_DURATION_S]} == 172800 ]]
     finalize_discovered_fixture debian-edge-auto
     APO_STATE=()
     apo_state_load "$TEMP_DIR/debian-edge-auto.state"
@@ -206,6 +206,11 @@ apo_config_migrate_duration_schema_9
 [[ $(apo_state_get CFG_FINAL_DURATION_S) == 43200 ]]
 [[ $(apo_state_get CFG_EDGE_DURATION_S) == 86400 ]]
 [[ $(apo_state_get CFG_DURATION_POLICY) == custom ]]
+
+# Retained 24-hour runs marked with the old default policy stay valid after
+# new automatic runs adopt the 48-hour default.
+apo_config_saved_duration_policy_matches 7200 86400 86400 default
+[[ $(apo_config_duration_policy 7200 86400 86400) == custom ]]
 
 # A crash before PREPARE persisted its plan remains inspectable and reaches the
 # dedicated safe-resume refusal. Once tuning has begun, the same missing plan

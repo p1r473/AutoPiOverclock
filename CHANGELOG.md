@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.48 — 2026-09-05
+
+- Raised the configuration-free automatic final-validation default from 24 to 48 uninterrupted hours. The 1–168 hour override remains available, shorter runs are still labeled custom, and every failure or retry starts the complete saved duration again rather than crediting partial time.
+- Added preferred `--final-hours HOURS` support to exact-pair `test TARGET --cpu MHZ --gpu MHZ`, while retaining `--minutes MINUTES` for compatibility. A new test requires exactly one duration form, equivalent hour/minute durations can continue the same checkpoint, and every manual test remains evidence-only with `VALIDATED=0` and `APPLY_STATUS=NOT_APPLIED`.
+
 ## 0.1.0-alpha.47 — 2026-09-04
 
 - Made automatically discovered graphical audio advisory after discovery: if the saved default sink is temporarily absent or changes after a reboot, the worker records a warning and continues once process, service, and display health pass. An explicitly configured `audio_sink_pattern` remains a strict `HARNESS_FAILURE` constraint.

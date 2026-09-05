@@ -38,6 +38,81 @@ ln -sfn "$(basename "$MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
     [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$MANUAL_RUN" ]]
     [[ $APO_MANUAL_TEST == 1 && $APO_MAX_FAN == 1 ]]
 )
+
+LONG_MANUAL_RUN=20260905-010205-fedcba9876543210
+LONG_MANUAL_STATE="$CONTINUATION_OUTPUT/tron-${LONG_MANUAL_RUN}.state"
+write_state_fixture "$LONG_MANUAL_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$LONG_MANUAL_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND test \
+    STATUS INTERRUPTED PHASE MANUAL_TEST APPLY_STATUS NOT_APPLIED \
+    CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 CFG_MANUAL_MINUTES 2880 \
+    CFG_MANUAL_DURATION_S 172800 CFG_MAX_FAN 1
+ln -sfn "$(basename "$LONG_MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 48
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_test_select_continuation
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$LONG_MANUAL_RUN" ]]
+    [[ $APO_MANUAL_MINUTES == 2880 && $APO_MANUAL_DURATION_S == 172800 ]]
+)
+# Canonical duration matching lets an interrupted one-hour test continue with
+# either supported spelling without weakening the immutable duration check.
+write_state_fixture "$LONG_MANUAL_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$LONG_MANUAL_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND test \
+    STATUS INTERRUPTED PHASE MANUAL_TEST APPLY_STATUS NOT_APPLIED \
+    CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 CFG_MANUAL_MINUTES 60 \
+    CFG_MANUAL_DURATION_S 3600 CFG_MAX_FAN 1
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --minutes 60
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_test_select_continuation
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$LONG_MANUAL_RUN" ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 1
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_test_select_continuation
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$LONG_MANUAL_RUN" ]]
+)
+# Direct resume may restate the saved exact-test duration, but it must compare
+# against the manual duration rather than the unrelated automatic final default.
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --final-hours 1
+    apo_state_load "$LONG_MANUAL_STATE"
+    apo_resume_require_matching_duration_options
+)
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --final-hours 2
+    apo_state_load "$LONG_MANUAL_STATE"
+    apo_resume_require_matching_duration_options
+) 2>"$TEMP_DIR/manual-resume-duration-change.err"; then
+    echo 'direct resume accepted a changed exact-test duration' >&2
+    exit 1
+fi
+grep -Fq 'exact-pair test duration cannot change' "$TEMP_DIR/manual-resume-duration-change.err"
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --qualification-hours 1
+    apo_state_load "$LONG_MANUAL_STATE"
+    apo_resume_require_matching_duration_options
+) 2>"$TEMP_DIR/manual-resume-qualification.err"; then
+    echo 'direct resume accepted an automatic qualification duration for an exact test' >&2
+    exit 1
+fi
+grep -Fq -- '--qualification-hours is not valid' "$TEMP_DIR/manual-resume-qualification.err"
+ln -sfn "$(basename "$MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -48,7 +123,7 @@ if (
     echo 'an interrupted manual test accepted different clocks' >&2
     exit 1
 fi
-grep -Fq 'Repeat that exact test command' "$TEMP_DIR/manual-plan-change.err"
+grep -Fq 'Repeat the same clocks and duration' "$TEMP_DIR/manual-plan-change.err"
 if "$ROOT/autopioverclock" apply tron --output-dir "$CONTINUATION_OUTPUT" --run-id "$MANUAL_RUN" 2>"$TEMP_DIR/manual-apply.err"; then
     echo 'a manual stability result was accepted for permanent apply' >&2
     exit 1
@@ -72,7 +147,11 @@ for invalid_test_args in \
     '--gpu 1150 --minutes 60' \
     '--cpu 599 --gpu 1150 --minutes 60' \
     '--cpu 3100 --gpu 1150 --minutes 0' \
-    '--cpu 3100 --gpu 1150 --minutes 1441'; do
+    '--cpu 3100 --gpu 1150 --minutes 1441' \
+    '--cpu 3100 --gpu 1150 --final-hours 0' \
+    '--cpu 3100 --gpu 1150 --final-hours 169' \
+    '--cpu 3100 --gpu 1150 --final-hours 1.5' \
+    '--cpu 3100 --gpu 1150 --minutes 60 --final-hours 1'; do
     # The fixture arguments are fixed numeric tokens without shell metacharacters.
     # shellcheck disable=SC2086
     if "$ROOT/autopioverclock" test tron $invalid_test_args >/dev/null 2>&1; then
@@ -155,8 +234,9 @@ done
 grep -Fq 'Searches CPU from 2500 through 3200 MHz' "$ROOT/README.md"
 grep -Fq 'Searches GPU/V3D through 1200 MHz' "$ROOT/README.md"
 grep -Fq 'refines the failure gap in 25 MHz steps to the highest actual pass' "$ROOT/README.md"
-grep -Fq 'one fresh 24-hour combined CPU/GPU/I/O validation by default' "$ROOT/README.md"
-grep -Fq -- '--qualification-hours 3 --final-hours 36' "$ROOT/README.md"
+grep -Fq 'one fresh 48-hour combined CPU/GPU/I/O validation by default' "$ROOT/README.md"
+grep -Fq 'test pi@pi-host --cpu 3100 --gpu 1150 --final-hours 48' "$ROOT/README.md"
+grep -Fq -- '--qualification-hours 3 --final-hours 72' "$ROOT/README.md"
 quick_start=$(sed -n '/^## Quick start$/,/^## Supported targets$/p' "$ROOT/README.md")
 for install_line in \
     'git clone https://github.com/p1r473/AutoPiOverclock.git' \

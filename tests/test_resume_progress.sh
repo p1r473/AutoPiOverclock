@@ -1101,7 +1101,8 @@ apo_final_validation
 [[ $(printf '%s\n' "${ACTIONS[@]}" | grep -c '^stress:combined:86400:final-endurance$') == 1 ]]
 
 # A safely recovered edge rejection does not mark the untested floor PASS. It
-# starts one fresh 24-hour guarded-floor validation and completes only after it.
+# starts one fresh default-duration guarded-floor validation and completes only
+# after it.
 APO_STATE=()
 ACTIONS=()
 seed_valid_guarded_auto_floor_plan
@@ -1146,7 +1147,7 @@ apo_final_validation
 [[ $(apo_state_get FLOOR_VALIDATED) == 1 ]]
 [[ $(apo_state_get FINAL_CPU) == 3000 && $(apo_state_get FINAL_GPU) == 900 ]]
 [[ $(apo_state_get VALIDATION_DURATION_S) == "$APO_DEFAULT_FINAL_DURATION_S" ]]
-[[ $(printf '%s\n' "${ACTIONS[@]}" | grep -c '^stress:combined:86400:final-endurance$') == 1 ]]
+[[ $(printf '%s\n' "${ACTIONS[@]}" | grep -c "^stress:combined:${APO_DEFAULT_FINAL_DURATION_S}:final-endurance$") == 1 ]]
 
 # If the freshly tested guarded floor also proves unstable after an edge
 # rejection, automatic tuning still backs off safely. The old edge disposition

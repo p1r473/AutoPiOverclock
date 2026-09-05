@@ -370,7 +370,7 @@ apo_run_manual_test() {
     apo_state_set MANUAL_MINUTES "$APO_MANUAL_MINUTES"
     apo_state_set MANUAL_DURATION_S "$APO_MANUAL_DURATION_S"
     apo_state_save
-    apo_event manual-test INFO '' "Testing exact clocks CPU=$APO_MANUAL_CPU GPU=$APO_MANUAL_GPU for $APO_MANUAL_MINUTES timed stress minutes; normal recovery and configured boot cycles remain mandatory."
+    apo_event manual-test INFO '' "Testing exact clocks CPU=$APO_MANUAL_CPU GPU=$APO_MANUAL_GPU for $APO_MANUAL_DURATION_S seconds; normal recovery and configured boot cycles remain mandatory."
     if ! apo_test_candidate "$APO_MANUAL_CPU" "$APO_MANUAL_GPU" "$label" combined; then
         apo_state_set MANUAL_TEST_STATUS FAILED
         apo_state_save
@@ -388,10 +388,10 @@ apo_run_manual_test() {
     apo_state_save
     apo_summary_line 'MANUAL STABILITY TEST: PASS'
     apo_summary_line "Exact tested clocks: CPU $APO_MANUAL_CPU MHz / GPU $APO_MANUAL_GPU MHz"
-    apo_summary_line "Timed combined stress: $APO_MANUAL_MINUTES minutes ($APO_MANUAL_DURATION_S seconds)"
+    apo_summary_line "Timed combined stress: $APO_MANUAL_DURATION_S seconds"
     apo_summary_line "Maximum observed temperature: $(apo_state_get RUN_MAX_TEMP unknown)C"
-    apo_summary_line 'Permanent config was not modified. This short/manual result is not a validated recommendation and cannot be applied.'
-    apo_event manual-test PASS '' "CPU=$APO_MANUAL_CPU GPU=$APO_MANUAL_GPU passed $APO_MANUAL_MINUTES timed stress minutes, post-stress health, configured tryboot/normal cycles, and final normal recovery; permanent config remained unchanged."
+    apo_summary_line 'Permanent config was not modified. This manual evidence-only result is not a validated recommendation and cannot be applied.'
+    apo_event manual-test PASS '' "CPU=$APO_MANUAL_CPU GPU=$APO_MANUAL_GPU passed $APO_MANUAL_DURATION_S seconds of timed stress, post-stress health, configured tryboot/normal cycles, and final normal recovery; permanent config remained unchanged."
 }
 
 apo_post_floor_edge_source_is_eligible() {

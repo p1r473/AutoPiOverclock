@@ -84,7 +84,8 @@ apo_config_saved_duration_policy_matches() {
     [[ $saved_policy == "$expected_policy" ]] && return 0
     [[ $saved_policy == default &&
        $qualification_duration == "$APO_DEFAULT_QUALIFICATION_DURATION_S" &&
-       $final_duration == "$APO_LEGACY_DEFAULT_FINAL_DURATION_S" &&
+       ( $final_duration == "$APO_PREVIOUS_DEFAULT_FINAL_DURATION_S" ||
+         $final_duration == "$APO_LEGACY_DEFAULT_FINAL_DURATION_S" ) &&
        $edge_duration == "$APO_DEFAULT_EDGE_DURATION_S" ]]
 }
 
@@ -292,9 +293,14 @@ apo_validate_name_list() {
 }
 
 apo_config_validate() {
+    local candidate_duration_max=86400
+    if (( ${APO_MANUAL_TEST:-0} == 1 )); then
+        candidate_duration_max=$APO_MAX_TUNING_DURATION_S
+    fi
     apo_parse_ordered_int_list "${APO_CFG[CPU_CANDIDATES]}" APO_CPU_CANDIDATES "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" cpu_candidates_mhz
     apo_parse_ordered_int_list "${APO_CFG[GPU_CANDIDATES]}" APO_GPU_CANDIDATES "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" gpu_candidates_mhz
-    apo_validate_uint_range "${APO_CFG[CANDIDATE_DURATION_S]}" 10 86400 || apo_die 'candidate_duration_seconds must be 10-86400.' "$APO_EXIT_USAGE"
+    apo_validate_uint_range "${APO_CFG[CANDIDATE_DURATION_S]}" 10 "$candidate_duration_max" ||
+        apo_die "candidate_duration_seconds must be 10-${candidate_duration_max}." "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" || apo_die 'final_duration_seconds must be 3600-604800.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[MAX_TEMP_C]}" 40 95 || apo_die 'max_temp_c must be 40-95.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[TELEMETRY_INTERVAL_S]}" 1 60 || apo_die 'telemetry_interval_seconds must be 1-60.' "$APO_EXIT_USAGE"
@@ -526,7 +532,7 @@ apo_config_restore_from_state() {
             apo_die 'Saved manual CPU clock is malformed.' "$APO_EXIT_INTERNAL"
         apo_validate_uint_range "$APO_MANUAL_GPU" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" ||
             apo_die 'Saved manual GPU clock is malformed.' "$APO_EXIT_INTERNAL"
-        apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 1440 || apo_die 'Saved manual duration is malformed.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 10080 || apo_die 'Saved manual duration is malformed.' "$APO_EXIT_INTERNAL"
         [[ $APO_MANUAL_DURATION_S == $((APO_MANUAL_MINUTES * 60)) ]] ||
             apo_die 'Saved manual duration fields disagree.' "$APO_EXIT_INTERNAL"
     fi
@@ -553,8 +559,8 @@ apo_write_effective_config() {
             printf '# automatic_final_workload=combined CPU/GPU/I/O\n'
         fi
         if (( ${APO_MANUAL_TEST:-0} == 1 )); then
-            printf '# manual_stability_test=CPU:%sMHz GPU:%sMHz duration:%smin; never eligible for permanent apply\n' \
-                "$APO_MANUAL_CPU" "$APO_MANUAL_GPU" "$APO_MANUAL_MINUTES"
+            printf '# manual_stability_test=CPU:%sMHz GPU:%sMHz duration:%ss; never eligible for permanent apply\n' \
+                "$APO_MANUAL_CPU" "$APO_MANUAL_GPU" "$APO_MANUAL_DURATION_S"
         fi
         for config_key in "${APO_ALLOWED_CONFIG_KEYS[@]}"; do
             internal_key=$(apo_config_internal_key "$config_key")

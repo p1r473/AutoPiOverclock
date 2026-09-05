@@ -137,7 +137,8 @@ Usage:
                                       [--restart-from CHECKPOINT]
                                       [--qualification-hours HOURS] [--final-hours HOURS]
                                       [--no-max-fan]
-  autopioverclock test TARGET --cpu MHZ --gpu MHZ --minutes MINUTES [--no-max-fan]
+  autopioverclock test TARGET --cpu MHZ --gpu MHZ (--final-hours HOURS | --minutes MINUTES)
+                                      [--no-max-fan]
   autopioverclock reset TARGET
   autopioverclock run TARGET [OPTIONS]
   autopioverclock resume TARGET [--run-id RUN_ID] [--restart-from CHECKPOINT]
@@ -164,7 +165,7 @@ Commands:
   report     Generate a concise report for a selected or latest run
 
   Automatic defaults are 2-hour domain qualifications and one uninterrupted
-  24-hour combined final validation. Coarse failures are refined upward in
+  48-hour combined final validation. Coarse failures are refined upward in
   25 MHz steps; the highest passing refined clock is then qualified.
 
 Target:
@@ -174,7 +175,7 @@ Target:
 
 Common options:
   --qualification-hours N  CPU and GPU qualification hours for overclock (default: 2)
-  --final-hours N          Uninterrupted combined final hours (default: 24)
+  --final-hours N          Final validation or exact-test hours (overclock default: 48)
   --restart-from POINT     current, cpu-qualification, gpu-qualification, or final
   --cpu-only               Continue CPU tuning from a retained applied result
   --gpu-only               Continue GPU tuning from a retained applied result
@@ -183,7 +184,7 @@ Common options:
   --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning/test
   --cpu MHZ                Exact CPU clock for test TARGET
   --gpu MHZ                Exact GPU/V3D clock for test TARGET
-  --minutes MINUTES        Timed stress duration for test TARGET (1-1440)
+  --minutes MINUTES        Alternative exact-test duration (1-1440; not with --final-hours)
   --output-dir DIR         Flat artifact directory (default: $HOME/overclock-results)
   --ssh-port PORT          SSH port (default: 22)
   --identity-file FILE     SSH private key; otherwise use agent/default keys
@@ -369,15 +370,27 @@ apo_parse_cli() {
             apo_die '--restart-from is valid only with overclock TARGET or resume TARGET.' "$APO_EXIT_USAGE"
     fi
     if [[ $APO_PUBLIC_COMMAND == test ]]; then
-        (( APO_MANUAL_CPU_OPTION_SEEN == 1 && APO_MANUAL_GPU_OPTION_SEEN == 1 && APO_MANUAL_MINUTES_OPTION_SEEN == 1 )) ||
-            apo_die 'test TARGET requires --cpu MHZ, --gpu MHZ, and --minutes MINUTES.' "$APO_EXIT_USAGE"
+        (( APO_MANUAL_CPU_OPTION_SEEN == 1 && APO_MANUAL_GPU_OPTION_SEEN == 1 )) ||
+            apo_die 'test TARGET requires --cpu MHZ and --gpu MHZ.' "$APO_EXIT_USAGE"
+        (( APO_MANUAL_MINUTES_OPTION_SEEN + APO_FINAL_HOURS_OPTION_SEEN == 1 )) || {
+            if (( APO_MANUAL_MINUTES_OPTION_SEEN == 1 && APO_FINAL_HOURS_OPTION_SEEN == 1 )); then
+                apo_die 'test TARGET accepts exactly one duration: use --final-hours HOURS or --minutes MINUTES, not both.' "$APO_EXIT_USAGE"
+            fi
+            apo_die 'test TARGET requires exactly one duration: --final-hours HOURS or --minutes MINUTES.' "$APO_EXIT_USAGE"
+        }
         apo_validate_uint_range "$APO_MANUAL_CPU" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" ||
             apo_die "--cpu must be ${APO_CPU_CLOCK_MIN_MHZ}-${APO_CPU_CLOCK_MAX_MHZ} MHz." "$APO_EXIT_USAGE"
         apo_validate_uint_range "$APO_MANUAL_GPU" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" ||
             apo_die "--gpu must be ${APO_GPU_CLOCK_MIN_MHZ}-${APO_GPU_CLOCK_MAX_MHZ} MHz." "$APO_EXIT_USAGE"
-        apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 1440 || apo_die '--minutes must be 1-1440.' "$APO_EXIT_USAGE"
-        APO_MANUAL_DURATION_S=$((APO_MANUAL_MINUTES * 60))
-        (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'test TARGET uses its exact --cpu/--gpu/--minutes plan; --config is not valid.' "$APO_EXIT_USAGE"
+        if (( APO_FINAL_HOURS_OPTION_SEEN == 1 )); then
+            APO_MANUAL_DURATION_S=$APO_FINAL_DURATION_S
+            APO_MANUAL_MINUTES=$((APO_MANUAL_DURATION_S / 60))
+        else
+            apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 1440 || apo_die '--minutes must be 1-1440.' "$APO_EXIT_USAGE"
+            APO_MANUAL_MINUTES=$((10#$APO_MANUAL_MINUTES))
+            APO_MANUAL_DURATION_S=$((APO_MANUAL_MINUTES * 60))
+        fi
+        (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'test TARGET uses its exact --cpu/--gpu/duration plan; --config is not valid.' "$APO_EXIT_USAGE"
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'test TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with test TARGET; repeat the same test command to continue it.' "$APO_EXIT_USAGE"
         (( APO_INSTALL_MISSING == 0 )) || apo_die 'Run prepare TARGET to install dependencies; test does not change host prerequisites.' "$APO_EXIT_USAGE"
@@ -394,8 +407,12 @@ apo_parse_cli() {
         apo_die '--cpu-only, --gpu-only, --cpu-start-at, and --gpu-start-at are valid only with overclock TARGET.' "$APO_EXIT_USAGE"
     fi
     if [[ $APO_PUBLIC_COMMAND != overclock && $APO_COMMAND != resume ]] &&
-       (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 || APO_FINAL_HOURS_OPTION_SEEN == 1 )); then
-        apo_die "--qualification-hours and --final-hours are valid only with overclock TARGET or resume TARGET, not ${APO_PUBLIC_COMMAND:-this command} TARGET." "$APO_EXIT_USAGE"
+       (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 )); then
+        apo_die "--qualification-hours is valid only with overclock TARGET or resume TARGET, not ${APO_PUBLIC_COMMAND:-this command} TARGET." "$APO_EXIT_USAGE"
+    fi
+    if [[ $APO_PUBLIC_COMMAND != overclock && $APO_PUBLIC_COMMAND != test && $APO_COMMAND != resume ]] &&
+       (( APO_FINAL_HOURS_OPTION_SEEN == 1 )); then
+        apo_die "--final-hours is valid only with overclock TARGET, test TARGET, or resume TARGET, not ${APO_PUBLIC_COMMAND:-this command} TARGET." "$APO_EXIT_USAGE"
     fi
     if [[ $APO_COMMAND == reset ]]; then
         (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die '--config is not valid with reset TARGET.' "$APO_EXIT_USAGE"
@@ -486,6 +503,28 @@ apo_public_overclock_require_matching_saved_durations() {
         apo_die 'The active run qualification duration cannot change during continuation.' "$APO_EXIT_USAGE"
     (( APO_FINAL_HOURS_OPTION_SEEN == 0 )) || [[ $APO_FINAL_DURATION_S == "$APO_SAVED_FINAL_DURATION_S" ]] ||
         apo_die 'The active run final duration cannot change during continuation.' "$APO_EXIT_USAGE"
+}
+
+apo_resume_require_matching_duration_options() {
+    local saved_origin saved_manual_duration
+    saved_origin=$(apo_state_get ORIGIN_COMMAND '')
+    if [[ $saved_origin == test ]]; then
+        (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 0 )) ||
+            apo_die '--qualification-hours is not valid when resuming an exact-pair test.' "$APO_EXIT_USAGE"
+        if (( APO_FINAL_HOURS_OPTION_SEEN == 1 )); then
+            saved_manual_duration=$(apo_state_get CFG_MANUAL_DURATION_S "$(apo_state_get MANUAL_DURATION_S '')")
+            apo_validate_uint_range "$saved_manual_duration" 60 "$APO_MAX_TUNING_DURATION_S" ||
+                apo_die 'The retained exact-pair test has a malformed saved duration.' "$APO_EXIT_INTERNAL"
+            [[ $APO_FINAL_DURATION_S == "$saved_manual_duration" ]] ||
+                apo_die 'The interrupted exact-pair test duration cannot change during resume.' "$APO_EXIT_USAGE"
+        fi
+        return 0
+    fi
+    if [[ $APO_PUBLIC_COMMAND != test ]] && (( APO_RESTART_FROM_OPTION_SEEN == 0 )) &&
+       (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 || APO_FINAL_HOURS_OPTION_SEEN == 1 )); then
+        apo_public_overclock_load_saved_duration_plan
+        apo_public_overclock_require_matching_saved_durations
+    fi
 }
 
 apo_restart_merge_unspecified_saved_durations() {
@@ -876,7 +915,7 @@ apo_public_overclock_select_continuation() {
 
 apo_public_test_select_continuation() {
     local state_file stored_run_id stored_target origin status phase state_schema
-    local saved_cpu saved_gpu saved_minutes saved_max_fan
+    local saved_cpu saved_gpu saved_minutes saved_duration saved_max_fan
     [[ $APO_PUBLIC_COMMAND == test ]] || return 0
     state_file=$(apo_find_state_file '' || true)
     [[ -n $state_file ]] || return 0
@@ -890,13 +929,15 @@ apo_public_test_select_continuation() {
     saved_cpu=$(apo_state_get CFG_MANUAL_CPU "$(apo_state_get MANUAL_CPU '')")
     saved_gpu=$(apo_state_get CFG_MANUAL_GPU "$(apo_state_get MANUAL_GPU '')")
     saved_minutes=$(apo_state_get CFG_MANUAL_MINUTES "$(apo_state_get MANUAL_MINUTES '')")
+    saved_duration=$(apo_state_get CFG_MANUAL_DURATION_S "$(apo_state_get MANUAL_DURATION_S '')")
     saved_max_fan=$(apo_state_get CFG_MAX_FAN 1)
     if apo_is_safe_run_id "$stored_run_id" &&
        [[ $stored_target == "$APO_REMOTE_TARGET" && $origin == test && ( $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 ) ]] &&
        [[ $status == RUNNING || $status == INTERRUPTED ]] &&
        [[ $phase != PREPARE && $phase != PREPARED && $phase != COMPLETE ]]; then
-        [[ $saved_cpu == "$APO_MANUAL_CPU" && $saved_gpu == "$APO_MANUAL_GPU" && $saved_minutes == "$APO_MANUAL_MINUTES" ]] ||
-            apo_die "An interrupted manual test is retained for CPU=${saved_cpu:-?} GPU=${saved_gpu:-?} duration=${saved_minutes:-?} minutes. Repeat that exact test command, or recover it explicitly before starting different clocks." "$APO_EXIT_USAGE"
+        [[ $saved_cpu == "$APO_MANUAL_CPU" && $saved_gpu == "$APO_MANUAL_GPU" &&
+           $saved_minutes == "$APO_MANUAL_MINUTES" && $saved_duration == "$APO_MANUAL_DURATION_S" ]] ||
+            apo_die "An interrupted manual test is retained for CPU=${saved_cpu:-?} GPU=${saved_gpu:-?} duration=${saved_duration:-?} seconds. Repeat the same clocks and duration, or recover it explicitly before starting a different test." "$APO_EXIT_USAGE"
         [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] || apo_die 'The interrupted manual test has a malformed saved maximum-fan policy.' "$APO_EXIT_INTERNAL"
         if (( APO_MAX_FAN_OPTION_SEEN == 1 )) && [[ $APO_MAX_FAN != "$saved_max_fan" ]]; then
             apo_die 'The interrupted manual test cooling policy cannot change during continuation.' "$APO_EXIT_USAGE"
@@ -1458,24 +1499,25 @@ apo_start_new_run() {
     apo_summary_line "Run ID: $APO_RUN_ID"
     apo_summary_line "Target: $APO_REMOTE_TARGET"
     apo_summary_line "Configured voltage delta: ${APO_CFG[VOLTAGE_DELTA_UV]}"
-    apo_summary_line "Candidate duration: ${APO_CFG[CANDIDATE_DURATION_S]}s"
-    apo_summary_line "CPU/GPU qualification duration: ${APO_QUALIFICATION_DURATION_S}s each"
-    apo_summary_line "Uninterrupted combined final duration: ${APO_CFG[FINAL_DURATION_S]}s"
-    if (( APO_EDGE_CPU_24H == 1 )); then
-        apo_summary_line "Legacy edge duration: ${APO_EDGE_DURATION_S}s"
+    if (( APO_MANUAL_TEST == 1 )); then
+        apo_summary_line "Manual stability target: CPU $APO_MANUAL_CPU MHz / GPU $APO_MANUAL_GPU MHz"
+        apo_summary_line "Manual timed stress: $APO_MANUAL_DURATION_S seconds"
+        apo_summary_line 'Manual test result: evidence only; never a validated recommendation or permanent apply input'
+    else
+        apo_summary_line "Candidate duration: ${APO_CFG[CANDIDATE_DURATION_S]}s"
+        apo_summary_line "CPU/GPU qualification duration: ${APO_QUALIFICATION_DURATION_S}s each"
+        apo_summary_line "Uninterrupted combined final duration: ${APO_CFG[FINAL_DURATION_S]}s"
+        if (( APO_EDGE_CPU_24H == 1 )); then
+            apo_summary_line "Legacy edge duration: ${APO_EDGE_DURATION_S}s"
+        fi
+        apo_summary_line "Duration policy: $APO_DURATION_POLICY"
     fi
-    apo_summary_line "Duration policy: $APO_DURATION_POLICY"
     apo_summary_line "Temperature ceiling: ${APO_CFG[MAX_TEMP_C]}C"
     apo_summary_line "Telemetry interval: ${APO_CFG[TELEMETRY_INTERVAL_S]}s"
     apo_summary_line "Candidate boot cycles: ${APO_CFG[CANDIDATE_BOOTS]}"
     apo_summary_line "Final post-stress boot cycles: ${APO_CFG[FINAL_BOOTS]}"
     apo_summary_line "Backoff steps: ${APO_CFG[BACKOFF_STEPS]}"
     apo_summary_line "Maximum fan cooling during tuning: $([[ $APO_MAX_FAN == 1 ]] && printf enabled || printf disabled)"
-    if (( APO_MANUAL_TEST == 1 )); then
-        apo_summary_line "Manual stability target: CPU $APO_MANUAL_CPU MHz / GPU $APO_MANUAL_GPU MHz"
-        apo_summary_line "Manual timed stress: $APO_MANUAL_MINUTES minutes ($APO_MANUAL_DURATION_S seconds)"
-        apo_summary_line 'Manual test result: evidence only; never a validated recommendation or permanent apply input'
-    fi
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
         apo_summary_line "Automatic refinement: ${APO_AUTO_REFINE_STEP_MHZ}MHz"
         apo_summary_line "Automatic selection policy: ${APO_SELECTION_POLICY:-refined-max-25}"
@@ -1750,11 +1792,7 @@ main() {
             apo_load_selected_run
             apo_restart_merge_unspecified_saved_durations
             apo_restore_saved_command_policy
-            if (( APO_RESTART_FROM_OPTION_SEEN == 0 )) &&
-               (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 || APO_FINAL_HOURS_OPTION_SEEN == 1 )); then
-                apo_public_overclock_load_saved_duration_plan
-                apo_public_overclock_require_matching_saved_durations
-            fi
+            apo_resume_require_matching_duration_options
             if [[ $APO_PUBLIC_COMMAND == overclock ]]; then
                 apo_event overclock-resume INFO '' "Continuing interrupted overclock run $APO_RUN_ID through the same safety gates."
             fi

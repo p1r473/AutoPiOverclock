@@ -283,6 +283,21 @@ apo_report_duration() {
     else printf '%ss' "$seconds"; fi
 }
 
+apo_report_manual_duration() {
+    local seconds minutes
+    seconds=$(apo_state_get MANUAL_DURATION_S "$(apo_state_get CFG_MANUAL_DURATION_S '')")
+    if [[ $seconds =~ ^[0-9]+$ ]]; then
+        apo_report_duration "$seconds"
+        return 0
+    fi
+    minutes=$(apo_state_get MANUAL_MINUTES "$(apo_state_get CFG_MANUAL_MINUTES '')")
+    if [[ $minutes =~ ^[0-9]+$ ]]; then
+        apo_report_duration "$((minutes * 60))"
+    else
+        printf n/a
+    fi
+}
+
 apo_report_friendly_phase() {
     case ${1:-} in
         TRYBOOT_PROOF) printf 'baseline safety proof' ;;
@@ -393,7 +408,7 @@ EOF_STATUS
 Auto retries:   $(apo_report_state_value FINAL_BACKOFF_COUNT 0)
 Duration policy: $(apo_report_state_value CFG_DURATION_POLICY default) qualification=$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s final=$(apo_report_state_value CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")s
 Max fan tuning: $(apo_report_fan_policy)
-Manual test:    $(apo_report_state_value MANUAL_TEST_STATUS NOT_REQUESTED) CPU=$(apo_report_state_value MANUAL_CPU n/a)MHz GPU=$(apo_report_state_value MANUAL_GPU n/a)MHz duration=$(apo_report_state_value MANUAL_MINUTES n/a)min
+Manual test:    $(apo_report_state_value MANUAL_TEST_STATUS NOT_REQUESTED) CPU=$(apo_report_state_value MANUAL_CPU n/a)MHz GPU=$(apo_report_state_value MANUAL_GPU n/a)MHz duration=$(apo_report_manual_duration)
 Run max temp:   $(apo_report_state_value RUN_MAX_TEMP pending)C
 Final clocks:   CPU $(apo_report_state_value FINAL_CPU pending) MHz / GPU $(apo_report_state_value FINAL_GPU pending) MHz
 Validated:      $(apo_report_state_value VALIDATED 0)
@@ -578,9 +593,9 @@ apo_generate_report() {
             "$(apo_report_state_value CFG_DURATION_POLICY default)" \
             "$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")" \
             "$(apo_report_state_value CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")"
-        printf 'Manual stability test: status=%s, CPU=%s MHz, GPU=%s MHz, duration=%s minutes\n' \
+        printf 'Manual stability test: status=%s, CPU=%s MHz, GPU=%s MHz, duration=%s\n' \
             "$(apo_report_state_value MANUAL_TEST_STATUS NOT_REQUESTED)" "$(apo_report_state_value MANUAL_CPU n/a)" \
-            "$(apo_report_state_value MANUAL_GPU n/a)" "$(apo_report_state_value MANUAL_MINUTES n/a)"
+            "$(apo_report_state_value MANUAL_GPU n/a)" "$(apo_report_manual_duration)"
         printf 'Maximum observed run temperature: %sC\n' "$(apo_report_state_value RUN_MAX_TEMP pending)"
         if [[ $policy != refined-max-25 ]]; then
             printf 'Edge failure: class=%s, reason=%s\n' \
