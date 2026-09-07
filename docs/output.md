@@ -11,10 +11,10 @@ Artifact destinations are reconstructed from the selected, filename-validated st
 | Classification | Meaning |
 |---|---|
 | `PREFLIGHT_FAILURE` | Unsupported/missing prerequisite before tuning. |
-| `HARNESS_FAILURE` | The intended test did not actually run or prove its workload, including a missing/mismatched explicitly required audio pattern, a structured harness diagnosis, or unstructured same-boot transport loss after five safely recovered automatic retries are exhausted. |
+| `HARNESS_FAILURE` | The intended test did not actually run or prove its workload, including a missing/mismatched explicitly required audio pattern, a structured harness diagnosis, or unstructured same-boot transport loss after five safely recovered automatic retries are exhausted. A primary normal-return timeout belongs to this retry path only when bounded fallback later proves the complete protected permanent-normal configuration and clocks, clear tryboot state and owned cleanup, watchdog chain, and normal health; it uses the same persisted retry budget. |
 | `BOOT_FAILURE` | Candidate boot or required boot/display/service health failed, including an exactly observed autonomous reboot during that gate after full normal recovery. |
 | `STABILITY_FAILURE` | Power, temperature, kernel, GPU, storage, filesystem, stress, or post-stress-health failure, including an exactly observed autonomous candidate reboot after full normal recovery. |
-| `RECOVERY_FAILURE` | The target did not return to verified permanent normal configuration, or protected recovery evidence remained unavailable/mismatched after its retry policy. An older controller-only unavailable-hash result may be normalized to `HARNESS_FAILURE` only after fresh stock health and the exact hash are re-proved. |
+| `RECOVERY_FAILURE` | The target's protected permanent-normal configuration and clocks, clear tryboot state and owned cleanup, watchdog chain, or normal health remained unproved after the primary handshake and bounded fallback. A timeout alone never becomes clock-boundary evidence or triggers domain isolation. An older controller-only unavailable-hash result may be normalized to `HARNESS_FAILURE` only after protected normal health and the exact hash are freshly re-proved. |
 | `APPLY_FAILURE` | Permanent application or rollback failed. |
 
 The `.state` file is data-only: sorted uppercase keys with base64-encoded values. It is never sourced. The `.jsonl` event stream is finalized into a JSON array when the controller exits.

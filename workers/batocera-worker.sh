@@ -1590,6 +1590,36 @@ cmd_reboot_normal() {
     reboot >/dev/null 2>&1
 }
 
+cmd_reboot_normal_fallback() {
+    local boot_config=$1 tryboot_config=$2 expected_permanent_hash=$3 expected_tryboot_hash=$4
+    local run_id=$5 ownership_token=$6 expected_boot_id=$7 current_boot_id live_flag
+    # This direct fallback is intentionally separate from the graceful primary
+    # reboot. Re-prove the exact candidate ownership, protected config, and
+    # read-only boot mount inside the mutation lock immediately before syscall.
+    [[ $expected_boot_id =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || {
+        emit_result RECOVERY_FAILURE 'The verified normal-return fallback received a malformed expected boot ID.'
+        return 1
+    }
+    current_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    [[ $current_boot_id == "$expected_boot_id" ]] || {
+        emit_result RECOVERY_FAILURE 'The boot identity changed before the verified normal-return fallback mutation boundary.'
+        return 1
+    }
+    live_flag=$(od -An -tx1 /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d ' \n' || true)
+    [[ $live_flag == 00000001 ]] || {
+        emit_result RECOVERY_FAILURE 'The live tryboot flag is not exactly active at the verified normal-return fallback mutation boundary.'
+        return 1
+    }
+    cmd_verify_tryboot "$boot_config" "$tryboot_config" "$expected_permanent_hash" \
+        "$expected_tryboot_hash" "$run_id" "$ownership_token" >/dev/null || return 1
+    vcgencmd get_throttled 0x0f >/dev/null 2>&1 || true
+    sync || { emit_result RECOVERY_FAILURE 'Could not sync before the verified normal-return fallback reboot.'; return 1; }
+    trap - EXIT INT TERM HUP
+    verified_normal_reboot_now
+    emit_result RECOVERY_FAILURE 'The verified normal-return fallback reboot syscall returned without restarting the target.'
+    return 1
+}
+
 cmd_reset_throttle_history() {
     local before_reset after_reset
     before_reset=$(recent_throttle)
@@ -2647,6 +2677,7 @@ main() {
         clear-tryboot) run_with_mutation_lock "${8:-}" RECOVERY_FAILURE cmd_clear_tryboot "$@" ;;
         trigger-tryboot) run_with_mutation_lock "${6:-}" RECOVERY_FAILURE cmd_trigger_tryboot "$@" ;;
         reboot-normal) run_with_mutation_lock "reboot-${BASHPID}" RECOVERY_FAILURE cmd_reboot_normal "$@" ;;
+        reboot-normal-fallback) run_with_mutation_lock "reboot-fallback-${BASHPID}" RECOVERY_FAILURE cmd_reboot_normal_fallback "$@" ;;
         stress) cmd_stress "$@" ;;
         reset-throttle-history) cmd_reset_throttle_history "$@" ;;
         render-permanent) cmd_render_permanent "$@" ;;

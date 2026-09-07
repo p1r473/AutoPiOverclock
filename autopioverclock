@@ -674,6 +674,7 @@ apo_public_overclock_select_continuation() {
           { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 || $state_schema == 8 || $state_schema == 7 ]] &&
                apo_final_saved_failure_is_retryable "$state_schema"; } ||
           { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $post_floor_final == 1 && $status == FAILED ]]; } ||
+          { apo_saved_normal_return_failure_is_retryable "$state_schema"; } ||
           { apo_saved_transient_failure_is_retryable "$state_schema"; }; }; then
         saved_sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
         [[ $saved_sweep_domain == all || $saved_sweep_domain == cpu || $saved_sweep_domain == gpu ]] ||
@@ -933,7 +934,9 @@ apo_public_test_select_continuation() {
     saved_max_fan=$(apo_state_get CFG_MAX_FAN 1)
     if apo_is_safe_run_id "$stored_run_id" &&
        [[ $stored_target == "$APO_REMOTE_TARGET" && $origin == test && ( $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 ) ]] &&
-       [[ $status == RUNNING || $status == INTERRUPTED ]] &&
+       { [[ $status == RUNNING || $status == INTERRUPTED ]] ||
+         { [[ $status == FAILED && $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 ]] &&
+           apo_validate_normal_return_retry_state; }; } &&
        [[ $phase != PREPARE && $phase != PREPARED && $phase != COMPLETE ]]; then
         [[ $saved_cpu == "$APO_MANUAL_CPU" && $saved_gpu == "$APO_MANUAL_GPU" &&
            $saved_minutes == "$APO_MANUAL_MINUTES" && $saved_duration == "$APO_MANUAL_DURATION_S" ]] ||
@@ -1723,7 +1726,7 @@ apo_exit_from_saved_failure() {
 }
 
 main() {
-    local status state_schema retry_saved_final=0 retry_saved_transient=0 saved_failure_stage='' saved_failure_class='' saved_failure_reason=''
+    local status state_schema retry_saved_final=0 retry_saved_transient=0 retry_saved_normal_return=0 saved_failure_stage='' saved_failure_class='' saved_failure_reason=''
     apo_parse_cli "$@"
     if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
         APO_RESTART_PENDING=1
@@ -1865,6 +1868,10 @@ main() {
                 saved_failure_stage=$(apo_state_get FINAL_STAGE '')
                 saved_failure_class=$(apo_state_get FAILURE_CLASS '')
                 saved_failure_reason=$(apo_state_get FAILURE_REASON '')
+            elif apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then
+                retry_saved_normal_return=1
+                saved_failure_class=$(apo_state_get FAILURE_CLASS '')
+                saved_failure_reason=$(apo_state_get FAILURE_REASON '')
             elif apo_saved_transient_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then
                 retry_saved_transient=1
                 saved_failure_class=$(apo_state_get FAILURE_CLASS '')
@@ -1879,6 +1886,12 @@ main() {
             elif (( retry_saved_final == 1 )); then
                 if ! apo_final_schedule_stress_backoff "$saved_failure_stage" "$saved_failure_class" "$saved_failure_reason"; then
                     apo_state_fail "$saved_failure_class" "$saved_failure_reason"
+                    return "$(apo_class_exit_code "$saved_failure_class")"
+                fi
+            elif (( retry_saved_normal_return == 1 )); then
+                if ! apo_adopt_saved_normal_return_failure; then
+                    saved_failure_class=${APO_LAST_CLASS:-RECOVERY_FAILURE}
+                    apo_state_fail "$saved_failure_class" "${APO_LAST_REASON:-Saved normal-return recovery could not be replayed safely.}"
                     return "$(apo_class_exit_code "$saved_failure_class")"
                 fi
             elif (( retry_saved_transient == 1 )); then

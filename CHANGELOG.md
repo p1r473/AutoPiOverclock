@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.49 — 2026-09-06
+
+- Made a stalled Batocera normal-return request recoverable in-process only when the controller can re-prove the exact unchanged tryboot boot, active firmware tryboot state, protected permanent-config hash, project-owned candidate file, ownership token, quarantine path, and read-only boot mount. A separately named direct fallback rechecks boot identity, firmware state, config, and ownership again inside the target mutation lock immediately before reboot.
+- At a clean normal-return checkpoint, after fallback reaches a fully verified permanent-normal boot, the controller durably records a pending replay before returning, then atomically combines its retry count with the affected checkpoint rewind. The complete boot/stress/health gate repeats under the existing five-retry budget without lowering CPU or GPU. When fallback is only transporting an already-recorded worker, health, or stability failure back to normal, that original result remains authoritative and no competing replay marker is created. Final-validation recovery replays the full saved duration from zero; incomplete proof remains `RECOVERY_FAILURE`, and timeout alone never enters clock backoff or domain isolation.
+- Allowed an exact current-schema automatic run that already stopped at a candidate or final normal-return checkpoint to resume only after fresh protected-normal recovery has cleared all owned tryboot evidence. The checkpoint is atomically rewound, clocks and boundaries are preserved, and malformed, older-schema, ownership-bearing, or exhausted state remains refused.
+
 ## 0.1.0-alpha.48 — 2026-09-05
 
 - Raised the configuration-free automatic final-validation default from 24 to 48 uninterrupted hours. The 1–168 hour override remains available, shorter runs are still labeled custom, and every failure or retry starts the complete saved duration again rather than crediting partial time.

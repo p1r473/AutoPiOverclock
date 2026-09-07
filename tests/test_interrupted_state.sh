@@ -7,6 +7,7 @@ APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/state.sh"
 source "$ROOT/lib/recovery.sh"
+source "$ROOT/lib/candidates.sh"
 apo_state_load "$ROOT/tests/fixtures/interrupted-tryboot.state"
 [[ $(apo_state_get STATUS) == INTERRUPTED ]]
 [[ $(apo_state_get TRYBOOT_EXPECTED) == 1 ]]
@@ -286,7 +287,7 @@ apo_return_normal already-normal-fixture
     apo_state_set LAST_BOOT_ID candidate-stress-boot
     apo_state_set CANDIDATE_BOOT_ID candidate-stress-boot
     apo_state_set CANDIDATE_STAGE STRESS
-    CURRENT_BOOT_ID=candidate-stress-boot
+    CURRENT_BOOT_ID='candidate-stress-boot'
     REBOOT_NORMAL_CALLS=0
     apo_wait_for_ssh() { return 0; }
     apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
@@ -317,7 +318,7 @@ for missing_proof in active-stage tryboot-expectation pending-boot-id changed-bo
             active-stage) apo_state_set CANDIDATE_STAGE POST_STRESS_HEALTH ;;
             tryboot-expectation) apo_state_set TRYBOOT_EXPECTED 0 ;;
             pending-boot-id) apo_state_set LAST_BOOT_ID '' ;;
-            changed-boot-id) CURRENT_BOOT_ID=candidate-proof-boot ;;
+            changed-boot-id) CURRENT_BOOT_ID='candidate-proof-boot' ;;
             clear-tryboot) TRYBOOT_FLAG=00000001 ;;
             candidate-boot-id) apo_state_set CANDIDATE_BOOT_ID different-candidate-boot ;;
         esac
@@ -624,6 +625,240 @@ apo_return_normal third-reboot-fixture
 [[ $REBOOT_NORMAL_CALLS == 3 ]]
 [[ $(apo_state_get NORMAL_BOOT_ID) == boot-3 ]]
 [[ $(apo_state_get TRYBOOT_EXPECTED) == 0 ]]
+
+# A graceful normal-return request can occasionally leave Batocera running on
+# the exact same tryboot boot. Re-prove every non-mutating boundary, issue the
+# separately named direct fallback once, finish complete normal recovery, and
+# expose a retry marker so the caller replays the affected gate. This incident
+# is harness uncertainty and never a CPU/GPU boundary.
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    FIXTURE_TRYBOOT_HASH=$(printf 'a%.0s' {1..64})
+    FIXTURE_RESERVATION_HASH=$(printf 'b%.0s' {1..64})
+    FIXTURE_OWNERSHIP_TOKEN=$(printf 'c%.0s' {1..64})
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+    apo_state_set TRYBOOT_OWNED_HASH "$FIXTURE_TRYBOOT_HASH"
+    apo_state_set TRYBOOT_RESERVATION_HASH "$FIXTURE_RESERVATION_HASH"
+    apo_state_set TRYBOOT_OWNERSHIP_TOKEN "$FIXTURE_OWNERSHIP_TOKEN"
+    apo_state_set TRYBOOT_QUARANTINE_PATH "/boot/.autopioverclock-remove-${FIXTURE_OWNERSHIP_TOKEN}"
+    apo_state_set LAST_BOOT_ID stalled-candidate-boot
+    apo_state_set CANDIDATE_BOOT_ID stalled-candidate-boot
+    CURRENT_BOOT_ID=stalled-candidate-boot
+    REBOOT_NORMAL_CALLS=0
+    FALLBACK_CALLS=0
+    OWNERSHIP_RECHECKS=0
+    HASH_RECHECKS=0
+    CLEANUP_CALLS=0
+    HEALTH_CALLS=0
+    INTENT_BEFORE_FALLBACK=0
+    EXPECT_NEW_REPLAY_INTENT=1
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() { [[ $CURRENT_BOOT_ID == stalled-candidate-boot ]] && printf 00000001 || printf 00000000; }
+    apo_ensure_worker_for_boot() { return 0; }
+    apo_verify_permanent_hash() { HASH_RECHECKS=$((HASH_RECHECKS + 1)); return 0; }
+    apo_run_worker_capture() {
+        [[ $2 == verify-tryboot && $3 == "$APO_BOOT_CONFIG" && $4 == "$APO_TRYBOOT_CONFIG" ]]
+        [[ $5 == "$APO_PERMANENT_CONFIG_HASH" && $6 == "$FIXTURE_TRYBOOT_HASH" ]]
+        [[ $7 == "$APO_RUN_ID" && $8 == "$FIXTURE_OWNERSHIP_TOKEN" ]]
+        OWNERSHIP_RECHECKS=$((OWNERSHIP_RECHECKS + 1))
+    }
+    apo_remote_worker() {
+        REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1))
+        if [[ $2 == reboot-normal-fallback ]]; then
+            FALLBACK_CALLS=$((FALLBACK_CALLS + 1))
+            if (( EXPECT_NEW_REPLAY_INTENT == 1 )); then
+                [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 ]] || return 1
+                [[ $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') == stalled-normal-return ]] || return 1
+                [[ $(apo_state_get NORMAL_RETURN_RETRY_REASON '') == *'must replay after normal recovery is fully verified'* ]] || return 1
+                INTENT_BEFORE_FALLBACK=1
+            fi
+            [[ $3 == "$APO_BOOT_CONFIG" && $4 == "$APO_TRYBOOT_CONFIG" ]]
+            [[ $5 == "$APO_PERMANENT_CONFIG_HASH" && $6 == "$FIXTURE_TRYBOOT_HASH" ]]
+            [[ $7 == "$APO_RUN_ID" && $8 == "$FIXTURE_OWNERSHIP_TOKEN" ]]
+            CURRENT_BOOT_ID='fallback-normal-boot'
+        else
+            [[ $2 == reboot-normal ]]
+        fi
+    }
+    apo_wait_for_new_boot() {
+        [[ $2 == 300 ]] || return 1
+        [[ $CURRENT_BOOT_ID != "$1" ]] || return 1
+        printf '%s' "$CURRENT_BOOT_ID"
+    }
+    apo_clear_managed_tryboot() {
+        CLEANUP_CALLS=$((CLEANUP_CALLS + 1))
+        apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+        apo_state_set TRYBOOT_OWNED_HASH ''
+        apo_state_set TRYBOOT_RESERVATION_HASH ''
+        apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+        apo_state_set TRYBOOT_QUARANTINE_PATH ''
+    }
+    apo_health_check() { HEALTH_CALLS=$((HEALTH_CALLS + 1)); return 0; }
+    apo_return_normal stalled-normal-return 0 none 1
+    [[ $REBOOT_NORMAL_CALLS == 2 && $FALLBACK_CALLS == 1 ]]
+    [[ $INTENT_BEFORE_FALLBACK == 1 ]]
+    [[ $OWNERSHIP_RECHECKS == 1 && $HASH_RECHECKS == 1 ]]
+    [[ $CLEANUP_CALLS == 1 && $HEALTH_CALLS == 1 ]]
+    [[ $(apo_state_get NORMAL_BOOT_ID) == fallback-normal-boot ]]
+    [[ $(apo_state_get TRYBOOT_EXPECTED) == 0 && $(apo_state_get TRYBOOT_FILE_MAY_EXIST) == 0 ]]
+    [[ $APO_RETURN_NORMAL_RETRY_REQUIRED == 1 ]]
+    [[ $APO_RETURN_NORMAL_RETRY_REASON == *'fully re-proved clear tryboot state, owned cleanup, protected config, normal clocks, watchdogs, and health'* ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 1 ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_SOURCE) == stalled-normal-return ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_REASON) == "$APO_RETURN_NORMAL_RETRY_REASON" ]]
+    apo_normal_return_retry_schedule stalled-normal-return stalled-normal-return apo_baseline_retry_rewind_state
+    [[ $(apo_state_get TRANSIENT_RETRY_CONTEXT) == stalled-normal-return ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 0 ]]
+    [[ -z $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') && -z $(apo_state_get NORMAL_RETURN_RETRY_REASON '') ]]
+    [[ $APO_LAST_CLASS != BOOT_FAILURE && $APO_LAST_CLASS != STABILITY_FAILURE ]]
+
+    seed_stalled_failure_recovery() {
+        reset_recovery_fixture
+        APO_PROFILE=batocera
+        apo_state_set TRYBOOT_EXPECTED 1
+        apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+        apo_state_set TRYBOOT_OWNED_HASH "$FIXTURE_TRYBOOT_HASH"
+        apo_state_set TRYBOOT_RESERVATION_HASH "$FIXTURE_RESERVATION_HASH"
+        apo_state_set TRYBOOT_OWNERSHIP_TOKEN "$FIXTURE_OWNERSHIP_TOKEN"
+        apo_state_set TRYBOOT_QUARANTINE_PATH "/boot/.autopioverclock-remove-${FIXTURE_OWNERSHIP_TOKEN}"
+        apo_state_set LAST_BOOT_ID stalled-candidate-boot
+        apo_state_set CANDIDATE_BOOT_ID stalled-candidate-boot
+        apo_state_set CANDIDATE_STAGE STRESS
+        apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+        apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+        apo_state_set NORMAL_RETURN_RETRY_REASON ''
+        CURRENT_BOOT_ID=stalled-candidate-boot
+        REBOOT_NORMAL_CALLS=0
+        FALLBACK_CALLS=0
+        OWNERSHIP_RECHECKS=0
+        HASH_RECHECKS=0
+        CLEANUP_CALLS=0
+        HEALTH_CALLS=0
+        INTENT_BEFORE_FALLBACK=0
+        EXPECT_NEW_REPLAY_INTENT=0
+    }
+
+    # A fallback needed while recovering an existing retryable stress failure
+    # belongs to that stress gate's retry path. It must not create a second,
+    # mismatched normal-return replay marker that poisons the next checkpoint.
+    seed_stalled_failure_recovery
+    apo_recover_stress_failure stalled-retryable-stress-recovery HARNESS_FAILURE 'CPU stress exited early with rc=0.' 1 candidate
+    [[ $REBOOT_NORMAL_CALLS == 2 && $FALLBACK_CALLS == 1 ]]
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE && $APO_LAST_REASON == 'CPU stress exited early with rc=0.' ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 0 ]]
+    [[ -z $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') && -z $(apo_state_get NORMAL_RETURN_RETRY_REASON '') ]]
+    apo_transient_phase_retry_schedule stalled-retryable-stress HARNESS_FAILURE "$APO_LAST_REASON" 1
+    [[ $(apo_state_get TRANSIENT_RETRY_CONTEXT) == stalled-retryable-stress ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+
+    # A structured stability result remains the clock evidence. Fallback is
+    # only its normal-recovery transport and cannot request a same-clock replay.
+    seed_stalled_failure_recovery
+    apo_recover_stress_failure stalled-structured-stability-recovery STABILITY_FAILURE 'CPU stress reported computation errors.' 1 candidate
+    [[ $REBOOT_NORMAL_CALLS == 2 && $FALLBACK_CALLS == 1 ]]
+    [[ $APO_LAST_CLASS == STABILITY_FAILURE && $APO_LAST_REASON == 'CPU stress reported computation errors.' ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 0 ]]
+    [[ -z $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') && -z $(apo_state_get NORMAL_RETURN_RETRY_REASON '') ]]
+
+    # Simulate a controller dying immediately after saving replay intent and
+    # before it invokes fallback. Resume first completes normal recovery and
+    # health; only the original checkpoint may then consume and rewind it.
+    seed_stalled_failure_recovery
+    apo_state_set PHASE GPU_QUALIFICATION
+    apo_state_set SUBPHASE gpu-qualification-2975_gpu-1125:NORMAL_2
+    apo_state_set CANDIDATE_LABEL gpu-qualification-2975_gpu-1125
+    apo_state_set CANDIDATE_CPU 2975
+    apo_state_set CANDIDATE_GPU 1125
+    apo_state_set CANDIDATE_STAGE NORMAL_2
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
+    apo_state_set NORMAL_RETURN_RETRY_REASON 'The verified stalled tryboot requires complete-gate replay after normal recovery.'
+    apo_validate_normal_return_retry_state
+    apo_recover_normal resume-initial-recovery
+    [[ $(apo_state_get TRYBOOT_EXPECTED) == 0 && $(apo_state_get TRYBOOT_FILE_MAY_EXIST) == 0 ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 1 ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_SOURCE) == gpu-qualification-2975_gpu-1125-normal-2 ]]
+    apo_validate_normal_return_retry_state
+    apo_normal_return_retry_schedule gpu-qualification-2975_gpu-1125-normal-2 gpu-qualification-2975_gpu-1125-normal-2 \
+        apo_candidate_retry_rewind_state gpu-qualification-2975_gpu-1125 2975 1125 BOOT_2
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 0 ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_CONTEXT) == gpu-qualification-2975_gpu-1125-normal-2 ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+    [[ $(apo_state_get CANDIDATE_STAGE) == BOOT_2 ]]
+
+    # The adjacent crash window after owned-file cleanup has clear ownership
+    # but still retains replay intent. Fresh resume health proof precedes the
+    # same atomic retry/rewind rather than silently advancing the checkpoint.
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    CURRENT_BOOT_ID=already-recovered-normal-boot
+    apo_state_set PHASE GPU_QUALIFICATION
+    apo_state_set SUBPHASE gpu-qualification-2975_gpu-1125:NORMAL_2
+    apo_state_set CANDIDATE_LABEL gpu-qualification-2975_gpu-1125
+    apo_state_set CANDIDATE_CPU 2975
+    apo_state_set CANDIDATE_GPU 1125
+    apo_state_set CANDIDATE_STAGE NORMAL_2
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
+    apo_state_set NORMAL_RETURN_RETRY_REASON 'The verified stalled tryboot requires complete-gate replay after normal recovery.'
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() { printf 00000000; }
+    apo_ensure_worker_for_boot() { return 0; }
+    apo_health_check() { HEALTH_CALLS=$((HEALTH_CALLS + 1)); return 0; }
+    HEALTH_CALLS=0
+    apo_validate_normal_return_retry_state
+    apo_recover_normal resume-initial-recovery
+    [[ $HEALTH_CALLS == 1 && $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 1 ]]
+    apo_validate_normal_return_retry_state
+    apo_normal_return_retry_schedule gpu-qualification-2975_gpu-1125-normal-2 gpu-qualification-2975_gpu-1125-normal-2 \
+        apo_candidate_retry_rewind_state gpu-qualification-2975_gpu-1125 2975 1125 BOOT_2
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 0 ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+    [[ $(apo_state_get CANDIDATE_STAGE) == BOOT_2 ]]
+)
+
+# A fallback is never attempted when any protected evidence is uncertain. The
+# original owned candidate remains preserved for the exit recovery boundary.
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    FIXTURE_TRYBOOT_HASH=$(printf 'a%.0s' {1..64})
+    FIXTURE_RESERVATION_HASH=$(printf 'b%.0s' {1..64})
+    FIXTURE_OWNERSHIP_TOKEN=$(printf 'c%.0s' {1..64})
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+    apo_state_set TRYBOOT_OWNED_HASH "$FIXTURE_TRYBOOT_HASH"
+    apo_state_set TRYBOOT_RESERVATION_HASH "$FIXTURE_RESERVATION_HASH"
+    apo_state_set TRYBOOT_OWNERSHIP_TOKEN "$FIXTURE_OWNERSHIP_TOKEN"
+    apo_state_set TRYBOOT_QUARANTINE_PATH "/boot/.autopioverclock-remove-${FIXTURE_OWNERSHIP_TOKEN}"
+    apo_state_set LAST_BOOT_ID stalled-candidate-boot
+    apo_state_set CANDIDATE_BOOT_ID stalled-candidate-boot
+    REBOOT_NORMAL_CALLS=0
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf stalled-candidate-boot; }
+    apo_remote_tryboot_flag() { printf 00000001; }
+    apo_ensure_worker_for_boot() { return 0; }
+    apo_remote_worker() { REBOOT_NORMAL_CALLS=$((REBOOT_NORMAL_CALLS + 1)); }
+    apo_wait_for_new_boot() { return 1; }
+    apo_verify_permanent_hash() {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='fixture protected hash mismatch'
+        return 1
+    }
+    if apo_return_normal stalled-hash-mismatch; then
+        echo 'stalled normal return ignored a protected hash mismatch' >&2
+        exit 1
+    fi
+    [[ $REBOOT_NORMAL_CALLS == 1 ]]
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE && $APO_LAST_REASON == 'fixture protected hash mismatch' ]]
+    [[ $(apo_state_get TRYBOOT_EXPECTED) == 1 && $(apo_state_get TRYBOOT_FILE_MAY_EXIST) == 1 ]]
+    [[ $APO_RETURN_NORMAL_RETRY_REQUIRED == 0 ]]
+)
 
 # A candidate that automatically falls back to normal records the recovered
 # boot ID and clears only the state that is now known to be normal.

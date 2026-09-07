@@ -105,7 +105,7 @@ apo_post_reboot_handshake() {
     new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$timeout_seconds" "$context" || true)
     [[ -n $new_boot_id && $new_boot_id != "$old_boot_id" ]] || {
         APO_LAST_CLASS=HARNESS_FAILURE
-        APO_LAST_REASON="The target did not return with a new boot ID after $context."
+        APO_LAST_REASON="No new boot ID was observed after the reboot request for $context; the target either remained on boot $old_boot_id or could not be safely identified."
         return 1
     }
     APO_REBOOT_OBSERVED_BOOT_ID=$new_boot_id

@@ -6,6 +6,9 @@ APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
 APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
 APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
 APO_BOOT_FAILURE_OBSERVATION_ELIGIBLE=0
+APO_RETURN_NORMAL_RETRY_REQUIRED=0
+APO_RETURN_NORMAL_RETRY_REASON=''
+APO_RETURN_NORMAL_RETRY_SOURCE=''
 APO_TRANSIENT_PHASE_RETRY_MAX=5
 
 apo_transient_worker_failure_is_retryable() {
@@ -87,7 +90,7 @@ apo_reboot_observation_scope_is_active() {
 
 apo_transient_phase_retry_schedule() {
     local retry_context=$1 original_class=$2 original_reason=$3 eligible=${4:-0}
-    local saved_context retry_count
+    local state_rewind=${5:-} saved_context retry_count
     [[ $eligible == 1 && $original_class == HARNESS_FAILURE && -n $original_reason ]] || return 1
     saved_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
     retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
@@ -100,6 +103,10 @@ apo_transient_phase_retry_schedule() {
     apo_state_set STATUS RUNNING
     apo_state_set FAILURE_CLASS ''
     apo_state_set FAILURE_REASON ''
+    if [[ -n $state_rewind ]]; then
+        declare -F "$state_rewind" >/dev/null 2>&1 || return 1
+        "$state_rewind" "${@:6}" || return 1
+    fi
     apo_state_save
     apo_event automatic-harness-retry WARN HARNESS_FAILURE "Recovered a retryable harness failure in $retry_context; repeating the complete affected gate automatically (retry $retry_count/$APO_TRANSIENT_PHASE_RETRY_MAX): $original_reason"
 }
@@ -112,6 +119,130 @@ apo_transient_phase_retry_clear() {
         apo_state_set TRANSIENT_RETRY_CONTEXT ''
         apo_state_set TRANSIENT_RETRY_COUNT 0
         apo_state_save
+    fi
+}
+
+apo_normal_return_retry_schedule() {
+    local retry_context=$1 expected_source=$2 state_rewind=$3 recovered_reason saved_source rc
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 ]] || return 1
+    saved_source=$(apo_state_get NORMAL_RETURN_RETRY_SOURCE '')
+    recovered_reason=$(apo_state_get NORMAL_RETURN_RETRY_REASON '')
+    if [[ -z $recovered_reason || $saved_source != "$expected_source" ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="Saved normal-return replay evidence is incomplete or does not match $expected_source; refusing to credit or replay the gate."
+        return 2
+    fi
+    if [[ $(apo_state_get TRYBOOT_EXPECTED 0) != 0 || $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) != 0 ||
+          -n $(apo_state_get TRYBOOT_OWNED_HASH '') || -n $(apo_state_get TRYBOOT_RESERVATION_HASH '') ||
+          -n $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') || -n $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="Saved normal-return replay for $expected_source cannot begin until complete normal recovery clears every owned tryboot field."
+        return 2
+    fi
+    if apo_transient_phase_retry_schedule "$retry_context" HARNESS_FAILURE "$recovered_reason" 1 \
+        apo_normal_return_retry_rewind_state "$expected_source" "$state_rewind" "${@:4}"; then
+        APO_RETURN_NORMAL_RETRY_REQUIRED=0
+        APO_RETURN_NORMAL_RETRY_REASON=''
+        APO_RETURN_NORMAL_RETRY_SOURCE=''
+        return 0
+    else
+        rc=$?
+    fi
+    (( rc == 1 )) || return "$rc"
+    APO_LAST_CLASS=HARNESS_FAILURE
+    APO_LAST_REASON="$recovered_reason Automatic recovery exhausted $APO_TRANSIENT_PHASE_RETRY_MAX bounded retries of this complete gate."
+    APO_RETURN_NORMAL_RETRY_REQUIRED=0
+    APO_RETURN_NORMAL_RETRY_REASON=''
+    APO_RETURN_NORMAL_RETRY_SOURCE=''
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+    apo_state_set NORMAL_RETURN_RETRY_REASON ''
+    return 2
+}
+
+apo_normal_return_retry_rewind_state() {
+    local expected_source=$1 state_rewind=$2
+    shift 2
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 &&
+       $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') == "$expected_source" &&
+       -n $(apo_state_get NORMAL_RETURN_RETRY_REASON '') ]] || return 1
+    declare -F "$state_rewind" >/dev/null 2>&1 || return 1
+    "$state_rewind" "$@" || return 1
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+    apo_state_set NORMAL_RETURN_RETRY_REASON ''
+}
+
+apo_baseline_retry_rewind_state() {
+    apo_state_set APP_VERSION "$APO_VERSION"
+    apo_state_set PHASE TRYBOOT_PROOF
+    apo_state_set SUBPHASE CANDIDATE_BOOT
+    apo_state_set STATUS RUNNING
+}
+
+apo_verify_stalled_normal_reboot_boundary() {
+    local context=$1 old_boot_id=$2 current_boot_id tryboot_flag
+    local expected_tryboot_hash expected_reservation_hash ownership_token quarantine_path failure_reason
+    APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID=''
+    if [[ ${APO_PROFILE:-} != batocera ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The direct normal-return fallback is available only for a fully identified Batocera target.'
+        return 1
+    fi
+    current_boot_id=$(apo_remote_boot_id || true)
+    if [[ -z $current_boot_id ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="The normal-return reboot request produced no new boot ID, and the target's current boot identity is unreadable."
+        return 1
+    fi
+    if [[ $current_boot_id != "$old_boot_id" ]]; then
+        # The original reboot may finish in the narrow interval between the
+        # timed wait and fallback verification.  Report that distinct outcome
+        # so the caller can reconcile the observed boot without issuing an
+        # unsafe second reboot.
+        APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID=$current_boot_id
+        return 2
+    fi
+    if ! apo_ensure_worker_for_boot "$current_boot_id" "${context}-stalled-reboot"; then
+        failure_reason=$APO_LAST_REASON
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="The normal-return reboot request left boot $old_boot_id reachable, but its transient worker could not be verified before fallback: $failure_reason"
+        return 1
+    fi
+    tryboot_flag=$(apo_remote_tryboot_flag || true)
+    if [[ $tryboot_flag != 00000001 ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="The normal-return reboot request left boot $old_boot_id reachable, but the live tryboot flag is not exactly active (${tryboot_flag:-missing}); refusing an ambiguous fallback reboot."
+        return 1
+    fi
+    if [[ $(apo_state_get TRYBOOT_EXPECTED 0) != 1 || $(apo_state_get LAST_BOOT_ID '') != "$old_boot_id" ||
+          $(apo_state_get CANDIDATE_BOOT_ID '') != "$old_boot_id" ||
+          $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) != 1 ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="The normal-return reboot request left boot $old_boot_id reachable, but saved tryboot intent no longer matches that boot; refusing a fallback reboot."
+        return 1
+    fi
+    expected_tryboot_hash=$(apo_state_get TRYBOOT_OWNED_HASH '')
+    expected_reservation_hash=$(apo_state_get TRYBOOT_RESERVATION_HASH '')
+    ownership_token=$(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '')
+    quarantine_path=$(apo_state_get TRYBOOT_QUARANTINE_PATH '')
+    if [[ ! $expected_tryboot_hash =~ ^[0-9a-f]{64}$ || ! $expected_reservation_hash =~ ^[0-9a-f]{64}$ ||
+          ! $ownership_token =~ ^[0-9a-f]{64}$ ||
+          $quarantine_path != "${APO_TRYBOOT_CONFIG%/*}/.autopioverclock-remove-${ownership_token}" ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="The normal-return reboot request left boot $old_boot_id reachable, but saved tryboot ownership evidence is incomplete or malformed; refusing a fallback reboot."
+        return 1
+    fi
+    if ! apo_verify_permanent_hash "${context}-stalled-reboot"; then
+        return 1
+    fi
+    if ! apo_run_worker_capture "${context}-stalled-reboot-ownership" verify-tryboot \
+        "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_PERMANENT_CONFIG_HASH" \
+        "$expected_tryboot_hash" "$APO_RUN_ID" "$ownership_token"; then
+        failure_reason=$APO_LAST_REASON
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="The normal-return reboot request left boot $old_boot_id reachable, but exact tryboot ownership could not be re-proved before fallback: $failure_reason"
+        return 1
     fi
 }
 
@@ -277,14 +408,25 @@ apo_boot_candidate() {
 
 apo_return_normal() {
     local context=${1:-normal-recovery} force_normal_reboot=${2:-0} stress_reboot_scope=${3:-none}
+    local replay_recovered_stall=${4:-0}
     local old_boot_id new_boot_id tryboot_flag current_boot_id
     local expected_tryboot pending_boot_id reboot_attempts=0 forced_normal_reboot_done=0 controller_reboot_issued=0
+    local stalled_reboot_recovered=0 stalled_reboot_from='' fallback_reboot_pending=0 handshake_stage failure_reason stalled_boundary_rc
+    local fallback_tryboot_hash fallback_ownership_token
     APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
     APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
     APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
+    APO_RETURN_NORMAL_RETRY_REQUIRED=0
+    APO_RETURN_NORMAL_RETRY_REASON=''
+    APO_RETURN_NORMAL_RETRY_SOURCE=''
     [[ $force_normal_reboot == 0 || $force_normal_reboot == 1 ]] || {
         APO_LAST_CLASS=RECOVERY_FAILURE
         APO_LAST_REASON='The normal-recovery reboot request is malformed.'
+        return 1
+    }
+    [[ $replay_recovered_stall == 0 || $replay_recovered_stall == 1 ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The normal-return replay policy is malformed.'
         return 1
     }
     case $stress_reboot_scope in
@@ -363,7 +505,7 @@ apo_return_normal() {
         if (( reboot_attempts >= 3 )); then
             APO_RECOVERY_IN_PROGRESS=0
             APO_LAST_CLASS=RECOVERY_FAILURE
-            APO_LAST_REASON='Normal recovery exceeded three verified reboot attempts.'
+            APO_LAST_REASON='Normal recovery exceeded three bounded reboot requests without reaching a verified normal boot.'
             return 1
         fi
         old_boot_id=$current_boot_id
@@ -371,18 +513,85 @@ apo_return_normal() {
         apo_state_set LAST_BOOT_ID "$old_boot_id"
         apo_state_save
         controller_reboot_issued=1
+        reboot_attempts=$((reboot_attempts + 1))
         if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )); then
             apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal "$APO_PERMANENT_CONFIG_HASH" >/dev/null 2>&1 || true
+        elif (( fallback_reboot_pending == 1 )); then
+            fallback_tryboot_hash=$(apo_state_get TRYBOOT_OWNED_HASH '')
+            fallback_ownership_token=$(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '')
+            fallback_reboot_pending=0
+            apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal-fallback \
+                "$APO_BOOT_CONFIG" "$APO_TRYBOOT_CONFIG" "$APO_PERMANENT_CONFIG_HASH" \
+                "$fallback_tryboot_hash" "$APO_RUN_ID" "$fallback_ownership_token" "$old_boot_id" >/dev/null 2>&1 || true
         else
             apo_remote_worker "$APO_REMOTE_WORKER" reboot-normal >/dev/null 2>&1 || true
         fi
         if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" "$context"; then
+            handshake_stage=${APO_REBOOT_HANDSHAKE_STAGE:-wait}
+            failure_reason=$APO_LAST_REASON
+            if [[ $handshake_stage == wait && ${APO_PROFILE:-} == batocera && $force_normal_reboot == 0 && $stalled_reboot_recovered == 0 && $reboot_attempts -lt 3 ]]; then
+                stalled_boundary_rc=0
+                apo_verify_stalled_normal_reboot_boundary "$context" "$old_boot_id" || stalled_boundary_rc=$?
+                if (( stalled_boundary_rc == 0 )); then
+                    stalled_reboot_recovered=1
+                    stalled_reboot_from=$old_boot_id
+                    fallback_reboot_pending=1
+                    if (( replay_recovered_stall == 1 )); then
+                        if [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 &&
+                              $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') != "$context" ]]; then
+                            APO_RECOVERY_IN_PROGRESS=0
+                            APO_LAST_CLASS=RECOVERY_FAILURE
+                            APO_LAST_REASON="A different normal-return replay is already pending; refusing to overwrite it with $context."
+                            return 1
+                        fi
+                        APO_RETURN_NORMAL_RETRY_REQUIRED=1
+                        APO_RETURN_NORMAL_RETRY_SOURCE=$context
+                        APO_RETURN_NORMAL_RETRY_REASON="The first normal-return reboot request left the exact tryboot boot $old_boot_id reachable after protected config and ownership were re-proved. This complete gate must replay after normal recovery is fully verified."
+                        apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+                        apo_state_set NORMAL_RETURN_RETRY_SOURCE "$context"
+                        apo_state_set NORMAL_RETURN_RETRY_REASON "$APO_RETURN_NORMAL_RETRY_REASON"
+                        apo_state_save
+                        apo_event "$context" WARN HARNESS_FAILURE "The first normal-return reboot request did not produce a new boot; boot $old_boot_id remains reachable with exact protected config and tryboot ownership. Issuing one bounded fallback reboot before re-running the complete affected gate."
+                    else
+                        apo_event "$context" WARN '' "The normal-recovery reboot request did not produce a new boot; boot $old_boot_id remains reachable with exact protected config and tryboot ownership. Issuing one bounded fallback reboot to finish recovery of the existing failure."
+                    fi
+                    continue
+                fi
+                if (( stalled_boundary_rc == 2 )) && [[ -n ${APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID:-} ]]; then
+                    stalled_reboot_recovered=1
+                    stalled_reboot_from=$old_boot_id
+                    if (( replay_recovered_stall == 1 )); then
+                        if [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 &&
+                              $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') != "$context" ]]; then
+                            APO_RECOVERY_IN_PROGRESS=0
+                            APO_LAST_CLASS=RECOVERY_FAILURE
+                            APO_LAST_REASON="A different normal-return replay is already pending; refusing to overwrite it with $context."
+                            return 1
+                        fi
+                        APO_RETURN_NORMAL_RETRY_REQUIRED=1
+                        APO_RETURN_NORMAL_RETRY_SOURCE=$context
+                        APO_RETURN_NORMAL_RETRY_REASON="The first normal-return reboot request changed from boot $old_boot_id to boot $APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID only after its timed handshake ended. This complete gate must replay after normal recovery is fully verified."
+                        apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+                        apo_state_set NORMAL_RETURN_RETRY_SOURCE "$context"
+                        apo_state_set NORMAL_RETURN_RETRY_REASON "$APO_RETURN_NORMAL_RETRY_REASON"
+                        apo_state_save
+                        apo_event "$context" WARN HARNESS_FAILURE "The requested reboot completed after its timed handshake. Reconciling observed boot $APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID without issuing a second reboot, then re-running the complete affected gate."
+                    else
+                        apo_event "$context" WARN '' "The requested reboot completed after its timed handshake. Reconciling observed boot $APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID without issuing a second reboot."
+                    fi
+                    continue
+                fi
+                APO_RECOVERY_IN_PROGRESS=0
+                return 1
+            fi
             APO_RECOVERY_IN_PROGRESS=0
             APO_LAST_CLASS=RECOVERY_FAILURE
-            if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+            if [[ $handshake_stage == worker ]]; then
                 APO_LAST_REASON="Normal recovery reboot returned, but verification could not continue: $APO_LAST_REASON"
+            elif [[ $stalled_reboot_recovered == 1 ]]; then
+                APO_LAST_REASON="The bounded fallback normal-return reboot also failed to produce a new boot ID after the target remained on boot $old_boot_id; automatic continuation is unsafe."
             else
-                APO_LAST_REASON='Normal recovery reboot did not return to SSH.'
+                APO_LAST_REASON="No new boot ID was observed after the normal-return reboot request: $failure_reason"
             fi
             return 1
         fi
@@ -402,7 +611,6 @@ apo_return_normal() {
                 return 1
             fi
         fi
-        reboot_attempts=$((reboot_attempts + 1))
     done
     if [[ -z ${new_boot_id:-} ]]; then APO_RECOVERY_IN_PROGRESS=0; APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON='Normal recovery did not produce a verified normal boot ID.'; return 1; fi
     tryboot_flag=$(apo_remote_tryboot_flag || true)
@@ -421,6 +629,15 @@ apo_return_normal() {
         [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]] || { APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="Normal config returned but failed health: $APO_LAST_REASON"; }
         APO_RECOVERY_IN_PROGRESS=0
         return 1
+    fi
+    if (( stalled_reboot_recovered == 1 && replay_recovered_stall == 1 )); then
+        APO_RETURN_NORMAL_RETRY_REQUIRED=1
+        APO_RETURN_NORMAL_RETRY_REASON="The first normal-return reboot request did not complete its original handshake from boot $stalled_reboot_from; bounded reconciliation reached normal boot $new_boot_id and fully re-proved clear tryboot state, owned cleanup, protected config, normal clocks, watchdogs, and health."
+        APO_RETURN_NORMAL_RETRY_SOURCE=$context
+        apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+        apo_state_set NORMAL_RETURN_RETRY_SOURCE "$context"
+        apo_state_set NORMAL_RETURN_RETRY_REASON "$APO_RETURN_NORMAL_RETRY_REASON"
+        apo_state_save
     fi
     APO_RECOVERY_IN_PROGRESS=0
 }
@@ -497,12 +714,32 @@ apo_record_failure_after_recovery() {
 }
 
 apo_prove_tryboot_recovery() {
-    apo_state_phase TRYBOOT_PROOF CANDIDATE_BOOT RUNNING
-    apo_boot_candidate "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" baseline-safety-proof || {
-        local candidate_class=$APO_LAST_CLASS candidate_reason=$APO_LAST_REASON
-        apo_record_failure_after_recovery baseline-safety-fallback "$candidate_class" "$candidate_reason"
-        return 1
-    }
-    apo_return_normal baseline-safety-normal || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return 1; }
-    apo_event baseline-safety-proof PASS '' 'The installed baseline completed a temporary tryboot and verified normal recovery before clock sweeping began.'
+    local retry_action_rc candidate_class candidate_reason
+    while :; do
+        apo_state_phase TRYBOOT_PROOF CANDIDATE_BOOT RUNNING
+        apo_boot_candidate "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" baseline-safety-proof || {
+            candidate_class=$APO_LAST_CLASS
+            candidate_reason=$APO_LAST_REASON
+            apo_record_failure_after_recovery baseline-safety-fallback "$candidate_class" "$candidate_reason"
+            return 1
+        }
+        APO_RETURN_NORMAL_RETRY_REQUIRED=0
+        apo_return_normal baseline-safety-normal 0 none 1 || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return 1; }
+        retry_action_rc=1
+        if apo_normal_return_retry_schedule baseline-safety-normal baseline-safety-normal apo_baseline_retry_rewind_state; then
+            retry_action_rc=0
+        else
+            retry_action_rc=$?
+        fi
+        if (( retry_action_rc == 0 )); then
+            continue
+        fi
+        if (( retry_action_rc != 1 )); then
+            apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"
+            return 1
+        fi
+        apo_transient_phase_retry_clear baseline-safety-normal
+        apo_event baseline-safety-proof PASS '' 'The installed baseline completed a temporary tryboot and verified normal recovery before clock sweeping began.'
+        return 0
+    done
 }

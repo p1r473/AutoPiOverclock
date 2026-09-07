@@ -254,6 +254,9 @@ apo_state_initialize() {
     apo_state_set RECOVERY_WAIT_TIMEOUTS 0
     apo_state_set TRANSIENT_RETRY_CONTEXT ''
     apo_state_set TRANSIENT_RETRY_COUNT 0
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+    apo_state_set NORMAL_RETURN_RETRY_REASON ''
     apo_state_set MANUAL_TEST "${APO_MANUAL_TEST:-0}"
     apo_state_set MANUAL_CPU "${APO_MANUAL_CPU:-}"
     apo_state_set MANUAL_GPU "${APO_MANUAL_GPU:-}"

@@ -750,8 +750,10 @@ if boot_mount_has_option rw "$TEMP_DIR/missing-mounts"; then exit 1; fi
 unset -f awk
 
 # A forced graphical-session recovery reboot rechecks every safety invariant
-# inside the target mutation lock immediately before rebooting.  Ordinary
-# tryboot recovery keeps the existing argument-free reboot behavior.
+# inside the target mutation lock immediately before rebooting. The ordinary
+# normal return remains a graceful reboot; only a controller-verified stalled
+# request uses the separately named direct fallback with a second ownership
+# check at the worker mutation boundary.
 (
     EXPECTED_HASH=$(printf 'a%.0s' {1..64})
     CURRENT_HASH=$EXPECTED_HASH
@@ -759,12 +761,19 @@ unset -f awk
     BOOT_RO=1
     REBOOT_CALLS=0
     VERIFIED_REBOOT_CALLS=0
+    VERIFY_TRYBOOT_CALLS=0
+    EXPECTED_BOOT_ID=11111111-2222-3333-4444-555555555555
+    CURRENT_BOOT_ID=$EXPECTED_BOOT_ID
+    LIVE_TRYBOOT_FLAG=' 00 00 00 01'
     vcgencmd() { :; }
     sync() { :; }
     reboot() { REBOOT_CALLS=$((REBOOT_CALLS + 1)); }
     verified_normal_reboot_now() { VERIFIED_REBOOT_CALLS=$((VERIFIED_REBOOT_CALLS + 1)); return 1; }
     apply_tryboot_clear() { (( TRYBOOT_CLEAR == 1 )); }
     boot_mount_has_option() { [[ $1 == ro && $BOOT_RO == 1 ]]; }
+    cmd_verify_tryboot() { VERIFY_TRYBOOT_CALLS=$((VERIFY_TRYBOOT_CALLS + 1)); return 0; }
+    cat() { [[ $1 == /proc/sys/kernel/random/boot_id ]] && printf '%s\n' "$CURRENT_BOOT_ID"; }
+    od() { printf '%s\n' "$LIVE_TRYBOOT_FLAG"; }
     # shellcheck disable=SC2032
     sha256sum() { printf '%s  /boot/config.txt\n' "$CURRENT_HASH"; }
 
@@ -780,6 +789,25 @@ unset -f awk
     [[ $REBOOT_CALLS == 1 && $VERIFIED_REBOOT_CALLS == 0 ]]
 
     REBOOT_CALLS=0
+    TRYBOOT_CLEAR=0
+    BOOT_RO=1
+    CURRENT_HASH=$EXPECTED_HASH
+    CURRENT_BOOT_ID=$EXPECTED_BOOT_ID
+    LIVE_TRYBOOT_FLAG=' 00 00 00 01'
+    if cmd_reboot_normal_fallback /boot/config.txt /boot/tryboot.txt "$EXPECTED_HASH" "$EXPECTED_HASH" fixture-run "$EXPECTED_HASH" "$EXPECTED_BOOT_ID" >/dev/null; then exit 1; fi
+    [[ $REBOOT_CALLS == 0 && $VERIFIED_REBOOT_CALLS == 1 && $VERIFY_TRYBOOT_CALLS == 1 ]]
+
+    CURRENT_BOOT_ID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+    if cmd_reboot_normal_fallback /boot/config.txt /boot/tryboot.txt "$EXPECTED_HASH" "$EXPECTED_HASH" fixture-run "$EXPECTED_HASH" "$EXPECTED_BOOT_ID" >/dev/null; then exit 1; fi
+    [[ $VERIFIED_REBOOT_CALLS == 1 && $VERIFY_TRYBOOT_CALLS == 1 ]]
+
+    CURRENT_BOOT_ID=$EXPECTED_BOOT_ID
+    LIVE_TRYBOOT_FLAG=' 00 00 00 00'
+    if cmd_reboot_normal_fallback /boot/config.txt /boot/tryboot.txt "$EXPECTED_HASH" "$EXPECTED_HASH" fixture-run "$EXPECTED_HASH" "$EXPECTED_BOOT_ID" >/dev/null; then exit 1; fi
+    [[ $VERIFIED_REBOOT_CALLS == 1 && $VERIFY_TRYBOOT_CALLS == 1 ]]
+
+    REBOOT_CALLS=0
+    VERIFIED_REBOOT_CALLS=0
     if cmd_reboot_normal malformed-hash >/dev/null; then exit 1; fi
     [[ $REBOOT_CALLS == 0 && $VERIFIED_REBOOT_CALLS == 0 ]]
 

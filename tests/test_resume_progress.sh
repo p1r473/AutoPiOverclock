@@ -166,6 +166,65 @@ apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
 [[ ${ACTIONS[*]} == 'normal:cpu-3000_gpu-800-normal-2 boot:cpu-3000_gpu-800-boot-3 normal:cpu-3000_gpu-800-normal-3 boot:cpu-3000_gpu-800-boot-4 normal:cpu-3000_gpu-800-normal-4 boot:cpu-3000_gpu-800-stress-boot stress:combined:cpu-3000_gpu-800-candidate health:cpu-3000_gpu-800-post-stress normal:cpu-3000_gpu-800-final-normal' ]]
 [[ $(apo_state_get CANDIDATE_STAGE) == COMPLETE ]]
 
+# If the primary normal-return request stalls but bounded fallback recovery
+# fully succeeds, the same boot/normal pair is replayed atomically under the
+# persisted harness-retry budget. No clock boundary or backoff is recorded.
+ACTIONS=()
+APO_STATE=()
+apo_state_set CANDIDATE_LABEL cpu-3000_gpu-800
+apo_state_set CANDIDATE_CPU 3000
+apo_state_set CANDIDATE_GPU 800
+apo_state_set CANDIDATE_STAGE NORMAL_2
+NORMAL_RETURN_CALLS=0
+apo_return_normal() {
+    ACTIONS+=("normal:$1")
+    NORMAL_RETURN_CALLS=$((NORMAL_RETURN_CALLS + 1))
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+    APO_RETURN_NORMAL_RETRY_REQUIRED=0
+    APO_RETURN_NORMAL_RETRY_REASON=''
+    if (( NORMAL_RETURN_CALLS == 1 )); then
+        APO_RETURN_NORMAL_RETRY_REQUIRED=1
+        APO_RETURN_NORMAL_RETRY_REASON='fixture bounded fallback fully proved normal recovery'
+        APO_RETURN_NORMAL_RETRY_SOURCE=$1
+        apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+        apo_state_set NORMAL_RETURN_RETRY_SOURCE "$1"
+        apo_state_set NORMAL_RETURN_RETRY_REASON "$APO_RETURN_NORMAL_RETRY_REASON"
+    fi
+}
+apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
+[[ $NORMAL_RETURN_CALLS == 5 ]]
+[[ ${ACTIONS[*]} == 'normal:cpu-3000_gpu-800-normal-2 boot:cpu-3000_gpu-800-boot-2 normal:cpu-3000_gpu-800-normal-2 boot:cpu-3000_gpu-800-boot-3 normal:cpu-3000_gpu-800-normal-3 boot:cpu-3000_gpu-800-boot-4 normal:cpu-3000_gpu-800-normal-4 boot:cpu-3000_gpu-800-stress-boot stress:combined:cpu-3000_gpu-800-candidate health:cpu-3000_gpu-800-post-stress normal:cpu-3000_gpu-800-final-normal' ]]
+[[ $(apo_state_get CANDIDATE_STAGE) == COMPLETE ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
+[[ -z $(apo_state_get TRANSIENT_RETRY_CONTEXT '') ]]
+[[ -z $(apo_state_get CPU_FAILURE_BOUNDARY '') && -z $(apo_state_get GPU_FAILURE_BOUNDARY '') ]]
+
+# A recovered failure of the final normal return replays the complete stress
+# half of the candidate gate, not merely the last reboot checkpoint.
+ACTIONS=()
+APO_STATE=()
+apo_state_set CANDIDATE_LABEL cpu-3000_gpu-800
+apo_state_set CANDIDATE_CPU 3000
+apo_state_set CANDIDATE_GPU 800
+apo_state_set CANDIDATE_STAGE FINAL_NORMAL
+NORMAL_RETURN_CALLS=0
+apo_test_candidate 3000 800 cpu-3000_gpu-800 combined
+[[ $NORMAL_RETURN_CALLS == 2 ]]
+[[ ${ACTIONS[*]} == 'normal:cpu-3000_gpu-800-final-normal boot:cpu-3000_gpu-800-stress-boot stress:combined:cpu-3000_gpu-800-candidate health:cpu-3000_gpu-800-post-stress normal:cpu-3000_gpu-800-final-normal' ]]
+[[ $(apo_state_get CANDIDATE_STAGE) == COMPLETE ]]
+
+# Restore the ordinary successful normal-return fixture.
+apo_return_normal() {
+    ACTIONS+=("normal:$1")
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+    APO_RETURN_NORMAL_RETRY_REQUIRED=0
+    APO_RETURN_NORMAL_RETRY_REASON=''
+}
+
 # A missing stress trailer is promoted only when normal recovery proves that
 # the saved candidate boot rebooted before the controller requested it. This is
 # a silicon stability boundary, while same-boot transport loss receives only
@@ -320,6 +379,235 @@ apo_final_validation
 [[ $(apo_state_get FINAL_GPU) == 900 ]]
 [[ $(apo_state_get VALIDATED) == 1 ]]
 [[ $(apo_state_get VALIDATION_SCHEMA) == "$APO_CURRENT_VALIDATION_SCHEMA" ]]
+
+# A recovered failure of the normal return after final endurance cannot credit
+# the already-finished duration. The retry checkpoint atomically rewinds to the
+# pre-stress boot and the complete configured endurance runs again.
+ACTIONS=()
+APO_STATE=()
+SAVE_COUNT=0
+FINAL_RETURN_CALLS=0
+FINAL_REPLAY_STRESS_CALLS=0
+FINAL_REPLAY_DURATIONS=()
+FINAL_REWIND_SNAPSHOTS=()
+apo_state_set RECOMMENDED_CPU 3000
+apo_state_set RECOMMENDED_GPU 900
+apo_state_set FINAL_TARGET_CPU 3000
+apo_state_set FINAL_TARGET_GPU 900
+apo_state_set FINAL_STAGE RETURN_NORMAL
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set SUBPHASE RETURN_NORMAL
+apo_state_set STATUS RUNNING
+apo_state_set VALIDATION_DURATION_S "${APO_CFG[FINAL_DURATION_S]}"
+apo_state_save() {
+    SAVE_COUNT=$((SAVE_COUNT + 1))
+    if [[ $(apo_state_get TRANSIENT_RETRY_CONTEXT '') == final-complete-recovery &&
+          $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 1 ]]; then
+        FINAL_REWIND_SNAPSHOTS+=("$(apo_state_get FINAL_STAGE ''):$(apo_state_get STATUS '')")
+    fi
+}
+apo_return_normal() {
+    ACTIONS+=("normal:$1")
+    FINAL_RETURN_CALLS=$((FINAL_RETURN_CALLS + 1))
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+    APO_RETURN_NORMAL_RETRY_REQUIRED=0
+    APO_RETURN_NORMAL_RETRY_REASON=''
+    if (( FINAL_RETURN_CALLS == 1 )); then
+        APO_RETURN_NORMAL_RETRY_REQUIRED=1
+        APO_RETURN_NORMAL_RETRY_REASON='fixture final normal-return fallback fully re-proved recovery'
+        APO_RETURN_NORMAL_RETRY_SOURCE=$1
+        apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+        apo_state_set NORMAL_RETURN_RETRY_SOURCE "$1"
+        apo_state_set NORMAL_RETURN_RETRY_REASON "$APO_RETURN_NORMAL_RETRY_REASON"
+    fi
+}
+apo_run_stress() {
+    ACTIONS+=("stress:$1:$3")
+    FINAL_REPLAY_STRESS_CALLS=$((FINAL_REPLAY_STRESS_CALLS + 1))
+    FINAL_REPLAY_DURATIONS+=("$2")
+}
+apo_final_validation
+[[ ${FINAL_REWIND_SNAPSHOTS[0]} == PRE_STRESS_BOOT:RUNNING ]]
+[[ $FINAL_REPLAY_STRESS_CALLS == 1 ]]
+[[ ${FINAL_REPLAY_DURATIONS[*]} == "${APO_CFG[FINAL_DURATION_S]}" ]]
+[[ ${ACTIONS[0]} == normal:final-post-endurance-normal ]]
+[[ " ${ACTIONS[*]} " == *' boot:final-pre-stress-boot '* ]]
+[[ " ${ACTIONS[*]} " == *' stress:combined:final-endurance '* ]]
+[[ $(apo_state_get STATUS) == PASS && $(apo_state_get PHASE) == COMPLETE ]]
+[[ $(apo_state_get VALIDATION_DURATION_S) == "${APO_CFG[FINAL_DURATION_S]}" ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
+
+# Restore the ordinary fixtures and state-save counter used below.
+apo_state_save() { SAVE_COUNT=$((SAVE_COUNT + 1)); }
+apo_return_normal() {
+    ACTIONS+=("normal:$1")
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set CURRENT_CPU ''
+    apo_state_set CURRENT_GPU ''
+    APO_RETURN_NORMAL_RETRY_REQUIRED=0
+    APO_RETURN_NORMAL_RETRY_REASON=''
+}
+apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
+
+# Exact retained alpha.48 shape: exit-trap recovery already cleared ownership,
+# but FAILED/RECOVERY_FAILURE remained at GPU qualification NORMAL_2. Resume
+# adopts it as harness uncertainty, preserves all clocks/boundaries, and saves
+# BOOT_2 plus retry 1/5 in one atomic checkpoint.
+seed_alpha48_normal_return_failure() {
+    APO_STATE=()
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set APP_VERSION 0.1.0-alpha.48
+    apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set STATUS FAILED
+    apo_state_set PHASE GPU_QUALIFICATION
+    apo_state_set SUBPHASE gpu-qualification-2975_gpu-1125:NORMAL_2
+    apo_state_set CANDIDATE_LABEL gpu-qualification-2975_gpu-1125
+    apo_state_set CANDIDATE_CPU 2975
+    apo_state_set CANDIDATE_GPU 1125
+    apo_state_set CANDIDATE_STAGE NORMAL_2
+    apo_state_set RECOMMENDED_CPU 2975
+    apo_state_set RECOMMENDED_GPU 1125
+    apo_state_set SAFE_CPU 2975
+    apo_state_set SAFE_GPU 1125
+    apo_state_set CPU_FAILURE_BOUNDARY 3000
+    apo_state_set GPU_FAILURE_BOUNDARY 1150
+    apo_state_set CFG_FINAL_DURATION_S 259200
+    apo_state_set FAILURE_CLASS RECOVERY_FAILURE
+    apo_state_set FAILURE_REASON 'Normal recovery reboot did not return to SSH.'
+    apo_state_set APPLY_STATUS NOT_APPLIED
+    apo_state_set TRYBOOT_EXPECTED 0
+    apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+    apo_state_set TRYBOOT_OWNED_HASH ''
+    apo_state_set TRYBOOT_RESERVATION_HASH ''
+    apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+    apo_state_set TRYBOOT_QUARANTINE_PATH ''
+    apo_state_set TRANSIENT_RETRY_CONTEXT ''
+    apo_state_set TRANSIENT_RETRY_COUNT 0
+}
+
+seed_alpha48_normal_return_failure
+SAVE_COUNT=0
+apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"
+apo_adopt_saved_normal_return_failure
+[[ $SAVE_COUNT == 1 ]]
+[[ $(apo_state_get CANDIDATE_STAGE) == BOOT_2 ]]
+[[ $(apo_state_get SUBPHASE) == gpu-qualification-2975_gpu-1125:BOOT_2 ]]
+[[ $(apo_state_get TRANSIENT_RETRY_CONTEXT) == gpu-qualification-2975_gpu-1125-normal-2 ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+[[ $(apo_state_get APP_VERSION) == "$APO_VERSION" ]]
+[[ $(apo_state_get CFG_FINAL_DURATION_S) == 259200 ]]
+[[ $(apo_state_get STATUS) == RUNNING ]]
+[[ -z $(apo_state_get FAILURE_CLASS '') && -z $(apo_state_get FAILURE_REASON '') ]]
+[[ $(apo_state_get CANDIDATE_CPU) == 2975 && $(apo_state_get CANDIDATE_GPU) == 1125 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 2975 && $(apo_state_get RECOMMENDED_GPU) == 1125 ]]
+[[ $(apo_state_get CPU_FAILURE_BOUNDARY) == 3000 && $(apo_state_get GPU_FAILURE_BOUNDARY) == 1150 ]]
+
+# A failed controller process can retain pre-fallback intent instead of the
+# legacy alpha.48 reason. After resume has fully normalized the target, that
+# exact marker drives the same atomic retry/rewind and is consumed once.
+seed_alpha48_normal_return_failure
+apo_state_set TRYBOOT_CONFIG /boot/tryboot.txt
+apo_state_set FAILURE_REASON 'The bounded fallback reboot did not complete before controller exit.'
+apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
+apo_state_set NORMAL_RETURN_RETRY_REASON 'The verified stalled tryboot requires complete-gate replay after normal recovery.'
+SAVE_COUNT=0
+apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"
+apo_adopt_saved_normal_return_failure
+[[ $SAVE_COUNT == 1 ]]
+[[ $(apo_state_get CANDIDATE_STAGE) == BOOT_2 ]]
+[[ $(apo_state_get TRANSIENT_RETRY_CONTEXT) == gpu-qualification-2975_gpu-1125-normal-2 ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+[[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 0 ]]
+[[ -z $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') && -z $(apo_state_get NORMAL_RETURN_RETRY_REASON '') ]]
+
+# The same gate stops after all five persisted retries; exhaustion does not
+# rewrite the candidate checkpoint or lower either clock.
+seed_alpha48_normal_return_failure
+apo_state_set TRANSIENT_RETRY_CONTEXT gpu-qualification-2975_gpu-1125-normal-2
+apo_state_set TRANSIENT_RETRY_COUNT 5
+SAVE_COUNT=0
+if apo_adopt_saved_normal_return_failure; then
+    echo 'exhausted saved normal-return failure was retried a sixth time' >&2
+    exit 1
+fi
+[[ $SAVE_COUNT == 0 ]]
+[[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+[[ $APO_LAST_REASON == *'exhausted 5 bounded retries'* ]]
+[[ $(apo_state_get STATUS) == FAILED && $(apo_state_get CANDIDATE_STAGE) == NORMAL_2 ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 5 ]]
+[[ $(apo_state_get CANDIDATE_CPU) == 2975 && $(apo_state_get CANDIDATE_GPU) == 1125 ]]
+[[ $(apo_state_get CPU_FAILURE_BOUNDARY) == 3000 && $(apo_state_get GPU_FAILURE_BOUNDARY) == 1150 ]]
+
+# Adoption is exact: a different reason/schema or any uncleared ownership is
+# still recovery uncertainty and is never converted into an automatic replay.
+seed_alpha48_normal_return_failure
+apo_state_set FAILURE_REASON 'Permanent config hash is unavailable after normal recovery.'
+if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
+if apo_adopt_saved_normal_return_failure; then exit 1; fi
+[[ $(apo_state_get STATUS) == FAILED && $(apo_state_get CANDIDATE_STAGE) == NORMAL_2 ]]
+
+seed_alpha48_normal_return_failure
+apo_state_set RUN_SCHEMA 9
+if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
+if apo_adopt_saved_normal_return_failure; then exit 1; fi
+
+seed_alpha48_normal_return_failure
+apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+apo_state_set TRYBOOT_OWNED_HASH "$(printf 'a%.0s' {1..64})"
+if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
+if apo_adopt_saved_normal_return_failure; then exit 1; fi
+
+# The durable pending-replay tuple is optional for older schema-10 states. A
+# pending intent is checkpoint-bound and permits only the three real recovery
+# snapshots: live tryboot, normal boot before owned cleanup, or fully cleared.
+seed_alpha48_normal_return_failure
+apo_state_set TRYBOOT_CONFIG /boot/tryboot.txt
+apo_validate_normal_return_retry_state
+apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
+apo_state_set NORMAL_RETURN_RETRY_REASON 'fixture verified normal-return fallback'
+apo_validate_normal_return_retry_state
+apo_state_set TRYBOOT_EXPECTED 1
+apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+apo_state_set TRYBOOT_OWNED_HASH "$(printf 'a%.0s' {1..64})"
+apo_state_set TRYBOOT_RESERVATION_HASH "$(printf 'b%.0s' {1..64})"
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN "$(printf 'c%.0s' {1..64})"
+apo_state_set TRYBOOT_QUARANTINE_PATH "/boot/.autopioverclock-remove-$(printf 'c%.0s' {1..64})"
+apo_validate_normal_return_retry_state
+if apo_normal_return_retry_schedule gpu-qualification-2975_gpu-1125-normal-2 gpu-qualification-2975_gpu-1125-normal-2 apo_candidate_retry_rewind_state gpu-qualification-2975_gpu-1125 2975 1125 BOOT_2; then
+    echo 'normal-return replay started before tryboot ownership was fully cleared' >&2
+    exit 1
+fi
+[[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+[[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 1 ]]
+[[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
+apo_state_set TRYBOOT_EXPECTED 0
+apo_validate_normal_return_retry_state
+apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+if apo_validate_normal_return_retry_state; then exit 1; fi
+apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+if apo_validate_normal_return_retry_state; then exit 1; fi
+apo_state_set TRYBOOT_RESERVATION_HASH "$(printf 'b%.0s' {1..64})"
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+if apo_validate_normal_return_retry_state; then exit 1; fi
+apo_state_set TRYBOOT_FILE_MAY_EXIST 1
+apo_state_set CANDIDATE_STAGE NORMAL_3
+if apo_validate_normal_return_retry_state; then exit 1; fi
+apo_state_set CANDIDATE_STAGE NORMAL_2
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+apo_validate_normal_return_retry_state
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+if apo_validate_normal_return_retry_state; then exit 1; fi
 
 # A saved stage beyond the immutable configured count is corrupt state, not a
 # reason to silently skip directly into stress or completion.
