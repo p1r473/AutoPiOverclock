@@ -89,6 +89,9 @@ write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-incompatible.state" \
     ORIGIN_COMMAND overclock READ_ONLY_RUN 0 CFG_AUTO_GENERATED_CANDIDATES 1 \
     CFG_SELECTION_POLICY refined-max-25 PROFILE different TEST_VALID 1 CPU_FAILURE_BOUNDARY 2500
 
+# The production definition was sourced above; focused fixture overrides appear
+# later in this file for planner-only cases.
+# shellcheck disable=SC2218
 apo_history_refresh
 [[ $APO_HISTORY_ACCEPTED_STATES == 4 ]]
 [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2900 ]]
@@ -107,6 +110,7 @@ grep -Fq '2026-09-07T03:05:00-0400 | run-d | 2850 | 1150 | STABILITY_FAILURE | P
 
 # The human file cannot authorize anything and is replaced from state.
 printf 'CPU failed at 1 MHz\n' > "$APO_HISTORY_LEDGER_FILE"
+# shellcheck disable=SC2218
 apo_history_refresh
 [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2900 ]]
 if grep -Fq '1 MHz' "$APO_HISTORY_LEDGER_FILE"; then
