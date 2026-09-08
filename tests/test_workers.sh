@@ -1250,8 +1250,10 @@ mapfile -t BATOCERA_OPENSSL_ARGV < "$BATOCERA_OPENSSL_ARGS"
 [[ ${BATOCERA_OPENSSL_ARGV[*]} == 'speed -elapsed -seconds 600 -bytes 1048576 -multi 4 sha256' ]]
 
 # A controller gate longer than the per-tool limit remains one shared stress
-# interval. Both CPU and GPU must be relaunched at the segment boundary, and
-# their segment durations must add up to the exact requested wall time.
+# interval. Both CPU and GPU must be relaunched at the segment boundary with
+# identical positive durations. Supervisor launch/reap time belongs to the
+# shared wall-clock gate, so later tool durations may be shorter than the raw
+# remainder and must never extend that gate.
 for WORKER_NAME in debian batocera; do
     SEGMENT_DIR="$TEMP_DIR/${WORKER_NAME}-segments"
     WORKER_FILE="$ROOT/workers/${WORKER_NAME}-worker.sh"
@@ -1311,16 +1313,20 @@ for WORKER_NAME in debian batocera; do
             SECONDS=$((SECONDS + 10))
         }
         # SECONDS includes time spent loading the worker before this fixture
-        # starts. Reset its epoch so host/CI load cannot shave a second from
-        # the second synthetic segment and make this assertion intermittent.
+        # starts. Reset its epoch so the fixture reliably exercises a second
+        # segment; real supervisor overhead may still shorten that segment.
         SECONDS=0
         cmd_stress combined 20 75 headless "" 0 2400 800 throttled=0x0 60
     ' 2>&1)
     [[ $SEGMENT_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
     [[ $(wc -l < "$SEGMENT_DIR/cpu-durations") -eq 2 ]]
     [[ $(wc -l < "$SEGMENT_DIR/gpu-durations") -eq 2 ]]
-    [[ $(awk '{ total += $1 } END { print total }' "$SEGMENT_DIR/cpu-durations") == 20 ]]
-    [[ $(awk '{ total += $1 } END { print total }' "$SEGMENT_DIR/gpu-durations") == 20 ]]
+    cmp "$SEGMENT_DIR/cpu-durations" "$SEGMENT_DIR/gpu-durations"
+    [[ $(sed -n '1p' "$SEGMENT_DIR/cpu-durations") == 10 ]]
+    SECOND_SEGMENT_DURATION=$(sed -n '2p' "$SEGMENT_DIR/cpu-durations")
+    [[ $SECOND_SEGMENT_DURATION =~ ^[1-9][0-9]*$ ]]
+    (( SECOND_SEGMENT_DURATION <= 10 ))
+    [[ $SEGMENT_OUTPUT == *'elapsed=20/20s'* ]]
 done
 
 # A poll that wakes after the hard deadline fails closed even when the child
