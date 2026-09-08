@@ -1732,8 +1732,8 @@ write_glmark_launcher() {
 launch_gpu_test() {
     local launcher_file=$1 output_file=$2 mode=$3
     case $mode in
-        graphical) printf 'GPU_LAUNCH=wayland-compositor\n' > "$output_file" ;;
-        headless) printf 'GPU_LAUNCH=headless-drm\n' > "$output_file" ;;
+        graphical) printf 'GPU_LAUNCH=wayland-compositor\n' >> "$output_file" ;;
+        headless) printf 'GPU_LAUNCH=headless-drm\n' >> "$output_file" ;;
         *) return 1 ;;
     esac
     /bin/bash "$launcher_file" >>"$output_file" 2>&1 &
@@ -1811,13 +1811,41 @@ stress_signal_cleanup() {
     exit "$exit_code"
 }
 
+# One-hour tool segments avoid OpenSSL operation-counter exhaustion and large
+# glmark2 duration edge cases while preserving one shared stress deadline.
+stress_segment_limit() { printf '3600'; }
+
+stress_segment_duration() {
+    local remaining=$1 limit
+    limit=$(stress_segment_limit) || return 1
+    [[ $remaining =~ ^[1-9][0-9]*$ && $limit =~ ^[1-9][0-9]*$ ]] || return 1
+    if (( remaining < limit )); then printf '%s' "$remaining"; else printf '%s' "$limit"; fi
+}
+
+launch_batocera_cpu_segment() {
+    local segment_duration=$1 output_file=$2 segment_number=$3
+    printf '%s\n' "--- CPU segment ${segment_number}: ${segment_duration}s ---" >> "$output_file"
+    openssl speed -elapsed -seconds "$segment_duration" -bytes "$OPENSSL_CPU_BLOCK_BYTES" -multi "$(nproc)" sha256 >>"$output_file" 2>&1 &
+    stress_cpu_pid=$!
+}
+
+launch_batocera_gpu_segment() {
+    local segment_duration=$1 launcher_file=$2 output_file=$3 segment_number=$4
+    local glmark_binary=$5 glmark_data=$6 library_dirs=$7 mode=$8 wayland_runtime_dir=$9 wayland_display=${10:-}
+    write_glmark_launcher "$launcher_file" "$segment_duration" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode" "$wayland_runtime_dir" "$wayland_display" || return 1
+    printf '%s\n' "--- GPU segment ${segment_number}: ${segment_duration}s ---" >> "$output_file"
+    launch_gpu_test "$launcher_file" "$output_file" "$mode"
+}
+
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=$4 baseline=$5 io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
     local cpu_output gpu_output launcher_file
-    local start_seconds expected_end hard_deadline completion_tolerance now_seconds next_log max_seen=0 temp throttle kernel_lines new_errors
+    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle kernel_lines new_errors
     local cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' glmark_binary glmark_data library_dirs gpu_stack
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 cpu_dead=0 gpu_dead=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
+    local cpu_segment_duration=0 gpu_segment_duration=0 cpu_segment_end=0 gpu_segment_end=0
+    local cpu_segment_number=0 gpu_segment_number=0 remaining=0 segment_tolerance=0 cpu_segment_bad=0 gpu_segment_bad=0
     local wayland_runtime_dir='' wayland_display=''
     : "$baseline" "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
@@ -1852,20 +1880,24 @@ cmd_stress() {
             emit_result HARNESS_FAILURE "Unsupported Batocera stress mode: $mode."
             return 1
         fi
-        write_glmark_launcher "$launcher_file" "$duration" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode" "$wayland_runtime_dir" "$wayland_display" \
-            || { emit_result HARNESS_FAILURE 'Could not create the mode-specific glmark2 launcher.'; return 1; }
     fi
 
     kernel_lines=$(kernel_log | wc -l)
     start_seconds=$SECONDS; expected_end=$((start_seconds + duration)); hard_deadline=$((expected_end + 60)); next_log=$start_seconds
-    completion_tolerance=$(stress_completion_tolerance "$duration")
-    # OpenSSL applies -seconds to every default buffer size, and each multi
-    # worker records its operation count in a signed 32-bit counter.  Use one
-    # 1 MiB block: this keeps the requested duration as the total wall time and
-    # lowers the operation rate 64-fold versus 16 KiB, preventing the counter
-    # from ending a 24-hour CPU/combined run early on a fast Pi 5.
-    if [[ $stress_kind == cpu || $stress_kind == combined ]]; then openssl speed -elapsed -seconds "$duration" -bytes "$OPENSSL_CPU_BLOCK_BYTES" -multi "$(nproc)" sha256 >"$cpu_output" 2>&1 & stress_cpu_pid=$!; fi
-    if [[ $stress_kind == gpu || $stress_kind == combined ]]; then launch_gpu_test "$launcher_file" "$gpu_output" "$mode"; fi
+    : > "$cpu_output"; : > "$gpu_output"
+    if [[ $stress_kind == cpu || $stress_kind == combined ]]; then
+        cpu_segment_duration=$(stress_segment_duration "$duration") || { emit_result HARNESS_FAILURE 'Could not derive a safe CPU stress segment.'; return 1; }
+        cpu_segment_number=1
+        launch_batocera_cpu_segment "$cpu_segment_duration" "$cpu_output" "$cpu_segment_number"
+        cpu_segment_end=$((start_seconds + cpu_segment_duration))
+    fi
+    if [[ $stress_kind == gpu || $stress_kind == combined ]]; then
+        gpu_segment_duration=$(stress_segment_duration "$duration") || { emit_result HARNESS_FAILURE 'Could not derive a safe GPU stress segment.'; return 1; }
+        gpu_segment_number=1
+        launch_batocera_gpu_segment "$gpu_segment_duration" "$launcher_file" "$gpu_output" "$gpu_segment_number" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode" "$wayland_runtime_dir" "$wayland_display" \
+            || { emit_result HARNESS_FAILURE 'Could not launch the mode-specific glmark2 stress segment.'; return 1; }
+        gpu_segment_end=$((start_seconds + gpu_segment_duration))
+    fi
     if [[ $io_check == 1 ]]; then mkdir -p "$PERSISTENT_ROOT"; start_io_activity "$stress_io_file"; fi
 
     while :; do
@@ -1893,49 +1925,61 @@ cmd_stress() {
             failure_reason="Persistent filesystem activity failed during load with rc=$io_rc."
             break
         fi
-        # Reap every worker found dead in the same supervision poll before
-        # assigning one failing domain. Otherwise the CPU-first check can hide
-        # a simultaneous GPU failure and make ambiguous combined evidence look
-        # CPU-specific. The workload and Bash supervisor use independent
-        # whole-second clocks.
-        # Permit a clean child to finish within 0.1% of the requested duration
-        # (bounded to 3-30 seconds); nonzero exits still fail after wait.
-        if (( now_seconds < expected_end - completion_tolerance )); then
-            cpu_dead=0; gpu_dead=0
-            [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]] && cpu_dead=1
-            [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]] && gpu_dead=1
-            if (( cpu_dead == 1 || gpu_dead == 1 )); then
-                if (( cpu_dead == 1 )); then
-                    if wait "$stress_cpu_pid"; then cpu_rc=0; else cpu_rc=$?; fi
-                    stress_cpu_pid=''
-                fi
-                if (( gpu_dead == 1 )); then
-                    if wait "$stress_gpu_pid"; then gpu_rc=0; else gpu_rc=$?; fi
-                    stress_gpu_pid=''
-                fi
-                if (( cpu_dead == 1 && gpu_dead == 1 )); then
-                    if (( cpu_rc == 0 && gpu_rc == 0 )); then
-                        failure_class=HARNESS_FAILURE
-                        failure_reason='CPU and GPU stress exited early with rc=0/0.'
-                    elif (( cpu_rc != 0 && gpu_rc == 0 )); then
-                        failure_class=STABILITY_FAILURE
-                        failure_reason="CPU stress exited early with rc=$cpu_rc."
-                    elif (( cpu_rc == 0 && gpu_rc != 0 )); then
-                        failure_class=$(gpu_early_exit_class "$gpu_rc" "$gpu_output")
-                        failure_reason="GPU stress exited early with rc=$gpu_rc."
-                    else
-                        failure_class=STABILITY_FAILURE
-                        failure_reason="CPU and GPU stress exited early with rc=$cpu_rc/$gpu_rc."
-                    fi
-                elif (( cpu_dead == 1 )); then
-                    failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE)
-                    failure_reason="CPU stress exited early with rc=$cpu_rc."
-                else
+        # Reap every worker found dead in the same supervision poll. A clean
+        # segment completion is accepted only near that segment's deadline,
+        # then the domain is relaunched immediately for the shared remaining
+        # wall time. Nonzero or genuinely early exits still fail at once.
+        cpu_dead=0; gpu_dead=0; cpu_segment_bad=0; gpu_segment_bad=0
+        [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]] && cpu_dead=1
+        [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]] && gpu_dead=1
+        if (( cpu_dead == 1 )); then
+            if wait "$stress_cpu_pid"; then cpu_rc=0; else cpu_rc=$?; fi
+            stress_cpu_pid=''
+            segment_tolerance=$(stress_completion_tolerance "$cpu_segment_duration")
+            (( cpu_rc != 0 || now_seconds < cpu_segment_end - segment_tolerance )) && cpu_segment_bad=1
+        fi
+        if (( gpu_dead == 1 )); then
+            if wait "$stress_gpu_pid"; then gpu_rc=0; else gpu_rc=$?; fi
+            stress_gpu_pid=''
+            segment_tolerance=$(stress_completion_tolerance "$gpu_segment_duration")
+            (( gpu_rc != 0 || now_seconds < gpu_segment_end - segment_tolerance )) && gpu_segment_bad=1
+        fi
+        if (( cpu_segment_bad == 1 || gpu_segment_bad == 1 )); then
+            if (( cpu_segment_bad == 1 && gpu_segment_bad == 1 )); then
+                if (( cpu_rc == 0 && gpu_rc == 0 )); then
+                    failure_class=HARNESS_FAILURE
+                    failure_reason='CPU and GPU stress exited early with rc=0/0.'
+                elif (( cpu_rc != 0 && gpu_rc == 0 )); then
+                    failure_class=STABILITY_FAILURE; failure_reason="CPU stress exited early with rc=$cpu_rc."
+                elif (( cpu_rc == 0 && gpu_rc != 0 )); then
                     failure_class=$(gpu_early_exit_class "$gpu_rc" "$gpu_output")
                     failure_reason="GPU stress exited early with rc=$gpu_rc."
+                else
+                    failure_class=STABILITY_FAILURE; failure_reason="CPU and GPU stress exited early with rc=$cpu_rc/$gpu_rc."
                 fi
-                break
+            elif (( cpu_segment_bad == 1 )); then
+                failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE)
+                failure_reason="CPU stress exited early with rc=$cpu_rc."
+            else
+                failure_class=$(gpu_early_exit_class "$gpu_rc" "$gpu_output")
+                failure_reason="GPU stress exited early with rc=$gpu_rc."
             fi
+            break
+        fi
+        if (( cpu_dead == 1 && now_seconds < expected_end )); then
+            remaining=$((expected_end - now_seconds))
+            cpu_segment_duration=$(stress_segment_duration "$remaining") || { failure_class=HARNESS_FAILURE; failure_reason='Could not derive the next CPU stress segment.'; break; }
+            cpu_segment_number=$((cpu_segment_number + 1))
+            launch_batocera_cpu_segment "$cpu_segment_duration" "$cpu_output" "$cpu_segment_number"
+            cpu_segment_end=$((now_seconds + cpu_segment_duration)); cpu_alive=1
+        fi
+        if (( gpu_dead == 1 && now_seconds < expected_end )); then
+            remaining=$((expected_end - now_seconds))
+            gpu_segment_duration=$(stress_segment_duration "$remaining") || { failure_class=HARNESS_FAILURE; failure_reason='Could not derive the next GPU stress segment.'; break; }
+            gpu_segment_number=$((gpu_segment_number + 1))
+            launch_batocera_gpu_segment "$gpu_segment_duration" "$launcher_file" "$gpu_output" "$gpu_segment_number" "$glmark_binary" "$glmark_data" "$library_dirs" "$mode" "$wayland_runtime_dir" "$wayland_display" \
+                || { failure_class=HARNESS_FAILURE; failure_reason='Could not launch the next mode-specific glmark2 stress segment.'; break; }
+            gpu_segment_end=$((now_seconds + gpu_segment_duration)); gpu_alive=1
         fi
         if (( cpu_alive == 0 && gpu_alive == 0 )); then workloads_complete=1; fi
 

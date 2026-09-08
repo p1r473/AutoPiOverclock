@@ -219,6 +219,32 @@ apo_state_initialize() {
     apo_state_set FINAL_BACKOFF_ANCHOR_GPU ''
     apo_state_set FINAL_BACKOFF_TRIAL ''
     apo_state_set FINAL_BACKOFF_ANCHOR_CPU_QUALIFIED_CLOCK ''
+    # Retained-history scheduling is intentionally separate from the current
+    # run's FINAL_BACKOFF_HISTORY.  The latter may describe only failures that
+    # this run actually observed and replayed.
+    apo_state_set HISTORY_ISOLATION_STAGE NONE
+    apo_state_set HISTORY_CPU_FAILURE_BOUNDARY ''
+    apo_state_set HISTORY_GPU_FAILURE_BOUNDARY ''
+    apo_state_set HISTORY_PAIR_FRONTIERS ''
+    apo_state_set HISTORY_PROVENANCE ''
+    apo_state_set HISTORY_LEDGER_FILE ''
+    apo_state_set HISTORY_SCANNED_STATES 0
+    apo_state_set HISTORY_ACCEPTED_STATES 0
+    apo_state_set HISTORY_EVIDENCE_COUNT 0
+    apo_state_set HISTORY_ISOLATION_ANCHOR_CPU ''
+    apo_state_set HISTORY_ISOLATION_ANCHOR_GPU ''
+    apo_state_set HISTORY_CPU_TRIAL_CPU ''
+    apo_state_set HISTORY_CPU_TRIAL_GPU ''
+    apo_state_set HISTORY_GPU_TRIAL_CPU ''
+    apo_state_set HISTORY_GPU_TRIAL_GPU ''
+    apo_state_set HISTORY_PAIR_TRIAL_CPU ''
+    apo_state_set HISTORY_PAIR_TRIAL_GPU ''
+    apo_state_set HISTORY_BASE_CPU_QUALIFIED_CLOCK ''
+    apo_state_set HISTORY_CPU_TRIAL_QUALIFIED_CLOCK ''
+    apo_state_set HISTORY_ISOLATION_HANDOFF_CPU ''
+    apo_state_set HISTORY_ISOLATION_HANDOFF_GPU ''
+    apo_state_set HISTORY_ISOLATION_HISTORY ''
+    apo_state_set HISTORY_FAILURE_EVENTS ''
     apo_state_set APPLY_STATUS NOT_APPLIED
     apo_state_set APPLY_OLD_HASH ''
     apo_state_set APPLY_EXPECTED_HASH ''
@@ -312,7 +338,8 @@ apo_state_clear_final_validation() {
 
 apo_state_complete() {
     local final_cpu=$1 final_gpu=$2 validation_duration=$3
-    [[ -n $final_cpu && -n $final_gpu && $validation_duration =~ ^[1-9][0-9]{0,6}$ ]] ||
+    [[ -n $final_cpu && -n $final_gpu ]] &&
+        apo_validate_uint_range "$validation_duration" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
         apo_die 'Internal error: final validation completion lacks clock or endurance-duration evidence.' "$APO_EXIT_INTERNAL"
     apo_state_set FINAL_CPU "$final_cpu"
     apo_state_set FINAL_GPU "$final_gpu"

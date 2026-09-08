@@ -38,13 +38,15 @@ parse_fixture run overclock overclock overclock tron
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --cpu-start-at 3000 --gpu-start-at 1150
+    apo_parse_cli overclock tron --cpu-min 3000 --cpu-max 3175 --gpu-min 1150 --gpu-max 1175
     [[ $APO_COMMAND == run ]]
     [[ $APO_AUTO_APPLY == 1 ]]
     [[ $APO_ASSUME_YES == 1 ]]
     [[ $APO_EDGE_CPU_24H == 0 ]]
     [[ $APO_SWEEP_DOMAIN == all ]]
-    [[ $APO_CPU_START_AT == 3000 && $APO_GPU_START_AT == 1150 ]]
+    [[ $APO_CPU_MIN == 3000 && $APO_CPU_MAX == 3175 ]]
+    [[ $APO_GPU_MIN == 1150 && $APO_GPU_MAX == 1175 ]]
+    [[ $APO_USE_HISTORY == 1 && $APO_HISTORY_OPTION_SEEN == 0 ]]
     [[ $APO_MAX_FAN == 1 ]]
     [[ $APO_MODE_REQUESTED == auto ]]
     [[ -z $APO_CONFIG_FILE ]]
@@ -61,14 +63,20 @@ parse_fixture run overclock overclock overclock tron
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --cpu-only --cpu-start-at 3150
-    [[ $APO_SWEEP_DOMAIN == cpu && $APO_CPU_START_AT == 3150 && -z $APO_GPU_START_AT ]]
+    apo_parse_cli overclock tron --cpu-only --cpu-min 3150 --cpu-max 3175
+    [[ $APO_SWEEP_DOMAIN == cpu && $APO_CPU_MIN == 3150 && $APO_CPU_MAX == 3175 && -z $APO_GPU_MIN && -z $APO_GPU_MAX ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
-    [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_START_AT == 1150 && -z $APO_CPU_START_AT ]]
+    apo_parse_cli overclock tron --gpu-only --gpu-min 1150 --gpu-max 1175
+    [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_MIN == 1150 && $APO_GPU_MAX == 1175 && -z $APO_CPU_MIN && -z $APO_CPU_MAX ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --no-history
+    [[ $APO_USE_HISTORY == 0 && $APO_HISTORY_OPTION_SEEN == 1 ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
@@ -100,7 +108,9 @@ if (
 fi
 for invalid_duration_args in \
     '--qualification-hours 0' \
-    '--final-hours 169' \
+    '--final-hours 596524' \
+    '--final-hours 18446744073709551617' \
+    '--final-hours 000100' \
     '--edge-hours 1.5' \
     '--edge-hours 12 --edge-cpu-24h'; do
     if (
@@ -116,10 +126,18 @@ for invalid_duration_args in \
 done
 for invalid_domain_args in \
     '--cpu-only --gpu-only' \
-    '--cpu-start-at 3010' \
-    '--gpu-start-at 1160' \
-    '--cpu-only --gpu-start-at 1150' \
-    '--gpu-only --cpu-start-at 3000' \
+    '--cpu-min 3010' \
+    '--gpu-min 1160' \
+    '--cpu-max 3010' \
+    '--gpu-max 1160' \
+    '--cpu-min 3100 --cpu-max 3075' \
+    '--gpu-min 1175 --gpu-max 1150' \
+    '--cpu-only --gpu-min 1150' \
+    '--cpu-only --gpu-max 1175' \
+    '--gpu-only --cpu-min 3000' \
+    '--gpu-only --cpu-max 3175' \
+    '--cpu-start-at 3000' \
+    '--gpu-start-at 1150' \
     '--cpu-only --restart-from final' \
     '--edge-cpu-24h' \
     '--edge-hours 24'; do
@@ -137,9 +155,17 @@ done
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli prepare tron --cpu-start-at 3000
+    apo_parse_cli prepare tron --cpu-min 3000
 ) >/dev/null 2>&1; then
-    echo 'prepare accepted an overclock starting-clock option' >&2
+    echo 'prepare accepted an overclock clock-bound option' >&2
+    exit 1
+fi
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli prepare tron --no-history
+) >/dev/null 2>&1; then
+    echo 'prepare accepted the overclock history opt-out' >&2
     exit 1
 fi
 (
@@ -179,6 +205,18 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
     source "$ROOT/autopioverclock"
     apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 168
     [[ $APO_MANUAL_MINUTES == 10080 && $APO_MANUAL_DURATION_S == 604800 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 596523
+    [[ $APO_MANUAL_MINUTES == 35791380 && $APO_MANUAL_DURATION_S == 2147482800 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --minutes 35791380
+    [[ $APO_MANUAL_MINUTES == 35791380 && $APO_MANUAL_DURATION_S == 2147482800 ]]
 )
 
 parse_fixture reset reset reset reset tron

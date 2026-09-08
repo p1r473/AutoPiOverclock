@@ -335,6 +335,8 @@ expect_auto_stock_rejection inconsistent-provenance 2400 800 0 verified-default 
 
 [[ $(apo_config_auto_ladder 3150 100 3200 600) == 3200 ]]
 [[ $(apo_config_auto_ladder 1190 50 1200 200) == 1200 ]]
+[[ $(apo_config_auto_ladder 2400 100 3175 600) == '2500,2600,2700,2800,2900,3000,3100,3175' ]]
+[[ $(apo_config_auto_ladder 960 50 1175 200) == '1000,1050,1100,1150,1175' ]]
 [[ $(apo_config_auto_ladder_from_exact 2975 100 3200 600) == '2975,3075,3175,3200' ]]
 [[ $(apo_config_auto_ladder_from_exact 1150 50 1200 200) == '1150,1200' ]]
 
@@ -397,13 +399,45 @@ fi
     APO_CONFIG_FILE=''
     APO_MODE_REQUESTED=auto
     APO_SWEEP_DOMAIN=all
-    APO_CPU_START_AT=3000
-    APO_GPU_START_AT=1150
+    APO_CPU_MIN=3000
+    APO_GPU_MIN=1150
+    APO_CPU_MAX=3175
+    APO_GPU_MAX=1175
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 2400 960 0
-    [[ ${APO_CFG[CPU_CANDIDATES]} == '3000,3100,3200' ]]
-    [[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1200' ]]
+    [[ ${APO_CFG[CPU_CANDIDATES]} == '3000,3100,3175' ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1175' ]]
 )
+
+expect_auto_max_below_current_rejection() {
+    local domain=$1 cpu_max=$2 gpu_max=$3 expected=$4 status
+    local output_file="$TEMP_DIR/max-below-current-${domain}.out"
+    set +e
+    (
+        APO_COMMAND=run
+        APO_PUBLIC_COMMAND=overclock
+        APO_DRY_RUN=0
+        APO_CONFIG_FILE=''
+        APO_MODE_REQUESTED=auto
+        APO_SWEEP_DOMAIN=all
+        APO_CPU_MIN=''
+        APO_GPU_MIN=''
+        APO_CPU_MAX=$cpu_max
+        APO_GPU_MAX=$gpu_max
+        apo_config_load_for_new_run
+        resolve_discovered_auto_plan debian 2400 960 0
+    ) >"$output_file" 2>&1
+    status=$?
+    set -e
+    if (( status != APO_EXIT_USAGE )); then
+        echo "automatic $domain maximum below the current clock returned $status, expected $APO_EXIT_USAGE" >&2
+        cat "$output_file" >&2
+        exit 1
+    fi
+    grep -Fq -- "$expected" "$output_file"
+}
+expect_auto_max_below_current_rejection cpu 2300 1200 '--cpu-max cannot be below the protected current CPU clock (2400 MHz).'
+expect_auto_max_below_current_rejection gpu 3200 900 '--gpu-max cannot be below the protected current GPU/V3D clock (960 MHz).'
 
 (
     APO_COMMAND=run
@@ -412,8 +446,11 @@ fi
     APO_CONFIG_FILE=''
     APO_MODE_REQUESTED=auto
     APO_SWEEP_DOMAIN=gpu
-    APO_CPU_START_AT=''
-    APO_GPU_START_AT=1150
+    APO_CPU_MIN=''
+    APO_GPU_MIN=1150
+    APO_CPU_MAX=''
+    APO_GPU_MAX=1175
+    APO_USE_HISTORY=0
     APO_SOURCE_APPLIED_RUN_ID=20260903-120000-0123456789abcdef
     APO_SOURCE_APPLIED_PERMANENT_HASH=$(printf 'b%.0s' {1..64})
     APO_SOURCE_APPLIED_CPU=3100
@@ -431,8 +468,8 @@ fi
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 3100 1125 0 explicit-override arm_freq,v3d_freq
     [[ -z ${APO_CFG[CPU_CANDIDATES]} ]]
-    [[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1200' ]]
-    [[ ${APO_GPU_CANDIDATES[*]} == '1150 1200' ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1175' ]]
+    [[ ${APO_GPU_CANDIDATES[*]} == '1150 1175' ]]
     finalize_discovered_fixture gpu-only-applied
     apo_store_discovery_state
     (( APO_REQUIRE_GPU_STRESS == 1 ))
@@ -440,7 +477,9 @@ fi
     apo_state_load "$TEMP_DIR/gpu-only-applied.state"
     [[ ${APO_STATE[CFG_SWEEP_DOMAIN]} == gpu ]]
     [[ ${APO_STATE[CFG_SELECTION_POLICY]} == refined-max-25 ]]
-    [[ ${APO_STATE[CFG_GPU_START_AT]} == 1150 && -z ${APO_STATE[CFG_CPU_START_AT]} ]]
+    [[ ${APO_STATE[CFG_GPU_MIN]} == 1150 && -z ${APO_STATE[CFG_CPU_MIN]} ]]
+    [[ ${APO_STATE[CFG_GPU_MAX]} == 1175 && -z ${APO_STATE[CFG_CPU_MAX]} ]]
+    [[ ${APO_STATE[CFG_USE_HISTORY]} == 0 ]]
     [[ ${APO_STATE[SOURCE_APPLIED_RUN_ID]} == 20260903-120000-0123456789abcdef ]]
     [[ ${APO_STATE[SOURCE_APPLIED_CPU]} == 3100 && ${APO_STATE[SOURCE_APPLIED_GPU]} == 1125 ]]
     [[ ${APO_STATE[SOURCE_APPLIED_LIVE_HASH]} == "${APO_STATE[SOURCE_APPLIED_PERMANENT_HASH]}" ]]
@@ -612,8 +651,10 @@ grep -Fq 'malformed or mismatched AutoPiOverclock clock markers' "$TEMP_DIR/doma
     APO_CONFIG_FILE=''
     APO_MODE_REQUESTED=auto
     APO_SWEEP_DOMAIN=cpu
-    APO_CPU_START_AT=3000
-    APO_GPU_START_AT=''
+    APO_CPU_MIN=3000
+    APO_GPU_MIN=''
+    APO_CPU_MAX=3175
+    APO_GPU_MAX=''
     APO_SOURCE_APPLIED_RUN_ID=20260903-120000-fedcba9876543210
     APO_SOURCE_APPLIED_PERMANENT_HASH=$(printf 'b%.0s' {1..64})
     APO_SOURCE_APPLIED_CPU=2900
@@ -630,7 +671,7 @@ grep -Fq 'malformed or mismatched AutoPiOverclock clock markers' "$TEMP_DIR/doma
     APO_SOURCE_APPLIED_GPU_KEY=v3d_freq
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 2900 1175 0 explicit-override arm_freq,v3d_freq
-    [[ ${APO_CFG[CPU_CANDIDATES]} == '3000,3100,3200' ]]
+    [[ ${APO_CFG[CPU_CANDIDATES]} == '3000,3100,3175' ]]
     [[ -z ${APO_CFG[GPU_CANDIDATES]} ]]
 )
 
@@ -645,20 +686,20 @@ if (
     APO_STATE=()
     apo_state_set CFG_SELECTION_POLICY refined-max-25
     apo_state_set CFG_SWEEP_DOMAIN all
-    apo_state_set CFG_CPU_START_AT 3010
+    apo_state_set CFG_CPU_MIN 3010
     apo_config_restore_from_state
 ) >/dev/null 2>&1; then
-    echo 'saved CPU starting clock not aligned to 25 MHz was accepted' >&2
+    echo 'saved CPU minimum not aligned to 25 MHz was accepted' >&2
     exit 1
 fi
 if (
     APO_STATE=()
     apo_state_set CFG_SELECTION_POLICY refined-max-25
     apo_state_set CFG_SWEEP_DOMAIN all
-    apo_state_set CFG_GPU_START_AT 1160
+    apo_state_set CFG_GPU_MIN 1160
     apo_config_restore_from_state
 ) >/dev/null 2>&1; then
-    echo 'saved GPU starting clock not aligned to 25 MHz was accepted' >&2
+    echo 'saved GPU minimum not aligned to 25 MHz was accepted' >&2
     exit 1
 fi
 (

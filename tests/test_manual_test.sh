@@ -49,8 +49,8 @@ APO_RUN_ID=manual-fixture
 apo_write_effective_config "$TEMP_DIR/manual.conf"
 grep -Fq '# manual_stability_test=CPU:3100MHz GPU:1150MHz duration:5400s; never eligible for permanent apply' "$TEMP_DIR/manual.conf"
 
-# Exact tests may use the same 1-168 hour range as final validation without
-# widening the advanced automatic candidate-duration limit.
+# A retained seven-day exact test remains valid after the former policy ceiling
+# becomes only a portable numeric limit.
 APO_MANUAL_MINUTES=10080
 APO_MANUAL_DURATION_S=604800
 apo_config_load_for_new_run

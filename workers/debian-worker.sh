@@ -1359,12 +1359,47 @@ stress_completion_tolerance() {
     printf '%s' "$tolerance"
 }
 
+# Keep individual stress tools inside conservative one-hour counters while the
+# controller-visible gate remains one uninterrupted wall-clock interval.
+stress_segment_limit() { printf '3600'; }
+
+stress_segment_duration() {
+    local remaining=$1 limit
+    limit=$(stress_segment_limit) || return 1
+    [[ $remaining =~ ^[1-9][0-9]*$ && $limit =~ ^[1-9][0-9]*$ ]] || return 1
+    if (( remaining < limit )); then printf '%s' "$remaining"; else printf '%s' "$limit"; fi
+}
+
+launch_debian_cpu_segment() {
+    local segment_duration=$1 output_file=$2 segment_number=$3
+    printf '%s\n' "--- CPU segment ${segment_number}: ${segment_duration}s ---" >> "$output_file"
+    stress-ng --cpu "$(nproc)" --cpu-method all --verify --timeout "${segment_duration}s" --metrics-brief >>"$output_file" 2>&1 &
+    stress_cpu_pid=$!
+}
+
+launch_debian_gpu_segment() {
+    local segment_duration=$1 output_file=$2 segment_number=$3 render_node=$4 gpu_strategy=$5
+    printf '%s\n' "--- GPU segment ${segment_number}: ${segment_duration}s ---" >> "$output_file"
+    case $gpu_strategy in
+        explicit-v3d-device)
+            { printf 'GPU_STRESS_STRATEGY=%s\n' "$gpu_strategy"; stress-ng --gpu 1 --gpu-devnode "$render_node" --verify --timeout "${segment_duration}s" --metrics-brief; } >>"$output_file" 2>&1 &
+            ;;
+        single-v3d-default)
+            { printf 'GPU_STRESS_STRATEGY=%s\n' "$gpu_strategy"; stress-ng --gpu 1 --verify --timeout "${segment_duration}s" --metrics-brief; } >>"$output_file" 2>&1 &
+            ;;
+        *) return 1 ;;
+    esac
+    stress_gpu_pid=$!
+}
+
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
-    local start_seconds expected_end hard_deadline completion_tolerance now_seconds next_log max_seen=0 temp throttle new_errors
+    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors
     local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 cpu_dead=0 gpu_dead=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
+    local cpu_segment_duration=0 gpu_segment_duration=0 cpu_segment_end=0 gpu_segment_end=0
+    local cpu_segment_number=0 gpu_segment_number=0 remaining=0 segment_tolerance=0 cpu_segment_bad=0 gpu_segment_bad=0
     : "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
@@ -1386,27 +1421,26 @@ cmd_stress() {
     trap 'stress_signal_cleanup 129' HUP
     kernel_lines=$(kernel_log | wc -l)
     start_seconds=$SECONDS; expected_end=$((start_seconds + duration)); hard_deadline=$((expected_end + 60)); next_log=$start_seconds
-    completion_tolerance=$(stress_completion_tolerance "$duration")
-    case $stress_kind in cpu|combined) stress-ng --cpu "$(nproc)" --cpu-method all --verify --timeout "${duration}s" --metrics-brief >"$cpu_output" 2>&1 & stress_cpu_pid=$! ;; esac
+    : > "$cpu_output"; : > "$gpu_output"
+    case $stress_kind in
+        cpu|combined)
+            cpu_segment_duration=$(stress_segment_duration "$duration") || { emit_result HARNESS_FAILURE 'Could not derive a safe CPU stress segment.'; return 1; }
+            cpu_segment_number=1
+            launch_debian_cpu_segment "$cpu_segment_duration" "$cpu_output" "$cpu_segment_number"
+            cpu_segment_end=$((start_seconds + cpu_segment_duration))
+            ;;
+    esac
     case $stress_kind in
         gpu|combined)
             stress_ng_has_gpu || { emit_result HARNESS_FAILURE 'Installed stress-ng does not provide the GPU stressor.'; return 1; }
             render_node=$(v3d_render_node || true)
             [[ -n $render_node ]] || { emit_result HARNESS_FAILURE 'No V3D DRM render node is available.'; return 1; }
             gpu_strategy=$(stress_ng_gpu_strategy "$render_node" || true)
-            case $gpu_strategy in
-                explicit-v3d-device)
-                    { printf 'GPU_STRESS_STRATEGY=%s\n' "$gpu_strategy"; stress-ng --gpu 1 --gpu-devnode "$render_node" --verify --timeout "${duration}s" --metrics-brief; } >"$gpu_output" 2>&1 &
-                    ;;
-                single-v3d-default)
-                    { printf 'GPU_STRESS_STRATEGY=%s\n' "$gpu_strategy"; stress-ng --gpu 1 --verify --timeout "${duration}s" --metrics-brief; } >"$gpu_output" 2>&1 &
-                    ;;
-                *)
-                    emit_result HARNESS_FAILURE 'The installed stress-ng cannot select the V3D node and more than one DRM render node exists.'
-                    return 1
-                    ;;
-            esac
-            stress_gpu_pid=$!
+            case $gpu_strategy in explicit-v3d-device|single-v3d-default) ;; *) emit_result HARNESS_FAILURE 'The installed stress-ng cannot select the V3D node and more than one DRM render node exists.'; return 1 ;; esac
+            gpu_segment_duration=$(stress_segment_duration "$duration") || { emit_result HARNESS_FAILURE 'Could not derive a safe GPU stress segment.'; return 1; }
+            gpu_segment_number=1
+            launch_debian_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$render_node" "$gpu_strategy" || { emit_result HARNESS_FAILURE 'Could not launch the GPU stress segment.'; return 1; }
+            gpu_segment_end=$((start_seconds + gpu_segment_duration))
             ;;
     esac
     [[ -n $stress_cpu_pid || -n $stress_gpu_pid ]] || { emit_result HARNESS_FAILURE "Unknown stress kind: $stress_kind"; return 1; }
@@ -1437,50 +1471,60 @@ cmd_stress() {
             failure_reason="Filesystem activity failed during load with rc=$io_rc."
             break
         fi
-        # Reap every worker found dead in the same supervision poll before
-        # assigning one failing domain. Otherwise the CPU-first check can hide
-        # a simultaneous GPU failure and make ambiguous combined evidence look
-        # CPU-specific. CPU-only/GPU-only and simultaneous clean exits must
-        # never bypass the requested-duration gate.
-        # The workload and Bash supervisor use independent whole-second clocks.
-        # Permit a clean child to finish within 0.1% of the requested duration
-        # (bounded to 3-30 seconds); nonzero exits still fail after wait.
-        if (( now_seconds < expected_end - completion_tolerance )); then
-            cpu_dead=0; gpu_dead=0
-            [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]] && cpu_dead=1
-            [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]] && gpu_dead=1
-            if (( cpu_dead == 1 || gpu_dead == 1 )); then
-                if (( cpu_dead == 1 )); then
-                    if wait "$stress_cpu_pid"; then cpu_rc=0; else cpu_rc=$?; fi
-                    stress_cpu_pid=''
-                fi
-                if (( gpu_dead == 1 )); then
-                    if wait "$stress_gpu_pid"; then gpu_rc=0; else gpu_rc=$?; fi
-                    stress_gpu_pid=''
-                fi
-                if (( cpu_dead == 1 && gpu_dead == 1 )); then
-                    if (( cpu_rc == 0 && gpu_rc == 0 )); then
-                        failure_class=HARNESS_FAILURE
-                        failure_reason='CPU and GPU stress exited early with rc=0/0.'
-                    elif (( cpu_rc != 0 && gpu_rc == 0 )); then
-                        failure_class=STABILITY_FAILURE
-                        failure_reason="CPU stress exited early with rc=$cpu_rc."
-                    elif (( cpu_rc == 0 && gpu_rc != 0 )); then
-                        if grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
-                        failure_reason="GPU stress exited early with rc=$gpu_rc."
-                    else
-                        failure_class=STABILITY_FAILURE
-                        failure_reason="CPU and GPU stress exited early with rc=$cpu_rc/$gpu_rc."
-                    fi
-                elif (( cpu_dead == 1 )); then
-                    failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE)
-                    failure_reason="CPU stress exited early with rc=$cpu_rc."
-                else
-                    if (( gpu_rc == 0 )) || grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
+        # Reap every worker found dead in the same supervision poll. A clean
+        # segment completion is accepted only near that segment's deadline,
+        # then the domain is relaunched immediately for the shared remaining
+        # wall time. Nonzero or genuinely early exits still fail at once.
+        cpu_dead=0; gpu_dead=0; cpu_segment_bad=0; gpu_segment_bad=0
+        [[ -n $stress_cpu_pid && $cpu_alive -eq 0 ]] && cpu_dead=1
+        [[ -n $stress_gpu_pid && $gpu_alive -eq 0 ]] && gpu_dead=1
+        if (( cpu_dead == 1 )); then
+            if wait "$stress_cpu_pid"; then cpu_rc=0; else cpu_rc=$?; fi
+            stress_cpu_pid=''
+            segment_tolerance=$(stress_completion_tolerance "$cpu_segment_duration")
+            (( cpu_rc != 0 || now_seconds < cpu_segment_end - segment_tolerance )) && cpu_segment_bad=1
+        fi
+        if (( gpu_dead == 1 )); then
+            if wait "$stress_gpu_pid"; then gpu_rc=0; else gpu_rc=$?; fi
+            stress_gpu_pid=''
+            segment_tolerance=$(stress_completion_tolerance "$gpu_segment_duration")
+            (( gpu_rc != 0 || now_seconds < gpu_segment_end - segment_tolerance )) && gpu_segment_bad=1
+        fi
+        if (( cpu_segment_bad == 1 || gpu_segment_bad == 1 )); then
+            if (( cpu_segment_bad == 1 && gpu_segment_bad == 1 )); then
+                if (( cpu_rc == 0 && gpu_rc == 0 )); then
+                    failure_class=HARNESS_FAILURE
+                    failure_reason='CPU and GPU stress exited early with rc=0/0.'
+                elif (( cpu_rc != 0 && gpu_rc == 0 )); then
+                    failure_class=STABILITY_FAILURE; failure_reason="CPU stress exited early with rc=$cpu_rc."
+                elif (( cpu_rc == 0 && gpu_rc != 0 )); then
+                    if grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
                     failure_reason="GPU stress exited early with rc=$gpu_rc."
+                else
+                    failure_class=STABILITY_FAILURE; failure_reason="CPU and GPU stress exited early with rc=$cpu_rc/$gpu_rc."
                 fi
-                break
+            elif (( cpu_segment_bad == 1 )); then
+                failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE)
+                failure_reason="CPU stress exited early with rc=$cpu_rc."
+            else
+                if (( gpu_rc == 0 )) || grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
+                failure_reason="GPU stress exited early with rc=$gpu_rc."
             fi
+            break
+        fi
+        if (( cpu_dead == 1 && now_seconds < expected_end )); then
+            remaining=$((expected_end - now_seconds))
+            cpu_segment_duration=$(stress_segment_duration "$remaining") || { failure_class=HARNESS_FAILURE; failure_reason='Could not derive the next CPU stress segment.'; break; }
+            cpu_segment_number=$((cpu_segment_number + 1))
+            launch_debian_cpu_segment "$cpu_segment_duration" "$cpu_output" "$cpu_segment_number"
+            cpu_segment_end=$((now_seconds + cpu_segment_duration)); cpu_alive=1
+        fi
+        if (( gpu_dead == 1 && now_seconds < expected_end )); then
+            remaining=$((expected_end - now_seconds))
+            gpu_segment_duration=$(stress_segment_duration "$remaining") || { failure_class=HARNESS_FAILURE; failure_reason='Could not derive the next GPU stress segment.'; break; }
+            gpu_segment_number=$((gpu_segment_number + 1))
+            launch_debian_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$render_node" "$gpu_strategy" || { failure_class=HARNESS_FAILURE; failure_reason='Could not launch the next GPU stress segment.'; break; }
+            gpu_segment_end=$((now_seconds + gpu_segment_duration)); gpu_alive=1
         fi
         if (( cpu_alive == 0 && gpu_alive == 0 )); then workloads_complete=1; fi
 

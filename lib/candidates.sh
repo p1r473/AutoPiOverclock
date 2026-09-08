@@ -11,6 +11,177 @@ apo_refined_sweep_domain() {
     printf '%s' "${APO_SWEEP_DOMAIN:-$(apo_state_get CFG_SWEEP_DOMAIN all)}"
 }
 
+apo_history_isolation_stage() {
+    apo_state_get HISTORY_ISOLATION_STAGE NONE
+}
+
+apo_history_isolation_active() {
+    case $(apo_history_isolation_stage) in
+        PLANNED|CPU_TRIAL|GPU_TRIAL|PAIR_TRIAL) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+apo_history_failure_domain_for_stage() {
+    local failed_stage=$1 attributed_domain=${2:-}
+    case $failed_stage in
+        CPU_QUALIFICATION|CPU_STRESS) printf 'CPU' ;;
+        GPU_QUALIFICATION|GPU_STRESS) printf 'GPU' ;;
+        *)
+            case $attributed_domain in CPU|GPU) printf '%s' "$attributed_domain" ;; *) printf 'PAIR' ;; esac
+            ;;
+    esac
+}
+
+apo_history_record_failure_if_available() {
+    declare -F apo_history_record_failure_event >/dev/null 2>&1 || return 0
+    apo_history_record_failure_event "$@"
+}
+
+apo_history_append_isolation_transition() {
+    local from_stage=$1 from_cpu=$2 from_gpu=$3 to_stage=$4 to_cpu=$5 to_gpu=$6
+    local class=$7 domain=$8 reason=$9 timestamp run_id encoded history record value
+    for value in from_cpu from_gpu to_cpu to_gpu; do
+        [[ -n ${!value} ]] || printf -v "$value" '%s' '-'
+    done
+    timestamp=$(apo_now_iso) || return 1
+    run_id=$(apo_state_get RUN_ID "${APO_RUN_ID:-}")
+    apo_is_safe_run_id "$run_id" || return 1
+    encoded=$(apo_state_encode "$reason") || return 1
+    record="v1|$timestamp|$run_id|$from_stage|$from_cpu|$from_gpu|$to_stage|$to_cpu|$to_gpu|$class|$domain|$encoded"
+    history=$(apo_state_get HISTORY_ISOLATION_HISTORY '')
+    [[ -z $history ]] || history+=$'\n'
+    apo_state_set HISTORY_ISOLATION_HISTORY "${history}${record}"
+}
+
+apo_history_validate_runtime_isolation_state() {
+    local stage
+    stage=$(apo_history_isolation_stage)
+    case $stage in NONE|PLANNED|CPU_TRIAL|GPU_TRIAL|PAIR_TRIAL|DONE) ;; *)
+        APO_AUTO_VALIDATION_REASON="Saved retained-history isolation stage is malformed: ${stage:-missing}"
+        return 1
+        ;;
+    esac
+    if declare -F apo_history_validate_plan_state >/dev/null 2>&1; then
+        apo_history_validate_plan_state || {
+            APO_AUTO_VALIDATION_REASON=${APO_HISTORY_VALIDATION_REASON:-${APO_HISTORY_SCAN_ERROR:-Saved retained-history isolation plan is invalid.}}
+            return 1
+        }
+    fi
+}
+
+# The CPU search is intentionally completed and qualified at the fresh run's
+# true maximum before an ambiguous retained pair is allowed to influence the
+# pair under test.  A historical pass is never substituted for this proof.
+apo_history_after_cpu_qualification() {
+    local stage qualified target anchor_gpu from_gpu
+    stage=$(apo_history_isolation_stage)
+    qualified=$(apo_state_get CPU_QUALIFIED_CLOCK '')
+    [[ $qualified =~ ^[0-9]+$ ]] || return 1
+    case $stage in
+        PLANNED)
+            target=$(apo_state_get HISTORY_CPU_TRIAL_CPU '')
+            anchor_gpu=$(apo_state_get HISTORY_ISOLATION_ANCHOR_GPU '')
+            [[ $target =~ ^[0-9]+$ && $anchor_gpu =~ ^[0-9]+$ ]] || return 1
+            if (( qualified <= target )); then
+                apo_history_append_isolation_transition PLANNED "$qualified" "${APO_NORMAL_GPU:-}" NONE "$qualified" "${APO_NORMAL_GPU:-}" PASS CPU \
+                    'The fresh CPU maximum is already at or below the retained ambiguous-pair CPU trial; no historical pair isolation is needed.' || return 1
+                apo_state_set HISTORY_ISOLATION_STAGE NONE
+                apo_state_save
+                return 0
+            fi
+            apo_state_set HISTORY_ISOLATION_ANCHOR_CPU "$qualified"
+            apo_state_set HISTORY_GPU_TRIAL_CPU "$qualified"
+            apo_state_set HISTORY_PAIR_TRIAL_CPU "$target"
+            apo_state_set HISTORY_BASE_CPU_QUALIFIED_CLOCK "$qualified"
+            apo_state_set HISTORY_ISOLATION_STAGE CPU_TRIAL
+            apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+            apo_state_set CPU_QUALIFICATION_TARGET "$target"
+            apo_state_set CPU_QUALIFIED_CLOCK ''
+            apo_state_set CPU_QUALIFICATION_HISTORY ''
+            apo_state_set CPU_QUALIFICATION_LAST_CLASS ''
+            apo_state_set CPU_QUALIFICATION_LAST_REASON ''
+            apo_state_set RECOMMENDED_CPU "$target"
+            apo_state_set RECOMMENDED_GPU ''
+            apo_state_clear_final_validation
+            apo_state_set FINAL_TARGET_CPU "$target"
+            apo_state_set FINAL_TARGET_GPU ''
+            apo_state_set FINAL_STAGE ''
+            apo_clear_candidate_checkpoint
+            from_gpu=${APO_NORMAL_GPU:-$(apo_state_get NORMAL_GPU '')}
+            apo_history_append_isolation_transition PLANNED "$qualified" "$from_gpu" CPU_TRIAL "$target" "$from_gpu" PASS CPU \
+                'Fresh CPU maximum qualified; beginning the retained ambiguous-pair CPU-lowered branch.' || return 1
+            apo_state_phase CPU_QUALIFICATION READY RUNNING
+            return 2
+            ;;
+        CPU_TRIAL|PAIR_TRIAL)
+            if [[ $stage == CPU_TRIAL ]]; then
+                target=$(apo_state_get HISTORY_CPU_TRIAL_CPU '')
+            else
+                target=$(apo_state_get HISTORY_PAIR_TRIAL_CPU '')
+            fi
+            [[ $target =~ ^[0-9]+$ && $qualified -le $target ]] || return 1
+            if (( qualified < target )); then
+                from_gpu=$(apo_state_get RECOMMENDED_GPU "${APO_NORMAL_GPU:-}")
+                apo_history_append_isolation_transition "$stage" "$target" "$from_gpu" NONE "$qualified" "$from_gpu" PASS CPU \
+                    'Current-run CPU qualification established a lower exact CPU boundary; ordinary current-run backoff evidence supersedes historical pair isolation.' || return 1
+                apo_state_set HISTORY_ISOLATION_STAGE NONE
+            elif [[ $stage == CPU_TRIAL ]]; then
+                apo_state_set HISTORY_CPU_TRIAL_QUALIFIED_CLOCK "$qualified"
+            fi
+            apo_state_save
+            ;;
+    esac
+}
+
+# Once the fresh GPU sweep establishes its actual maximum, bind the retained
+# trial plan to that clock.  If the fresh GPU boundary already lies below the
+# ambiguous quadrant, restore the freshly-qualified CPU maximum and let exact
+# pair qualification prove it instead of sacrificing CPU performance.
+apo_history_finalize_selected_pair() {
+    local stage selected_cpu selected_gpu base_cpu cpu_trial gpu_trial
+    stage=$(apo_history_isolation_stage)
+    [[ $stage == CPU_TRIAL ]] || return 0
+    selected_cpu=$(apo_state_get RECOMMENDED_CPU '')
+    selected_gpu=$(apo_state_get RECOMMENDED_GPU '')
+    base_cpu=$(apo_state_get HISTORY_BASE_CPU_QUALIFIED_CLOCK '')
+    cpu_trial=$(apo_state_get HISTORY_CPU_TRIAL_CPU '')
+    gpu_trial=$(apo_state_get HISTORY_GPU_TRIAL_GPU '')
+    [[ $selected_cpu == "$cpu_trial" && $selected_gpu =~ ^[0-9]+$ && $base_cpu =~ ^[0-9]+$ && $gpu_trial =~ ^[0-9]+$ ]] || return 1
+    if (( selected_gpu <= gpu_trial )); then
+        apo_state_set HISTORY_ISOLATION_STAGE DONE
+        apo_state_set HISTORY_ISOLATION_HANDOFF_CPU "$base_cpu"
+        apo_state_set HISTORY_ISOLATION_HANDOFF_GPU "$selected_gpu"
+        apo_state_set CPU_QUALIFICATION_STATUS PASS
+        apo_state_set CPU_QUALIFICATION_TARGET "$base_cpu"
+        apo_state_set CPU_QUALIFIED_CLOCK "$base_cpu"
+        apo_state_set RECOMMENDED_CPU "$base_cpu"
+        apo_history_append_isolation_transition CPU_TRIAL "$cpu_trial" "$selected_gpu" DONE "$base_cpu" "$selected_gpu" PASS GPU \
+            'The fresh GPU maximum already avoided every retained ambiguous failed-pair quadrant; restored the fresh qualified CPU maximum.' || return 1
+    else
+        apo_state_set HISTORY_ISOLATION_ANCHOR_CPU "$base_cpu"
+        apo_state_set HISTORY_ISOLATION_ANCHOR_GPU "$selected_gpu"
+        apo_state_set HISTORY_CPU_TRIAL_GPU "$selected_gpu"
+        apo_state_set HISTORY_GPU_TRIAL_CPU "$base_cpu"
+        apo_state_set HISTORY_PAIR_TRIAL_CPU "$cpu_trial"
+        apo_state_set HISTORY_PAIR_TRIAL_GPU "$gpu_trial"
+    fi
+}
+
+apo_history_finish_isolation_success() {
+    local stage cpu gpu
+    stage=$(apo_history_isolation_stage)
+    case $stage in CPU_TRIAL|GPU_TRIAL|PAIR_TRIAL) ;; *) return 0 ;; esac
+    cpu=$(apo_state_get RECOMMENDED_CPU '')
+    gpu=$(apo_state_get RECOMMENDED_GPU '')
+    [[ $cpu =~ ^[0-9]+$ && $gpu =~ ^[0-9]+$ ]] || return 1
+    apo_state_set HISTORY_ISOLATION_STAGE DONE
+    apo_state_set HISTORY_ISOLATION_HANDOFF_CPU "$cpu"
+    apo_state_set HISTORY_ISOLATION_HANDOFF_GPU "$gpu"
+    apo_history_append_isolation_transition "$stage" "$cpu" "$gpu" DONE "$cpu" "$gpu" PASS NONE \
+        'The retained-history isolation branch completed the full requested final validation.'
+}
+
 apo_structured_stress_failure_domain() {
     local reason=$1 cpu_rc gpu_rc
     if [[ $reason =~ ^CPU\ stress\ exited\ early\ with\ rc=[0-9]+\.$ ||
@@ -650,6 +821,12 @@ apo_refined_validate_final_backoff_state() {
     }
     expected_cpu=$safe_cpu
     expected_gpu=$safe_gpu
+    if [[ $(apo_history_isolation_stage) == DONE &&
+          $(apo_state_get HISTORY_ISOLATION_HANDOFF_CPU '') =~ ^[0-9]+$ &&
+          $(apo_state_get HISTORY_ISOLATION_HANDOFF_GPU '') =~ ^[0-9]+$ ]]; then
+        expected_cpu=$(apo_state_get HISTORY_ISOLATION_HANDOFF_CPU '')
+        expected_gpu=$(apo_state_get HISTORY_ISOLATION_HANDOFF_GPU '')
+    fi
     local replay_anchor_cpu='' replay_anchor_gpu='' replay_trial='' replay_anchor_qualified=''
     for entry in "${entries[@]}"; do
         domain=''; from_value=''; to_value=''; extra=''
@@ -1305,7 +1482,7 @@ apo_auto_validate_domain_state() {
     case $domain in
         CPU)
             coarse_name=APO_CPU_CANDIDATES
-            normal_clock=$APO_AUTO_BASELINE_CPU; minimum=$APO_AUTO_BASELINE_CPU; maximum=$APO_AUTO_CPU_MAX_MHZ
+            normal_clock=$APO_AUTO_BASELINE_CPU; minimum=$APO_AUTO_BASELINE_CPU; maximum=${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ}
             if apo_refined_max_policy_active; then normal_clock=$APO_NORMAL_CPU; fi
             guard_mhz=$APO_AUTO_CPU_GUARD_MHZ; passed_key=PASSED_CPUS; boundary_key=CPU_FAILURE_BOUNDARY
             candidates_key=CPU_REFINE_CANDIDATES; index_key=CPU_REFINE_INDEX; complete_key=CPU_REFINE_COMPLETE
@@ -1314,7 +1491,7 @@ apo_auto_validate_domain_state() {
             ;;
         GPU)
             coarse_name=APO_GPU_CANDIDATES
-            normal_clock=$APO_AUTO_BASELINE_GPU; minimum=$APO_AUTO_BASELINE_GPU; maximum=$APO_AUTO_GPU_MAX_MHZ
+            normal_clock=$APO_AUTO_BASELINE_GPU; minimum=$APO_AUTO_BASELINE_GPU; maximum=${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}
             if apo_refined_max_policy_active; then normal_clock=$APO_NORMAL_GPU; fi
             guard_mhz=$APO_AUTO_GPU_GUARD_MHZ; passed_key=PASSED_GPUS; boundary_key=GPU_FAILURE_BOUNDARY
             candidates_key=GPU_REFINE_CANDIDATES; index_key=GPU_REFINE_INDEX; complete_key=GPU_REFINE_COMPLETE
@@ -1372,6 +1549,13 @@ apo_auto_validate_domain_state() {
         }
     done
     coarse_last=$normal_clock
+    if (( coarse_index == 0 )); then
+        case $domain in
+            CPU) [[ -z ${APO_CPU_MIN:-} ]] || coarse_last=$((APO_CPU_MIN - APO_AUTO_REFINE_STEP_MHZ)) ;;
+            GPU) [[ -z ${APO_GPU_MIN:-} ]] || coarse_last=$((APO_GPU_MIN - APO_AUTO_REFINE_STEP_MHZ)) ;;
+        esac
+        (( coarse_last < normal_clock )) && coarse_last=$normal_clock
+    fi
     (( coarse_index > 0 )) && coarse_last=${coarse_candidates[$((coarse_index - 1))]}
     if (( ${#refinement_values[@]} > 0 )); then
         [[ -n $boundary ]] || { APO_AUTO_VALIDATION_REASON="Saved $domain refinement plan has no failure boundary"; return 1; }
@@ -1570,7 +1754,7 @@ apo_auto_validate_edge_state() {
 
 apo_auto_validate_final_state() {
     local edge_status stage duration validated validation_schema status phase expected_cpu expected_gpu expected_duration
-    local final_cpu final_gpu recommended_cpu recommended_gpu target_cpu target_gpu completion_claimed=0 backoff_count qualification_target floor_validated
+    local final_cpu final_gpu recommended_cpu recommended_gpu target_cpu target_gpu completion_claimed=0 backoff_count qualification_target floor_validated history_stage
     edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
     stage=$(apo_state_get FINAL_STAGE '')
     duration=$(apo_state_get VALIDATION_DURATION_S '')
@@ -1608,6 +1792,30 @@ apo_auto_validate_final_state() {
                 if [[ $(apo_state_get SUBPHASE '') == GPU ]]; then
                     qualification_target=$(apo_state_get CPU_QUALIFICATION_TARGET '')
                     [[ -z $qualification_target ]] || expected_cpu=$qualification_target
+                fi
+                ;;
+        esac
+    fi
+    history_stage=$(apo_history_isolation_stage)
+    if (( backoff_count == 0 )); then
+        case $history_stage in
+            CPU_TRIAL)
+                expected_cpu=$(apo_state_get HISTORY_CPU_TRIAL_CPU '')
+                [[ -z $recommended_gpu ]] || expected_gpu=$recommended_gpu
+                ;;
+            GPU_TRIAL)
+                expected_cpu=$(apo_state_get HISTORY_GPU_TRIAL_CPU '')
+                expected_gpu=$(apo_state_get HISTORY_GPU_TRIAL_GPU '')
+                ;;
+            PAIR_TRIAL)
+                expected_cpu=$(apo_state_get HISTORY_PAIR_TRIAL_CPU '')
+                expected_gpu=$(apo_state_get HISTORY_PAIR_TRIAL_GPU '')
+                ;;
+            DONE)
+                if [[ $(apo_state_get HISTORY_ISOLATION_HANDOFF_CPU '') =~ ^[0-9]+$ &&
+                      $(apo_state_get HISTORY_ISOLATION_HANDOFF_GPU '') =~ ^[0-9]+$ ]]; then
+                    expected_cpu=$(apo_state_get HISTORY_ISOLATION_HANDOFF_CPU '')
+                    expected_gpu=$(apo_state_get HISTORY_ISOLATION_HANDOFF_GPU '')
                 fi
                 ;;
         esac
@@ -1869,26 +2077,26 @@ apo_validate_auto_resume_state() {
         fi
         if [[ $selection_policy == refined-max-25 && $sweep_domain == gpu ]]; then
             expected_cpu_csv=''
-        elif [[ $selection_policy == refined-max-25 && -n ${APO_CPU_START_AT:-} ]]; then
-            expected_cpu_csv=$(apo_config_auto_ladder_from_exact "$APO_CPU_START_AT" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") || {
-                apo_auto_state_invalid 'Saved automatic CPU plan could not be reconstructed from its exact starting clock.'
+        elif [[ $selection_policy == refined-max-25 && -n ${APO_CPU_MIN:-} ]]; then
+            expected_cpu_csv=$(apo_config_auto_ladder_from_exact "$APO_CPU_MIN" "$APO_AUTO_CPU_STEP_MHZ" "${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ}" "$APO_CPU_CLOCK_MIN_MHZ") || {
+                apo_auto_state_invalid 'Saved automatic CPU plan could not be reconstructed from its exact minimum.'
                 return 1
             }
         else
-            expected_cpu_csv=$(apo_config_auto_ladder "$plan_cpu" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") || {
+            expected_cpu_csv=$(apo_config_auto_ladder "$plan_cpu" "$APO_AUTO_CPU_STEP_MHZ" "${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ}" "$APO_CPU_CLOCK_MIN_MHZ") || {
                 apo_auto_state_invalid 'Saved automatic CPU plan could not be reconstructed from its protected baseline.'
                 return 1
             }
         fi
         if [[ $selection_policy == refined-max-25 && $sweep_domain == cpu ]]; then
             expected_gpu_csv=''
-        elif [[ $selection_policy == refined-max-25 && -n ${APO_GPU_START_AT:-} ]]; then
-            expected_gpu_csv=$(apo_config_auto_ladder_from_exact "$APO_GPU_START_AT" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") || {
-                apo_auto_state_invalid 'Saved automatic GPU plan could not be reconstructed from its exact starting clock.'
+        elif [[ $selection_policy == refined-max-25 && -n ${APO_GPU_MIN:-} ]]; then
+            expected_gpu_csv=$(apo_config_auto_ladder_from_exact "$APO_GPU_MIN" "$APO_AUTO_GPU_STEP_MHZ" "${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}" "$APO_GPU_CLOCK_MIN_MHZ") || {
+                apo_auto_state_invalid 'Saved automatic GPU plan could not be reconstructed from its exact minimum.'
                 return 1
             }
         else
-            expected_gpu_csv=$(apo_config_auto_ladder "$plan_gpu" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") || {
+            expected_gpu_csv=$(apo_config_auto_ladder "$plan_gpu" "$APO_AUTO_GPU_STEP_MHZ" "${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}" "$APO_GPU_CLOCK_MIN_MHZ") || {
                 apo_auto_state_invalid 'Saved automatic GPU plan could not be reconstructed from its protected baseline.'
                 return 1
             }
@@ -1925,6 +2133,7 @@ apo_validate_auto_resume_state() {
         fi
         apo_auto_validate_domain_state CPU || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
         apo_auto_validate_domain_state GPU || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+        apo_history_validate_runtime_isolation_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
         apo_auto_validate_final_backoff_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
         apo_auto_validate_qualification_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     elif (( edge_marker == 1 )); then
@@ -1980,7 +2189,7 @@ apo_auto_refinement_ladder() {
 
 apo_auto_refine_domain() {
     local domain=$1 normal_clock=$2 fixed_clock=$3 stress_kind=$4
-    local passed_key boundary_key candidates_key index_key complete_key candidate label passed_csv boundary refinement_csv index truncated_index truncated_csv
+    local passed_key boundary_key candidates_key index_key complete_key candidate label passed_csv boundary refinement_csv index truncated_index truncated_csv refinement_floor
     local -a refinement_candidates=()
     case $domain in
         CPU)
@@ -2004,7 +2213,13 @@ apo_auto_refine_domain() {
     refinement_csv=$(apo_state_get "$candidates_key" '')
     if [[ -z $refinement_csv ]]; then
         passed_csv=$(apo_state_get "$passed_key" '')
-        refinement_csv=$(apo_auto_refinement_ladder "$(apo_last_passed_clock "$passed_csv" "$normal_clock")" "$boundary")
+        refinement_floor=$normal_clock
+        case $domain in
+            CPU) [[ -z ${APO_CPU_MIN:-} ]] || refinement_floor=$((APO_CPU_MIN - APO_AUTO_REFINE_STEP_MHZ)) ;;
+            GPU) [[ -z ${APO_GPU_MIN:-} ]] || refinement_floor=$((APO_GPU_MIN - APO_AUTO_REFINE_STEP_MHZ)) ;;
+        esac
+        (( refinement_floor < normal_clock )) && refinement_floor=$normal_clock
+        refinement_csv=$(apo_auto_refinement_ladder "$(apo_last_passed_clock "$passed_csv" "$refinement_floor")" "$boundary")
         apo_state_set "$candidates_key" "$refinement_csv"
         apo_state_set "$index_key" 0
         apo_state_save
@@ -2033,6 +2248,8 @@ apo_auto_refine_domain() {
                     apo_state_set "$candidates_key" "$truncated_csv"
                     apo_state_set "$index_key" "$index"
                     apo_state_set "$complete_key" 1
+                    apo_history_record_failure_if_available CPU "$candidate" "$fixed_clock" "$APO_LAST_CLASS" "$APO_LAST_REASON" \
+                        cpu-refinement || return 1
                     apo_state_save
                     return 0
                 fi
@@ -2054,6 +2271,8 @@ apo_auto_refine_domain() {
                     apo_state_set "$candidates_key" "$truncated_csv"
                     apo_state_set "$index_key" "$index"
                     apo_state_set "$complete_key" 1
+                    apo_history_record_failure_if_available GPU "$fixed_clock" "$candidate" "$APO_LAST_CLASS" "$APO_LAST_REASON" \
+                        gpu-refinement || return 1
                     apo_state_save
                     return 0
                 fi
@@ -2137,6 +2356,8 @@ apo_auto_verify_guard() {
                 target=$((target - guard_mhz))
                 (( target < normal_clock )) && target=$normal_clock
                 apo_state_set "$target_key" "$target"
+                apo_history_record_failure_if_available CPU "$(apo_state_get "$boundary_key" '')" "$fixed_clock" "$APO_LAST_CLASS" "$APO_LAST_REASON" \
+                    cpu-guard || return 1
                 apo_state_save
                 continue
             fi
@@ -2151,6 +2372,8 @@ apo_auto_verify_guard() {
                 target=$((target - guard_mhz))
                 (( target < normal_clock )) && target=$normal_clock
                 apo_state_set "$target_key" "$target"
+                apo_history_record_failure_if_available GPU "$fixed_clock" "$(apo_state_get "$boundary_key" '')" "$APO_LAST_CLASS" "$APO_LAST_REASON" \
+                    gpu-guard || return 1
                 apo_state_save
                 continue
             fi
@@ -2185,6 +2408,8 @@ apo_sweep_cpu() {
             if apo_class_is_edge_failure "$APO_LAST_CLASS"; then
                 boundary=$candidate
                 apo_state_set CPU_FAILURE_BOUNDARY "$boundary"
+                apo_history_record_failure_if_available CPU "$candidate" "$APO_NORMAL_GPU" "$APO_LAST_CLASS" "$APO_LAST_REASON" \
+                    cpu-sweep || return 1
                 apo_state_save
                 break
             fi
@@ -2224,6 +2449,8 @@ apo_sweep_gpu() {
             if apo_class_is_edge_failure "$APO_LAST_CLASS"; then
                 boundary=$candidate
                 apo_state_set GPU_FAILURE_BOUNDARY "$boundary"
+                apo_history_record_failure_if_available GPU "$safe_cpu" "$candidate" "$APO_LAST_CLASS" "$APO_LAST_REASON" \
+                    gpu-sweep || return 1
                 apo_state_save
                 break
             fi
@@ -2248,7 +2475,7 @@ apo_clear_candidate_checkpoint() {
 }
 
 apo_cpu_qualification_schedule_backoff() {
-    local failure_class=$1 failure_reason=$2 attributed_domain=${3:-} current_cpu next_cpu history entry step floor_cpu
+    local failure_class=$1 failure_reason=$2 attributed_domain=${3:-} current_cpu current_gpu next_cpu history entry step floor_cpu
     apo_class_is_edge_failure "$failure_class" || return 1
     if [[ $(apo_state_get FINAL_BACKOFF_COUNT 0) =~ ^[1-9][0-9]*$ ]] &&
        apo_final_schedule_stress_backoff CPU_QUALIFICATION "$failure_class" "$failure_reason" "$attributed_domain"; then
@@ -2286,6 +2513,10 @@ apo_cpu_qualification_schedule_backoff() {
     apo_state_set FAILURE_CLASS ''
     apo_state_set FAILURE_REASON ''
     apo_clear_candidate_checkpoint
+    current_gpu=$(apo_state_get RECOMMENDED_GPU '')
+    [[ $current_gpu =~ ^[0-9]+$ ]] || current_gpu=${APO_NORMAL_GPU:-}
+    apo_history_record_failure_if_available CPU "$current_cpu" "$current_gpu" \
+        "$failure_class" "$failure_reason" cpu-qualification || return 1
     apo_state_phase CPU_QUALIFICATION READY RUNNING
     apo_summary_line "CPU QUALIFICATION BACKOFF: $entry after verified normal recovery; repeating the complete ${APO_QUALIFICATION_DURATION_S}s CPU qualification"
     apo_event cpu-qualification-backoff WARN "$failure_class" "CPU qualification rejected ${current_cpu} MHz: $failure_reason; reduced CPU by ${step} MHz and will repeat the complete qualification at ${next_cpu} MHz"
@@ -2455,6 +2686,12 @@ apo_select_conservative_clocks() {
             apo_state_fail HARNESS_FAILURE 'CPU qualification backoff evidence could not be bound to the selected GPU guard.'
             return 1
         }
+        apo_history_finalize_selected_pair || {
+            apo_state_fail HARNESS_FAILURE 'The retained-history isolation plan could not be bound to the fresh selected CPU/GPU pair.'
+            return 1
+        }
+        recommended_cpu=$(apo_state_get RECOMMENDED_CPU "$recommended_cpu")
+        recommended_gpu=$(apo_state_get RECOMMENDED_GPU "$recommended_gpu")
     else
         apo_state_set FINAL_BACKOFF_COUNT 0
         apo_state_set FINAL_BACKOFF_CPU ''
@@ -3029,14 +3266,118 @@ apo_restart_active_automatic_state() {
     apo_validate_auto_resume_state
 }
 
+# Return 0 when a retained-history transition was fully scheduled, 1 when the
+# current failure is unrelated to that plan, and 2 after establishing an exact
+# handoff origin for the ordinary current-run 25 MHz scheduler.
+apo_history_schedule_isolation_failure() {
+    local failed_stage=$1 failure_class=$2 failure_reason=$3 attributed_domain=${4:-}
+    local stage current_cpu current_gpu failure_domain next_stage next_cpu next_gpu
+    local base_cpu cpu_trial_cpu gpu_trial_gpu pair_trial_cpu pair_trial_gpu
+    apo_refined_max_policy_active && [[ $(apo_refined_sweep_domain) == all ]] || return 1
+    stage=$(apo_history_isolation_stage)
+    case $stage in CPU_TRIAL|GPU_TRIAL|PAIR_TRIAL) ;; *) return 1 ;; esac
+    apo_class_is_edge_failure "$failure_class" || return 1
+    [[ $(apo_state_get TRYBOOT_EXPECTED 0) == 0 &&
+       $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 0 &&
+       -z $(apo_state_get TRYBOOT_OWNED_HASH '') &&
+       -z $(apo_state_get TRYBOOT_RESERVATION_HASH '') &&
+       -z $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') &&
+       -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]] || return 1
+    current_cpu=$(apo_state_get FINAL_TARGET_CPU '')
+    current_gpu=$(apo_state_get FINAL_TARGET_GPU '')
+    [[ $current_cpu =~ ^[0-9]+$ && $current_gpu =~ ^[0-9]+$ &&
+       $current_cpu == "$(apo_state_get RECOMMENDED_CPU '')" &&
+       $current_gpu == "$(apo_state_get RECOMMENDED_GPU '')" ]] || return 1
+    failure_domain=$(apo_history_failure_domain_for_stage "$failed_stage" "$attributed_domain")
+
+    # Exact domain evidence ends the retained ambiguous experiment.  The
+    # ordinary scheduler consumes that evidence from this exact pair.
+    if [[ $failure_domain == CPU || $failure_domain == GPU || $stage == PAIR_TRIAL ]]; then
+        apo_state_set HISTORY_ISOLATION_STAGE DONE
+        apo_state_set HISTORY_ISOLATION_HANDOFF_CPU "$current_cpu"
+        apo_state_set HISTORY_ISOLATION_HANDOFF_GPU "$current_gpu"
+        apo_history_append_isolation_transition "$stage" "$current_cpu" "$current_gpu" DONE "$current_cpu" "$current_gpu" \
+            "$failure_class" "$failure_domain" "$failure_reason" || return 1
+        return 2
+    fi
+
+    base_cpu=$(apo_state_get HISTORY_BASE_CPU_QUALIFIED_CLOCK '')
+    cpu_trial_cpu=$(apo_state_get HISTORY_CPU_TRIAL_CPU '')
+    gpu_trial_gpu=$(apo_state_get HISTORY_GPU_TRIAL_GPU '')
+    pair_trial_cpu=$(apo_state_get HISTORY_PAIR_TRIAL_CPU '')
+    pair_trial_gpu=$(apo_state_get HISTORY_PAIR_TRIAL_GPU '')
+    case $stage in
+        CPU_TRIAL)
+            next_stage=GPU_TRIAL
+            next_cpu=$base_cpu
+            next_gpu=$gpu_trial_gpu
+            [[ $next_cpu =~ ^[0-9]+$ && $next_gpu =~ ^[0-9]+$ ]] || return 1
+            apo_state_set CPU_QUALIFICATION_STATUS PASS
+            apo_state_set CPU_QUALIFICATION_TARGET "$base_cpu"
+            apo_state_set CPU_QUALIFIED_CLOCK "$base_cpu"
+            apo_state_set CPU_QUALIFICATION_HISTORY ''
+            apo_state_set CPU_QUALIFICATION_LAST_CLASS ''
+            apo_state_set CPU_QUALIFICATION_LAST_REASON ''
+            apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+            apo_state_set GPU_QUALIFICATION_CPU "$next_cpu"
+            apo_state_set GPU_QUALIFICATION_TARGET "$next_gpu"
+            apo_state_set GPU_QUALIFIED_CPU ''
+            apo_state_set GPU_QUALIFIED_CLOCK ''
+            ;;
+        GPU_TRIAL)
+            next_stage=PAIR_TRIAL
+            next_cpu=$pair_trial_cpu
+            next_gpu=$pair_trial_gpu
+            [[ $next_cpu =~ ^[0-9]+$ && $next_gpu =~ ^[0-9]+$ && $cpu_trial_cpu == "$next_cpu" ]] || return 1
+            apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+            apo_state_set CPU_QUALIFICATION_TARGET "$next_cpu"
+            apo_state_set CPU_QUALIFIED_CLOCK ''
+            apo_state_set CPU_QUALIFICATION_HISTORY ''
+            apo_state_set CPU_QUALIFICATION_LAST_CLASS ''
+            apo_state_set CPU_QUALIFICATION_LAST_REASON ''
+            apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+            apo_state_set GPU_QUALIFICATION_CPU "$next_cpu"
+            apo_state_set GPU_QUALIFICATION_TARGET "$next_gpu"
+            apo_state_set GPU_QUALIFIED_CPU ''
+            apo_state_set GPU_QUALIFIED_CLOCK ''
+            ;;
+    esac
+    apo_history_record_failure_if_available PAIR "$current_cpu" "$current_gpu" "$failure_class" "$failure_reason" \
+        "history-isolation-${stage}" || return 1
+    apo_history_append_isolation_transition "$stage" "$current_cpu" "$current_gpu" "$next_stage" "$next_cpu" "$next_gpu" \
+        "$failure_class" AMBIGUOUS "$failure_reason" || return 1
+    apo_state_set HISTORY_ISOLATION_STAGE "$next_stage"
+    apo_state_set RECOMMENDED_CPU "$next_cpu"
+    apo_state_set RECOMMENDED_GPU "$next_gpu"
+    apo_state_set FAILURE_CLASS ''
+    apo_state_set FAILURE_REASON ''
+    apo_state_clear_final_validation
+    apo_state_set FINAL_TARGET_CPU "$next_cpu"
+    apo_state_set FINAL_TARGET_GPU "$next_gpu"
+    apo_state_set FINAL_STAGE ''
+    apo_clear_candidate_checkpoint
+    case $next_stage in
+        GPU_TRIAL) apo_state_phase GPU_QUALIFICATION READY RUNNING ;;
+        PAIR_TRIAL) apo_state_phase CPU_QUALIFICATION READY RUNNING ;;
+    esac
+    apo_summary_line "HISTORY ISOLATION: retained ambiguous pair CPU $current_cpu MHz / GPU $current_gpu MHz safely rejected; scheduled $next_stage at CPU $next_cpu MHz / GPU $next_gpu MHz before a fresh full ${APO_FINAL_DURATION_S}s final validation"
+    apo_event history-isolation WARN "$failure_class" "Retained ambiguous-pair isolation advanced from $stage to $next_stage after verified normal recovery: $failure_reason"
+}
+
 apo_refined_schedule_stress_backoff() {
     local failed_stage=$1 failure_class=$2 failure_reason=$3 attributed_domain=${4:-}
     local current_cpu current_gpu next_cpu next_gpu floor_cpu floor_gpu sweep_domain
     local count history entry next_phase domain anchor_cpu anchor_gpu trial anchor_qualified
     local restore_cpu_qualification=0 restore_gpu_qualification=0 restored_cpu='' restored_gpu=''
-    local routing_stage=$failed_stage
+    local routing_stage=$failed_stage history_schedule_rc failure_domain
     [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && -n $failure_reason ]] || return 1
     apo_class_is_edge_failure "$failure_class" || return 1
+    if apo_history_schedule_isolation_failure "$failed_stage" "$failure_class" "$failure_reason" "$attributed_domain"; then
+        return 0
+    else
+        history_schedule_rc=$?
+        (( history_schedule_rc == 1 )) || (( history_schedule_rc == 2 )) || return 1
+    fi
     [[ $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED &&
        $(apo_state_get FLOOR_VALIDATED 0) == 0 &&
        $(apo_state_get TRYBOOT_EXPECTED 0) == 0 &&
@@ -3295,6 +3636,9 @@ apo_refined_schedule_stress_backoff() {
     apo_state_set FINAL_TARGET_GPU "$next_gpu"
     apo_state_set FINAL_STAGE ''
     apo_clear_candidate_checkpoint
+    failure_domain=$(apo_history_failure_domain_for_stage "$failed_stage" "$attributed_domain")
+    apo_history_record_failure_if_available "$failure_domain" "$current_cpu" "$current_gpu" "$failure_class" "$failure_reason" \
+        "automatic-backoff-${failed_stage}" || return 1
 
     case $next_phase in
         CPU_QUALIFICATION)
@@ -3452,6 +3796,8 @@ apo_final_schedule_stress_backoff() {
     apo_state_set FINAL_TARGET_GPU "$next_gpu"
     apo_state_set FINAL_STAGE ''
     apo_clear_candidate_checkpoint
+    apo_history_record_failure_if_available "$domain" "$current_cpu" "$current_gpu" "$failure_class" "$failure_reason" \
+        "automatic-backoff-${failed_stage}" || return 1
     case $next_phase in
         CPU_QUALIFICATION)
             apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
@@ -3942,6 +4288,11 @@ apo_final_validation() {
                     apo_state_set FLOOR_VALIDATED 1
                     apo_summary_line "GUARDED FLOOR: PASS — CPU $recommended_cpu MHz / GPU $recommended_gpu MHz completed the full ${endurance_duration}s combined validation after the edge disposition."
                 fi
+                apo_history_finish_isolation_success || {
+                    apo_state_clear_final_validation
+                    apo_state_fail HARNESS_FAILURE 'The completed final could not durably close its retained-history isolation plan.'
+                    return 1
+                }
                 apo_state_complete "$recommended_cpu" "$recommended_gpu" "$endurance_duration"
                 apo_summary_line ''
                 apo_summary_line 'FINAL VALIDATION: PASS'
@@ -4043,6 +4394,14 @@ apo_run_tuning() {
                 else
                     tuning_rc=$?
                     (( tuning_rc == 2 )) && continue
+                    return 1
+                fi
+                if apo_history_after_cpu_qualification; then
+                    :
+                else
+                    tuning_rc=$?
+                    (( tuning_rc == 2 )) && continue
+                    apo_state_fail HARNESS_FAILURE 'The fresh CPU qualification could not advance the retained-history isolation plan.'
                     return 1
                 fi
                 if apo_refined_max_policy_active && [[ $(apo_state_get FINAL_BACKOFF_COUNT 0) =~ ^[1-9][0-9]*$ ]]; then

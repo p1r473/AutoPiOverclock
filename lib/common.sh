@@ -14,7 +14,12 @@ readonly APO_EXIT_RECOVERY=24
 readonly APO_EXIT_APPLY=25
 readonly APO_EXIT_INTERNAL=70
 readonly APO_MIN_TUNING_DURATION_S=3600
-readonly APO_MAX_TUNING_DURATION_S=604800
+# Keep user-selected whole-hour tests below the signed 32-bit seconds ceiling
+# used by portable timeout/deadline paths. This is a numeric safety boundary,
+# not a recommended test length: users may select anything from one hour up to
+# 596523 hours (about 68 years), including multi-week or month-long tests.
+readonly APO_MAX_TUNING_DURATION_HOURS=596523
+readonly APO_MAX_TUNING_DURATION_S=2147482800
 readonly APO_DEFAULT_QUALIFICATION_DURATION_S=7200
 readonly APO_DEFAULT_FINAL_DURATION_S=172800
 readonly APO_DEFAULT_EDGE_DURATION_S=86400
@@ -80,8 +85,21 @@ apo_is_safe_run_id() {
 }
 
 apo_validate_uint_range() {
-    local value=$1 minimum=$2 maximum=$3
-    apo_is_uint "$value" && (( value >= minimum && value <= maximum ))
+    local value=${1-} minimum=${2-} maximum=${3-}
+    local LC_ALL=C
+    [[ $value =~ ^(0|[1-9][0-9]*)$ &&
+       $minimum =~ ^(0|[1-9][0-9]*)$ &&
+       $maximum =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+    (( ${#minimum} < ${#maximum} )) ||
+        { (( ${#minimum} == ${#maximum} )) && [[ $minimum < $maximum || $minimum == "$maximum" ]]; } || return 1
+    if (( ${#value} < ${#minimum} )) ||
+       { (( ${#value} == ${#minimum} )) && [[ $value < $minimum ]]; }; then
+        return 1
+    fi
+    if (( ${#value} > ${#maximum} )) ||
+       { (( ${#value} == ${#maximum} )) && [[ $value > $maximum ]]; }; then
+        return 1
+    fi
 }
 
 apo_throttle_word() {

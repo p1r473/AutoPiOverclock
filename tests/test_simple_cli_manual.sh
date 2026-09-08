@@ -147,9 +147,11 @@ for invalid_test_args in \
     '--gpu 1150 --minutes 60' \
     '--cpu 599 --gpu 1150 --minutes 60' \
     '--cpu 3100 --gpu 1150 --minutes 0' \
-    '--cpu 3100 --gpu 1150 --minutes 1441' \
+    '--cpu 3100 --gpu 1150 --minutes 35791381' \
+    '--cpu 3100 --gpu 1150 --minutes 18446744073709551617' \
+    '--cpu 3100 --gpu 1150 --minutes 000060' \
     '--cpu 3100 --gpu 1150 --final-hours 0' \
-    '--cpu 3100 --gpu 1150 --final-hours 169' \
+    '--cpu 3100 --gpu 1150 --final-hours 596524' \
     '--cpu 3100 --gpu 1150 --final-hours 1.5' \
     '--cpu 3100 --gpu 1150 --minutes 60 --final-hours 1'; do
     # The fixture arguments are fixed numeric tokens without shell metacharacters.
@@ -206,9 +208,17 @@ for advanced_command in run resume status recover restore apply report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-start-at --gpu-start-at; do
+for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
+if grep -Fq -- '--cpu-start-at' <<< "$help_output"; then
+    echo 'removed --cpu-start-at alias is still present in help output' >&2
+    exit 1
+fi
+if grep -Fq -- '--gpu-start-at' <<< "$help_output"; then
+    echo 'removed --gpu-start-at alias is still present in help output' >&2
+    exit 1
+fi
 
 for documented_command in prepare overclock test reset run resume status recover restore apply report; do
     documented_pattern=$(printf '| `%s TARGET' "$documented_command")
@@ -255,7 +265,7 @@ if grep -Fq 'autopioverclock reset pi@pi-host' <<< "$quick_start"; then
 fi
 grep -Fq 'Run every command on the separate Linux controller.' "$ROOT/docs/cli.md"
 grep -Fq 'The controller may be any supported Linux computer; it does not need to be a Raspberry Pi.' "$ROOT/docs/cli.md"
-grep -Fq 'Every attempt starts a fresh full `--final-hours` run' "$ROOT/docs/cli.md"
+grep -Fq 'Every failure or retry starts the complete requested `--final-hours` duration from zero.' "$ROOT/docs/cli.md"
 grep -Fq 'Headless Raspberry Pi OS/Debian requires neither a desktop nor audio hardware' "$ROOT/docs/cli.md"
 grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
 grep -Fq 'ssh -o BatchMode=yes "$TARGET" true' "$ROOT/README.md"

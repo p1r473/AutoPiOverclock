@@ -517,6 +517,10 @@ apo_context_from_discovery() {
     apo_is_int "$APO_NORMAL_VOLTAGE" || apo_die "Discovery returned an invalid normal voltage delta: $APO_NORMAL_VOLTAGE" "$APO_EXIT_PREFLIGHT"
     [[ $APO_PERMANENT_CONFIG_HASH =~ ^[0-9a-f]{64}$ ]] || apo_die 'Discovery returned an invalid permanent-config hash.' "$APO_EXIT_PREFLIGHT"
     apo_verify_domain_sweep_source_discovery
+    if declare -F apo_history_resolve_new_overclock_plan >/dev/null 2>&1; then
+        apo_history_resolve_new_overclock_plan ||
+            apo_die "Retained-history planning failed: ${APO_HISTORY_SCAN_ERROR:-${APO_HISTORY_VALIDATION_REASON:-invalid retained evidence}}" "$APO_EXIT_PREFLIGHT"
+    fi
     apo_config_resolve_auto_candidates "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
         if [[ ${APO_SWEEP_DOMAIN:-all} == all ]]; then

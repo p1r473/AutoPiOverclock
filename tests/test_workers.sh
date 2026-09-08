@@ -1249,6 +1249,76 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" OPENSSL_ARGS
 mapfile -t BATOCERA_OPENSSL_ARGV < "$BATOCERA_OPENSSL_ARGS"
 [[ ${BATOCERA_OPENSSL_ARGV[*]} == 'speed -elapsed -seconds 600 -bytes 1048576 -multi 4 sha256' ]]
 
+# A controller gate longer than the per-tool limit remains one shared stress
+# interval. Both CPU and GPU must be relaunched at the segment boundary, and
+# their segment durations must add up to the exact requested wall time.
+for WORKER_NAME in debian batocera; do
+    SEGMENT_DIR="$TEMP_DIR/${WORKER_NAME}-segments"
+    WORKER_FILE="$ROOT/workers/${WORKER_NAME}-worker.sh"
+    mkdir -p "$SEGMENT_DIR"
+    : > "$SEGMENT_DIR/cpu-durations"
+    : > "$SEGMENT_DIR/gpu-durations"
+    SEGMENT_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$WORKER_FILE" \
+        WORKER_NAME="$WORKER_NAME" SEGMENT_DIR="$SEGMENT_DIR" bash -c '
+        set -u -o pipefail
+        source "$WORKER"
+        stress_segment_limit() { printf 10; }
+        current_temp() { printf 50; }
+        current_throttle() { printf "throttled=0x0"; }
+        clock_mhz() { case $1 in arm) printf 2400 ;; *) printf 800 ;; esac; }
+        kernel_log() { :; }
+        kernel_error_lines() { :; }
+        stress-ng() { :; }
+        stress_ng_has_gpu() { return 0; }
+        v3d_render_node() { printf /dev/dri/renderD128; }
+        stress_ng_gpu_strategy() { printf explicit-v3d-device; }
+        openssl() { :; }
+        find_glmark_binary() { printf /bin/true; }
+        find_glmark_data() { printf /tmp; }
+        find_glmark_library_dirs() { :; }
+        gpu_stack_probe() { printf "render_node=/dev/dri/renderD128;driver=v3d"; }
+
+        launch_fixture_cpu_segment() {
+            local segment_duration=$1 output_file=$2 segment_number=$3 marker
+            printf "%s\n" "$segment_duration" >> "$SEGMENT_DIR/cpu-durations"
+            marker="$SEGMENT_DIR/cpu-${segment_number}.done"
+            (while [[ ! -e $marker ]]; do command /bin/sleep 0.01; done; printf "CPU segment output\n" >> "$output_file") &
+            stress_cpu_pid=$!
+        }
+        launch_fixture_gpu_segment() {
+            local segment_duration=$1 output_file=$2 segment_number=$3 marker
+            printf "%s\n" "$segment_duration" >> "$SEGMENT_DIR/gpu-durations"
+            marker="$SEGMENT_DIR/gpu-${segment_number}.done"
+            (
+                while [[ ! -e $marker ]]; do command /bin/sleep 0.01; done
+                printf "    GL_RENDERER: V3D 7.1\nglmark2 Score: 42\n" >> "$output_file"
+            ) &
+            stress_gpu_pid=$!
+        }
+        if [[ $WORKER_NAME == debian ]]; then
+            launch_debian_cpu_segment() { launch_fixture_cpu_segment "$1" "$2" "$3"; }
+            launch_debian_gpu_segment() { launch_fixture_gpu_segment "$1" "$2" "$3"; }
+        else
+            launch_batocera_cpu_segment() { launch_fixture_cpu_segment "$1" "$2" "$3"; }
+            launch_batocera_gpu_segment() { launch_fixture_gpu_segment "$1" "$3" "$4"; }
+        fi
+        fixture_tick=0
+        sleep() {
+            fixture_tick=$((fixture_tick + 1))
+            : > "$SEGMENT_DIR/cpu-${fixture_tick}.done"
+            : > "$SEGMENT_DIR/gpu-${fixture_tick}.done"
+            command /bin/sleep 0.1
+            SECONDS=$((SECONDS + 10))
+        }
+        cmd_stress combined 20 75 headless "" 0 2400 800 throttled=0x0 60
+    ' 2>&1)
+    [[ $SEGMENT_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+    [[ $(wc -l < "$SEGMENT_DIR/cpu-durations") -eq 2 ]]
+    [[ $(wc -l < "$SEGMENT_DIR/gpu-durations") -eq 2 ]]
+    [[ $(awk '{ total += $1 } END { print total }' "$SEGMENT_DIR/cpu-durations") == 20 ]]
+    [[ $(awk '{ total += $1 } END { print total }' "$SEGMENT_DIR/gpu-durations") == 20 ]]
+done
+
 # A poll that wakes after the hard deadline fails closed even when the child
 # died between polls; its completion time cannot be proven to precede the
 # deadline.  Exercise the same invariant in both workers.

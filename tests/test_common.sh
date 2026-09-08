@@ -11,6 +11,23 @@ source "$ROOT/lib/ssh.sh"
 [[ $APO_TRANSIENT_READ_DELAY_SECONDS == 10 ]]
 [[ $APO_PREFLIGHT_SSH_TIMEOUT_SECONDS == 300 ]]
 [[ $APO_REBOOT_START_GRACE_SECONDS == 120 ]]
+[[ $APO_MAX_TUNING_DURATION_HOURS == 596523 ]]
+[[ $APO_MAX_TUNING_DURATION_S == 2147482800 ]]
+[[ $((APO_MAX_TUNING_DURATION_HOURS * 3600)) == "$APO_MAX_TUNING_DURATION_S" ]]
+# A hardware owner may request a month-long test; the only upper bound is the
+# portable whole-hour value below signed 32-bit seconds.
+apo_validate_uint_range 2592000 "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S"
+apo_validate_uint_range "$APO_MAX_TUNING_DURATION_S" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S"
+if apo_validate_uint_range 2147482801 "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S"; then
+    echo 'duration above the portable signed 32-bit limit was accepted' >&2
+    exit 1
+fi
+for unsafe_integer in 01 000596523 18446744073709551617 999999999999999999999999999999999999; do
+    if apo_validate_uint_range "$unsafe_integer" 1 "$APO_MAX_TUNING_DURATION_HOURS"; then
+        echo "noncanonical or overflowing integer was accepted: $unsafe_integer" >&2
+        exit 1
+    fi
+done
 
 apo_parse_target example-host
 [[ $APO_REMOTE_USER == "$(id -un)" ]]

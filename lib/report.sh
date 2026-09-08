@@ -350,9 +350,28 @@ EOF_LIVE
 }
 
 apo_print_saved_status() {
-    local policy sweep_domain
+    local policy sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
+    local cpu_effective_max gpu_effective_max history_policy
+    local auto_cpu_max=${APO_AUTO_CPU_MAX_MHZ:-3200} auto_gpu_max=${APO_AUTO_GPU_MAX_MHZ:-1200}
     policy=$(apo_report_selection_policy)
     sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
+    cpu_min=$(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT auto)")
+    gpu_min=$(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT auto)")
+    cpu_effective_max=$(apo_state_get CFG_CPU_MAX '')
+    gpu_effective_max=$(apo_state_get CFG_GPU_MAX '')
+    cpu_requested_max=$(apo_state_get CFG_CPU_MAX_REQUESTED "$cpu_effective_max")
+    gpu_requested_max=$(apo_state_get CFG_GPU_MAX_REQUESTED "$gpu_effective_max")
+    case $sweep_domain in
+        cpu) gpu_min=not-swept; gpu_requested_max=not-swept; gpu_effective_max=not-swept ;;
+        gpu) cpu_min=not-swept; cpu_requested_max=not-swept; cpu_effective_max=not-swept ;;
+        *)
+            cpu_requested_max=${cpu_requested_max:-$auto_cpu_max}
+            gpu_requested_max=${gpu_requested_max:-$auto_gpu_max}
+            cpu_effective_max=${cpu_effective_max:-$auto_cpu_max}
+            gpu_effective_max=${gpu_effective_max:-$auto_gpu_max}
+            ;;
+    esac
+    history_policy=$([[ $(apo_state_get CFG_USE_HISTORY 0) == 1 ]] && printf enabled || printf disabled)
     cat <<EOF_STATUS
 AutoPiOverclock ${APO_VERSION}
 Run ID:         $(apo_report_state_value RUN_ID unknown)
@@ -365,7 +384,9 @@ Phase:          $(apo_report_state_value PHASE unknown)
 Subphase:       $(apo_report_state_value SUBPHASE unknown)
 Sweep scope:    $(apo_report_state_value CFG_SWEEP_DOMAIN all)
 Selection:      $(apo_report_state_value CFG_SELECTION_POLICY guarded-v1)
-Requested start: CPU $(apo_report_state_value CFG_CPU_START_AT auto) MHz / GPU $(apo_report_state_value CFG_GPU_START_AT auto) MHz
+Requested bounds: CPU $(apo_report_value "${cpu_min:-auto}")..$(apo_report_value "${cpu_requested_max:-$auto_cpu_max}") MHz / GPU $(apo_report_value "${gpu_min:-auto}")..$(apo_report_value "${gpu_requested_max:-$auto_gpu_max}") MHz
+Effective caps:  CPU $(apo_report_value "${cpu_effective_max:-$auto_cpu_max}") MHz / GPU $(apo_report_value "${gpu_effective_max:-$auto_gpu_max}") MHz (history $history_policy)
+History evidence: clear CPU=$(apo_report_state_value HISTORY_CPU_FAILURE_BOUNDARY none) MHz / clear GPU=$(apo_report_state_value HISTORY_GPU_FAILURE_BOUNDARY none) MHz / ambiguous pairs=$(apo_report_state_value HISTORY_PAIR_FRONTIERS none) / accepted states=$(apo_report_state_value HISTORY_ACCEPTED_STATES 0)
 Normal clocks:  CPU $(apo_report_state_value NORMAL_CPU '?') MHz / GPU $(apo_report_state_value NORMAL_GPU '?') MHz
 Auto baseline:  CPU $(apo_report_state_value AUTO_BASELINE_CPU n/a) MHz / GPU $(apo_report_state_value AUTO_BASELINE_GPU n/a) MHz
 EOF_STATUS
@@ -507,7 +528,9 @@ EOF_SUMMARY
 }
 
 apo_generate_report() {
-    local report_file policy sweep_domain
+    local report_file policy sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
+    local cpu_effective_max gpu_effective_max history_policy
+    local auto_cpu_max=${APO_AUTO_CPU_MAX_MHZ:-3200} auto_gpu_max=${APO_AUTO_GPU_MAX_MHZ:-1200}
     if [[ ${APO_REDACT:-0} == 1 ]]; then
         # Do not inherit APO_RUN_PREFIX: it contains the target slug.
         report_file="${APO_OUTPUT_DIR}/autopioverclock-${APO_RUN_ID}-public-report.txt"
@@ -516,6 +539,23 @@ apo_generate_report() {
     fi
     policy=$(apo_report_selection_policy)
     sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
+    cpu_min=$(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT auto)")
+    gpu_min=$(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT auto)")
+    cpu_effective_max=$(apo_state_get CFG_CPU_MAX '')
+    gpu_effective_max=$(apo_state_get CFG_GPU_MAX '')
+    cpu_requested_max=$(apo_state_get CFG_CPU_MAX_REQUESTED "$cpu_effective_max")
+    gpu_requested_max=$(apo_state_get CFG_GPU_MAX_REQUESTED "$gpu_effective_max")
+    case $sweep_domain in
+        cpu) gpu_min=not-swept; gpu_requested_max=not-swept; gpu_effective_max=not-swept ;;
+        gpu) cpu_min=not-swept; cpu_requested_max=not-swept; cpu_effective_max=not-swept ;;
+        *)
+            cpu_requested_max=${cpu_requested_max:-$auto_cpu_max}
+            gpu_requested_max=${gpu_requested_max:-$auto_gpu_max}
+            cpu_effective_max=${cpu_effective_max:-$auto_cpu_max}
+            gpu_effective_max=${gpu_effective_max:-$auto_gpu_max}
+            ;;
+    esac
+    history_policy=$([[ $(apo_state_get CFG_USE_HISTORY 0) == 1 ]] && printf enabled || printf disabled)
     {
         printf 'AutoPiOverclock run report\n'
         printf '==========================\n'
@@ -527,8 +567,17 @@ apo_generate_report() {
         printf 'Mode: %s\n' "$(apo_report_state_value MODE_EFFECTIVE unknown)"
         printf 'Automatic sweep scope: %s\n' "$(apo_report_state_value CFG_SWEEP_DOMAIN all)"
         printf 'Automatic selection policy: %s\n' "$(apo_report_state_value CFG_SELECTION_POLICY guarded-v1)"
-        printf 'Requested automatic starts: CPU %s MHz, GPU %s MHz\n' \
-            "$(apo_report_state_value CFG_CPU_START_AT auto)" "$(apo_report_state_value CFG_GPU_START_AT auto)"
+        printf 'Requested automatic bounds: CPU %s..%s MHz, GPU %s..%s MHz\n' \
+            "$(apo_report_value "${cpu_min:-auto}")" "$(apo_report_value "${cpu_requested_max:-$auto_cpu_max}")" \
+            "$(apo_report_value "${gpu_min:-auto}")" "$(apo_report_value "${gpu_requested_max:-$auto_gpu_max}")"
+        printf 'Effective automatic caps: CPU %s MHz, GPU %s MHz (history %s)\n' \
+            "$(apo_report_value "${cpu_effective_max:-$auto_cpu_max}")" \
+            "$(apo_report_value "${gpu_effective_max:-$auto_gpu_max}")" "$history_policy"
+        printf 'Retained history: clear CPU failure=%s MHz, clear GPU failure=%s MHz, ambiguous pairs=%s, accepted states=%s\n' \
+            "$(apo_report_state_value HISTORY_CPU_FAILURE_BOUNDARY none)" \
+            "$(apo_report_state_value HISTORY_GPU_FAILURE_BOUNDARY none)" \
+            "$(apo_report_state_value HISTORY_PAIR_FRONTIERS none)" \
+            "$(apo_report_state_value HISTORY_ACCEPTED_STATES 0)"
         if [[ $sweep_domain != all ]]; then
             printf 'Applied source: run=%s, CPU=%s MHz, GPU=%s MHz, hash=%s\n' \
                 "$(apo_report_state_value SOURCE_APPLIED_RUN_ID missing)" \

@@ -92,11 +92,11 @@ apo_config_saved_duration_policy_matches() {
 apo_config_validate_duration_plan() {
     local expected_policy
     apo_validate_uint_range "${APO_QUALIFICATION_DURATION_S:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
-        apo_die 'Saved qualification duration must be 3600-604800 seconds.' "$APO_EXIT_INTERNAL"
+        apo_die "Saved qualification duration must be ${APO_MIN_TUNING_DURATION_S}-${APO_MAX_TUNING_DURATION_S} seconds." "$APO_EXIT_INTERNAL"
     apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
-        apo_die 'Saved final duration must be 3600-604800 seconds.' "$APO_EXIT_INTERNAL"
+        apo_die "Saved final duration must be ${APO_MIN_TUNING_DURATION_S}-${APO_MAX_TUNING_DURATION_S} seconds." "$APO_EXIT_INTERNAL"
     apo_validate_uint_range "${APO_EDGE_DURATION_S:-}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
-        apo_die 'Saved edge duration must be 3600-604800 seconds.' "$APO_EXIT_INTERNAL"
+        apo_die "Saved edge duration must be ${APO_MIN_TUNING_DURATION_S}-${APO_MAX_TUNING_DURATION_S} seconds." "$APO_EXIT_INTERNAL"
     expected_policy=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "${APO_CFG[FINAL_DURATION_S]}" "$APO_EDGE_DURATION_S")
     apo_config_saved_duration_policy_matches "$APO_QUALIFICATION_DURATION_S" "${APO_CFG[FINAL_DURATION_S]}" \
         "$APO_EDGE_DURATION_S" "${APO_DURATION_POLICY:-$expected_policy}" ||
@@ -143,7 +143,7 @@ apo_config_require_stock_auto_baseline() {
 }
 
 apo_config_auto_ladder() {
-    local baseline=$1 step=$2 maximum=$3 minimum=${4:-0} candidate ladder=''
+    local baseline=$1 step=$2 maximum=$3 minimum=${4:-0} candidate last=0 ladder=''
     [[ $baseline =~ ^(0|[1-9][0-9]{0,8})$ && $step =~ ^[1-9][0-9]{0,3}$ && $maximum =~ ^[1-9][0-9]{0,3}$ && $minimum =~ ^(0|[1-9][0-9]{0,3})$ ]] || return 1
     (( step <= APO_CPU_CLOCK_MAX_MHZ && maximum <= APO_CPU_CLOCK_MAX_MHZ && minimum <= maximum )) || return 1
     if (( baseline >= maximum )); then
@@ -155,8 +155,15 @@ apo_config_auto_ladder() {
     fi
     while (( candidate <= maximum )); do
         ladder=$(apo_append_csv "$ladder" "$candidate")
+        last=$candidate
         candidate=$((candidate + step))
     done
+    # An explicit maximum is inclusive even when it falls between coarse-ladder
+    # positions. That keeps a bounded run from silently stopping below its
+    # requested endpoint.
+    if (( maximum > baseline && last < maximum )); then
+        ladder=$(apo_append_csv "$ladder" "$maximum")
+    fi
     printf '%s' "$ladder"
 }
 
@@ -182,7 +189,8 @@ apo_config_auto_ladder_from_exact() {
 
 apo_config_resolve_auto_candidates() {
     local normal_cpu=$1 normal_gpu=$2 normal_voltage=$3 provenance=${4:-missing} evidence=${5:-missing}
-    local sweep_domain=${APO_SWEEP_DOMAIN:-all} cpu_start=${APO_CPU_START_AT:-} gpu_start=${APO_GPU_START_AT:-}
+    local sweep_domain=${APO_SWEEP_DOMAIN:-all} cpu_min=${APO_CPU_MIN:-} gpu_min=${APO_GPU_MIN:-}
+    local cpu_max=${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ} gpu_max=${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
         if [[ $sweep_domain == all ]]; then
             apo_config_require_stock_auto_baseline "$normal_cpu" "$normal_gpu" "$normal_voltage" "$provenance" "$evidence"
@@ -195,30 +203,38 @@ apo_config_resolve_auto_candidates() {
     fi
     (( APO_AUTO_CANDIDATES_PENDING == 1 )) || return 0
     if [[ $sweep_domain != gpu ]]; then
-        if [[ -n $cpu_start ]]; then
-            apo_validate_uint_range "$cpu_start" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
-                apo_die 'The requested automatic CPU starting clock is malformed.' "$APO_EXIT_USAGE"
-            (( cpu_start > normal_cpu )) ||
-                apo_die "--cpu-start-at must be above the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
-            APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$cpu_start" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") ||
-                apo_die 'Could not derive automatic CPU candidates from --cpu-start-at.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$cpu_max" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
+            apo_die 'The requested automatic CPU maximum is malformed.' "$APO_EXIT_USAGE"
+        (( cpu_max >= normal_cpu )) ||
+            apo_die "--cpu-max cannot be below the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
+        if [[ -n $cpu_min ]]; then
+            apo_validate_uint_range "$cpu_min" "$APO_CPU_CLOCK_MIN_MHZ" "$cpu_max" ||
+                apo_die 'The requested automatic CPU minimum is malformed or exceeds its maximum.' "$APO_EXIT_USAGE"
+            (( cpu_min > normal_cpu )) ||
+                apo_die "--cpu-min must be above the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
+            APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$cpu_min" "$APO_AUTO_CPU_STEP_MHZ" "$cpu_max" "$APO_CPU_CLOCK_MIN_MHZ") ||
+                apo_die 'Could not derive automatic CPU candidates from --cpu-min/--cpu-max.' "$APO_EXIT_INTERNAL"
         else
-            APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_cpu" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") ||
+            APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_cpu" "$APO_AUTO_CPU_STEP_MHZ" "$cpu_max" "$APO_CPU_CLOCK_MIN_MHZ") ||
                 apo_die 'Could not derive automatic CPU candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
         fi
     else
         APO_CFG[CPU_CANDIDATES]=''
     fi
     if [[ $sweep_domain != cpu ]]; then
-        if [[ -n $gpu_start ]]; then
-            apo_validate_uint_range "$gpu_start" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
-                apo_die 'The requested automatic GPU starting clock is malformed.' "$APO_EXIT_USAGE"
-            (( gpu_start > normal_gpu )) ||
-                apo_die "--gpu-start-at must be above the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
-            APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$gpu_start" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") ||
-                apo_die 'Could not derive automatic GPU/V3D candidates from --gpu-start-at.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$gpu_max" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
+            apo_die 'The requested automatic GPU maximum is malformed.' "$APO_EXIT_USAGE"
+        (( gpu_max >= normal_gpu )) ||
+            apo_die "--gpu-max cannot be below the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
+        if [[ -n $gpu_min ]]; then
+            apo_validate_uint_range "$gpu_min" "$APO_GPU_CLOCK_MIN_MHZ" "$gpu_max" ||
+                apo_die 'The requested automatic GPU minimum is malformed or exceeds its maximum.' "$APO_EXIT_USAGE"
+            (( gpu_min > normal_gpu )) ||
+                apo_die "--gpu-min must be above the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
+            APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$gpu_min" "$APO_AUTO_GPU_STEP_MHZ" "$gpu_max" "$APO_GPU_CLOCK_MIN_MHZ") ||
+                apo_die 'Could not derive automatic GPU/V3D candidates from --gpu-min/--gpu-max.' "$APO_EXIT_INTERNAL"
         else
-            APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_gpu" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") ||
+            APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder "$normal_gpu" "$APO_AUTO_GPU_STEP_MHZ" "$gpu_max" "$APO_GPU_CLOCK_MIN_MHZ") ||
                 apo_die 'Could not derive automatic GPU/V3D candidates from the discovered baseline.' "$APO_EXIT_INTERNAL"
         fi
     else
@@ -230,9 +246,9 @@ apo_config_resolve_auto_candidates() {
     apo_config_validate
     if [[ ${APO_COMMAND:-prepare} == run && ${APO_DRY_RUN:-0} == 0 && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
         case $sweep_domain in
-            cpu) apo_die "The protected current CPU clock is already at or above the automatic ceiling (${APO_AUTO_CPU_MAX_MHZ} MHz)." "$APO_EXIT_USAGE" ;;
-            gpu) apo_die "The protected current GPU/V3D clock is already at or above the automatic ceiling (${APO_AUTO_GPU_MAX_MHZ} MHz)." "$APO_EXIT_USAGE" ;;
-            *) apo_die "The discovered CPU and GPU clocks are already at or above the automatic ceilings (${APO_AUTO_CPU_MAX_MHZ}/${APO_AUTO_GPU_MAX_MHZ} MHz). Supply an explicit --config plan." "$APO_EXIT_USAGE" ;;
+            cpu) apo_die "The protected current CPU clock is already at or above the requested ceiling (${cpu_max} MHz)." "$APO_EXIT_USAGE" ;;
+            gpu) apo_die "The protected current GPU/V3D clock is already at or above the requested ceiling (${gpu_max} MHz)." "$APO_EXIT_USAGE" ;;
+            *) apo_die "The discovered CPU and GPU clocks are already at or above the requested ceilings (${cpu_max}/${gpu_max} MHz). Supply higher bounds or an explicit --config plan." "$APO_EXIT_USAGE" ;;
         esac
     fi
 }
@@ -301,7 +317,8 @@ apo_config_validate() {
     apo_parse_ordered_int_list "${APO_CFG[GPU_CANDIDATES]}" APO_GPU_CANDIDATES "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" gpu_candidates_mhz
     apo_validate_uint_range "${APO_CFG[CANDIDATE_DURATION_S]}" 10 "$candidate_duration_max" ||
         apo_die "candidate_duration_seconds must be 10-${candidate_duration_max}." "$APO_EXIT_USAGE"
-    apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" || apo_die 'final_duration_seconds must be 3600-604800.' "$APO_EXIT_USAGE"
+    apo_validate_uint_range "${APO_CFG[FINAL_DURATION_S]}" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+        apo_die "final_duration_seconds must be ${APO_MIN_TUNING_DURATION_S}-${APO_MAX_TUNING_DURATION_S}." "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[MAX_TEMP_C]}" 40 95 || apo_die 'max_temp_c must be 40-95.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[TELEMETRY_INTERVAL_S]}" 1 60 || apo_die 'telemetry_interval_seconds must be 1-60.' "$APO_EXIT_USAGE"
     apo_validate_uint_range "${APO_CFG[BACKOFF_STEPS]}" 0 10 || apo_die 'conservative_backoff_steps must be 0-10.' "$APO_EXIT_USAGE"
@@ -379,8 +396,13 @@ apo_config_store_in_state() {
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES "$APO_AUTO_GENERATED_CANDIDATES"
     apo_state_set CFG_SWEEP_DOMAIN "${APO_SWEEP_DOMAIN:-all}"
     apo_state_set CFG_SELECTION_POLICY "${APO_SELECTION_POLICY:-refined-max-25}"
-    apo_state_set CFG_CPU_START_AT "${APO_CPU_START_AT:-}"
-    apo_state_set CFG_GPU_START_AT "${APO_GPU_START_AT:-}"
+    apo_state_set CFG_CPU_MIN "${APO_CPU_MIN:-}"
+    apo_state_set CFG_GPU_MIN "${APO_GPU_MIN:-}"
+    apo_state_set CFG_CPU_MAX "${APO_CPU_MAX:-}"
+    apo_state_set CFG_GPU_MAX "${APO_GPU_MAX:-}"
+    apo_state_set CFG_CPU_MAX_REQUESTED "${APO_CPU_MAX_REQUESTED:-}"
+    apo_state_set CFG_GPU_MAX_REQUESTED "${APO_GPU_MAX_REQUESTED:-}"
+    apo_state_set CFG_USE_HISTORY "${APO_USE_HISTORY:-1}"
     apo_state_set CFG_EDGE_CPU_24H "${APO_EDGE_CPU_24H:-0}"
     apo_state_set CFG_EDGE_ORDER "${APO_EDGE_ORDER:-floor-first}"
     apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
@@ -428,20 +450,51 @@ apo_config_restore_from_state() {
     APO_SELECTION_POLICY=$(apo_state_get CFG_SELECTION_POLICY guarded-v1)
     [[ $APO_SELECTION_POLICY == guarded-v1 || $APO_SELECTION_POLICY == refined-max-25 ]] ||
         apo_die 'Saved automatic selection policy is malformed.' "$APO_EXIT_INTERNAL"
-    APO_CPU_START_AT=$(apo_state_get CFG_CPU_START_AT '')
-    APO_GPU_START_AT=$(apo_state_get CFG_GPU_START_AT '')
-    [[ -z $APO_CPU_START_AT ]] || apo_validate_uint_range "$APO_CPU_START_AT" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
-        apo_die 'Saved CPU starting clock is malformed.' "$APO_EXIT_INTERNAL"
-    [[ -z $APO_GPU_START_AT ]] || apo_validate_uint_range "$APO_GPU_START_AT" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
-        apo_die 'Saved GPU starting clock is malformed.' "$APO_EXIT_INTERNAL"
-    [[ -z $APO_CPU_START_AT ]] || (( 10#$APO_CPU_START_AT % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
-        apo_die 'Saved CPU starting clock is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
-    [[ -z $APO_GPU_START_AT ]] || (( 10#$APO_GPU_START_AT % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
-        apo_die 'Saved GPU starting clock is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
-    [[ $APO_SWEEP_DOMAIN != cpu || -z $APO_GPU_START_AT ]] ||
-        apo_die 'Saved CPU-only plan contains a GPU starting clock.' "$APO_EXIT_INTERNAL"
-    [[ $APO_SWEEP_DOMAIN != gpu || -z $APO_CPU_START_AT ]] ||
-        apo_die 'Saved GPU-only plan contains a CPU starting clock.' "$APO_EXIT_INTERNAL"
+    APO_CPU_MIN=$(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT '')")
+    APO_GPU_MIN=$(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT '')")
+    APO_CPU_MAX=$(apo_state_get CFG_CPU_MAX '')
+    APO_GPU_MAX=$(apo_state_get CFG_GPU_MAX '')
+    APO_CPU_MAX_REQUESTED=$(apo_state_get CFG_CPU_MAX_REQUESTED "$APO_CPU_MAX")
+    APO_GPU_MAX_REQUESTED=$(apo_state_get CFG_GPU_MAX_REQUESTED "$APO_GPU_MAX")
+    APO_USE_HISTORY=$(apo_state_get CFG_USE_HISTORY 0)
+    [[ -z $APO_CPU_MIN ]] || apo_validate_uint_range "$APO_CPU_MIN" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
+        apo_die 'Saved CPU minimum is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_MAX ]] || apo_validate_uint_range "$APO_CPU_MAX" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
+        apo_die 'Saved CPU maximum is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MIN ]] || apo_validate_uint_range "$APO_GPU_MIN" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
+        apo_die 'Saved GPU minimum is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MAX ]] || apo_validate_uint_range "$APO_GPU_MAX" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
+        apo_die 'Saved GPU maximum is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_MAX_REQUESTED ]] || apo_validate_uint_range "$APO_CPU_MAX_REQUESTED" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
+        apo_die 'Saved requested CPU maximum is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MAX_REQUESTED ]] || apo_validate_uint_range "$APO_GPU_MAX_REQUESTED" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
+        apo_die 'Saved requested GPU maximum is malformed.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_MIN ]] || (( 10#$APO_CPU_MIN % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved CPU minimum is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_MAX ]] || (( 10#$APO_CPU_MAX % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved CPU maximum is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MIN ]] || (( 10#$APO_GPU_MIN % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved GPU minimum is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MAX ]] || (( 10#$APO_GPU_MAX % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved GPU maximum is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_MAX_REQUESTED ]] || (( 10#$APO_CPU_MAX_REQUESTED % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved requested CPU maximum is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MAX_REQUESTED ]] || (( 10#$APO_GPU_MAX_REQUESTED % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
+        apo_die 'Saved requested GPU maximum is not aligned to the automatic refinement step.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_MIN || -z $APO_CPU_MAX ]] || (( 10#$APO_CPU_MIN <= 10#$APO_CPU_MAX )) ||
+        apo_die 'Saved CPU minimum exceeds its maximum.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MIN || -z $APO_GPU_MAX ]] || (( 10#$APO_GPU_MIN <= 10#$APO_GPU_MAX )) ||
+        apo_die 'Saved GPU minimum exceeds its maximum.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_CPU_MAX_REQUESTED || -z $APO_CPU_MAX ]] || (( 10#$APO_CPU_MAX <= 10#$APO_CPU_MAX_REQUESTED )) ||
+        apo_die 'Saved effective CPU maximum exceeds the user-requested maximum.' "$APO_EXIT_INTERNAL"
+    [[ -z $APO_GPU_MAX_REQUESTED || -z $APO_GPU_MAX ]] || (( 10#$APO_GPU_MAX <= 10#$APO_GPU_MAX_REQUESTED )) ||
+        apo_die 'Saved effective GPU maximum exceeds the user-requested maximum.' "$APO_EXIT_INTERNAL"
+    [[ $APO_USE_HISTORY == 0 || $APO_USE_HISTORY == 1 ]] ||
+        apo_die 'Saved history policy is malformed.' "$APO_EXIT_INTERNAL"
+    [[ $APO_SWEEP_DOMAIN != cpu || ( -z $APO_GPU_MIN && -z $APO_GPU_MAX ) ]] ||
+        apo_die 'Saved CPU-only plan contains GPU bounds.' "$APO_EXIT_INTERNAL"
+    [[ $APO_SWEEP_DOMAIN != gpu || ( -z $APO_CPU_MIN && -z $APO_CPU_MAX ) ]] ||
+        apo_die 'Saved GPU-only plan contains CPU bounds.' "$APO_EXIT_INTERNAL"
     APO_SOURCE_APPLIED_RUN_ID=$(apo_state_get SOURCE_APPLIED_RUN_ID '')
     APO_SOURCE_APPLIED_PERMANENT_HASH=$(apo_state_get SOURCE_APPLIED_PERMANENT_HASH '')
     APO_SOURCE_APPLIED_LIVE_HASH=$(apo_state_get SOURCE_APPLIED_LIVE_HASH '')
@@ -532,7 +585,10 @@ apo_config_restore_from_state() {
             apo_die 'Saved manual CPU clock is malformed.' "$APO_EXIT_INTERNAL"
         apo_validate_uint_range "$APO_MANUAL_GPU" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" ||
             apo_die 'Saved manual GPU clock is malformed.' "$APO_EXIT_INTERNAL"
-        apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 10080 || apo_die 'Saved manual duration is malformed.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 "$((APO_MAX_TUNING_DURATION_S / 60))" ||
+            apo_die 'Saved manual duration is malformed.' "$APO_EXIT_INTERNAL"
+        apo_validate_uint_range "$APO_MANUAL_DURATION_S" 60 "$APO_MAX_TUNING_DURATION_S" ||
+            apo_die 'Saved manual duration seconds are malformed.' "$APO_EXIT_INTERNAL"
         [[ $APO_MANUAL_DURATION_S == $((APO_MANUAL_MINUTES * 60)) ]] ||
             apo_die 'Saved manual duration fields disagree.' "$APO_EXIT_INTERNAL"
     fi
@@ -549,8 +605,13 @@ apo_write_effective_config() {
         if (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then
             printf '# automatic_sweep_domain=%s\n' "${APO_SWEEP_DOMAIN:-all}"
             printf '# automatic_selection_policy=%s\n' "${APO_SELECTION_POLICY:-refined-max-25}"
-            printf '# automatic_cpu_start_at_mhz=%s\n' "${APO_CPU_START_AT:-auto}"
-            printf '# automatic_gpu_start_at_mhz=%s\n' "${APO_GPU_START_AT:-auto}"
+            printf '# automatic_cpu_min_mhz=%s\n' "${APO_CPU_MIN:-auto}"
+            printf '# automatic_cpu_requested_max_mhz=%s\n' "${APO_CPU_MAX_REQUESTED:-auto}"
+            printf '# automatic_cpu_max_mhz=%s\n' "${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ}"
+            printf '# automatic_gpu_min_mhz=%s\n' "${APO_GPU_MIN:-auto}"
+            printf '# automatic_gpu_requested_max_mhz=%s\n' "${APO_GPU_MAX_REQUESTED:-auto}"
+            printf '# automatic_gpu_max_mhz=%s\n' "${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}"
+            printf '# automatic_use_history=%s\n' "${APO_USE_HISTORY:-1}"
             printf '# automatic_domain_qualification_seconds=%s\n' "$APO_QUALIFICATION_DURATION_S"
             if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
                 printf '# legacy_automatic_edge_seconds=%s\n' "$APO_EDGE_DURATION_S"

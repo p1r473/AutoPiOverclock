@@ -68,6 +68,8 @@ CONTINUATION_STATE="$CONTINUATION_OUTPUT/tron-${CONTINUATION_RUN}.state"
 write_state_fixture "$CONTINUATION_STATE" \
     FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$CONTINUATION_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all \
+    CFG_CPU_MAX 3075 CFG_GPU_MAX 1175 CFG_CPU_MAX_REQUESTED '' CFG_GPU_MAX_REQUESTED '' CFG_USE_HISTORY 1 \
     STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED CFG_MAX_FAN 1 \
     CFG_QUALIFICATION_DURATION_S 10800 CFG_FINAL_DURATION_S 21600 \
     CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY custom
@@ -81,7 +83,14 @@ ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
     [[ $APO_COMMAND == resume ]]
     [[ $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
     [[ $APO_AUTO_APPLY == 1 ]]
+    [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1175 && $APO_USE_HISTORY == 1 ]]
     [[ $APO_QUALIFICATION_DURATION_S == 10800 && $APO_FINAL_DURATION_S == 21600 && $APO_EDGE_DURATION_S == 86400 ]]
+    history_refresh_calls=0
+    apo_history_refresh() { history_refresh_calls=$((history_refresh_calls + 1)); }
+    APO_AUTO_GENERATED_CANDIDATES=1
+    apo_history_resolve_new_overclock_plan
+    [[ $history_refresh_calls == 0 ]]
+    [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1175 ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
@@ -124,6 +133,35 @@ if (
     exit 1
 fi
 grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fan-change.err"
+
+# A completed reset owns the latest-state pointer and forces a fresh all-domain
+# overclock. An older interrupted run remains historical evidence but is never
+# silently resumed across the reset boundary.
+RESET_SHADOW_OUTPUT="$TEMP_DIR/reset-shadow-output"
+mkdir -p "$RESET_SHADOW_OUTPUT"
+RESET_SHADOW_OLD_RUN=20260906-010000-aaaaaaaaaaaaaaaa
+RESET_SHADOW_OLD_STATE="$RESET_SHADOW_OUTPUT/tron-${RESET_SHADOW_OLD_RUN}.state"
+write_state_fixture "$RESET_SHADOW_OLD_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$RESET_SHADOW_OLD_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all CFG_USE_HISTORY 1 \
+    STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED
+RESET_SHADOW_RESET_RUN=20260906-020000-bbbbbbbbbbbbbbbb
+RESET_SHADOW_RESET_STATE="$RESET_SHADOW_OUTPUT/tron-${RESET_SHADOW_RESET_RUN}.state"
+write_state_fixture "$RESET_SHADOW_RESET_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$RESET_SHADOW_RESET_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND reset READ_ONLY_RUN 0 \
+    STATUS PASS PHASE COMPLETE SUBPHASE STOCK_VERIFIED
+ln -s "$(basename "$RESET_SHADOW_RESET_STATE")" "$RESET_SHADOW_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$RESET_SHADOW_OUTPUT
+    apo_public_overclock_select_continuation
+    [[ $APO_COMMAND == run ]]
+    [[ -z $APO_SELECTED_RUN_ID && -z ${APO_STATE_FILE:-} && ${#APO_STATE[@]} == 0 ]]
+)
 
 # An explicit checkpoint restart may replace an untouched long-duration plan.
 # The saved state supplies clocks; the command supplies only checkpoint/time.
@@ -207,7 +245,7 @@ ln -s "$(basename "$DOMAIN_SOURCE_STATE")" "$DOMAIN_SOURCE_OUTPUT/tron-latest.st
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+    apo_parse_cli overclock tron --gpu-only --gpu-min 1150
     APO_OUTPUT_DIR=$DOMAIN_SOURCE_OUTPUT
     apo_public_overclock_select_continuation
     [[ $APO_COMMAND == run && $APO_SWEEP_DOMAIN == gpu ]]
@@ -262,7 +300,7 @@ for cleanup_case in comment-only project-zero-removed; do
     (
         export APO_CLI_LIBRARY_ONLY=1
         source "$ROOT/autopioverclock"
-        apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+        apo_parse_cli overclock tron --gpu-only --gpu-min 1150
         APO_OUTPUT_DIR=$PREPARE_SOURCE_OUTPUT
         apo_public_overclock_select_continuation
         [[ $APO_COMMAND == run && $APO_SWEEP_DOMAIN == gpu ]]
@@ -284,7 +322,7 @@ write_state_fixture "$DOMAIN_REPEAT_STATE" \
     FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$DOMAIN_REPEAT_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
     PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
-    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN gpu CFG_CPU_START_AT '' CFG_GPU_START_AT 1150 \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN gpu CFG_CPU_MIN '' CFG_GPU_MIN 1150 CFG_CPU_MAX '' CFG_GPU_MAX '' CFG_USE_HISTORY 1 \
     CFG_MAX_FAN 1 CFG_EDGE_CPU_24H 0 CFG_EDGE_ORDER floor-first \
     CFG_QUALIFICATION_DURATION_S 7200 CFG_FINAL_DURATION_S 86400 \
     CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY default \
@@ -303,11 +341,11 @@ ln -s "$(basename "$PREPARE_REPEAT_STATE")" "$PREPARE_REPEAT_OUTPUT/tron-latest.
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+    apo_parse_cli overclock tron --gpu-only --gpu-min 1150
     APO_OUTPUT_DIR=$PREPARE_REPEAT_OUTPUT
     apo_public_overclock_select_continuation
     [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$DOMAIN_REPEAT_RUN" ]]
-    [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_START_AT == 1150 ]]
+    [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_MIN == 1150 ]]
     [[ $APO_QUALIFICATION_DURATION_S == 7200 && $APO_FINAL_DURATION_S == 86400 ]]
 )
 
@@ -327,7 +365,7 @@ ln -s "$(basename "$PREPARE_MISMATCH_STATE")" "$PREPARE_MISMATCH_OUTPUT/tron-lat
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --gpu-only --gpu-start-at 1150
+    apo_parse_cli overclock tron --gpu-only --gpu-min 1150
     APO_OUTPUT_DIR=$PREPARE_MISMATCH_OUTPUT
     apo_public_overclock_select_continuation
 ) >"$TEMP_DIR/domain-prepare-path-mismatch.out" 2>&1; then

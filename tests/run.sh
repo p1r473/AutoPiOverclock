@@ -16,6 +16,8 @@ TESTS=(
     test_tryboot_lifecycle.sh
     test_watchdogs.sh
     test_selection.sh
+    test_history.sh
+    test_history_scheduler.sh
     test_resume_progress.sh
     test_interrupted_state.sh
     test_apply_resume.sh
