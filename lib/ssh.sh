@@ -219,6 +219,9 @@ APO_REMOTE_UPLOAD
     remote_command+=$'\n'
     apo_transient_read_policy_normalize
     for (( attempt=1; attempt<=APO_TRANSIENT_READ_ATTEMPTS; attempt++ )); do
+        # Upload transport diagnostics are intentionally allowed through to the
+        # terminal.  Clear any painted progress row before SSH can emit them.
+        if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
         if apo_remote_root_stdin "$remote_command" < "$local_file"; then return 0; fi
         (( attempt < APO_TRANSIENT_READ_ATTEMPTS )) && apo_transient_read_delay
     done

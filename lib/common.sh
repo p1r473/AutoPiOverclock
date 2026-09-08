@@ -47,12 +47,19 @@ apo_die() {
     local exit_code=${2:-$APO_EXIT_INTERNAL}
     APO_FATAL_MESSAGE=$message
     APO_FATAL_EXIT_CODE=$exit_code
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     printf 'ERROR: %s\n' "$message" >&2
     exit "$exit_code"
 }
 
-apo_info_plain() { printf 'INFO: %s\n' "$*" >&2; }
-apo_warn_plain() { printf 'WARNING: %s\n' "$*" >&2; }
+apo_info_plain() {
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
+    printf 'INFO: %s\n' "$*" >&2
+}
+apo_warn_plain() {
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
+    printf 'WARNING: %s\n' "$*" >&2
+}
 
 apo_is_redacted_observer() {
     [[ ${APO_REDACT:-0} == 1 ]] || return 1
@@ -224,6 +231,7 @@ apo_parse_target() {
 apo_confirm_exact() {
     local prompt=$1 expected=$2 answer
     [[ -t 0 ]] || return 1
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     printf '%s\nType exactly: %s\n> ' "$prompt" "$expected" >&2
     IFS= read -r answer
     [[ $answer == "$expected" ]]
@@ -233,6 +241,7 @@ apo_confirm_ordinary() {
     local prompt=$1 answer
     if [[ ${APO_ASSUME_YES:-0} == 1 ]]; then return 0; fi
     [[ -t 0 ]] || return 1
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     printf '%s [y/N] ' "$prompt" >&2
     IFS= read -r answer
     case $answer in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac

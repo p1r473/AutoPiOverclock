@@ -163,6 +163,11 @@ apo_discovery_capture() {
     for (( attempt=1; attempt<=APO_TRANSIENT_READ_ATTEMPTS; attempt++ )); do
         attempts_used=$attempt
         : > "$output_file"
+        # run-start leaves the interactive progress row painted.  Discovery is
+        # intentionally streamed verbatim, outside the normal worker-capture
+        # path, so clear that row before the first APO_DATA line.  A later
+        # ordinary logged event repaints after the complete stream.
+        if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
         set +e
         if (( APO_WORKER_DEPLOYED == 1 )); then
             apo_remote_worker "$APO_REMOTE_WORKER" discover 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"

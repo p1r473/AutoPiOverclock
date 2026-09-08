@@ -251,4 +251,90 @@ if apo_progress_line_is_telemetry 'ordinary worker output without elapsed'; then
     exit 1
 fi
 
+# Discovery streams raw APO_DATA lines instead of using the ordinary worker
+# capture path.  It must clear a run-start progress row before that stream and
+# leave repainting to a later logged event, otherwise the first field is
+# corrupted on the user's terminal.
+source "$ROOT/lib/detect.sh"
+APO_DISCOVERY_FILE=$(mktemp)
+APO_LOG_FILE=$(mktemp)
+APO_WORKER_DEPLOYED=1
+APO_REMOTE_WORKER=fixture-worker
+apo_transient_read_policy_normalize() { APO_TRANSIENT_READ_ATTEMPTS=1; }
+apo_remote_worker() {
+    printf 'APO_DATA\tPROFILE\tZGViaWFu\nAPO_RESULT_CLASS=PASS\n'
+}
+apo_classify_output() {
+    APO_LAST_CLASS=PASS
+    APO_LAST_RESULT_STRUCTURED=1
+}
+apo_parse_data_file() { :; }
+discovery_stream=$(mktemp)
+APO_PROGRESS_SHUTTING_DOWN=0
+APO_PROGRESS_LINE_ACTIVE=0
+COLUMNS=80
+{
+    apo_progress_render 150 600
+    apo_discovery_capture
+} > "$discovery_stream" 2>&1
+discovery_bytes=$(< "$discovery_stream")
+discovery_after_clear=${discovery_bytes##*"$progress_clear"}
+[[ $discovery_after_clear == $'APO_DATA\tPROFILE\tZGViaWFu\nAPO_RESULT_CLASS=PASS' ]]
+
+# Fatal and plain output paths also erase a live progress row before writing,
+# so a later preflight refusal or recovery warning cannot recreate the same
+# corruption.
+fatal_stream=$(mktemp)
+set +e
+(
+    APO_PROGRESS_SHUTTING_DOWN=0
+    APO_PROGRESS_LINE_ACTIVE=0
+    apo_progress_render 150 600
+    apo_die 'fixture refusal' 64
+) 2> "$fatal_stream"
+fatal_rc=$?
+set -e
+fatal_bytes=$(< "$fatal_stream")
+fatal_after_clear=${fatal_bytes##*"$progress_clear"}
+[[ $fatal_rc == 64 ]]
+[[ $fatal_after_clear == 'ERROR: fixture refusal' ]]
+plain_stream=$(mktemp)
+APO_PROGRESS_SHUTTING_DOWN=0
+APO_PROGRESS_LINE_ACTIVE=0
+{
+    apo_progress_render 150 600
+    apo_warn_plain 'fixture warning'
+} 2> "$plain_stream"
+plain_bytes=$(< "$plain_stream")
+plain_after_clear=${plain_bytes##*"$progress_clear"}
+[[ $plain_after_clear == 'WARNING: fixture warning' ]]
+
+# A worker or dependency upload can emit SSH diagnostics before a structured
+# event exists.  The upload boundary must clear the painted row first too.
+source "$ROOT/lib/ssh.sh"
+upload_source=$(mktemp)
+upload_stream=$(mktemp)
+printf 'fixture upload\n' > "$upload_source"
+APO_TRANSIENT_READ_ATTEMPTS=1
+APO_TRANSIENT_READ_DELAY_SECONDS=0
+apo_remote_root_stdin() {
+    printf 'fixture upload diagnostic\n' >&2
+    return 1
+}
+APO_PROGRESS_SHUTTING_DOWN=0
+APO_PROGRESS_LINE_ACTIVE=0
+set +e
+{
+    apo_progress_render 150 600
+    apo_remote_upload_root "$upload_source" /tmp/autopioverclock-fixture-upload
+} 2> "$upload_stream"
+upload_rc=$?
+set -e
+upload_bytes=$(< "$upload_stream")
+upload_after_clear=${upload_bytes##*"$progress_clear"}
+[[ $upload_rc == 1 ]]
+[[ $upload_after_clear == 'fixture upload diagnostic' ]]
+rm -f "$APO_DISCOVERY_FILE" "$APO_LOG_FILE" "$discovery_stream" "$fatal_stream" "$plain_stream" \
+    "$upload_source" "$upload_stream"
+
 printf 'test_progress: PASS\n'

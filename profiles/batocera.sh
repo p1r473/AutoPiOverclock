@@ -119,12 +119,14 @@ apo_profile_install_dependencies() {
     mkdir -p "$bundle_dir" || return 1
     if ! apo_profile_batocera_bundle_ready "$bundle_file"; then
         apo_event dependencies INFO '' 'Building portable ARM64 glmark2 bundle from Debian packages'
+        if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
         "${APO_ROOT}/tools/build-batocera-bundle.sh" "$bundle_dir" || return 1
     fi
     apo_profile_batocera_bundle_ready "$bundle_file" || return 1
     apo_event dependencies INFO '' 'Uploading portable glmark2 bundle to Batocera persistent storage'
     apo_remote_upload_root "$bundle_file" "$remote_bundle" || return 1
     remote_command=$(apo_profile_batocera_bundle_install_command "$remote_bundle") || return 1
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     apo_remote_root "$remote_command" || return 1
 }
 

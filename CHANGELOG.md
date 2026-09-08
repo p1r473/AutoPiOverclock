@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.53 — 2026-09-08
+
+- Made retained-history screening reject authority from old state schemas by ignoring and preserving them before current metadata is required. Only current-schema compatible evidence can constrain a fresh plan; malformed current-schema evidence still fails closed.
+- Cleared the interactive progress row before streamed discovery, dependency, upload, prompt, diff, warning, and fatal output so ordinary terminal text cannot be overwritten or joined to the progress display.
+- Added regressions for schema-7, schema-9, and schema-less archives plus the discovery-stream progress boundary.
+
 ## 0.1.0-alpha.52 — 2026-09-08
 
 - Made every public `overclock TARGET` invocation a genuinely new history-guided operation. Retained state can constrain the fresh ceilings and starting points, but it can no longer silently replace the requested duration, bounds, cooling, or history policy with an interrupted run; only explicit `resume TARGET [--run-id RUN_ID]` continues saved progress, and `--restart-from` is now resume-only.

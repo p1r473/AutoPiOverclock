@@ -80,9 +80,26 @@ write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-test-run.state" \
 write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-other-target.state" \
     FORMAT_VERSION 1 RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA" RUN_ID other-target \
     REMOTE_TARGET 'pi@different-host' TARGET_SLUG "$APO_TARGET_SLUG" ORIGIN_COMMAND overclock
-write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-old-schema.state" \
+old_schema_file="$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-old-schema.state"
+schema_seven_file="$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-schema-seven.state"
+schema_missing_file="$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-schema-missing.state"
+write_state "$old_schema_file" \
     FORMAT_VERSION 1 RUN_SCHEMA 9 RUN_ID old-schema \
-    REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" ORIGIN_COMMAND overclock
+    REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" ORIGIN_COMMAND overclock \
+    CPU_FAILURE_BOUNDARY 2400
+# Real pre-current archives can lack metadata that did not exist when they were
+# written.  Their schema excludes them before current FORMAT_VERSION and
+# automatic-run fields are required, even if an old field resembles boundary
+# evidence.
+write_state "$schema_seven_file" \
+    RUN_SCHEMA 7 RUN_ID schema-seven REMOTE_TARGET "$APO_REMOTE_TARGET" \
+    CPU_FAILURE_BOUNDARY 2500
+write_state "$schema_missing_file" \
+    RUN_ID schema-missing REMOTE_TARGET "$APO_REMOTE_TARGET" \
+    CPU_FAILURE_BOUNDARY 2600
+old_schema_hash_before=$(sha256sum "$old_schema_file" | awk '{print $1}')
+schema_seven_hash_before=$(sha256sum "$schema_seven_file" | awk '{print $1}')
+schema_missing_hash_before=$(sha256sum "$schema_missing_file" | awk '{print $1}')
 write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-incompatible.state" \
     FORMAT_VERSION 1 RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA" RUN_ID incompatible \
     REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" \
@@ -93,11 +110,18 @@ write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-incompatible.state" \
 # later in this file for planner-only cases.
 # shellcheck disable=SC2218
 apo_history_refresh
+[[ $APO_HISTORY_SCANNED_STATES == 10 ]]
 [[ $APO_HISTORY_ACCEPTED_STATES == 4 ]]
 [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2900 ]]
 [[ $APO_HISTORY_GPU_FAILURE_BOUNDARY == 1150 ]]
 [[ $APO_HISTORY_PAIR_FRONTIERS == '2850/1150' ]]
 [[ $APO_HISTORY_EVIDENCE_COUNT == 12 ]]
+[[ -f $old_schema_file && ! -L $old_schema_file ]]
+[[ -f $schema_seven_file && ! -L $schema_seven_file ]]
+[[ -f $schema_missing_file && ! -L $schema_missing_file ]]
+[[ $(sha256sum "$old_schema_file" | awk '{print $1}') == "$old_schema_hash_before" ]]
+[[ $(sha256sum "$schema_seven_file" | awk '{print $1}') == "$schema_seven_hash_before" ]]
+[[ $(sha256sum "$schema_missing_file" | awk '{print $1}') == "$schema_missing_hash_before" ]]
 [[ $APO_HISTORY_PROVENANCE == *'CPU|3000|run-b|CPU_FAILURE_BOUNDARY|'* ]]
 [[ $APO_HISTORY_PROVENANCE == *'PAIR|2975/1200|run-c|FINAL_BACKOFF_TRIAL_CPU|'* ]]
 [[ $APO_HISTORY_PROVENANCE != *'999'* ]]

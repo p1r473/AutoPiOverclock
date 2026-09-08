@@ -474,7 +474,7 @@ apo_history_screen_validate_emit_file() (
     local expected_test_voltage=${APO_TEST_VOLTAGE:-}
     local expected_baseline_cpu expected_baseline_gpu expected_baseline_voltage
     local expected_model expected_compatible expected_arch state_key
-    local -A metadata=() evidence=() loaded_state=()
+    local -A schema_fields=() metadata=() evidence=() loaded_state=()
 
     expected_model=$(apo_history_expected_discovery_value DISC_MODEL)
     expected_compatible=$(apo_history_expected_discovery_value DISC_COMPATIBLE)
@@ -492,10 +492,18 @@ apo_history_screen_validate_emit_file() (
             ;;
     esac
 
-    # First prove whether this file can even belong to the current automatic
-    # history domain.  Do not make an unrelated reset/prepare/test/restore audit
-    # pass a full tuning-state validator merely because it shares the target's
-    # artifact namespace.
+    # Schema compatibility is the first and cheapest screen.  Retained files
+    # from an older controller may predate FORMAT_VERSION or other metadata
+    # required by the current strict validator.  They are preserved but ignored;
+    # only a current-schema state can constrain a new plan or fail the scan.
+    apo_history_load_screen_fields "$source_file" schema_fields RUN_SCHEMA || return 1
+    schema=$(apo_history_state_value schema_fields RUN_SCHEMA '')
+    [[ $schema == "$APO_CURRENT_RUN_SCHEMA" ]] || return 3
+
+    # Now prove whether this current-schema file can belong to the current
+    # automatic history domain.  Do not make an unrelated
+    # reset/prepare/test/restore audit pass a full tuning-state validator merely
+    # because it shares the target's artifact namespace.
     apo_history_load_screen_fields "$source_file" metadata \
         FORMAT_VERSION RUN_SCHEMA RUN_ID REMOTE_TARGET TARGET_SLUG ORIGIN_COMMAND \
         READ_ONLY_RUN CFG_AUTO_GENERATED_CANDIDATES || return 1
@@ -514,11 +522,7 @@ apo_history_screen_validate_emit_file() (
         overclock) ;;
         *) return 1 ;;
     esac
-    schema=$(apo_history_state_value metadata RUN_SCHEMA '')
-    [[ $schema == "$APO_CURRENT_RUN_SCHEMA" ]] || {
-        [[ -n $schema ]] && return 3
-        return 1
-    }
+    [[ $(apo_history_state_value metadata RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]] || return 1
     read_only=$(apo_history_state_value metadata READ_ONLY_RUN '')
     case $read_only in 0) ;; 1) return 3 ;; *) return 1 ;; esac
     auto_generated=$(apo_history_state_value metadata CFG_AUTO_GENERATED_CANDIDATES '')

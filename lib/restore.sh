@@ -253,6 +253,7 @@ apo_restore_validated_config() {
         apo_die 'Could not generate the validated-config restore diff.' "$APO_EXIT_APPLY"
     fi
     if (( diff_rc == 1 )); then
+        if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
         printf '\n===== EXACT VALIDATED CONFIG RESTORE DIFF =====\n' >&2
         cat "$diff_file" >&2
         printf '===============================================\n\n' >&2

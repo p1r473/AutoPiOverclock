@@ -15,6 +15,7 @@ apo_profile_dependencies_ready() {
 
 apo_profile_install_dependencies() {
     apo_event dependencies INFO '' 'Installing Debian stress dependency: stress-ng'
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     apo_remote_root 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y --no-install-recommends stress-ng'
 }
 
