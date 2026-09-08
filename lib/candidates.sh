@@ -304,7 +304,12 @@ apo_refined_domain_floor() {
             ;;
         *) return 1 ;;
     esac
-    if [[ $requested_floor =~ ^[0-9]+$ ]] && (( requested_floor > floor )); then
+    # During retained-history screening only, schema-10 START_AT values retain
+    # their original seed semantics.  They must remain available to rebuild
+    # the old candidate plan, but must not invalidate a later saved backoff by
+    # acting as today's hard minimum.
+    if [[ ${APO_HISTORY_LEGACY_START_AT_SEMANTICS:-0} != 1 &&
+          $requested_floor =~ ^[0-9]+$ ]] && (( requested_floor > floor )); then
         floor=$requested_floor
     fi
     printf '%s' "$floor"

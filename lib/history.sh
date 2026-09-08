@@ -146,6 +146,25 @@ apo_history_state_value() {
     fi
 }
 
+# Schema 10 briefly persisted --*-start-at as a search seed.  The current
+# controller reads that legacy spelling as --*-min, whose stronger floor
+# semantics can make an otherwise valid saved backoff fail replay validation.
+# Recognize only that exact pre-adaptive plan shape.  The caller uses the
+# result solely inside the retained-history screening subshell; ordinary
+# resume keeps its strict current semantics.
+apo_history_loaded_state_uses_legacy_start_at_semantics() {
+    local map_name=$1
+    local -n state_map=$map_name
+    local selection_policy
+
+    selection_policy=$(apo_history_state_value "$map_name" CFG_SELECTION_POLICY '')
+    [[ $selection_policy == refined-max-25 ]] || return 1
+    [[ ! -v state_map[CFG_CPU_MIN] && ! -v state_map[CFG_GPU_MIN] ]] || return 1
+    [[ ! -v state_map[CFG_CPU_RESOLUTION_MHZ] && ! -v state_map[CFG_GPU_RESOLUTION_MHZ] &&
+       ! -v state_map[CFG_CPU_SEARCH_DIRECTION] && ! -v state_map[CFG_GPU_SEARCH_DIRECTION] ]] || return 1
+    [[ -v state_map[CFG_CPU_START_AT] || -v state_map[CFG_GPU_START_AT] ]]
+}
+
 # This hook deliberately validates in the caller's subshell.  Tests may replace
 # it with a fixture validator; production requires the complete automatic-resume
 # validator and refuses to consume evidence when that validator is unavailable.
@@ -602,6 +621,10 @@ apo_history_screen_validate_emit_file() (
     # arithmetic expressions.
     # shellcheck disable=SC2004
     for state_key in "${!loaded_state[@]}"; do APO_STATE[$state_key]=${loaded_state[$state_key]}; done
+    APO_HISTORY_LEGACY_START_AT_SEMANTICS=0
+    if apo_history_loaded_state_uses_legacy_start_at_semantics loaded_state; then
+        APO_HISTORY_LEGACY_START_AT_SEMANTICS=1
+    fi
     # This assignment is intentionally isolated by the surrounding subshell.
     # shellcheck disable=SC2030
     APO_STATE_FILE=$source_file

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.55 — 2026-09-08
+
+- Fixed retained-history validation for alpha.48 schema-10 automatic runs whose legacy `CFG_CPU_START_AT`/`CFG_GPU_START_AT` fields were search seeds rather than hard minimums. The read-only history scanner now validates those states against their original stock/source floors, so coherent failure and backoff evidence remains usable without changing the state file; malformed evidence still fails closed.
+
 ## 0.1.0-alpha.54 — 2026-09-08
 
 - Added independently configurable `--cpu-resolution` and `--gpu-resolution` controls, defaulting to 25 MHz and accepting 1–1000 MHz. Automatic refinement, qualification backoff, ambiguous-domain isolation, final backoff, reports, and progress estimates all use the saved per-domain values; a larger resolution also raises that domain's coarse step.

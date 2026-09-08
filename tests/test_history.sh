@@ -4,6 +4,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/state.sh"
+source "$ROOT/lib/candidates.sh"
 source "$ROOT/lib/history.sh"
 
 TMP=$(mktemp -d)
@@ -22,7 +23,28 @@ sync() { :; }
 # A compact fixture hook proves that the scanner invokes validation inside its
 # isolated load path.  Production uses the full automatic-resume validator.
 apo_history_validate_loaded_state() {
-    [[ $(apo_state_get TEST_VALID 0) == 1 ]]
+    local fixture_mode
+    fixture_mode=$(apo_state_get TEST_VALID 0)
+    if [[ $(apo_state_get APP_VERSION '') == 0.1.0-alpha.48 ]]; then
+        [[ $fixture_mode == 1 ]] || return 1
+        # The production scanner sets this only inside its screening subshell.
+        # shellcheck disable=SC2031
+        [[ ${APO_HISTORY_LEGACY_START_AT_SEMANTICS:-0} == 1 ]] || return 1
+        APO_SELECTION_POLICY=$(apo_state_get CFG_SELECTION_POLICY)
+        APO_SWEEP_DOMAIN=$(apo_state_get CFG_SWEEP_DOMAIN all)
+        APO_NORMAL_CPU=$(apo_state_get NORMAL_CPU)
+        APO_NORMAL_GPU=$(apo_state_get NORMAL_GPU)
+        APO_AUTO_BASELINE_CPU=$(apo_state_get AUTO_BASELINE_CPU)
+        APO_AUTO_BASELINE_GPU=$(apo_state_get AUTO_BASELINE_GPU)
+        APO_CPU_MIN=$(apo_state_get CFG_CPU_START_AT '')
+        APO_GPU_MIN=$(apo_state_get CFG_GPU_START_AT '')
+        [[ -z $APO_CPU_MIN || $APO_CPU_MIN =~ ^[0-9]+$ ]] || return 1
+        [[ -z $APO_GPU_MIN || $APO_GPU_MIN =~ ^[0-9]+$ ]] || return 1
+        [[ $(apo_refined_domain_floor CPU) == "$APO_AUTO_BASELINE_CPU" ]]
+        [[ $(apo_refined_domain_floor GPU) == "$APO_AUTO_BASELINE_GPU" ]]
+        return
+    fi
+    [[ $fixture_mode == 1 ]]
 }
 
 write_state() {
@@ -134,6 +156,46 @@ if grep -Fq '2026-09-07T03:05:00-0400 | run-d | 2850 | 1150 | STABILITY_FAILURE 
     printf 'derived isolation journal was incorrectly reused as retained planning authority\n' >&2
     exit 1
 fi
+
+# Exact alpha.48/schema-10 automatic state shape: START_AT was a candidate
+# seed, not a hard lower bound.  A later 3075 MHz backoff is therefore valid,
+# and both its clear 3175 CPU boundary and ambiguous 3100/1200 pair remain
+# usable retained evidence.  This compatibility is history-screening-only.
+APO_OUTPUT_DIR=$TMP/legacy-alpha48
+mkdir -p -- "$APO_OUTPUT_DIR"
+write_auto_state alpha48-valid \
+    APP_VERSION 0.1.0-alpha.48 \
+    CFG_SWEEP_DOMAIN all CFG_CPU_START_AT 3100 CFG_GPU_START_AT 1150 \
+    NORMAL_CPU 2400 NORMAL_GPU 960 AUTO_BASELINE_CPU 2400 AUTO_BASELINE_GPU 960 \
+    CPU_FAILURE_BOUNDARY 3175 \
+    FINAL_BACKOFF_HISTORY 'TRIAL_CPU:3100/1200>3075/1200' \
+    FINAL_BACKOFF_CPU 3075 FINAL_BACKOFF_GPU 1200
+apo_history_scan_retained_states
+[[ $APO_HISTORY_SCANNED_STATES == 1 && $APO_HISTORY_ACCEPTED_STATES == 1 ]]
+[[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 3175 ]]
+[[ $APO_HISTORY_PAIR_FRONTIERS == 3100/1200 ]]
+[[ $APO_HISTORY_PROVENANCE == *'CPU|3175|alpha48-valid|CPU_FAILURE_BOUNDARY|'* ]]
+[[ $APO_HISTORY_PROVENANCE == *'PAIR|3100/1200|alpha48-valid|FINAL_BACKOFF_TRIAL_CPU|'* ]]
+
+# The adapter recognizes a legacy shape; it does not waive strict validation.
+# A malformed seed in the same alpha.48/schema-10 shape remains fatal.
+APO_OUTPUT_DIR=$TMP/legacy-alpha48-malformed
+mkdir -p -- "$APO_OUTPUT_DIR"
+write_auto_state alpha48-malformed \
+    APP_VERSION 0.1.0-alpha.48 \
+    CFG_SWEEP_DOMAIN all CFG_CPU_START_AT not-a-clock CFG_GPU_START_AT 1150 \
+    NORMAL_CPU 2400 NORMAL_GPU 960 AUTO_BASELINE_CPU 2400 AUTO_BASELINE_GPU 960 \
+    CPU_FAILURE_BOUNDARY 3175
+if apo_history_scan_retained_states; then
+    printf 'malformed alpha.48 START_AT history was accepted\n' >&2
+    exit 1
+fi
+[[ $APO_HISTORY_SCAN_ERROR == *'alpha48-malformed.state'* ]]
+[[ -z $APO_HISTORY_CPU_FAILURE_BOUNDARY$APO_HISTORY_PAIR_FRONTIERS ]]
+
+# Return to the primary fixture directory for the remaining scanner tests.
+APO_OUTPUT_DIR=$TMP/good
+apo_history_refresh
 
 # Adaptive plans retain the established refined history record grammar.  Test
 # that mapping in isolation so the legacy refined-max-25 scanner fixtures and
