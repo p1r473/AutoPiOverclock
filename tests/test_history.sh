@@ -195,6 +195,9 @@ fi
 
 # Return to the primary fixture directory for the remaining scanner tests.
 APO_OUTPUT_DIR=$TMP/good
+# The production definition was sourced above; a planner-only fixture override
+# appears later in this file.
+# shellcheck disable=SC2218
 apo_history_refresh
 
 # Adaptive plans retain the established refined history record grammar.  Test
