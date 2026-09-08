@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
-source "$ROOT/lib/common.sh"
-source "$ROOT/lib/state.sh"
-source "$ROOT/lib/logging.sh"
+APO_CLI_LIBRARY_ONLY=1
+# shellcheck source=/dev/null
+source "$ROOT/autopioverclock"
+unset APO_CLI_LIBRARY_ONLY
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
@@ -14,6 +15,7 @@ APO_RAW_TARGET=fixture-target
 APO_REMOTE_TARGET="$(id -un)@fixture-target"
 APO_TARGET_HOST=fixture-target
 APO_MODE_REQUESTED=auto
+APO_JSON_FILE=''
 apo_init_artifacts
 FIRST_RUN=$APO_RUN_ID
 [[ $FIRST_RUN =~ ^[0-9]{8}-[0-9]{6}-[0-9a-f]{16}$ ]]
@@ -88,10 +90,6 @@ FIRST_STATE_HASH=$(sha256sum "$FIRST_STATE" | awk '{print $1}')
 for observer_command in status summary report; do
     observer_status=0
     if (
-        APO_CLI_LIBRARY_ONLY=1
-        export APO_CLI_LIBRARY_ONLY
-        # shellcheck source=/dev/null
-        source "$ROOT/autopioverclock"
         APO_COMMAND=$observer_command
         APO_STATE_FILE=$FIRST_STATE
         APO_STATE=()
