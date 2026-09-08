@@ -64,6 +64,7 @@ APO_INSTALL_MISSING=0
 APO_REPAIR_WATCHDOGS=0
 APO_DRY_RUN=0
 APO_ASSUME_YES=0
+APO_YES_OPTION_SEEN=0
 APO_EDGE_CPU_24H=0
 APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 APO_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
@@ -145,7 +146,6 @@ Usage:
   autopioverclock overclock TARGET [--cpu-only | --gpu-only]
                                       [--cpu-min MHZ] [--cpu-max MHZ]
                                       [--gpu-min MHZ] [--gpu-max MHZ] [--no-history]
-                                      [--restart-from CHECKPOINT]
                                       [--qualification-hours HOURS] [--final-hours HOURS]
                                       [--no-max-fan]
   autopioverclock test TARGET --cpu MHZ --gpu MHZ (--final-hours HOURS | --minutes MINUTES)
@@ -163,7 +163,7 @@ Usage:
 
 Commands:
   prepare    Install and verify required dependencies and watchdog recovery
-  overclock  Automatically tune, validate, and apply the fully validated result
+  overclock  Start a fresh history-guided tune, validate, and apply operation
   test       Stability-test one exact CPU/GPU pair, then return to normal clocks
   reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
   run        Advanced tuning run with explicit plan/control options
@@ -187,9 +187,9 @@ Target:
 Common options:
   --qualification-hours N  CPU and GPU qualification hours for overclock (default: 2)
   --final-hours N          Final validation or exact-test hours (overclock default: 48)
-  --restart-from POINT     current, cpu-qualification, gpu-qualification, or final
-  --cpu-only               Continue CPU tuning from a retained applied result
-  --gpu-only               Continue GPU tuning from a retained applied result
+  --restart-from POINT     Resume-only checkpoint choice; current keeps the saved position
+  --cpu-only               Start a fresh CPU-only extension from an applied result
+  --gpu-only               Start a fresh GPU-only extension from an applied result
   --cpu-min MHZ            Lowest new CPU candidate (25 MHz aligned)
   --cpu-max MHZ            Inclusive CPU candidate ceiling (maximum: 3200)
   --gpu-min MHZ            Lowest new GPU/V3D candidate (25 MHz aligned)
@@ -205,8 +205,10 @@ Common options:
   --help                   Show help
   --version                Show version
 
-  Checkpoint restarts are available only for full two-domain runs. To continue
-  a one-domain checkpoint, repeat its exact overclock command and options.
+  Checkpoint restarts are available only with resume on full two-domain runs.
+  Use `current` to keep the saved position while changing future test lengths
+  before final validation starts; the other choices deliberately repeat work.
+  Plain resume TARGET continues a saved one-domain checkpoint.
 
 Advanced options:
   --config FILE            Strict tuning plan for run
@@ -266,8 +268,7 @@ apo_parse_cli() {
             if (( ${#arguments[@]} >= 2 )) && [[ ${arguments[0]} != -* && ${arguments[1]} == reset ]]; then
                 apo_die 'Unsupported command order. Use: autopioverclock reset TARGET.' "$APO_EXIT_USAGE"
             fi
-            APO_COMMAND=run
-            APO_ORIGIN_COMMAND=run
+            apo_die "Unknown command: ${arguments[0]}. Use prepare, overclock, test, reset, run, resume, status, summary, recover, restore, apply, or report." "$APO_EXIT_USAGE"
             ;;
     esac
     while (( index < ${#arguments[@]} )); do
@@ -368,7 +369,12 @@ apo_parse_cli() {
                 index=$((index + 1))
                 ;;
             --no-max-fan) APO_MAX_FAN=0; APO_MAX_FAN_OPTION_SEEN=1; index=$((index + 1)) ;;
-            --yes) APO_ASSUME_YES=1; index=$((index + 1)) ;;
+            --yes)
+                (( APO_YES_OPTION_SEEN == 0 )) || apo_die '--yes may be specified only once.' "$APO_EXIT_USAGE"
+                APO_ASSUME_YES=1
+                APO_YES_OPTION_SEEN=1
+                index=$((index + 1))
+                ;;
             --redact) APO_REDACT=1; index=$((index + 1)) ;;
             --help) usage; exit 0 ;;
             --version) printf '%s\n' "$APO_VERSION"; exit 0 ;;
@@ -412,8 +418,8 @@ apo_parse_cli() {
             apo_die '--restart-from must be current, cpu-qualification, gpu-qualification, or final.' "$APO_EXIT_USAGE"
             ;;
         esac
-        [[ $APO_PUBLIC_COMMAND == overclock || $APO_COMMAND == resume ]] ||
-            apo_die '--restart-from is valid only with overclock TARGET or resume TARGET.' "$APO_EXIT_USAGE"
+        [[ $APO_COMMAND == resume ]] ||
+            apo_die '--restart-from is valid only with resume TARGET.' "$APO_EXIT_USAGE"
     fi
     if [[ $APO_PUBLIC_COMMAND == test ]]; then
         (( APO_MANUAL_CPU_OPTION_SEEN == 1 && APO_MANUAL_GPU_OPTION_SEEN == 1 )) ||
@@ -481,6 +487,8 @@ apo_parse_cli() {
         (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'prepare TARGET uses automatic host discovery; custom plans belong to the advanced run command.' "$APO_EXIT_USAGE"
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'prepare TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
+        (( APO_INSTALL_MISSING == 0 )) || apo_die 'prepare TARGET already installs missing dependencies automatically; do not add --install-missing.' "$APO_EXIT_USAGE"
+        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die 'prepare TARGET already repairs a planned watchdog deficiency automatically; do not add --repair-watchdogs.' "$APO_EXIT_USAGE"
         (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan belongs on overclock TARGET, test TARGET, or the advanced run command, not prepare TARGET.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
         APO_INSTALL_MISSING=1
@@ -494,12 +502,17 @@ apo_parse_cli() {
         (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die 'Run prepare TARGET to install watchdogs; overclock does not change host prerequisites.' "$APO_EXIT_USAGE"
         (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with overclock TARGET; use prepare TARGET --dry-run for inspection.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with overclock TARGET.' "$APO_EXIT_USAGE"
-        if [[ $APO_SWEEP_DOMAIN != all && $APO_RESTART_FROM_OPTION_SEEN == 1 ]]; then
-            apo_die '--restart-from is not valid with --cpu-only or --gpu-only; repeat the same domain command to continue its saved checkpoint.' "$APO_EXIT_USAGE"
-        fi
+        (( APO_RESTART_FROM_OPTION_SEEN == 0 )) ||
+            apo_die '--restart-from belongs to resume TARGET; overclock TARGET always starts a fresh history-guided run.' "$APO_EXIT_USAGE"
         APO_EDGE_CPU_24H=0
         APO_EDGE_ORDER=floor-first
         APO_ASSUME_YES=1
+    fi
+    if [[ $APO_COMMAND == run && -z $APO_PUBLIC_COMMAND ]]; then
+        (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id selects saved operations and is not valid with a new advanced run TARGET.' "$APO_EXIT_USAGE"
+    fi
+    if (( APO_YES_OPTION_SEEN == 1 )) && [[ $APO_COMMAND != run || -n $APO_PUBLIC_COMMAND ]]; then
+        apo_die '--yes is valid only with the advanced run TARGET command.' "$APO_EXIT_USAGE"
     fi
     case $APO_COMMAND in
         run|prepare) ;;
@@ -677,186 +690,67 @@ apo_capture_domain_sweep_source() {
     APO_STATE_FILE=''
 }
 
-apo_public_overclock_select_continuation() {
-    local state_file stored_run_id stored_target origin status phase apply_status state_schema saved_edge
-    local saved_max_fan requested_max_fan requested_max_fan_seen requested_final requested_final_seen source_validation_duration post_floor_final
-    local requested_qualification requested_edge_duration saved_sweep_domain saved_cpu_min saved_gpu_min saved_cpu_max saved_gpu_max
-    local saved_cpu_max_requested saved_gpu_max_requested saved_use_history saved_edge_order
+apo_public_overclock_select_source() {
+    local state_file stored_target origin status phase state_schema source_run_id source_state
     local prepare_hash prepare_cpu prepare_gpu prepare_voltage prepare_profile prepare_boot_config prepare_tryboot_config prepare_gpu_key
-    local prepare_fallback_state=''
+    local audit_source_run_id audit_source_hash candidate_hash
+    local prepare_fallback_state='' prepare_fallback_hash='' prepare_fallback_ambiguous=0
     local -a state_files=()
     local -A state_screen=()
     local state_index
+
     [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
-    requested_final=$APO_FINAL_DURATION_S
-    requested_final_seen=$APO_FINAL_HOURS_OPTION_SEEN
-    requested_qualification=$APO_QUALIFICATION_DURATION_S
-    requested_edge_duration=$APO_EDGE_DURATION_S
-    requested_max_fan=$APO_MAX_FAN
-    requested_max_fan_seen=$APO_MAX_FAN_OPTION_SEEN
+
+    # A public overclock invocation is always a new operation.  Retained state
+    # may constrain its fresh plan, but it can never silently replace the
+    # requested command, duration, bounds, cooling, or history policy with an
+    # older run.  Continuation belongs exclusively to `resume TARGET`.
+    APO_COMMAND=run
+    APO_SELECTED_RUN_ID=''
+    APO_STATE=()
+    APO_STATE_FILE=''
+    [[ $APO_SWEEP_DOMAIN != all ]] || return 0
+
     state_file=$(apo_find_state_file '' || true)
-    if [[ -z $state_file ]]; then
-        [[ $APO_SWEEP_DOMAIN == all ]] ||
-            apo_die "${APO_SWEEP_DOMAIN}-only tuning requires a retained applied AutoPiOverclock result for $APO_RAW_TARGET." "$APO_EXIT_USAGE"
-        return 0
-    fi
+    [[ -n $state_file ]] ||
+        apo_die "${APO_SWEEP_DOMAIN}-only tuning requires a retained applied AutoPiOverclock result for $APO_RAW_TARGET." "$APO_EXIT_USAGE"
     apo_state_load "$state_file"
-    stored_run_id=$(apo_state_get RUN_ID '')
     stored_target=$(apo_state_get REMOTE_TARGET '')
     origin=$(apo_state_get ORIGIN_COMMAND '')
     status=$(apo_state_get STATUS '')
     phase=$(apo_state_get PHASE '')
-    apply_status=$(apo_state_get APPLY_STATUS NOT_APPLIED)
     state_schema=$(apo_state_get RUN_SCHEMA '')
-    saved_edge=$(apo_state_get CFG_EDGE_CPU_24H 0)
-    saved_edge_order=$(apo_state_get CFG_EDGE_ORDER floor-first)
-    saved_max_fan=$(apo_state_get CFG_MAX_FAN 1)
-    post_floor_final=$(apo_state_get POST_FLOOR_FINAL 0)
-    [[ $saved_edge == 0 || $saved_edge == 1 ]] || apo_die 'The retained run has a malformed edge marker.' "$APO_EXIT_INTERNAL"
-    [[ $saved_edge_order == floor-first || $saved_edge_order == edge-first ]] ||
-        apo_die 'The retained run has a malformed edge-order marker.' "$APO_EXIT_INTERNAL"
-    if apo_is_safe_run_id "$stored_run_id" &&
-       [[ $stored_target == "$APO_REMOTE_TARGET" && $origin == overclock ]] &&
-       { { [[ ( $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 ) && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
-           [[ $phase != PREPARE && $phase != PREPARED ]]; } ||
-         { [[ ( $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 ) && $status == PASS && $phase == COMPLETE ]] &&
-           [[ $apply_status == NOT_APPLIED || $apply_status == APPLYING ||
-              $apply_status == INTERRUPTED_NO_CHANGE || $apply_status == ROLLED_BACK ]]; } ||
-         { [[ $state_schema == 8 && ( $status == RUNNING || $status == INTERRUPTED ) ]] &&
-           [[ $phase != PREPARE && $phase != PREPARED ]]; } ||
-          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 || $state_schema == 8 || $state_schema == 7 ]] &&
-               apo_final_saved_failure_is_retryable "$state_schema"; } ||
-          { [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $post_floor_final == 1 && $status == FAILED ]]; } ||
-          { apo_saved_normal_return_failure_is_retryable "$state_schema"; } ||
-          { apo_saved_transient_failure_is_retryable "$state_schema"; }; }; then
-        saved_sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
-        [[ $saved_sweep_domain == all || $saved_sweep_domain == cpu || $saved_sweep_domain == gpu ]] ||
-            apo_die 'The active run has a malformed saved sweep-domain plan.' "$APO_EXIT_INTERNAL"
-        [[ $saved_sweep_domain == "$APO_SWEEP_DOMAIN" ]] ||
-            apo_die "The active run uses sweep domain $saved_sweep_domain. Repeat overclock $APO_RAW_TARGET with the same domain option." "$APO_EXIT_USAGE"
-        saved_cpu_min=$(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT '')")
-        saved_gpu_min=$(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT '')")
-        saved_cpu_max=$(apo_state_get CFG_CPU_MAX '')
-        saved_gpu_max=$(apo_state_get CFG_GPU_MAX '')
-        saved_cpu_max_requested=$(apo_state_get CFG_CPU_MAX_REQUESTED "$saved_cpu_max")
-        saved_gpu_max_requested=$(apo_state_get CFG_GPU_MAX_REQUESTED "$saved_gpu_max")
-        saved_use_history=$(apo_state_get CFG_USE_HISTORY 0)
-        (( APO_CPU_MIN_OPTION_SEEN == 0 )) || [[ $APO_CPU_MIN == "$saved_cpu_min" ]] ||
-            apo_die 'The active run CPU minimum cannot change during continuation.' "$APO_EXIT_USAGE"
-        (( APO_GPU_MIN_OPTION_SEEN == 0 )) || [[ $APO_GPU_MIN == "$saved_gpu_min" ]] ||
-            apo_die 'The active run GPU minimum cannot change during continuation.' "$APO_EXIT_USAGE"
-        (( APO_CPU_MAX_OPTION_SEEN == 0 )) || [[ $APO_CPU_MAX_REQUESTED == "$saved_cpu_max_requested" ]] ||
-            apo_die 'The active run CPU maximum cannot change during continuation.' "$APO_EXIT_USAGE"
-        (( APO_GPU_MAX_OPTION_SEEN == 0 )) || [[ $APO_GPU_MAX_REQUESTED == "$saved_gpu_max_requested" ]] ||
-            apo_die 'The active run GPU maximum cannot change during continuation.' "$APO_EXIT_USAGE"
-        (( APO_HISTORY_OPTION_SEEN == 0 )) || [[ $APO_USE_HISTORY == "$saved_use_history" ]] ||
-            apo_die 'The active run history policy cannot change during continuation.' "$APO_EXIT_USAGE"
-        APO_SWEEP_DOMAIN=$saved_sweep_domain
-        APO_CPU_MIN=$saved_cpu_min
-        APO_GPU_MIN=$saved_gpu_min
-        APO_CPU_MAX=$saved_cpu_max
-        APO_GPU_MAX=$saved_gpu_max
-        APO_CPU_MAX_REQUESTED=$saved_cpu_max_requested
-        APO_GPU_MAX_REQUESTED=$saved_gpu_max_requested
-        APO_USE_HISTORY=$saved_use_history
-        apo_public_overclock_load_saved_duration_plan
-        if (( APO_RESTART_FROM_OPTION_SEEN == 0 )); then
-            apo_public_overclock_require_matching_saved_durations
-        else
-            APO_RESTART_QUALIFICATION_DURATION_S=$requested_qualification
-            APO_RESTART_FINAL_DURATION_S=$requested_final
-            APO_RESTART_EDGE_DURATION_S=$requested_edge_duration
-            apo_restart_merge_unspecified_saved_durations
-            requested_qualification=$APO_RESTART_QUALIFICATION_DURATION_S
-            requested_final=$APO_RESTART_FINAL_DURATION_S
-            requested_edge_duration=$APO_RESTART_EDGE_DURATION_S
-        fi
-        [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] || apo_die 'The active run has a malformed saved maximum-fan policy.' "$APO_EXIT_INTERNAL"
-        if (( requested_max_fan_seen == 1 )) && [[ $requested_max_fan != "$saved_max_fan" ]]; then
-            apo_die 'The active run was created with maximum-fan cooling. Its cooling policy cannot change during continuation; reset and start a fresh run to use --no-max-fan.' "$APO_EXIT_USAGE"
-        fi
-        APO_SELECTED_RUN_ID=$stored_run_id
-        APO_COMMAND=resume
-        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
-            APO_RESTART_PENDING=1
-            APO_RESTART_QUALIFICATION_DURATION_S=$requested_qualification
-            APO_RESTART_FINAL_DURATION_S=$requested_final
-            APO_RESTART_EDGE_DURATION_S=$requested_edge_duration
-            APO_EDGE_CPU_24H=$saved_edge
-            APO_EDGE_ORDER=$saved_edge_order
-            APO_QUALIFICATION_DURATION_S=$requested_qualification
-            APO_FINAL_DURATION_S=$requested_final
-            APO_EDGE_DURATION_S=$requested_edge_duration
-        else
-            APO_EDGE_CPU_24H=$saved_edge
-            APO_QUALIFICATION_DURATION_S=$APO_SAVED_QUALIFICATION_DURATION_S
-            APO_FINAL_DURATION_S=$APO_SAVED_FINAL_DURATION_S
-            APO_EDGE_DURATION_S=$APO_SAVED_EDGE_DURATION_S
-        fi
-        APO_MAX_FAN=$saved_max_fan
+
+    if [[ $stored_target == "$APO_REMOTE_TARGET" ]] && apo_domain_sweep_source_is_eligible; then
+        apo_capture_domain_sweep_source "$state_file" ||
+            apo_die 'The retained applied result failed domain-only source capture.' "$APO_EXIT_INTERNAL"
         return 0
     fi
-    if [[ ( $state_schema == "$APO_CURRENT_RUN_SCHEMA" || $state_schema == 9 ) && $stored_target == "$APO_REMOTE_TARGET" &&
-          $origin == overclock && $status == PASS && $phase == COMPLETE && $apply_status == APPLIED ]]; then
-        if [[ $APO_SWEEP_DOMAIN != all ]]; then
-            apo_capture_domain_sweep_source "$state_file" ||
-                apo_die 'Domain-only tuning requires a retained current-schema applied result with complete validation, clear tryboot ownership, and intact stock lineage.' "$APO_EXIT_USAGE"
-            APO_COMMAND=run
-            return 0
+
+    # A completed no-improvement domain sweep proves that its inherited applied
+    # source remained active.  Follow only that explicit lineage; never search
+    # past an arbitrary failed or interrupted operation.
+    if [[ $state_schema == "$APO_CURRENT_RUN_SCHEMA" && $stored_target == "$APO_REMOTE_TARGET" &&
+          $origin == overclock && $status == FAILED &&
+          $(apo_state_get CFG_SWEEP_DOMAIN all) != all &&
+          $(apo_state_get TRYBOOT_EXPECTED 0) == 0 &&
+          $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 0 &&
+          $(apo_state_get FAILURE_CLASS '') == STABILITY_FAILURE &&
+          $(apo_state_get FAILURE_REASON '') == 'No selected-domain candidate passed above the retained applied clock; the previously validated applied source remains active and unchanged.' ]]; then
+        source_run_id=$(apo_state_get SOURCE_APPLIED_RUN_ID '')
+        if apo_is_safe_run_id "$source_run_id"; then
+            source_state="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${source_run_id}.state"
+            if [[ -f $source_state && ! -L $source_state ]]; then
+                apo_state_load "$source_state"
+                if apo_capture_domain_sweep_source "$source_state"; then
+                    return 0
+                fi
+            fi
         fi
-        (( APO_CPU_MIN_OPTION_SEEN == 0 && APO_GPU_MIN_OPTION_SEEN == 0 &&
-           APO_CPU_MAX_OPTION_SEEN == 0 && APO_GPU_MAX_OPTION_SEEN == 0 )) ||
-            apo_die 'Clock-bound overrides on an already tuned target require --cpu-only or --gpu-only.' "$APO_EXIT_USAGE"
-        apo_public_overclock_load_saved_duration_plan
-        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
-            APO_RESTART_QUALIFICATION_DURATION_S=$requested_qualification
-            APO_RESTART_FINAL_DURATION_S=$requested_final
-            APO_RESTART_EDGE_DURATION_S=$requested_edge_duration
-            apo_restart_merge_unspecified_saved_durations
-            requested_qualification=$APO_RESTART_QUALIFICATION_DURATION_S
-            requested_final=$APO_RESTART_FINAL_DURATION_S
-            requested_edge_duration=$APO_RESTART_EDGE_DURATION_S
-        fi
-        (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 0 )) || [[ $APO_QUALIFICATION_DURATION_S == "$APO_SAVED_QUALIFICATION_DURATION_S" ]] ||
-            apo_die 'A completed floor cannot be relabeled with a different qualification duration.' "$APO_EXIT_USAGE"
-        source_validation_duration=$(apo_state_get VALIDATION_DURATION_S '')
-        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )) && [[ $APO_RESTART_FROM != final ]]; then
-            apo_die 'A completed applied run can restart only from final; earlier checkpoints require a fresh reset and overclock.' "$APO_EXIT_USAGE"
-        fi
-        if { (( requested_final_seen == 1 || APO_RESTART_FROM_OPTION_SEEN == 1 )); } && [[ $requested_final != "$APO_SAVED_FINAL_DURATION_S" ]]; then
-            apo_validate_uint_range "$source_validation_duration" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
-                apo_die 'The completed run has malformed retained validation-duration evidence.' "$APO_EXIT_HARNESS"
-            (( requested_final > source_validation_duration )) ||
-                apo_die 'A completed result cannot be relabeled with a shorter final duration; request a duration longer than its retained validation.' "$APO_EXIT_USAGE"
-            apo_post_floor_final_source_is_eligible ||
-                apo_die 'Longer final validation requires a retained, applied current-schema automatic result plus its verified pre-apply stock backup.' "$APO_EXIT_USAGE"
-            state_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${stored_run_id}.state"
-            [[ -f $state_file ]] || apo_die 'The applied result selected for longer final validation has no explicit retained state file.' "$APO_EXIT_USAGE"
-            apo_state_load "$state_file"
-            [[ $(apo_state_get RUN_ID '') == "$stored_run_id" && $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" ]] &&
-                apo_post_floor_final_source_is_eligible ||
-                apo_die 'The explicit retained state for longer final validation failed eligibility checks.' "$APO_EXIT_USAGE"
-            APO_POST_FLOOR_FINAL_SOURCE_STATE=$state_file
-            APO_POST_FLOOR_FINAL_MAX_FAN=$requested_max_fan
-            APO_POST_FLOOR_FINAL_DURATION_S=$requested_final
-            APO_COMMAND=post-floor-final
-            APO_EDGE_CPU_24H=0
-            return 0
-        fi
-        if (( APO_RESTART_FROM_OPTION_SEEN == 1 )); then
-            apo_die 'The retained result already completed at least the requested final duration; choose a longer --final-hours value to run a fresh extension.' "$APO_EXIT_USAGE"
-        fi
-        APO_SELECTED_RUN_ID=$stored_run_id
-        APO_COMMAND=resume
-        APO_EDGE_CPU_24H=$saved_edge
-        APO_QUALIFICATION_DURATION_S=$APO_SAVED_QUALIFICATION_DURATION_S
-        APO_FINAL_DURATION_S=$APO_SAVED_FINAL_DURATION_S
-        APO_EDGE_DURATION_S=$APO_SAVED_EDGE_DURATION_S
-        [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] || apo_die 'The completed run has a malformed saved maximum-fan policy.' "$APO_EXIT_INTERNAL"
-        APO_MAX_FAN=$saved_max_fan
-        return 0
+        apo_die 'The failed one-domain run says its applied source remained active, but that exact source no longer passes eligibility checks.' "$APO_EXIT_USAGE"
     fi
-    if [[ $APO_SWEEP_DOMAIN != all && ( $origin == prepare || $origin == restore ) && $status == PASS && $phase == COMPLETE ]]; then
+
+    if [[ ( $origin == prepare || $origin == restore ) && $status == PASS && $phase == COMPLETE ]]; then
         prepare_hash=$(apo_state_get PERMANENT_HASH '')
         prepare_cpu=$(apo_state_get NORMAL_CPU '')
         prepare_gpu=$(apo_state_get NORMAL_GPU '')
@@ -865,84 +759,32 @@ apo_public_overclock_select_continuation() {
         prepare_boot_config=$(apo_state_get BOOT_CONFIG '')
         prepare_tryboot_config=$(apo_state_get TRYBOOT_CONFIG '')
         prepare_gpu_key=$(apo_state_get GPU_KEY '')
+        if [[ $origin == restore ]]; then
+            audit_source_run_id=$(apo_state_get RESTORE_SOURCE_RUN_ID "$(apo_state_get SOURCE_APPLIED_RUN_ID '')")
+            audit_source_hash=$(apo_state_get RESTORE_SOURCE_HASH "$(apo_state_get SOURCE_APPLIED_PERMANENT_HASH '')")
+            apo_is_safe_run_id "$audit_source_run_id" ||
+                apo_die 'The latest restore audit does not identify a safe validated source run.' "$APO_EXIT_USAGE"
+            source_state="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${audit_source_run_id}.state"
+            [[ -f $source_state && ! -L $source_state ]] ||
+                apo_die 'The latest restore audit points to a missing or unsafe validated source state.' "$APO_EXIT_USAGE"
+            apo_state_load "$source_state"
+            if [[ $(apo_state_get RUN_ID '') == "$audit_source_run_id" &&
+                  $(apo_state_get PERMANENT_HASH '') == "$audit_source_hash" &&
+                  $(apo_state_get FINAL_CPU '') == "$prepare_cpu" &&
+                  $(apo_state_get FINAL_GPU '') == "$prepare_gpu" &&
+                  $(apo_state_get NORMAL_VOLTAGE '') == "$prepare_voltage" &&
+                  $(apo_state_get PROFILE '') == "$prepare_profile" &&
+                  $(apo_state_get BOOT_CONFIG '') == "$prepare_boot_config" &&
+                  $(apo_state_get TRYBOOT_CONFIG '') == "$prepare_tryboot_config" &&
+                  $(apo_state_get GPU_KEY '') == "$prepare_gpu_key" ]] &&
+               apo_capture_domain_sweep_source "$source_state"; then
+                return 0
+            fi
+            apo_die 'The latest restore audit source no longer passes applied-result eligibility checks.' "$APO_EXIT_USAGE"
+        fi
         shopt -s nullglob
         state_files=("${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"*.state)
         shopt -u nullglob
-        # A later prepare or restore audit may own the latest link after an interrupted
-        # one-domain run. Resume only an exact saved command/config baseline;
-        # unlike applied-source fallback below, no config drift is accepted.
-        for ((state_index=${#state_files[@]} - 1; state_index >= 0; state_index--)); do
-            state_file=${state_files[$state_index]}
-            [[ $state_file != "${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-latest.state" && -f $state_file ]] || continue
-            apo_state_load_fields "$state_file" state_screen \
-                FORMAT_VERSION RUN_SCHEMA REMOTE_TARGET ORIGIN_COMMAND READ_ONLY_RUN \
-                CFG_AUTO_GENERATED_CANDIDATES CFG_SWEEP_DOMAIN CFG_CPU_MIN CFG_GPU_MIN CFG_CPU_MAX CFG_GPU_MAX \
-                CFG_CPU_MAX_REQUESTED CFG_GPU_MAX_REQUESTED CFG_USE_HISTORY \
-                CFG_CPU_START_AT CFG_GPU_START_AT \
-                STATUS PHASE || continue
-            [[ ${state_screen[FORMAT_VERSION]:-} == 1 &&
-               ${state_screen[RUN_SCHEMA]:-} == "$APO_CURRENT_RUN_SCHEMA" &&
-               ${state_screen[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" &&
-               ${state_screen[ORIGIN_COMMAND]:-} == overclock &&
-               ${state_screen[READ_ONLY_RUN]:-0} == 0 &&
-               ${state_screen[CFG_AUTO_GENERATED_CANDIDATES]:-0} == 1 &&
-               ${state_screen[CFG_SWEEP_DOMAIN]:-all} == "$APO_SWEEP_DOMAIN" &&
-               ${state_screen[CFG_CPU_MIN]:-${state_screen[CFG_CPU_START_AT]:-}} == "$APO_CPU_MIN" &&
-               ${state_screen[CFG_GPU_MIN]:-${state_screen[CFG_GPU_START_AT]:-}} == "$APO_GPU_MIN" &&
-               ${state_screen[CFG_CPU_MAX_REQUESTED]:-${state_screen[CFG_CPU_MAX]:-}} == "$APO_CPU_MAX_REQUESTED" &&
-               ${state_screen[CFG_GPU_MAX_REQUESTED]:-${state_screen[CFG_GPU_MAX]:-}} == "$APO_GPU_MAX_REQUESTED" &&
-               ( $APO_HISTORY_OPTION_SEEN == 0 || ${state_screen[CFG_USE_HISTORY]:-0} == "$APO_USE_HISTORY" ) &&
-               ( ${state_screen[STATUS]:-} == RUNNING || ${state_screen[STATUS]:-} == INTERRUPTED ) &&
-               ${state_screen[PHASE]:-} != PREPARE && ${state_screen[PHASE]:-} != PREPARED ]] || continue
-            apo_state_load "$state_file"
-            [[ $(apo_state_get FORMAT_VERSION '') == 1 &&
-               $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
-               $(apo_state_get REMOTE_TARGET '') == "$APO_REMOTE_TARGET" &&
-               $(apo_state_get ORIGIN_COMMAND '') == overclock &&
-               $(apo_state_get READ_ONLY_RUN 0) == 0 &&
-               $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
-               $(apo_state_get CFG_SWEEP_DOMAIN all) == "$APO_SWEEP_DOMAIN" &&
-               $(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT '')") == "$APO_CPU_MIN" &&
-               $(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT '')") == "$APO_GPU_MIN" &&
-               $(apo_state_get CFG_CPU_MAX_REQUESTED "$(apo_state_get CFG_CPU_MAX '')") == "$APO_CPU_MAX_REQUESTED" &&
-               $(apo_state_get CFG_GPU_MAX_REQUESTED "$(apo_state_get CFG_GPU_MAX '')") == "$APO_GPU_MAX_REQUESTED" &&
-               ( $APO_HISTORY_OPTION_SEEN == 0 || $(apo_state_get CFG_USE_HISTORY 0) == "$APO_USE_HISTORY" ) &&
-               ( $(apo_state_get STATUS '') == RUNNING || $(apo_state_get STATUS '') == INTERRUPTED ) &&
-               $(apo_state_get PHASE '') != PREPARE && $(apo_state_get PHASE '') != PREPARED &&
-               $(apo_state_get PERMANENT_HASH '') == "$prepare_hash" &&
-               $(apo_state_get NORMAL_CPU '') == "$prepare_cpu" &&
-               $(apo_state_get NORMAL_GPU '') == "$prepare_gpu" &&
-               $(apo_state_get NORMAL_VOLTAGE '') == "$prepare_voltage" &&
-               $(apo_state_get PROFILE '') == "$prepare_profile" &&
-               $(apo_state_get BOOT_CONFIG '') == "$prepare_boot_config" &&
-               $(apo_state_get TRYBOOT_CONFIG '') == "$prepare_tryboot_config" &&
-               $(apo_state_get GPU_KEY '') == "$prepare_gpu_key" ]] || continue
-            stored_run_id=$(apo_state_get RUN_ID '')
-            apo_is_safe_run_id "$stored_run_id" || continue
-            saved_edge=$(apo_state_get CFG_EDGE_CPU_24H 0)
-            saved_edge_order=$(apo_state_get CFG_EDGE_ORDER floor-first)
-            saved_max_fan=$(apo_state_get CFG_MAX_FAN 1)
-            [[ $saved_edge == 0 || $saved_edge == 1 ]] ||
-                apo_die 'The retained one-domain run has a malformed edge marker.' "$APO_EXIT_INTERNAL"
-            [[ $saved_edge_order == floor-first || $saved_edge_order == edge-first ]] ||
-                apo_die 'The retained one-domain run has a malformed edge-order marker.' "$APO_EXIT_INTERNAL"
-            [[ $saved_max_fan == 0 || $saved_max_fan == 1 ]] ||
-                apo_die 'The retained one-domain run has a malformed maximum-fan policy.' "$APO_EXIT_INTERNAL"
-            apo_public_overclock_load_saved_duration_plan
-            apo_public_overclock_require_matching_saved_durations
-            if (( requested_max_fan_seen == 1 )) && [[ $requested_max_fan != "$saved_max_fan" ]]; then
-                apo_die 'The active run cooling policy cannot change during continuation.' "$APO_EXIT_USAGE"
-            fi
-            APO_SELECTED_RUN_ID=$stored_run_id
-            APO_COMMAND=resume
-            APO_EDGE_CPU_24H=$saved_edge
-            APO_EDGE_ORDER=$saved_edge_order
-            APO_QUALIFICATION_DURATION_S=$APO_SAVED_QUALIFICATION_DURATION_S
-            APO_FINAL_DURATION_S=$APO_SAVED_FINAL_DURATION_S
-            APO_EDGE_DURATION_S=$APO_SAVED_EDGE_DURATION_S
-            APO_MAX_FAN=$saved_max_fan
-            return 0
-        done
         for ((state_index=${#state_files[@]} - 1; state_index >= 0; state_index--)); do
             state_file=${state_files[$state_index]}
             [[ $state_file != "${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-latest.state" && -f $state_file ]] || continue
@@ -972,24 +814,32 @@ apo_public_overclock_select_continuation() {
                $(apo_state_get GPU_KEY '') == "$prepare_gpu_key" ]] || continue
             if [[ $(apo_state_get PERMANENT_HASH '') == "$prepare_hash" ]]; then
                 apo_capture_domain_sweep_source "$state_file" || continue
-                APO_COMMAND=run
                 return 0
             fi
-            [[ -n $prepare_fallback_state ]] || prepare_fallback_state=$state_file
+            candidate_hash=$(apo_state_get PERMANENT_HASH '')
+            if [[ -z $prepare_fallback_state ]]; then
+                prepare_fallback_state=$state_file
+                prepare_fallback_hash=$candidate_hash
+            elif [[ $candidate_hash != "$prepare_fallback_hash" ]]; then
+                prepare_fallback_ambiguous=1
+            fi
         done
         if [[ -n $prepare_fallback_state ]]; then
+            (( prepare_fallback_ambiguous == 0 )) ||
+                apo_die 'The latest prepare audit matches multiple applied configurations with different hashes; select or restore the intended validated source before domain-only tuning.' "$APO_EXIT_USAGE"
             apo_state_load "$prepare_fallback_state"
             apo_capture_domain_sweep_source "$prepare_fallback_state" ||
                 apo_die 'The retained applied fallback selected behind the latest host-baseline audit failed eligibility checks.' "$APO_EXIT_USAGE"
-            APO_COMMAND=run
             return 0
         fi
         apo_die 'The latest host-baseline audit does not match any retained applied result eligible for domain-only tuning.' "$APO_EXIT_USAGE"
     fi
     APO_STATE=()
     APO_STATE_FILE=''
-    [[ $APO_SWEEP_DOMAIN == all ]] ||
-        apo_die 'Domain-only tuning cannot skip the latest retained run; no matching applied source is available.' "$APO_EXIT_USAGE"
+    if [[ $origin == reset ]]; then
+        apo_die 'Domain-only tuning cannot cross a stock reset; complete and apply a full overclock result first.' "$APO_EXIT_USAGE"
+    fi
+    apo_die 'A fresh domain-only run requires a currently applied validated source. Use resume TARGET for saved progress, or recover/reset the unresolved latest operation first.' "$APO_EXIT_USAGE"
 }
 
 apo_public_test_select_continuation() {
@@ -1815,7 +1665,7 @@ main() {
     fi
     apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync chmod mkdir mv readlink rm
     case $APO_COMMAND in run|prepare|resume|recover|restore|reset|apply) apo_acquire_lock ;; esac
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
     apo_public_test_select_continuation
     case $APO_COMMAND in
         run|prepare|resume|recover|restore|reset|apply|post-floor-edge|post-floor-final)

@@ -29,6 +29,17 @@ parse_fixture prepare prepare prepare prepare tron
 )
 
 parse_fixture run overclock overclock overclock tron
+
+# Every operation uses an explicit command.  A bare target is not an undocumented
+# alias for the advanced run interface.
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli tron
+) >/dev/null 2>&1; then
+    echo 'a bare TARGET was accepted as an implicit advanced run' >&2
+    exit 1
+fi
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -98,6 +109,38 @@ for removed_edge_args in '--edge-hours 24' '--edge-cpu-24h'; do
         exit 1
     fi
 done
+
+assert_non_resume_rejects_restart() {
+    local command=$1 stderr_file
+    shift
+    stderr_file="${TMPDIR:-/tmp}/autopioverclock-restart-${command}-$$.err"
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        apo_parse_cli "$command" tron "$@" --restart-from current
+    ) >/dev/null 2>"$stderr_file"; then
+        echo "$command accepted --restart-from even though only resume may restart a checkpoint" >&2
+        rm -f -- "$stderr_file"
+        exit 1
+    fi
+    grep -Fq -- '--restart-from is valid only with resume TARGET.' "$stderr_file"
+    rm -f -- "$stderr_file"
+}
+
+# Checkpoint restart is exclusively resume syntax.  Exercise every other
+# target command so a future command-specific parser branch cannot admit it.
+assert_non_resume_rejects_restart prepare
+assert_non_resume_rejects_restart overclock
+assert_non_resume_rejects_restart test --cpu 3100 --gpu 1150 --final-hours 48
+assert_non_resume_rejects_restart reset
+assert_non_resume_rejects_restart run
+assert_non_resume_rejects_restart status
+assert_non_resume_rejects_restart summary
+assert_non_resume_rejects_restart recover
+assert_non_resume_rejects_restart restore
+assert_non_resume_rejects_restart apply
+assert_non_resume_rejects_restart report
+
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -138,6 +181,10 @@ for invalid_domain_args in \
     '--gpu-only --cpu-max 3175' \
     '--cpu-start-at 3000' \
     '--gpu-start-at 1150' \
+    '--restart-from current' \
+    '--restart-from cpu-qualification' \
+    '--restart-from gpu-qualification' \
+    '--restart-from final' \
     '--cpu-only --restart-from final' \
     '--edge-cpu-24h' \
     '--edge-hours 24'; do
@@ -181,6 +228,32 @@ fi
     apo_parse_cli run tron --no-max-fan --yes
     [[ $APO_COMMAND == run && $APO_MAX_FAN == 0 ]]
 )
+
+assert_cli_rejects() {
+    local description=$1
+    shift
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        apo_parse_cli "$@"
+    ) >/dev/null 2>&1; then
+        echo "$description" >&2
+        exit 1
+    fi
+}
+
+# Keep the documented accepted-by contract exact: prepare already grants its
+# own prerequisite permissions, new runs do not select old IDs, and --yes is
+# meaningful only for the advanced run confirmation.
+assert_cli_rejects 'prepare accepted redundant --install-missing' prepare tron --install-missing
+assert_cli_rejects 'prepare accepted redundant --repair-watchdogs' prepare tron --repair-watchdogs
+assert_cli_rejects 'prepare accepted irrelevant --yes' prepare tron --yes
+assert_cli_rejects 'advanced run accepted a saved --run-id' run tron --run-id 20260901-195530-ad946cde6c24975f
+assert_cli_rejects 'public overclock accepted irrelevant --yes' overclock tron --yes
+assert_cli_rejects 'exact-pair test accepted irrelevant --yes' test tron --cpu 3100 --gpu 1150 --final-hours 48 --yes
+assert_cli_rejects 'resume accepted irrelevant --yes' resume tron --yes
+assert_cli_rejects 'status accepted irrelevant --yes' status tron --yes
+assert_cli_rejects 'standalone apply accepted --yes despite typed confirmation' apply tron --yes
 
 parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
 (

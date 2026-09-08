@@ -20,8 +20,8 @@ write_state_fixture() {
 CONTINUATION_OUTPUT="$TEMP_DIR/continuation-output"
 mkdir -p "$CONTINUATION_OUTPUT"
 
-# Removed public edge flags must not start a new edge run. Retained applied
-# results remain readable and a flag-free invocation keeps existing behavior.
+# Removed public edge flags must not start a new edge run. A flag-free public
+# invocation starts a fresh run even when an applied result is retained.
 APPLIED_FLOOR_RUN=20260827-010203-2222222222222222
 APPLIED_FLOOR_STATE="$CONTINUATION_OUTPUT/tron-${APPLIED_FLOOR_RUN}.state"
 write_state_fixture "$APPLIED_FLOOR_STATE" \
@@ -41,7 +41,7 @@ if (
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-cpu-24h
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) 2>"$TEMP_DIR/removed-edge-alias.err"; then
     echo 'removed --edge-cpu-24h was accepted by overclock' >&2
     exit 1
@@ -52,7 +52,7 @@ if (
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-cpu-24h --no-max-fan
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) >/dev/null 2>&1; then
     echo 'removed --edge-cpu-24h was accepted with --no-max-fan' >&2
     exit 1
@@ -62,9 +62,9 @@ fi
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$APPLIED_FLOOR_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run ]]
+    [[ -z $APO_SELECTED_RUN_ID && -z ${APO_STATE_FILE:-} ]]
 )
 
 # The removed custom edge-duration spelling is rejected too.
@@ -89,7 +89,7 @@ if (
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-hours 12
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) >/dev/null 2>&1; then
     echo 'removed --edge-hours was accepted by overclock' >&2
     exit 1
@@ -114,7 +114,7 @@ if (
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-cpu-24h
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) 2>"$TEMP_DIR/ineligible-edge.err"; then
     echo 'an ineligible applied floor silently ignored a later edge request' >&2
     exit 1
@@ -133,7 +133,7 @@ ln -sfn "$(basename "$PREPARE_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
     [[ $APO_COMMAND == run ]]
     [[ -z $APO_SELECTED_RUN_ID ]]
     [[ -z ${APO_STATE_FILE:-} ]]

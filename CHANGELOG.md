@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.52 — 2026-09-08
+
+- Made every public `overclock TARGET` invocation a genuinely new history-guided operation. Retained state can constrain the fresh ceilings and starting points, but it can no longer silently replace the requested duration, bounds, cooling, or history policy with an interrupted run; only explicit `resume TARGET [--run-id RUN_ID]` continues saved progress, and `--restart-from` is now resume-only.
+- Started history-guided candidate ladders near relevant retained limits instead of replaying the known-low range: one 100 MHz CPU step or one 50 MHz GPU step below the effective ceiling, with ambiguous-pair isolation trials included when lower. An inactive one-domain clock remains unbounded, a domain with no relevant failure evidence keeps its normal baseline ladder, and explicit minima remain authoritative.
+- Hardened one-domain source selection behind prepare/restore audits, removed the undocumented bare-target run alias and irrelevant option combinations, enforced full two-domain checkpoint restarts, documented every command and supported option with generic target examples and plain-language use cases, and added regressions for fresh-run semantics, resume-only checkpoint restarts, near-ceiling planning, and public documentation rendering.
+
 ## 0.1.0-alpha.51 — 2026-09-07
 
 - Kept authoritative retained-history discovery fresh without churning its human audit. Every new history-enabled overclock still rescans all compatible `.state` evidence and clearly prints the effective CPU and GPU ceilings, but `target-failures.txt` is now created when missing and atomically replaced only when its materially derived content changes. An unchanged ledger retains its exact bytes, inode, generation time, and filesystem timestamp.

@@ -3128,7 +3128,11 @@ apo_restart_active_automatic_state() {
         return 1
     }
     phase=$(apo_state_get PHASE '')
-    sweep_domain=$(apo_refined_sweep_domain)
+    sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN "$(apo_refined_sweep_domain)")
+    [[ $sweep_domain == all ]] || {
+        APO_LAST_REASON='Checkpoint restart is available only for a full CPU-and-GPU run. Continue a one-domain checkpoint with plain resume TARGET.'
+        return 1
+    }
     [[ $phase != PREPARE && $phase != PREPARED && $phase != COMPLETE ]] || {
         APO_LAST_REASON="Checkpoint restart is unavailable from phase ${phase:-missing}."
         return 1

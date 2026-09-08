@@ -204,7 +204,7 @@ for command_line in \
     grep -Fq "$command_line" <<< "$help_output"
 done
 
-for advanced_command in run resume status recover restore apply report; do
+for advanced_command in run resume status summary recover restore apply report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
@@ -220,9 +220,15 @@ if grep -Fq -- '--gpu-start-at' <<< "$help_output"; then
     exit 1
 fi
 
-for documented_command in prepare overclock test reset run resume status recover restore apply report; do
+for documented_command in prepare overclock test reset run resume status summary recover restore apply report; do
     documented_pattern=$(printf '| `%s TARGET' "$documented_command")
     grep -Fq "$documented_pattern" "$ROOT/README.md"
+done
+
+# The public README is the concise command reference, so every accepted public
+# option must remain discoverable there even when several share one table row.
+for documented_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --help --version; do
+    grep -Fq -- "$documented_option" "$ROOT/README.md"
 done
 
 for normal_command in prepare overclock reset; do
@@ -241,11 +247,11 @@ for required_heading in \
     '## Results'; do
     grep -Fq "$required_heading" "$ROOT/README.md"
 done
-grep -Fq 'Searches CPU from 2500 through 3200 MHz' "$ROOT/README.md"
+grep -Fq 'CPU starts at 2500 MHz and searches through 3200 MHz' "$ROOT/README.md"
 grep -Fq 'Searches GPU/V3D through 1200 MHz' "$ROOT/README.md"
-grep -Fq 'refines the failure gap in 25 MHz steps to the highest actual pass' "$ROOT/README.md"
+grep -Fq 'refines a proved failure gap in 25 MHz steps to the highest actual pass' "$ROOT/README.md"
 grep -Fq 'one fresh 48-hour combined CPU/GPU/I/O validation by default' "$ROOT/README.md"
-grep -Fq 'test pi@pi-host --cpu 3100 --gpu 1150 --final-hours 48' "$ROOT/README.md"
+grep -Fq 'test pi@hostname --cpu 3100 --gpu 1150 --final-hours 72' "$ROOT/README.md"
 grep -Fq -- '--qualification-hours 3 --final-hours 72' "$ROOT/README.md"
 quick_start=$(sed -n '/^## Quick start$/,/^## Supported targets$/p' "$ROOT/README.md")
 for install_line in \
@@ -257,17 +263,27 @@ for install_line in \
     grep -Fq "$install_line" <<< "$quick_start"
 done
 grep -Fq 'It does not connect to, modify, or reboot a target.' <<< "$quick_start"
-grep -Fq 'autopioverclock prepare pi@pi-host' <<< "$quick_start"
-grep -Fq 'autopioverclock overclock pi@pi-host' <<< "$quick_start"
-if grep -Fq 'autopioverclock reset pi@pi-host' <<< "$quick_start"; then
+grep -Fq 'autopioverclock prepare pi@hostname' <<< "$quick_start"
+grep -Fq 'autopioverclock overclock pi@hostname' <<< "$quick_start"
+if grep -Fq 'autopioverclock reset pi@hostname' <<< "$quick_start"; then
     echo 'README quick start presented reset as an everyday required command' >&2
     exit 1
 fi
 grep -Fq 'Run every command on the separate Linux controller.' "$ROOT/docs/cli.md"
 grep -Fq 'The controller may be any supported Linux computer; it does not need to be a Raspberry Pi.' "$ROOT/docs/cli.md"
 grep -Fq 'Every failure or retry starts the complete requested `--final-hours` duration from zero.' "$ROOT/docs/cli.md"
+grep -Fq 'The common reason to use `--restart-from final` is simple:' "$ROOT/README.md"
 grep -Fq 'Headless Raspberry Pi OS/Debian requires neither a desktop nor audio hardware' "$ROOT/docs/cli.md"
 grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
+
+# Public examples stay generic and copyable; private lab hostnames belong only
+# in retained artifacts, never in README or reference documentation.
+for public_doc in "$ROOT/README.md" "$ROOT"/docs/*.md; do
+    if grep -Eiq 'tron|monkeebutt|harbormaster|pi@pi-host' "$public_doc"; then
+        echo "private or obsolete example target leaked into ${public_doc#"$ROOT"/}" >&2
+        exit 1
+    fi
+done
 grep -Fq 'ssh -o BatchMode=yes "$TARGET" true' "$ROOT/README.md"
 if grep -Fq 'command ssh' "$ROOT/README.md" || grep -Fq -- '-F /dev/null' "$ROOT/README.md"; then
     echo 'README exposed the implementation-specific SSH invocation' >&2

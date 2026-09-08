@@ -1629,6 +1629,17 @@ apo_restart_active_automatic_state current
 [[ $(apo_state_get CFG_EDGE_CPU_24H) == 0 && $(apo_state_get CFG_EDGE_ORDER) == floor-first ]]
 [[ $(apo_state_get CFG_EDGE_DURATION_S) == 86400 && $(apo_state_get CFG_FINAL_DURATION_S) == 86400 ]]
 
+# Checkpoint selection is a full two-domain resume feature. One-domain runs
+# continue only from their saved position with plain resume.
+apo_state_set CFG_SWEEP_DOMAIN cpu
+APO_LAST_REASON=''
+if apo_restart_active_automatic_state current; then
+    echo 'a CPU-only run accepted --restart-from current' >&2
+    exit 1
+fi
+[[ $APO_LAST_REASON == 'Checkpoint restart is available only for a full CPU-and-GPU run. Continue a one-domain checkpoint with plain resume TARGET.' ]]
+apo_state_set CFG_SWEEP_DOMAIN all
+
 # Exercise the production sweep/refinement implementation directly. CPU uses
 # 100 MHz coarse steps and GPU uses 50 MHz; both refine the last gap by 25 MHz
 # and select the exact highest pass.

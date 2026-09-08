@@ -367,6 +367,13 @@ APO_SWEEP_DOMAIN=all
 APO_USE_HISTORY=1
 APO_AUTO_CPU_MAX_MHZ=3200
 APO_AUTO_GPU_MAX_MHZ=1200
+APO_AUTO_CPU_STEP_MHZ=100
+APO_AUTO_GPU_STEP_MHZ=50
+APO_AUTO_REFINE_STEP_MHZ=25
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_CPU_MIN_OPTION_SEEN=0
+APO_GPU_MIN_OPTION_SEEN=0
 APO_CPU_MAX=''
 APO_GPU_MAX=''
 APO_CPU_MIN=''
@@ -380,8 +387,12 @@ apo_history_resolve_new_overclock_plan
 [[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1175 ]]
 [[ $(apo_state_get HISTORY_PAIR_TRIAL_CPU '') == 3075 ]]
 [[ $(apo_state_get HISTORY_PAIR_TRIAL_GPU '') == 1175 ]]
+[[ $APO_CPU_MIN == 3075 && $APO_GPU_MIN == 1150 ]]
+[[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == history ]]
+[[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == history ]]
 [[ ${#history_announcements[@]} == 1 ]]
 [[ ${history_announcements[0]} == *'History ceilings: CPU=3200 MHz (requested 3200 MHz); GPU=1200 MHz (requested 1200 MHz).'* ]]
+[[ ${history_announcements[0]} == *'Candidate starts: CPU=3075 MHz; GPU=1150 MHz.'* ]]
 # Discovery may be repeated after dependency/watchdog reconciliation.  The
 # effective cap must not become the next call's requested cap.
 apo_history_resolve_new_overclock_plan
@@ -390,6 +401,7 @@ apo_history_resolve_new_overclock_plan
 [[ $APO_CPU_MAX == 3200 && $APO_GPU_MAX == 1200 ]]
 [[ $(apo_state_get HISTORY_CPU_TRIAL_CPU '') == 3075 ]]
 [[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1175 ]]
+[[ $APO_CPU_MIN == 3075 && $APO_GPU_MIN == 1150 ]]
 [[ ${#history_announcements[@]} == 1 ]]
 
 # Explicit opt-out is the only path that skips the scan and leaves a clean
@@ -405,6 +417,7 @@ apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 2 ]]
 [[ $APO_CPU_MAX_REQUESTED == 3150 && $APO_GPU_MAX_REQUESTED == 1175 ]]
 [[ $APO_CPU_MAX == 3150 && $APO_GPU_MAX == 1175 ]]
+[[ -z $APO_CPU_MIN && -z $APO_GPU_MIN ]]
 [[ $(apo_state_get HISTORY_ISOLATION_STAGE '') == NONE ]]
 [[ ${#history_announcements[@]} == 1 ]]
 [[ ${history_announcements[0]} == 'History disabled for this new run. Ceilings: CPU=3150 MHz (requested 3150 MHz); GPU=1175 MHz (requested 1175 MHz).' ]]
@@ -439,17 +452,22 @@ apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 3 ]]
 [[ -z $APO_CPU_MAX_REQUESTED && -z $APO_GPU_MAX_REQUESTED ]]
 [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1200 ]]
+[[ $APO_CPU_MIN == 2975 && -z $APO_GPU_MIN ]]
+[[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == history ]]
+[[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]
 [[ ${#history_announcements[@]} == 1 ]]
 [[ ${history_announcements[0]} == *'History ceilings: CPU=3075 MHz (requested 3200 MHz); GPU=1200 MHz (requested 1200 MHz).'* ]]
+[[ ${history_announcements[0]} == *'Candidate starts: CPU=2975 MHz; GPU=automatic baseline ladder.'* ]]
 [[ ${history_announcements[0]} == *'Retained failures: clear CPU=3100, clear GPU=none'* ]]
 apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 4 ]]
 [[ -z $APO_CPU_MAX_REQUESTED && -z $APO_GPU_MAX_REQUESTED ]]
 [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1200 ]]
+[[ $APO_CPU_MIN == 2975 && -z $APO_GPU_MIN ]]
 [[ ${#history_announcements[@]} == 1 ]]
 
-# Neither an explicit resume nor the continuation selected by repeating the
-# public overclock command may rescan or alter its already persisted plan.
+# Resume must use its already persisted plan and never rescan retained history,
+# even when the saved public-command marker identifies an overclock run.
 APO_HISTORY_PLAN_ANNOUNCED=0
 history_announcements=()
 APO_COMMAND=resume
@@ -461,6 +479,63 @@ APO_PUBLIC_COMMAND=overclock
 apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 4 ]]
 [[ ${#history_announcements[@]} == 0 && $APO_HISTORY_PLAN_ANNOUNCED == 0 ]]
+
+# A history-enabled one-domain run must leave the held domain completely
+# unbounded while applying the relevant retained cap and near-ceiling start.
+apo_history_refresh() {
+    refresh_calls=$((refresh_calls + 1))
+    APO_HISTORY_CPU_FAILURE_BOUNDARY=3200
+    APO_HISTORY_GPU_FAILURE_BOUNDARY=1200
+    APO_HISTORY_PAIR_FRONTIERS=''
+    APO_HISTORY_PROVENANCE='CPU|3200|old-run|fixture|cpu.state,GPU|1200|old-run|fixture|gpu.state'
+    APO_HISTORY_LEDGER_FILE="$TMP/one-domain-failures.txt"
+    APO_HISTORY_SCANNED_STATES=2
+    APO_HISTORY_ACCEPTED_STATES=2
+    APO_HISTORY_EVIDENCE_COUNT=2
+}
+APO_COMMAND=run
+APO_SWEEP_DOMAIN=gpu
+APO_USE_HISTORY=1
+APO_HISTORY_PLAN_ANNOUNCED=0
+history_announcements=()
+APO_NORMAL_CPU=2950
+APO_NORMAL_GPU=1125
+unset APO_CPU_MAX_REQUESTED APO_GPU_MAX_REQUESTED
+APO_CPU_MIN=2975
+APO_GPU_MIN=''
+APO_CPU_MAX=''
+APO_GPU_MAX=''
+apo_history_resolve_new_overclock_plan
+[[ $refresh_calls == 5 ]]
+[[ -z $APO_CPU_MIN && -z $APO_CPU_MAX ]]
+[[ $APO_GPU_MIN == 1150 && $APO_GPU_MAX == 1175 ]]
+[[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == automatic-baseline ]]
+[[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == history ]]
+[[ -z $(apo_state_get CFG_CPU_MAX_EFFECTIVE '') ]]
+[[ $(apo_state_get CFG_GPU_MAX_EFFECTIVE '') == 1175 ]]
+[[ ${history_announcements[0]} == *'CPU=not swept (requested not swept); GPU=1175 MHz (requested 1200 MHz)'* ]]
+[[ ${history_announcements[0]} == *'Candidate starts: CPU=not swept; GPU=1150 MHz.'* ]]
+
+APO_SWEEP_DOMAIN=cpu
+APO_HISTORY_PLAN_ANNOUNCED=0
+history_announcements=()
+APO_NORMAL_CPU=2950
+APO_NORMAL_GPU=1125
+unset APO_CPU_MAX_REQUESTED APO_GPU_MAX_REQUESTED
+APO_CPU_MIN=''
+APO_GPU_MIN=1150
+APO_CPU_MAX=''
+APO_GPU_MAX=''
+apo_history_resolve_new_overclock_plan
+[[ $refresh_calls == 6 ]]
+[[ $APO_CPU_MIN == 3075 && $APO_CPU_MAX == 3175 ]]
+[[ -z $APO_GPU_MIN && -z $APO_GPU_MAX ]]
+[[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == history ]]
+[[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]
+[[ $(apo_state_get CFG_CPU_MAX_EFFECTIVE '') == 3175 ]]
+[[ -z $(apo_state_get CFG_GPU_MAX_EFFECTIVE '') ]]
+[[ ${history_announcements[0]} == *'CPU=3175 MHz (requested 3200 MHz); GPU=not swept (requested not swept)'* ]]
+[[ ${history_announcements[0]} == *'Candidate starts: CPU=3075 MHz; GPU=not swept.'* ]]
 
 # One-domain plans name the inactive domain without appending a bogus unit.
 APO_HISTORY_PLAN_ANNOUNCED=0

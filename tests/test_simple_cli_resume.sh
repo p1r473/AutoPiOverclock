@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1090,SC2030,SC2031
+# shellcheck disable=SC1090,SC2030,SC2031,SC2153
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TEMP_DIR=$(mktemp -d)
@@ -15,6 +15,26 @@ write_state_fixture() {
         shift 2
         printf '%s\t%s\n' "$key" "$(printf '%s' "$value" | base64 | tr -d '\n')" >> "$destination"
     done
+}
+
+set_stock_discovery_fixture() {
+    APO_MODE_EFFECTIVE=headless
+    APO_PROFILE=debian
+    APO_DISCOVERY=(
+        [BOOT_CONFIG]=/boot/firmware/config.txt
+        [TRYBOOT_CONFIG]=/boot/firmware/tryboot.txt
+        [TRYBOOT_EXISTS]=0
+        [TRYBOOT_TYPE]=absent
+        [TRYBOOT_HASH]=unavailable
+        [BOOT_MOUNT]=/boot/firmware
+        [GPU_KEY]=v3d_freq
+        [NORMAL_CPU]=2400
+        [NORMAL_GPU]=960
+        [NORMAL_VOLTAGE]=0
+        [PERMANENT_TUNING_PROVENANCE]=verified-default
+        [PERMANENT_TUNING_EVIDENCE]=none
+        [PERMANENT_HASH]=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    )
 }
 
 # Explicit resume of a saved public overclock must restore the original
@@ -74,65 +94,126 @@ write_state_fixture "$CONTINUATION_STATE" \
     CFG_QUALIFICATION_DURATION_S 10800 CFG_FINAL_DURATION_S 21600 \
     CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY custom
 ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+
+# Plain overclock is always a fresh operation. Retained state is history input,
+# never permission to replace the requested duration, bounds, or cooling plan.
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron
+    apo_parse_cli overclock tron --final-hours 100
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run ]]
+    [[ -z $APO_SELECTED_RUN_ID && -z ${APO_STATE_FILE:-} && ${#APO_STATE[@]} == 0 ]]
     [[ $APO_AUTO_APPLY == 1 ]]
-    [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1175 && $APO_USE_HISTORY == 1 ]]
-    [[ $APO_QUALIFICATION_DURATION_S == 10800 && $APO_FINAL_DURATION_S == 21600 && $APO_EDGE_DURATION_S == 86400 ]]
-    history_refresh_calls=0
-    apo_history_refresh() { history_refresh_calls=$((history_refresh_calls + 1)); }
-    APO_AUTO_GENERATED_CANDIDATES=1
-    apo_history_resolve_new_overclock_plan
-    [[ $history_refresh_calls == 0 ]]
-    [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1175 ]]
+    [[ $APO_USE_HISTORY == 1 && $APO_FINAL_DURATION_S == 360000 ]]
 )
+
+# Exercise the complete fresh public planning path: CLI parsing and source
+# selection preserve the requested duration, discovery invokes one history
+# scan, and retained failures generate short near-ceiling ladders.
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --qualification-hours 3 --final-hours 6
+    apo_parse_cli overclock pi@hostname --final-hours 100
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
+    apo_public_overclock_select_source
+    history_refresh_calls=0
+    apo_history_refresh() {
+        history_refresh_calls=$((history_refresh_calls + 1))
+        APO_HISTORY_CPU_FAILURE_BOUNDARY=3100
+        APO_HISTORY_GPU_FAILURE_BOUNDARY=1200
+        APO_HISTORY_PAIR_FRONTIERS=''
+        APO_HISTORY_PROVENANCE='CPU|3100|old-cpu-run|fixture|cpu.state,GPU|1200|old-gpu-run|fixture|gpu.state'
+        APO_HISTORY_LEDGER_FILE="$TEMP_DIR/integration-failures.txt"
+        APO_HISTORY_SCANNED_STATES=2
+        APO_HISTORY_ACCEPTED_STATES=2
+        APO_HISTORY_EVIDENCE_COUNT=2
+    }
+    apo_info() { :; }
+    apo_summary_line() { :; }
+    apo_config_load_for_new_run
+    set_stock_discovery_fixture
+    apo_context_from_discovery
+    [[ $history_refresh_calls == 1 ]]
+    [[ $APO_FINAL_DURATION_S == 360000 && ${APO_CFG[FINAL_DURATION_S]} == 360000 ]]
+    [[ $APO_CPU_MIN == 2975 && $APO_CPU_MAX == 3075 ]]
+    [[ $APO_GPU_MIN == 1125 && $APO_GPU_MAX == 1175 ]]
+    [[ ${APO_CFG[CPU_CANDIDATES]} == 2975,3075 ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == 1125,1175 ]]
+    [[ $(apo_state_get CFG_USE_HISTORY '') == 1 ]]
+    [[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == history ]]
+    [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == history ]]
 )
-if (
+
+# --no-history follows the same fresh public path but performs no retained-state
+# scan and rebuilds both complete automatic ladders from the stock baseline.
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock pi@hostname --no-history --final-hours 100
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_source
+    history_refresh_calls=0
+    apo_history_refresh() {
+        history_refresh_calls=$((history_refresh_calls + 1))
+        return 99
+    }
+    apo_info() { :; }
+    apo_summary_line() { :; }
+    apo_config_load_for_new_run
+    set_stock_discovery_fixture
+    apo_context_from_discovery
+    [[ $history_refresh_calls == 0 ]]
+    [[ $APO_FINAL_DURATION_S == 360000 && ${APO_CFG[FINAL_DURATION_S]} == 360000 ]]
+    [[ -z $APO_CPU_MIN && $APO_CPU_MAX == 3200 ]]
+    [[ -z $APO_GPU_MIN && $APO_GPU_MAX == 1200 ]]
+    [[ ${APO_CFG[CPU_CANDIDATES]} == 2500,2600,2700,2800,2900,3000,3100,3200 ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == 1000,1050,1100,1150,1200 ]]
+    [[ $(apo_state_get CFG_USE_HISTORY '') == 0 ]]
+    [[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == automatic-baseline ]]
+    [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]
+)
+
+# Only explicit resume selects saved progress; omitting --run-id selects latest.
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron
+    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == resume && -z $APO_SELECTED_RUN_ID ]]
+    [[ $(apo_find_state_file '') == "$CONTINUATION_STATE" ]]
+)
+
+# A different duration or fan policy describes a new run and is accepted.
+(
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --final-hours 8
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-) 2>"$TEMP_DIR/active-duration-change.err"; then
-    echo 'an active run accepted a different final duration' >&2
-    exit 1
-fi
-grep -Fq 'final duration cannot change during continuation' "$TEMP_DIR/active-duration-change.err"
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && $APO_FINAL_DURATION_S == 28800 ]]
+)
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-cpu-24h
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) 2>"$TEMP_DIR/active-edge-change.err"; then
     echo 'an active ordinary run accepted a late immutable edge-plan change' >&2
     exit 1
 fi
 grep -Fq 'Unknown option: --edge-cpu-24h' "$TEMP_DIR/active-edge-change.err"
-if (
+(
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --no-max-fan
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-) 2>"$TEMP_DIR/active-fan-change.err"; then
-    echo 'an active run accepted a mid-run cooling-policy change' >&2
-    exit 1
-fi
-grep -Fq 'cooling policy cannot change during continuation' "$TEMP_DIR/active-fan-change.err"
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && $APO_MAX_FAN == 0 ]]
+)
 
 # A completed reset owns the latest-state pointer and forces a fresh all-domain
 # overclock. An older interrupted run remains historical evidence but is never
@@ -158,7 +239,7 @@ ln -s "$(basename "$RESET_SHADOW_RESET_STATE")" "$RESET_SHADOW_OUTPUT/tron-lates
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$RESET_SHADOW_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
     [[ $APO_COMMAND == run ]]
     [[ -z $APO_SELECTED_RUN_ID && -z ${APO_STATE_FILE:-} && ${#APO_STATE[@]} == 0 ]]
 )
@@ -168,28 +249,34 @@ ln -s "$(basename "$RESET_SHADOW_RESET_STATE")" "$RESET_SHADOW_OUTPUT/tron-lates
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24
+    apo_parse_cli resume tron --run-id "$CONTINUATION_RUN" --restart-from cpu-qualification --qualification-hours 2 --final-hours 24
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_state_load "$CONTINUATION_STATE"
+    APO_RESTART_QUALIFICATION_DURATION_S=$APO_QUALIFICATION_DURATION_S
+    APO_RESTART_FINAL_DURATION_S=$APO_FINAL_DURATION_S
+    APO_RESTART_EDGE_DURATION_S=$APO_EDGE_DURATION_S
+    apo_restart_merge_unspecified_saved_durations
     [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
-    [[ $APO_RESTART_PENDING == 1 && $APO_RESTART_FROM == cpu-qualification ]]
-    [[ $APO_RESTART_QUALIFICATION_DURATION_S == 7200 ]]
-    [[ $APO_RESTART_FINAL_DURATION_S == 86400 && $APO_RESTART_EDGE_DURATION_S == 86400 ]]
-    [[ $APO_EDGE_CPU_24H == 0 && $APO_EDGE_ORDER == floor-first ]]
+    [[ $APO_RESTART_FROM == cpu-qualification ]]
+    [[ $APO_RESTART_QUALIFICATION_DURATION_S == 7200 && $APO_RESTART_FINAL_DURATION_S == 86400 ]]
+    [[ $APO_RESTART_EDGE_DURATION_S == 86400 ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --restart-from cpu-qualification --final-hours 24
+    apo_parse_cli resume tron --run-id "$CONTINUATION_RUN" --restart-from cpu-qualification --final-hours 24
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_state_load "$CONTINUATION_STATE"
+    APO_RESTART_QUALIFICATION_DURATION_S=$APO_QUALIFICATION_DURATION_S
+    APO_RESTART_FINAL_DURATION_S=$APO_FINAL_DURATION_S
+    APO_RESTART_EDGE_DURATION_S=$APO_EDGE_DURATION_S
+    apo_restart_merge_unspecified_saved_durations
     [[ $APO_RESTART_QUALIFICATION_DURATION_S == 10800 ]]
     [[ $APO_RESTART_FINAL_DURATION_S == 86400 ]]
     [[ $APO_RESTART_EDGE_DURATION_S == 86400 ]]
 )
 
-# A retained legacy edge run remains resumable when the user supplies no
-# removed edge option; the saved internal plan remains authoritative.
+# A retained legacy edge run does not hijack a new public overclock operation.
 EDGE_CONTINUATION_OUTPUT="$TEMP_DIR/edge-continuation-output"
 mkdir -p "$EDGE_CONTINUATION_OUTPUT"
 EDGE_CONTINUATION_RUN=20260827-010203-1111111111111111
@@ -206,15 +293,16 @@ ln -s "$(basename "$EDGE_CONTINUATION_STATE")" "$EDGE_CONTINUATION_OUTPUT/tron-l
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$EDGE_CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume && $APO_EDGE_CPU_24H == 1 && $APO_EDGE_DURATION_S == 43200 ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && $APO_EDGE_CPU_24H == 0 ]]
+    [[ -z $APO_SELECTED_RUN_ID && -z ${APO_STATE_FILE:-} ]]
 )
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --edge-cpu-24h
     APO_OUTPUT_DIR=$EDGE_CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) 2>"$TEMP_DIR/edge-alias-duration-change.err"; then
     echo 'the literal 24-hour compatibility flag silently continued a 12-hour edge run' >&2
     exit 1
@@ -247,7 +335,7 @@ ln -s "$(basename "$DOMAIN_SOURCE_STATE")" "$DOMAIN_SOURCE_OUTPUT/tron-latest.st
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --gpu-only --gpu-min 1150
     APO_OUTPUT_DIR=$DOMAIN_SOURCE_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
     [[ $APO_COMMAND == run && $APO_SWEEP_DOMAIN == gpu ]]
     [[ $APO_DOMAIN_SOURCE_STATE == "$DOMAIN_SOURCE_STATE" ||
        $APO_DOMAIN_SOURCE_STATE == "$DOMAIN_SOURCE_OUTPUT/tron-latest.state" ]]
@@ -302,7 +390,7 @@ for cleanup_case in comment-only project-zero-removed; do
         source "$ROOT/autopioverclock"
         apo_parse_cli overclock tron --gpu-only --gpu-min 1150
         APO_OUTPUT_DIR=$PREPARE_SOURCE_OUTPUT
-        apo_public_overclock_select_continuation
+        apo_public_overclock_select_source
         [[ $APO_COMMAND == run && $APO_SWEEP_DOMAIN == gpu ]]
         [[ $APO_DOMAIN_SOURCE_STATE == "$PREPARE_SOURCE_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")" ]]
         [[ $APO_SOURCE_APPLIED_RUN_ID == "$DOMAIN_SOURCE_RUN" ]]
@@ -310,9 +398,80 @@ for cleanup_case in comment-only project-zero-removed; do
     )
 done
 
-# Repeating an interrupted one-domain command resumes that exact run even when
-# a later successful prepare audit owns the latest link. The prepare audit must
-# prove the same permanent hash, live tuple, profile, and boot paths.
+# A successful restore audit is bound to its exact validated source run and
+# hash.  A newer applied result with the same clocks but different bytes must
+# not replace that lineage merely because it sorts later in the directory.
+RESTORE_SOURCE_OUTPUT="$TEMP_DIR/domain-source-after-restore"
+mkdir -p "$RESTORE_SOURCE_OUTPUT"
+cp "$DOMAIN_SOURCE_STATE" "$RESTORE_SOURCE_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")"
+RESTORE_DISTRACTOR_RUN=20260903-130000-1122334455667788
+RESTORE_DISTRACTOR_STATE="$RESTORE_SOURCE_OUTPUT/tron-${RESTORE_DISTRACTOR_RUN}.state"
+write_state_fixture "$RESTORE_DISTRACTOR_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$RESTORE_DISTRACTOR_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all \
+    STATUS PASS PHASE COMPLETE FINAL_STAGE COMPLETE VALIDATED 1 VALIDATION_SCHEMA 8 \
+    APPLY_STATUS APPLIED FINAL_CPU 2950 FINAL_GPU 1125 RECOMMENDED_CPU 2950 RECOMMENDED_GPU 1125 \
+    FINAL_TARGET_CPU 2950 FINAL_TARGET_GPU 1125 NORMAL_CPU 2950 NORMAL_GPU 1125 \
+    NORMAL_VOLTAGE 0 TEST_VOLTAGE 0 PERMANENT_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    APPLY_EXPECTED_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    AUTO_BASELINE_CPU 2400 AUTO_BASELINE_GPU 960 AUTO_BASELINE_VOLTAGE 0 \
+    AUTO_BASELINE_PROVENANCE verified-default AUTO_BASELINE_EVIDENCE none \
+    TRYBOOT_EXPECTED 0 TRYBOOT_FILE_MAY_EXIST 0 TRYBOOT_OWNED_HASH '' \
+    TRYBOOT_RESERVATION_HASH '' TRYBOOT_OWNERSHIP_TOKEN '' TRYBOOT_QUARANTINE_PATH ''
+RESTORE_AUDIT_RUN=20260904-120003-aabbccddeeff0011
+RESTORE_AUDIT_STATE="$RESTORE_SOURCE_OUTPUT/tron-${RESTORE_AUDIT_RUN}.state"
+write_state_fixture "$RESTORE_AUDIT_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$RESTORE_AUDIT_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND restore READ_ONLY_RUN 0 \
+    PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+    STATUS PASS PHASE COMPLETE NORMAL_CPU 2950 NORMAL_GPU 1125 NORMAL_VOLTAGE 0 \
+    PERMANENT_HASH bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    RESTORE_SOURCE_RUN_ID "$DOMAIN_SOURCE_RUN" \
+    RESTORE_SOURCE_HASH bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ln -s "$(basename "$RESTORE_AUDIT_STATE")" "$RESTORE_SOURCE_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --gpu-only --gpu-min 1150
+    APO_OUTPUT_DIR=$RESTORE_SOURCE_OUTPUT
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
+    [[ $APO_SOURCE_APPLIED_RUN_ID == "$DOMAIN_SOURCE_RUN" ]]
+    [[ $APO_SOURCE_APPLIED_PERMANENT_HASH == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]]
+)
+
+# A prepare audit whose bytes match neither of two otherwise compatible applied
+# configurations is ambiguous and must not guess which one is active.
+PREPARE_AMBIGUOUS_OUTPUT="$TEMP_DIR/domain-source-after-ambiguous-prepare"
+mkdir -p "$PREPARE_AMBIGUOUS_OUTPUT"
+cp "$DOMAIN_SOURCE_STATE" "$PREPARE_AMBIGUOUS_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")"
+cp "$RESTORE_DISTRACTOR_STATE" "$PREPARE_AMBIGUOUS_OUTPUT/$(basename "$RESTORE_DISTRACTOR_STATE")"
+PREPARE_AMBIGUOUS_RUN=20260904-120004-bbccddeeff001122
+PREPARE_AMBIGUOUS_STATE="$PREPARE_AMBIGUOUS_OUTPUT/tron-${PREPARE_AMBIGUOUS_RUN}.state"
+write_state_fixture "$PREPARE_AMBIGUOUS_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$PREPARE_AMBIGUOUS_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND prepare READ_ONLY_RUN 1 \
+    PROFILE batocera BOOT_CONFIG /boot/config.txt TRYBOOT_CONFIG /boot/tryboot.txt GPU_KEY v3d_freq \
+    STATUS PASS PHASE COMPLETE NORMAL_CPU 2950 NORMAL_GPU 1125 NORMAL_VOLTAGE 0 \
+    PERMANENT_HASH cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ln -s "$(basename "$PREPARE_AMBIGUOUS_STATE")" "$PREPARE_AMBIGUOUS_OUTPUT/tron-latest.state"
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron --gpu-only --gpu-min 1150
+    APO_OUTPUT_DIR=$PREPARE_AMBIGUOUS_OUTPUT
+    apo_public_overclock_select_source
+) >"$TEMP_DIR/domain-prepare-ambiguous.out" 2>&1; then
+    echo 'an ambiguous prepare audit silently selected one of two different applied configs' >&2
+    exit 1
+fi
+grep -Fq 'matches multiple applied configurations with different hashes' "$TEMP_DIR/domain-prepare-ambiguous.out"
+
+# A fresh one-domain command behind a prepare audit selects the independently
+# eligible APPLIED source, never the interrupted one-domain run. Explicit
+# resume remains the only continuation path.
 PREPARE_REPEAT_OUTPUT="$TEMP_DIR/domain-repeat-after-prepare"
 mkdir -p "$PREPARE_REPEAT_OUTPUT"
 cp "$DOMAIN_SOURCE_STATE" "$PREPARE_REPEAT_OUTPUT/$(basename "$DOMAIN_SOURCE_STATE")"
@@ -343,10 +502,11 @@ ln -s "$(basename "$PREPARE_REPEAT_STATE")" "$PREPARE_REPEAT_OUTPUT/tron-latest.
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --gpu-only --gpu-min 1150
     APO_OUTPUT_DIR=$PREPARE_REPEAT_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$DOMAIN_REPEAT_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
+    [[ $APO_SOURCE_APPLIED_RUN_ID == "$DOMAIN_SOURCE_RUN" ]]
     [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_MIN == 1150 ]]
-    [[ $APO_QUALIFICATION_DURATION_S == 7200 && $APO_FINAL_DURATION_S == 86400 ]]
+    [[ $APO_QUALIFICATION_DURATION_S == 7200 && $APO_FINAL_DURATION_S == 172800 ]]
 )
 
 # A hash-mismatched fallback is never inferred across a different boot path.
@@ -367,7 +527,7 @@ if (
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --gpu-only --gpu-min 1150
     APO_OUTPUT_DIR=$PREPARE_MISMATCH_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) >"$TEMP_DIR/domain-prepare-path-mismatch.out" 2>&1; then
     echo 'a latest prepare audit selected an applied source across different boot paths' >&2
     exit 1
@@ -380,15 +540,14 @@ if (
     apo_parse_cli overclock tron --cpu-only
     APO_OUTPUT_DIR=$TEMP_DIR/no-domain-source-output
     mkdir -p "$APO_OUTPUT_DIR"
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
 ) >/dev/null 2>&1; then
     echo 'CPU-only tuning started without a retained applied source' >&2
     exit 1
 fi
 
-# A completed, applied historical 8-hour floor with a safely rejected edge can
-# start one linked fresh 24-hour floor validation. The source clocks and exact
-# stock rollback backup come from retained evidence, never from CLI values.
+# A checkpoint restart is explicit resume syntax. Main later loads and verifies
+# the selected applied state before it creates a linked longer final validation.
 FINAL_EXTENSION_OUTPUT="$TEMP_DIR/final-extension-output"
 mkdir -p "$FINAL_EXTENSION_OUTPUT"
 FINAL_EXTENSION_SOURCE=20260829-223837-7b9716f361ef9804
@@ -413,13 +572,11 @@ ln -sfn "$(basename "$FINAL_EXTENSION_STATE")" "$FINAL_EXTENSION_OUTPUT/monkeebu
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock monkeebutt --restart-from final --final-hours 24
+    apo_parse_cli resume monkeebutt --run-id "$FINAL_EXTENSION_SOURCE" --restart-from final --final-hours 24
     APO_OUTPUT_DIR=$FINAL_EXTENSION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == post-floor-final ]]
-    [[ $APO_POST_FLOOR_FINAL_SOURCE_STATE == "$FINAL_EXTENSION_STATE" ]]
-    [[ $APO_POST_FLOOR_FINAL_DURATION_S == 86400 ]]
-    [[ $(apo_state_get FINAL_CPU) == 3100 && $(apo_state_get FINAL_GPU) == 1175 ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$FINAL_EXTENSION_SOURCE" ]]
+    [[ $APO_RESTART_FROM == final && $APO_FINAL_DURATION_S == 86400 ]]
 )
 
 # A direct resume of the exact linked-run failure reported by hardware performs
@@ -474,8 +631,8 @@ ln -sfn "$(basename "$FINAL_EXTENSION_STATE")" "$FINAL_EXTENSION_OUTPUT/monkeebu
     [[ $(apo_state_get POST_FLOOR_FINAL_STAGE) == COMPLETE ]]
 )
 
-# Repeating the public command adopts an exact recovered schema-7
-# final-stress boundary, not an arbitrary failed run.
+# Recovered failures remain retained history but never turn a fresh public
+# overclock into an implicit resume.
 FAILED_FINAL_RUN=20260827-010203-fedcba9876543210
 FAILED_FINAL_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_FINAL_RUN}.state"
 write_state_fixture "$FAILED_FINAL_STATE" \
@@ -492,13 +649,11 @@ ln -sfn "$(basename "$FAILED_FINAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.st
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$FAILED_FINAL_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
 )
 
-# A current saved sweep checkpoint matching Tron's recovered unstructured
-# boot/health handoff is selected by the simple command and retried in place.
+# A retryable saved boot/health handoff likewise requires explicit resume.
 FAILED_BOOT_HANDOFF_RUN=20260831-200735-4444444444444444
 FAILED_BOOT_HANDOFF_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_BOOT_HANDOFF_RUN}.state"
 write_state_fixture "$FAILED_BOOT_HANDOFF_STATE" \
@@ -518,13 +673,11 @@ ln -sfn "$(basename "$FAILED_BOOT_HANDOFF_STATE")" "$CONTINUATION_OUTPUT/tron-la
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$FAILED_BOOT_HANDOFF_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
 )
 
-# The exact clean early-exit state produced by the 24-hour supervisor race is
-# safe to adopt after its already-recorded complete normal recovery.
+# A recovered clean early-exit state remains available to explicit resume only.
 FAILED_CLEAN_EARLY_RUN=20260901-125438-5555555555555555
 FAILED_CLEAN_EARLY_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_CLEAN_EARLY_RUN}.state"
 write_state_fixture "$FAILED_CLEAN_EARLY_STATE" \
@@ -545,14 +698,11 @@ ln -sfn "$(basename "$FAILED_CLEAN_EARLY_STATE")" "$CONTINUATION_OUTPUT/tron-lat
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$FAILED_CLEAN_EARLY_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
 )
 
-# The exact alpha.38 failure occurred after a successful candidate workload and
-# normal recovery when one controller-side permanent-hash read returned no
-# evidence. The simple command must select that checkpoint for re-proof/retry.
+# A transient permanent-hash read failure also cannot hijack a new operation.
 FAILED_HASH_READ_RUN=20260901-182253-6666666666666666
 FAILED_HASH_READ_STATE="$CONTINUATION_OUTPUT/monkeebutt-${FAILED_HASH_READ_RUN}.state"
 write_state_fixture "$FAILED_HASH_READ_STATE" \
@@ -573,9 +723,8 @@ ln -sfn "$(basename "$FAILED_HASH_READ_STATE")" "$CONTINUATION_OUTPUT/monkeebutt
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock monkeebutt
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$FAILED_HASH_READ_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
 )
 
 apo_failed_harness_run=20260827-010203-1111111111111111
@@ -594,13 +743,13 @@ ln -sfn "$(basename "$apo_failed_harness_state")" "$CONTINUATION_OUTPUT/tron-lat
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
+    apo_public_overclock_select_source
     [[ $APO_COMMAND == run ]]
     [[ -z $APO_SELECTED_RUN_ID ]]
 )
 
-# A current-schema automatic run whose combined endurance rebooted and then
-# proved complete normal recovery is adopted for conservative paired backoff.
+# Current and legacy endurance failures are history inputs for a new run, not
+# implicit continuation targets.
 FAILED_ENDURANCE_RUN=20260828-205612-2222222222222222
 FAILED_ENDURANCE_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_ENDURANCE_RUN}.state"
 write_state_fixture "$FAILED_ENDURANCE_STATE" \
@@ -617,13 +766,11 @@ ln -sfn "$(basename "$FAILED_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tron-lates
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$FAILED_ENDURANCE_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
 )
 
-# A recovered schema-7 combined failure is also selected: the current schema migrates it
-# through the conservative paired backoff and fresh domain qualifications.
+# A legacy combined failure also requires an explicit resume to migrate it.
 FAILED_LEGACY_ENDURANCE_RUN=20260828-205613-3333333333333333
 FAILED_LEGACY_ENDURANCE_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_LEGACY_ENDURANCE_RUN}.state"
 write_state_fixture "$FAILED_LEGACY_ENDURANCE_STATE" \
@@ -640,7 +787,6 @@ ln -sfn "$(basename "$FAILED_LEGACY_ENDURANCE_STATE")" "$CONTINUATION_OUTPUT/tro
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_overclock_select_continuation
-    [[ $APO_COMMAND == resume ]]
-    [[ $APO_SELECTED_RUN_ID == "$FAILED_LEGACY_ENDURANCE_RUN" ]]
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
 )
