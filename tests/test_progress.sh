@@ -8,6 +8,10 @@ source "$ROOT/lib/config.sh"
 source "$ROOT/lib/state.sh"
 source "$ROOT/lib/progress.sh"
 
+# Width fixtures must not inherit the invoking developer's real Byobu/tmux
+# session. Individual tmux cases install their own deterministic stub below.
+unset TMUX TMUX_PANE
+
 APO_STATE=()
 APO_CFG=(
     [CANDIDATE_DURATION_S]=600
@@ -200,7 +204,7 @@ TMUX_PANE=%7
 COLUMNS=300
 APO_TEST_TMUX_CLIENT_WIDTHS=$'320\n90'
 [[ $(apo_progress_tmux_min_client_columns) == 90 ]]
-[[ $(apo_progress_terminal_columns) == 90 ]]
+[[ $(apo_progress_terminal_columns 2>/dev/null) == 90 ]]
 APO_PROGRESS_LINE_ACTIVE=0
 apo_progress_render 150 600 2> "$progress_file"
 tmux_client_line=$(< "$progress_file")
@@ -214,7 +218,7 @@ tmux_client_payload=${tmux_client_payload%"$progress_restore"}
 unset TMUX TMUX_PANE APO_TEST_TMUX_CLIENT_WIDTHS
 unset -f tmux
 COLUMNS=123
-[[ $(apo_progress_terminal_columns) == 123 ]]
+[[ $(apo_progress_terminal_columns 2>/dev/null) == 123 ]]
 
 # A pane width large enough to select the old verbose layout, but small enough
 # to make that content brush the right edge, now chooses the medium layout.
