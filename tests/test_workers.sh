@@ -1544,7 +1544,7 @@ WAYLAND_MISSING_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, "
 
 for WORKER_NAME in debian batocera; do
     WORKER_FILE="$ROOT/workers/${WORKER_NAME}-worker.sh"
-    WORKER="$WORKER_FILE" bash -lc '
+    WORKER="$WORKER_FILE" bash -c '
         set -Eeuo pipefail
         export APO_WORKER_LIBRARY_ONLY=1
         source "$WORKER"
