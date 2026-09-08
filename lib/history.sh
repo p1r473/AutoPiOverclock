@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Retained-run failure evidence for bounded automatic tuning.
 #
-# State files are the only authority.  The failures ledger is rebuilt output
+# State files are the only authority.  The failures ledger is derived output
 # for a person to inspect; it is never read to make a tuning decision.
 
 declare -ag APO_HISTORY_RECORDS=()
@@ -876,21 +876,41 @@ apo_history_scan_retained_states() {
     apo_history_finalize_frontiers
 }
 
-apo_history_rebuild_ledger() {
-    local destination destination_dir temporary_file generated_at record timestamp run_id cpu gpu class domain
-    local encoded_source encoded_reason basename source reason
-    destination=${1:-"${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-failures.txt"}
-    destination_dir=$(dirname -- "$destination")
-    mkdir -p -- "$destination_dir" || return 1
-    temporary_file=$(mktemp "${destination_dir}/.${APO_TARGET_SLUG}-failures.XXXXXX") || return 1
-    chmod 600 "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
-    generated_at=$(apo_now_iso)
+apo_history_generated_timestamp_is_valid() {
+    local timestamp=${1-}
+    [[ $timestamp =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4}$ ]]
+}
 
-    if ! {
+apo_history_existing_ledger_timestamp() {
+    local source_file=$1 file_fd first_line second_line timestamp
+
+    [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
+    exec {file_fd}< "$source_file" || return 1
+    if ! IFS= read -r first_line <&"$file_fd"; then
+        exec {file_fd}<&-
+        return 1
+    fi
+    if ! IFS= read -r second_line <&"$file_fd"; then
+        exec {file_fd}<&-
+        return 1
+    fi
+    exec {file_fd}<&-
+    [[ $first_line == 'AutoPiOverclock retained failure ledger' ]] || return 1
+    [[ $second_line == 'Generated: '* ]] || return 1
+    timestamp=${second_line#Generated: }
+    apo_history_generated_timestamp_is_valid "$timestamp" || return 1
+    printf '%s' "$timestamp"
+}
+
+apo_history_render_ledger() {
+    local destination=$1 generated_at=$2 record timestamp run_id cpu gpu class domain
+    local encoded_source encoded_reason basename source reason
+
+    {
         printf 'AutoPiOverclock retained failure ledger\n'
         printf 'Generated: %s\n' "$generated_at"
         printf 'Target: %s\n' "$APO_REMOTE_TARGET"
-        printf 'Authority: validated .state files only; this ledger is rebuilt and never read as input.\n'
+        printf 'Authority: validated .state files only; this ledger is derived output and never read as input.\n'
         printf 'Accepted retained auto-overclock states: %s\n' "$APO_HISTORY_ACCEPTED_STATES"
         printf 'Clear CPU failed boundary: %s\n' "${APO_HISTORY_CPU_FAILURE_BOUNDARY:-none}"
         printf 'Clear GPU failed boundary: %s\n' "${APO_HISTORY_GPU_FAILURE_BOUNDARY:-none}"
@@ -902,20 +922,68 @@ apo_history_rebuild_ledger() {
             printf '  timestamp | run | cpu_mhz | gpu_mhz | class | domain | reason | source | state\n'
             for record in "${APO_HISTORY_LEDGER_RECORDS[@]}"; do
                 IFS='|' read -r timestamp run_id cpu gpu class domain encoded_source encoded_reason basename <<< "$record"
-                source=$(apo_history_decode_field "$encoded_source") || { rm -f -- "$temporary_file"; return 1; }
-                reason=$(apo_history_decode_field "$encoded_reason") || { rm -f -- "$temporary_file"; return 1; }
+                source=$(apo_history_decode_field "$encoded_source") || return 1
+                reason=$(apo_history_decode_field "$encoded_reason") || return 1
                 reason=${reason//$'\r'/ }
                 reason=${reason//$'\n'/ }
                 printf '  %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
                     "$timestamp" "$run_id" "$cpu" "$gpu" "$class" "$domain" "$reason" "$source" "$basename"
             done
         fi
-    } > "$temporary_file"; then
+    } > "$destination"
+}
+
+apo_history_rebuild_ledger() {
+    local destination destination_dir temporary_file generated_at existing_generated_at candidate_generated_at compare_rc
+    destination=${1:-"${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-failures.txt"}
+    destination_dir=$(dirname -- "$destination")
+    if [[ -e $destination_dir || -L $destination_dir ]]; then
+        [[ -d $destination_dir && ! -L $destination_dir ]] || return 1
+    else
+        mkdir -p -- "$destination_dir" || return 1
+        [[ -d $destination_dir && ! -L $destination_dir ]] || return 1
+    fi
+    if [[ -e $destination || -L $destination ]]; then
+        [[ -f $destination && ! -L $destination && -r $destination ]] || return 1
+    fi
+    temporary_file=$(mktemp "${destination_dir}/.${APO_TARGET_SLUG}-failures.XXXXXX") || return 1
+    chmod 600 "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
+    if ! generated_at=$(apo_now_iso) || ! apo_history_generated_timestamp_is_valid "$generated_at"; then
         rm -f -- "$temporary_file"
         return 1
     fi
+    candidate_generated_at=$generated_at
+    if [[ -f $destination && ! -L $destination ]] &&
+       existing_generated_at=$(apo_history_existing_ledger_timestamp "$destination"); then
+        candidate_generated_at=$existing_generated_at
+    fi
+    if ! apo_history_render_ledger "$temporary_file" "$candidate_generated_at"; then
+        rm -f -- "$temporary_file"
+        return 1
+    fi
+    if [[ -f $destination && ! -L $destination ]]; then
+        if cmp -s -- "$destination" "$temporary_file"; then
+            rm -f -- "$temporary_file"
+            APO_HISTORY_LEDGER_FILE=$destination
+            return 0
+        else
+            compare_rc=$?
+            if (( compare_rc != 1 )); then
+                rm -f -- "$temporary_file"
+                return 1
+            fi
+        fi
+        if ! apo_history_render_ledger "$temporary_file" "$generated_at"; then
+            rm -f -- "$temporary_file"
+            return 1
+        fi
+    fi
     sync "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
-    mv -f -- "$temporary_file" "$destination" || { rm -f -- "$temporary_file"; return 1; }
+    [[ -d $destination_dir && ! -L $destination_dir ]] || { rm -f -- "$temporary_file"; return 1; }
+    if [[ -e $destination || -L $destination ]]; then
+        [[ -f $destination && ! -L $destination && -r $destination ]] || { rm -f -- "$temporary_file"; return 1; }
+    fi
+    mv -fT -- "$temporary_file" "$destination" || { rm -f -- "$temporary_file"; return 1; }
     sync "$destination" || return 1
     sync "$destination_dir" || return 1
     APO_HISTORY_LEDGER_FILE=$destination
@@ -999,9 +1067,9 @@ apo_history_announce_resolved_plan() {
     gpu_boundary=${APO_HISTORY_GPU_FAILURE_BOUNDARY:-none}
     pair_frontier=${APO_HISTORY_PAIR_FRONTIERS:-none}
     if (( use_history == 1 )); then
-        line="Retained-history plan: requested CPU max=${requested_cpu_display}, effective CPU max=${cpu_cap_display}; requested GPU max=${requested_gpu_display}, effective GPU max=${gpu_cap_display}; clear failed boundaries CPU=${cpu_boundary}, GPU=${gpu_boundary}; ambiguous pair frontier=${pair_frontier}; accepted states=${APO_HISTORY_ACCEPTED_STATES}; ledger=${APO_HISTORY_LEDGER_FILE:-unavailable}"
+        line="History ceilings: CPU=${cpu_cap_display} (requested ${requested_cpu_display}); GPU=${gpu_cap_display} (requested ${requested_gpu_display}). Retained failures: clear CPU=${cpu_boundary}, clear GPU=${gpu_boundary}, ambiguous pairs=${pair_frontier}; accepted states=${APO_HISTORY_ACCEPTED_STATES}; ledger=${APO_HISTORY_LEDGER_FILE:-unavailable}"
     else
-        line="Retained history disabled for this new run: requested CPU max=${requested_cpu_display}, effective CPU max=${cpu_cap_display}; requested GPU max=${requested_gpu_display}, effective GPU max=${gpu_cap_display}."
+        line="History disabled for this new run. Ceilings: CPU=${cpu_cap_display} (requested ${requested_cpu_display}); GPU=${gpu_cap_display} (requested ${requested_gpu_display})."
     fi
     if declare -F apo_info >/dev/null 2>&1; then
         apo_info "$line"

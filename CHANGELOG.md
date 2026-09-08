@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.51 — 2026-09-07
+
+- Kept authoritative retained-history discovery fresh without churning its human audit. Every new history-enabled overclock still rescans all compatible `.state` evidence and clearly prints the effective CPU and GPU ceilings, but `target-failures.txt` is now created when missing and atomically replaced only when its materially derived content changes. An unchanged ledger retains its exact bytes, inode, generation time, and filesystem timestamp.
+- Hardened ledger output against symlink, directory, FIFO, unreadable-file, comparison-error, and symlinked-parent ambiguity. Retained `.state` files remain the only scheduling authority; the ledger is never trusted as input, and `--no-history` still leaves it untouched.
+
 ## 0.1.0-alpha.50 — 2026-09-07
 
 - Added default-on retained-failure planning for fresh public overclocks. Strict compatible current-schema states contribute exclusive clear CPU/GPU boundaries and nondominated ambiguous failed-pair frontiers; changed pairs are requalified and every backoff restarts the full requested final duration.

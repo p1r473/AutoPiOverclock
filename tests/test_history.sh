@@ -102,11 +102,30 @@ apo_history_refresh
 [[ $APO_HISTORY_PROVENANCE == *'PAIR|2975/1200|run-c|FINAL_BACKOFF_TRIAL_CPU|'* ]]
 [[ $APO_HISTORY_PROVENANCE != *'999'* ]]
 [[ -f $APO_HISTORY_LEDGER_FILE && ! -L $APO_HISTORY_LEDGER_FILE ]]
-grep -Fq 'Authority: validated .state files only; this ledger is rebuilt and never read as input.' "$APO_HISTORY_LEDGER_FILE"
+grep -Fq 'Authority: validated .state files only; this ledger is derived output and never read as input.' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq 'Clear CPU failed boundary: 2900' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq 'Ambiguous failed-pair frontier: 2850/1150' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq '2026-09-07T03:00:00-0400 | run-d | 2900 | 1150 | STABILITY_FAILURE | CPU | Recovered exact CPU failure.' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq '2026-09-07T03:05:00-0400 | run-d | 2850 | 1150 | STABILITY_FAILURE | PAIR | Recovered ambiguous pair failure.' "$APO_HISTORY_LEDGER_FILE"
+
+# A fresh plan still rescans authoritative states, but unchanged derived
+# evidence must not replace or retimestamp the human-readable ledger.
+scanned_states_before=$APO_HISTORY_SCANNED_STATES
+write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-later-reset.state" \
+    FORMAT_VERSION 1 RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA" RUN_ID later-reset \
+    REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" ORIGIN_COMMAND reset
+sed -i '2cGenerated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"
+touch -t 200001010000.00 "$APO_HISTORY_LEDGER_FILE"
+ledger_hash_before=$(sha256sum "$APO_HISTORY_LEDGER_FILE" | awk '{print $1}')
+ledger_inode_before=$(stat -c '%i' "$APO_HISTORY_LEDGER_FILE")
+ledger_mtime_before=$(stat -c '%y' "$APO_HISTORY_LEDGER_FILE")
+# shellcheck disable=SC2218
+apo_history_refresh
+[[ $APO_HISTORY_SCANNED_STATES == $((scanned_states_before + 1)) ]]
+[[ $(sha256sum "$APO_HISTORY_LEDGER_FILE" | awk '{print $1}') == "$ledger_hash_before" ]]
+[[ $(stat -c '%i' "$APO_HISTORY_LEDGER_FILE") == "$ledger_inode_before" ]]
+[[ $(stat -c '%y' "$APO_HISTORY_LEDGER_FILE") == "$ledger_mtime_before" ]]
+grep -Fxq 'Generated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"
 
 # The human file cannot authorize anything and is replaced from state.
 printf 'CPU failed at 1 MHz\n' > "$APO_HISTORY_LEDGER_FILE"
@@ -117,6 +136,69 @@ if grep -Fq '1 MHz' "$APO_HISTORY_LEDGER_FILE"; then
     printf 'ledger text was incorrectly trusted as history input\n' >&2
     exit 1
 fi
+
+# New authoritative failure evidence refreshes an existing ledger, while a
+# missing ledger is recreated from the complete retained-state scan.
+touch -t 200001010000.00 "$APO_HISTORY_LEDGER_FILE"
+ledger_inode_before=$(stat -c '%i' "$APO_HISTORY_LEDGER_FILE")
+ledger_mtime_before=$(stat -c '%y' "$APO_HISTORY_LEDGER_FILE")
+write_auto_state run-e STATUS FAILED PHASE CPU_SWEEP FAILURE_CLASS STABILITY_FAILURE CPU_FAILURE_BOUNDARY 2875
+# shellcheck disable=SC2218
+apo_history_refresh
+[[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2875 ]]
+[[ $(stat -c '%i' "$APO_HISTORY_LEDGER_FILE") != "$ledger_inode_before" ]]
+[[ $(stat -c '%y' "$APO_HISTORY_LEDGER_FILE") != "$ledger_mtime_before" ]]
+if grep -Fxq 'Generated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"; then
+    printf 'changed history retained the previous ledger generation timestamp\n' >&2
+    exit 1
+fi
+grep -Fq 'Clear CPU failed boundary: 2875' "$APO_HISTORY_LEDGER_FILE"
+grep -Fq 'run-e' "$APO_HISTORY_LEDGER_FILE"
+rm -f -- "$APO_HISTORY_LEDGER_FILE"
+# shellcheck disable=SC2218
+apo_history_refresh
+[[ -f $APO_HISTORY_LEDGER_FILE && ! -L $APO_HISTORY_LEDGER_FILE ]]
+grep -Fq 'Clear CPU failed boundary: 2875' "$APO_HISTORY_LEDGER_FILE"
+
+# A generated audit path is never allowed to traverse or replace a symlink,
+# directory, FIFO, or symlinked destination directory. Comparison errors also
+# preserve the existing regular ledger instead of guessing that it changed.
+ledger_safety_dir=$TMP/ledger-safety
+mkdir -p -- "$ledger_safety_dir/real-parent"
+printf 'keep-target\n' > "$ledger_safety_dir/target.txt"
+ln -s target.txt "$ledger_safety_dir/file-link.txt"
+ln -s missing.txt "$ledger_safety_dir/broken-link.txt"
+mkdir "$ledger_safety_dir/directory.txt"
+ln -s directory.txt "$ledger_safety_dir/directory-link.txt"
+ln -s real-parent "$ledger_safety_dir/linked-parent"
+mkfifo "$ledger_safety_dir/fifo.txt"
+for refused_ledger in file-link.txt broken-link.txt directory.txt directory-link.txt fifo.txt; do
+    if apo_history_rebuild_ledger "$ledger_safety_dir/$refused_ledger"; then
+        printf 'unsafe ledger destination was accepted: %s\n' "$refused_ledger" >&2
+        exit 1
+    fi
+done
+if apo_history_rebuild_ledger "$ledger_safety_dir/linked-parent/failures.txt"; then
+    printf 'symlinked ledger destination directory was accepted\n' >&2
+    exit 1
+fi
+[[ -L $ledger_safety_dir/file-link.txt && $(<"$ledger_safety_dir/target.txt") == keep-target ]]
+[[ -L $ledger_safety_dir/broken-link.txt && ! -e $ledger_safety_dir/broken-link.txt ]]
+[[ -d $ledger_safety_dir/directory.txt && -L $ledger_safety_dir/directory-link.txt ]]
+[[ -p $ledger_safety_dir/fifo.txt && ! -e $ledger_safety_dir/real-parent/failures.txt ]]
+
+comparison_ledger=$ledger_safety_dir/comparison.txt
+apo_history_rebuild_ledger "$comparison_ledger"
+comparison_hash_before=$(sha256sum "$comparison_ledger" | awk '{print $1}')
+comparison_inode_before=$(stat -c '%i' "$comparison_ledger")
+cmp() { return 2; }
+if apo_history_rebuild_ledger "$comparison_ledger"; then
+    printf 'ledger comparison error was accepted as changed evidence\n' >&2
+    exit 1
+fi
+unset -f cmp
+[[ $(sha256sum "$comparison_ledger" | awk '{print $1}') == "$comparison_hash_before" ]]
+[[ $(stat -c '%i' "$comparison_ledger") == "$comparison_inode_before" ]]
 
 # A validator-rejected exact current-schema state fails the entire scan.
 APO_OUTPUT_DIR=$TMP/rejected
@@ -299,7 +381,7 @@ apo_history_resolve_new_overclock_plan
 [[ $(apo_state_get HISTORY_PAIR_TRIAL_CPU '') == 3075 ]]
 [[ $(apo_state_get HISTORY_PAIR_TRIAL_GPU '') == 1175 ]]
 [[ ${#history_announcements[@]} == 1 ]]
-[[ ${history_announcements[0]} == *'Retained-history plan: requested CPU max=3200 MHz, effective CPU max=3200 MHz; requested GPU max=1200 MHz, effective GPU max=1200 MHz'* ]]
+[[ ${history_announcements[0]} == *'History ceilings: CPU=3200 MHz (requested 3200 MHz); GPU=1200 MHz (requested 1200 MHz).'* ]]
 # Discovery may be repeated after dependency/watchdog reconciliation.  The
 # effective cap must not become the next call's requested cap.
 apo_history_resolve_new_overclock_plan
@@ -325,7 +407,7 @@ apo_history_resolve_new_overclock_plan
 [[ $APO_CPU_MAX == 3150 && $APO_GPU_MAX == 1175 ]]
 [[ $(apo_state_get HISTORY_ISOLATION_STAGE '') == NONE ]]
 [[ ${#history_announcements[@]} == 1 ]]
-[[ ${history_announcements[0]} == 'Retained history disabled for this new run: requested CPU max=3150 MHz, effective CPU max=3150 MHz; requested GPU max=1175 MHz, effective GPU max=1175 MHz.' ]]
+[[ ${history_announcements[0]} == 'History disabled for this new run. Ceilings: CPU=3150 MHz (requested 3150 MHz); GPU=1175 MHz (requested 1175 MHz).' ]]
 apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 2 ]]
 [[ $APO_CPU_MAX_REQUESTED == 3150 && $APO_GPU_MAX_REQUESTED == 1175 ]]
@@ -358,8 +440,8 @@ apo_history_resolve_new_overclock_plan
 [[ -z $APO_CPU_MAX_REQUESTED && -z $APO_GPU_MAX_REQUESTED ]]
 [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1200 ]]
 [[ ${#history_announcements[@]} == 1 ]]
-[[ ${history_announcements[0]} == *'Retained-history plan: requested CPU max=3200 MHz, effective CPU max=3075 MHz; requested GPU max=1200 MHz, effective GPU max=1200 MHz'* ]]
-[[ ${history_announcements[0]} == *'clear failed boundaries CPU=3100, GPU=none'* ]]
+[[ ${history_announcements[0]} == *'History ceilings: CPU=3075 MHz (requested 3200 MHz); GPU=1200 MHz (requested 1200 MHz).'* ]]
+[[ ${history_announcements[0]} == *'Retained failures: clear CPU=3100, clear GPU=none'* ]]
 apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 4 ]]
 [[ -z $APO_CPU_MAX_REQUESTED && -z $APO_GPU_MAX_REQUESTED ]]
@@ -391,7 +473,30 @@ APO_CPU_MAX=''
 APO_GPU_MAX=1175
 apo_history_resolve_new_overclock_plan
 [[ ${#history_announcements[@]} == 1 ]]
-[[ ${history_announcements[0]} == *'requested CPU max=not swept, effective CPU max=not swept; requested GPU max=1175 MHz, effective GPU max=1175 MHz'* ]]
+[[ ${history_announcements[0]} == *'Ceilings: CPU=not swept (requested not swept); GPU=1175 MHz (requested 1175 MHz)'* ]]
 [[ ${history_announcements[0]} != *'not-swept MHz'* ]]
+
+# Timestamp generation is explicitly checked even though the production call
+# chain suppresses errexit while reporting a failed history plan. A clock-tool
+# failure must preserve an existing ledger and leave an absent path absent.
+timestamp_failure_existing=$ledger_safety_dir/timestamp-existing.txt
+timestamp_failure_missing=$ledger_safety_dir/timestamp-missing.txt
+cp -- "$comparison_ledger" "$timestamp_failure_existing"
+timestamp_failure_hash=$(sha256sum "$timestamp_failure_existing" | awk '{print $1}')
+apo_now_iso() { return 1; }
+if apo_history_rebuild_ledger "$timestamp_failure_existing"; then
+    printf 'failed timestamp generation was accepted for an existing ledger\n' >&2
+    exit 1
+fi
+[[ $(sha256sum "$timestamp_failure_existing" | awk '{print $1}') == "$timestamp_failure_hash" ]]
+if apo_history_rebuild_ledger "$timestamp_failure_missing"; then
+    printf 'failed timestamp generation was accepted for a missing ledger\n' >&2
+    exit 1
+fi
+[[ ! -e $timestamp_failure_missing && ! -L $timestamp_failure_missing ]]
+if find "$ledger_safety_dir" -maxdepth 1 -type f -name ".${APO_TARGET_SLUG}-failures.*" | grep -q .; then
+    printf 'failed timestamp generation left a temporary ledger behind\n' >&2
+    exit 1
+fi
 
 printf 'history tests passed\n'
