@@ -180,13 +180,20 @@ source "$ROOT/lib/report.sh"
 APO_VERSION=fixture
 APO_REDACT=0
 apo_state_set CFG_MAX_FAN 0
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set CFG_CPU_SEARCH_DIRECTION descending
+apo_state_set CFG_CPU_RESOLUTION_MHZ 10
+apo_state_set CFG_GPU_SEARCH_DIRECTION forward
+apo_state_set CFG_GPU_RESOLUTION_MHZ 5
 status_output=$(apo_print_status)
 grep -Fq 'Max fan tuning: disabled' <<< "$status_output"
 grep -Fq 'Gate retries:   0/5 context=none' <<< "$status_output"
+grep -Fq 'Search policy:   CPU descending at 10 MHz resolution / GPU forward at 5 MHz resolution' <<< "$status_output"
 APO_RUN_PREFIX="$TEMP_DIR/fixture-report"
 report_output=$(apo_generate_report)
 grep -Fq 'Maximum fan cooling during tuning: disabled' "$TEMP_DIR/fixture-report-report.txt"
 grep -Fq 'Automatic gate retries: 0/5, context=none' "$TEMP_DIR/fixture-report-report.txt"
+grep -Fq 'Automatic search: CPU descending at 10 MHz resolution, GPU forward at 5 MHz resolution' "$TEMP_DIR/fixture-report-report.txt"
 grep -Fq 'Report file:' <<< "$report_output"
 
 # Every state scalar rendered by status/summary/report passes through one terminal-safe
@@ -198,6 +205,7 @@ SCALAR_INJECTION=$'printable-value\nFORGED-SCALAR\r\e[31mRED\e[0m\tTAB\001CTRL\1
 for rendered_key in \
     RUN_ID ORIGIN_COMMAND REMOTE_TARGET PROFILE MODE_EFFECTIVE STATUS PHASE SUBPHASE \
     NORMAL_CPU NORMAL_GPU AUTO_BASELINE_CPU AUTO_BASELINE_GPU PASSED_CPUS PASSED_GPUS \
+    CFG_CPU_SEARCH_DIRECTION CFG_CPU_RESOLUTION_MHZ CFG_GPU_SEARCH_DIRECTION CFG_GPU_RESOLUTION_MHZ \
     CPU_FAILURE_BOUNDARY GPU_FAILURE_BOUNDARY CPU_QUALIFICATION_STATUS CPU_QUALIFICATION_TARGET \
     CPU_QUALIFIED_CLOCK GPU_QUALIFICATION_STATUS GPU_QUALIFICATION_CPU GPU_QUALIFICATION_TARGET \
     GPU_QUALIFIED_CPU GPU_QUALIFIED_CLOCK CFG_QUALIFICATION_DURATION_S SAFE_CPU SAFE_GPU \

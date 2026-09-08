@@ -939,7 +939,7 @@ APO_STATE=()
 ACTIONS=()
 seed_valid_guarded_auto_floor_plan
 APO_EDGE_CPU_24H=0
-APO_EDGE_ORDER=floor-first
+APO_EDGE_ORDER='floor-first'
 APO_EDGE_DURATION_S=43200
 APO_FINAL_DURATION_S=86400
 APO_CFG[FINAL_DURATION_S]=86400
@@ -1362,7 +1362,7 @@ apo_final_validation
 APO_STATE=()
 ACTIONS=()
 seed_valid_guarded_auto_floor_plan
-APO_EDGE_ORDER=edge-first
+APO_EDGE_ORDER='edge-first'
 APO_EDGE_CPU_24H=1
 APO_CFG[FINAL_DURATION_S]=$APO_DEFAULT_FINAL_DURATION_S
 APO_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
@@ -1394,7 +1394,7 @@ apo_final_validation
 APO_STATE=()
 ACTIONS=()
 seed_valid_guarded_auto_floor_plan
-APO_EDGE_ORDER=edge-first
+APO_EDGE_ORDER='edge-first'
 APO_EDGE_CPU_24H=1
 apo_state_set RECOMMENDED_CPU 3000
 apo_state_set RECOMMENDED_GPU 900
@@ -1443,7 +1443,7 @@ apo_final_validation
 # sequence and fresh clock identities.
 APO_STATE=()
 seed_valid_guarded_auto_floor_plan
-APO_EDGE_ORDER=edge-first
+APO_EDGE_ORDER='edge-first'
 APO_EDGE_CPU_24H=1
 apo_state_set RECOMMENDED_CPU 3000
 apo_state_set RECOMMENDED_GPU 900
@@ -1477,7 +1477,7 @@ apo_final_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'floor fixture als
 # command request; they never encode host-specific clocks in controller code.
 APO_STATE=()
 seed_valid_guarded_auto_floor_plan
-APO_EDGE_ORDER=floor-first
+APO_EDGE_ORDER='floor-first'
 apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
 apo_state_set ORIGIN_COMMAND overclock
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
@@ -1693,12 +1693,265 @@ apo_sweep_cpu
 eval "$APO_VALIDATE_AUTO_RESUME_STATE_SAVED"
 unset APO_VALIDATE_AUTO_RESUME_STATE_SAVED
 
+# Adaptive descending-search checkpoints must remain acceptable to the strict
+# resume validator after every atomic save.  Keep both domains cap-first here so
+# this also proves that the persisted resolutions and directions reconstruct the
+# exact one-candidate coarse plans instead of a legacy aligned ladder.
+seed_adaptive_reverse_resume_plan() {
+    APO_STATE=()
+    APO_SELECTION_POLICY=adaptive-refined-v1
+    APO_SWEEP_DOMAIN=all
+    APO_AUTO_GENERATED_CANDIDATES=1
+    APO_EDGE_CPU_24H=0
+    APO_EDGE_ORDER='floor-first'
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=960
+    APO_NORMAL_VOLTAGE=0
+    APO_TEST_VOLTAGE=0
+    APO_AUTO_BASELINE_CPU=2400
+    APO_AUTO_BASELINE_GPU=960
+    APO_AUTO_BASELINE_VOLTAGE=0
+    APO_AUTO_BASELINE_PROVENANCE='verified-default'
+    APO_AUTO_BASELINE_EVIDENCE=none
+    APO_CPU_MIN=''
+    APO_GPU_MIN=''
+    APO_CPU_MAX=3175
+    APO_GPU_MAX=1187
+    APO_CPU_MAX_REQUESTED=3175
+    APO_GPU_MAX_REQUESTED=1187
+    APO_CPU_RESOLUTION_MHZ=25
+    APO_GPU_RESOLUTION_MHZ=10
+    APO_CPU_SEARCH_DIRECTION=descending
+    APO_GPU_SEARCH_DIRECTION=descending
+    APO_USE_HISTORY=1
+    APO_CPU_CANDIDATES=(3175)
+    APO_GPU_CANDIDATES=(1187)
+    APO_CFG[CPU_CANDIDATES]=3175
+    APO_CFG[GPU_CANDIDATES]=1187
+    APO_CFG[BACKOFF_STEPS]=0
+    APO_CFG[VOLTAGE_DELTA_UV]=existing
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+    apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
+    apo_state_set CFG_SWEEP_DOMAIN all
+    apo_state_set CFG_CPU_MIN ''
+    apo_state_set CFG_GPU_MIN ''
+    apo_state_set CFG_CPU_MAX 3175
+    apo_state_set CFG_GPU_MAX 1187
+    apo_state_set CFG_CPU_MAX_REQUESTED 3175
+    apo_state_set CFG_GPU_MAX_REQUESTED 1187
+    apo_state_set CFG_CPU_RESOLUTION_MHZ 25
+    apo_state_set CFG_GPU_RESOLUTION_MHZ 10
+    apo_state_set CFG_CPU_SEARCH_DIRECTION descending
+    apo_state_set CFG_GPU_SEARCH_DIRECTION descending
+    apo_state_set CFG_USE_HISTORY 1
+    apo_state_set APPLY_STATUS NOT_APPLIED
+    apo_state_set POST_FLOOR_EDGE 0
+    apo_state_set POST_FLOOR_FINAL 0
+    apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+    apo_state_set FLOOR_VALIDATED 0
+    apo_state_set PHASE CPU_SWEEP
+    apo_state_set SUBPHASE READY
+    apo_state_set STATUS RUNNING
+    apo_state_set VALIDATED 0
+    apo_state_set CPU_INDEX 0
+    apo_state_set PASSED_CPUS ''
+    apo_state_set CPU_FAILURE_BOUNDARY ''
+    apo_state_set CPU_REVERSE_FAILURES ''
+    apo_state_set CPU_REVERSE_PASS ''
+    apo_state_set CPU_REFINE_CANDIDATES ''
+    apo_state_set CPU_REFINE_INDEX 0
+    apo_state_set CPU_REFINE_COMPLETE 0
+    apo_state_set CPU_GUARD_TARGET ''
+    apo_state_set CPU_GUARD_VERIFIED 0
+    apo_state_set SAFE_CPU ''
+    apo_state_set GPU_INDEX 0
+    apo_state_set PASSED_GPUS ''
+    apo_state_set GPU_FAILURE_BOUNDARY ''
+    apo_state_set GPU_REVERSE_FAILURES ''
+    apo_state_set GPU_REVERSE_PASS ''
+    apo_state_set GPU_REFINE_CANDIDATES ''
+    apo_state_set GPU_REFINE_INDEX 0
+    apo_state_set GPU_REFINE_COMPLETE 0
+    apo_state_set GPU_GUARD_TARGET ''
+    apo_state_set GPU_GUARD_VERIFIED 0
+    apo_state_set SAFE_GPU ''
+    apo_final_initialize_backoff_state
+    apo_initialize_current_qualification_state
+}
+
+assert_adaptive_reverse_resume_valid() {
+    local checkpoint=$1
+    if ! apo_validate_auto_resume_state; then
+        echo "valid adaptive reverse checkpoint was rejected ($checkpoint): ${APO_AUTO_VALIDATION_REASON:-unknown reason}" >&2
+        exit 1
+    fi
+}
+
+assert_adaptive_reverse_resume_invalid() {
+    local checkpoint=$1
+    if (apo_validate_auto_resume_state) >/dev/null 2>&1; then
+        echo "invalid adaptive reverse checkpoint was accepted ($checkpoint)" >&2
+        exit 1
+    fi
+}
+
+seed_adaptive_reverse_resume_plan
+assert_adaptive_reverse_resume_valid 'initial exact-ceiling plan'
+
+# A crash after the exact ceiling or any later coarse failure retains a valid
+# descending prefix.  With no requested minimum, the protected 2400 MHz stock
+# clock is never tested as an overclock candidate; 2475 MHz is the last coarse
+# failure before refinement can start above that floor.
+reverse_failure_prefix=''
+for coarse_failure in 3175 3075 2975 2875 2775 2675 2575 2475; do
+    reverse_failure_prefix=$(apo_append_csv "$reverse_failure_prefix" "$coarse_failure")
+    apo_state_set CPU_FAILURE_BOUNDARY "$coarse_failure"
+    apo_state_set CPU_REVERSE_FAILURES "$reverse_failure_prefix"
+    assert_adaptive_reverse_resume_valid "CPU coarse failure $coarse_failure"
+done
+
+# Once the canonical descent is exhausted without a coarse pass, planning and
+# each 25 MHz refinement checkpoint are independently resumable.
+apo_state_set CPU_REFINE_CANDIDATES 2425,2450
+assert_adaptive_reverse_resume_valid 'CPU no-pass refinement plan save'
+apo_state_set PASSED_CPUS 2425
+apo_state_set CPU_REFINE_INDEX 1
+assert_adaptive_reverse_resume_valid 'CPU no-pass first fine pass'
+apo_state_set CPU_FAILURE_BOUNDARY 2450
+apo_state_set CPU_REFINE_CANDIDATES 2425
+apo_state_set CPU_REFINE_COMPLETE 1
+assert_adaptive_reverse_resume_valid 'CPU no-pass fine failure completion'
+apo_state_set CPU_GUARD_TARGET 2425
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 2425
+assert_adaptive_reverse_resume_valid 'CPU no-pass selected completion'
+
+# Replay the usual path independently: exact ceiling failure, first coarse
+# pass, refinement-plan save, every fine pass, and the atomic COMPLETE marker.
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3175
+apo_state_set CPU_REVERSE_FAILURES 3175
+assert_adaptive_reverse_resume_valid 'CPU exact ceiling failure before coarse pass'
+apo_state_set CPU_REVERSE_PASS 3075
+apo_state_set PASSED_CPUS 3075
+assert_adaptive_reverse_resume_valid 'CPU first coarse pass'
+apo_state_set CPU_REFINE_CANDIDATES 3100,3125,3150
+assert_adaptive_reverse_resume_valid 'CPU refinement plan save'
+for fine_pass in 3100 3125 3150; do
+    apo_state_set PASSED_CPUS "$(apo_append_csv "$(apo_state_get PASSED_CPUS '')" "$fine_pass")"
+    apo_state_set CPU_REFINE_INDEX "$(( $(apo_state_get CPU_REFINE_INDEX 0) + 1 ))"
+    assert_adaptive_reverse_resume_valid "CPU fine pass $fine_pass"
+done
+apo_state_set CPU_REFINE_COMPLETE 1
+assert_adaptive_reverse_resume_valid 'CPU refinement COMPLETE save'
+apo_state_set CPU_GUARD_TARGET 3150
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 3150
+assert_adaptive_reverse_resume_valid 'CPU selected completion'
+
+# A fine failure atomically lowers the boundary, truncates the pending ladder,
+# and marks refinement complete at the proven prefix.
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3175
+apo_state_set CPU_REVERSE_FAILURES 3175
+apo_state_set CPU_REVERSE_PASS 3075
+apo_state_set PASSED_CPUS 3075,3100
+apo_state_set CPU_REFINE_CANDIDATES 3100
+apo_state_set CPU_REFINE_INDEX 1
+apo_state_set CPU_REFINE_COMPLETE 1
+apo_state_set CPU_FAILURE_BOUNDARY 3125
+assert_adaptive_reverse_resume_valid 'CPU fine failure completion'
+apo_state_set CPU_GUARD_TARGET 3100
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 3100
+assert_adaptive_reverse_resume_valid 'CPU fine failure selected completion'
+
+# Exercise the same strict state contract for a custom-resolution GPU reverse
+# search, including the exact 1187 MHz cap and a 10 MHz refinement prefix.
+seed_adaptive_reverse_resume_plan
+apo_state_set GPU_FAILURE_BOUNDARY 1187
+apo_state_set GPU_REVERSE_FAILURES 1187
+assert_adaptive_reverse_resume_valid 'GPU exact ceiling failure'
+apo_state_set GPU_REVERSE_PASS 1137
+apo_state_set PASSED_GPUS 1137
+assert_adaptive_reverse_resume_valid 'GPU first coarse pass'
+apo_state_set GPU_REFINE_CANDIDATES 1147,1157,1167,1177
+assert_adaptive_reverse_resume_valid 'GPU refinement plan save'
+for fine_pass in 1147 1157; do
+    apo_state_set PASSED_GPUS "$(apo_append_csv "$(apo_state_get PASSED_GPUS '')" "$fine_pass")"
+    apo_state_set GPU_REFINE_INDEX "$(( $(apo_state_get GPU_REFINE_INDEX 0) + 1 ))"
+    assert_adaptive_reverse_resume_valid "GPU fine pass $fine_pass"
+done
+apo_state_set GPU_FAILURE_BOUNDARY 1167
+apo_state_set GPU_REFINE_CANDIDATES 1147,1157
+apo_state_set GPU_REFINE_COMPLETE 1
+assert_adaptive_reverse_resume_valid 'GPU fine failure completion'
+apo_state_set GPU_GUARD_TARGET 1157
+apo_state_set GPU_GUARD_VERIFIED 1
+apo_state_set SAFE_GPU 1157
+assert_adaptive_reverse_resume_valid 'GPU selected completion'
+
+# Reject scheduler states that cannot arise from the canonical reverse search.
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3175
+apo_state_set CPU_REVERSE_FAILURES 3175
+apo_state_set CPU_REFINE_CANDIDATES "$(apo_auto_refinement_ladder 2400 3175 25)"
+assert_adaptive_reverse_resume_invalid 'no-pass refinement before coarse exhaustion'
+
+seed_adaptive_reverse_resume_plan
+APO_CPU_MIN=3000
+apo_state_set CFG_CPU_MIN 3000
+apo_state_set CPU_FAILURE_BOUNDARY 3000
+apo_state_set CPU_REVERSE_FAILURES 3175,3075,3000
+apo_state_set CPU_REFINE_CANDIDATES 3000
+assert_adaptive_reverse_resume_invalid 'explicit-min refinement without a pass'
+
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3125
+apo_state_set CPU_REVERSE_FAILURES 3175
+apo_state_set CPU_REVERSE_PASS 3075
+apo_state_set PASSED_CPUS 3075
+apo_state_set CPU_REFINE_CANDIDATES 3100
+assert_adaptive_reverse_resume_invalid 'incomplete refinement lowered its failure boundary'
+
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3175
+apo_state_set CPU_REVERSE_FAILURES 3175
+apo_state_set CPU_GUARD_TARGET 2400
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 2400
+assert_adaptive_reverse_resume_invalid 'selected target without an actual pass'
+
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3175
+apo_state_set CPU_REVERSE_FAILURES 3175
+apo_state_set CPU_REVERSE_PASS 3075
+apo_state_set PASSED_CPUS 3075,3100
+apo_state_set CPU_REFINE_CANDIDATES 3100,3125,3150
+apo_state_set CPU_REFINE_INDEX 1
+apo_state_set CPU_GUARD_TARGET 3100
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 3100
+assert_adaptive_reverse_resume_invalid 'selected target before refinement completed'
+
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_FAILURE_BOUNDARY 3175
+apo_state_set CPU_REVERSE_FAILURES 3175
+apo_state_set CPU_REVERSE_PASS 3075
+apo_state_set PASSED_CPUS 3075,3100
+apo_state_set CPU_REFINE_CANDIDATES 3100,3125,3150
+apo_state_set CPU_REFINE_INDEX 1
+apo_state_set CPU_REFINE_COMPLETE 1
+assert_adaptive_reverse_resume_invalid 'COMPLETE with a partial passed prefix'
+
 seed_valid_refined_auto_floor_plan() {
     seed_valid_guarded_auto_floor_plan
     APO_SELECTION_POLICY=refined-max-25
     APO_SWEEP_DOMAIN=all
     APO_EDGE_CPU_24H=0
-    APO_EDGE_ORDER=floor-first
+    APO_EDGE_ORDER='floor-first'
     APO_CPU_MIN=''
     APO_GPU_MIN=''
     APO_CPU_MAX=''
@@ -2259,7 +2512,7 @@ APO_SELECTION_POLICY=refined-max-25
 APO_SWEEP_DOMAIN=all
 APO_AUTO_GENERATED_CANDIDATES=1
 APO_EDGE_CPU_24H=0
-APO_EDGE_ORDER=floor-first
+APO_EDGE_ORDER='floor-first'
 APO_EDGE_DURATION_S=86400
 APO_FINAL_DURATION_S=86400
 APO_NORMAL_CPU=2400

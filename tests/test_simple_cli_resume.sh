@@ -111,7 +111,7 @@ ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
 
 # Exercise the complete fresh public planning path: CLI parsing and source
 # selection preserve the requested duration, discovery invokes one history
-# scan, and retained failures generate short near-ceiling ladders.
+# scan, and retained failure caps become exact-first reverse-search ceilings.
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -137,13 +137,20 @@ ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
     apo_context_from_discovery
     [[ $history_refresh_calls == 1 ]]
     [[ $APO_FINAL_DURATION_S == 360000 && ${APO_CFG[FINAL_DURATION_S]} == 360000 ]]
-    [[ $APO_CPU_MIN == 2975 && $APO_CPU_MAX == 3075 ]]
-    [[ $APO_GPU_MIN == 1125 && $APO_GPU_MAX == 1175 ]]
-    [[ ${APO_CFG[CPU_CANDIDATES]} == 2975,3075 ]]
-    [[ ${APO_CFG[GPU_CANDIDATES]} == 1125,1175 ]]
+    [[ -z $APO_CPU_MIN && $APO_CPU_MAX == 3075 ]]
+    [[ -z $APO_GPU_MIN && $APO_GPU_MAX == 1175 ]]
+    [[ ${APO_CFG[CPU_CANDIDATES]} == 3075 ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == 1175 ]]
+    [[ $APO_SELECTION_POLICY == adaptive-refined-v1 ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 25 && $APO_GPU_RESOLUTION_MHZ == 25 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == descending && $APO_GPU_SEARCH_DIRECTION == descending ]]
     [[ $(apo_state_get CFG_USE_HISTORY '') == 1 ]]
-    [[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == history ]]
-    [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == history ]]
+    [[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == automatic-baseline ]]
+    [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]
+    [[ $(apo_state_get HISTORY_CPU_APPROACH_START '') == 3075 ]]
+    [[ $(apo_state_get HISTORY_GPU_APPROACH_START '') == 1175 ]]
+    [[ $(apo_state_get HISTORY_CPU_REVERSE_SEARCH 0) == 1 ]]
+    [[ $(apo_state_get HISTORY_GPU_REVERSE_SEARCH 0) == 1 ]]
 )
 
 # --no-history follows the same fresh public path but performs no retained-state
@@ -170,6 +177,9 @@ ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
     [[ -z $APO_GPU_MIN && $APO_GPU_MAX == 1200 ]]
     [[ ${APO_CFG[CPU_CANDIDATES]} == 2500,2600,2700,2800,2900,3000,3100,3200 ]]
     [[ ${APO_CFG[GPU_CANDIDATES]} == 1000,1050,1100,1150,1200 ]]
+    [[ $APO_SELECTION_POLICY == adaptive-refined-v1 ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 25 && $APO_GPU_RESOLUTION_MHZ == 25 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == forward && $APO_GPU_SEARCH_DIRECTION == forward ]]
     [[ $(apo_state_get CFG_USE_HISTORY '') == 0 ]]
     [[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == automatic-baseline ]]
     [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]

@@ -103,7 +103,7 @@ APO_RESTART_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 APO_RESTART_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
 APO_RESTART_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
 APO_SWEEP_DOMAIN=all
-APO_SELECTION_POLICY=refined-max-25
+APO_SELECTION_POLICY=adaptive-refined-v1
 APO_CPU_ONLY_OPTION_SEEN=0
 APO_GPU_ONLY_OPTION_SEEN=0
 APO_CPU_MIN=''
@@ -112,10 +112,16 @@ APO_CPU_MAX=''
 APO_GPU_MAX=''
 APO_CPU_MAX_REQUESTED=''
 APO_GPU_MAX_REQUESTED=''
+APO_CPU_RESOLUTION_MHZ=25
+APO_GPU_RESOLUTION_MHZ=25
+APO_CPU_SEARCH_DIRECTION=forward
+APO_GPU_SEARCH_DIRECTION=forward
 APO_CPU_MIN_OPTION_SEEN=0
 APO_GPU_MIN_OPTION_SEEN=0
 APO_CPU_MAX_OPTION_SEEN=0
 APO_GPU_MAX_OPTION_SEEN=0
+APO_CPU_RESOLUTION_OPTION_SEEN=0
+APO_GPU_RESOLUTION_OPTION_SEEN=0
 APO_USE_HISTORY=1
 APO_HISTORY_OPTION_SEEN=0
 APO_DOMAIN_SOURCE_STATE=''
@@ -145,7 +151,9 @@ Usage:
   autopioverclock prepare TARGET
   autopioverclock overclock TARGET [--cpu-only | --gpu-only]
                                       [--cpu-min MHZ] [--cpu-max MHZ]
-                                      [--gpu-min MHZ] [--gpu-max MHZ] [--no-history]
+                                      [--gpu-min MHZ] [--gpu-max MHZ]
+                                      [--cpu-resolution MHZ] [--gpu-resolution MHZ]
+                                      [--no-history]
                                       [--qualification-hours HOURS] [--final-hours HOURS]
                                       [--no-max-fan]
   autopioverclock test TARGET --cpu MHZ --gpu MHZ (--final-hours HOURS | --minutes MINUTES)
@@ -176,8 +184,8 @@ Commands:
   report     Generate a concise report for a selected or latest run
 
   Automatic defaults are 2-hour domain qualifications and one uninterrupted
-  48-hour combined final validation. Coarse failures are refined upward in
-  25 MHz steps; the highest passing refined clock is then qualified.
+  48-hour combined final validation. Each domain refines to 25 MHz by default,
+  qualifies separately, and then enters combined final validation.
 
 Target:
   hostname | IP | username@hostname | username@IP
@@ -190,10 +198,12 @@ Common options:
   --restart-from POINT     Resume-only checkpoint choice; current keeps the saved position
   --cpu-only               Start a fresh CPU-only extension from an applied result
   --gpu-only               Start a fresh GPU-only extension from an applied result
-  --cpu-min MHZ            Lowest new CPU candidate (25 MHz aligned)
-  --cpu-max MHZ            Inclusive CPU candidate ceiling (maximum: 3200)
-  --gpu-min MHZ            Lowest new GPU/V3D candidate (25 MHz aligned)
-  --gpu-max MHZ            Inclusive GPU/V3D candidate ceiling (maximum: 1200)
+  --cpu-min MHZ            Hard inclusive CPU floor for search and backoff
+  --cpu-max MHZ            Exact-first reverse CPU ceiling (maximum: 3200)
+  --gpu-min MHZ            Hard inclusive GPU/V3D floor for search and backoff
+  --gpu-max MHZ            Exact-first reverse GPU/V3D ceiling (maximum: 1200)
+  --cpu-resolution MHZ     CPU refinement/backoff granularity (default: 25; 1-1000)
+  --gpu-resolution MHZ     GPU refinement/backoff granularity (default: 25; 1-1000)
   --no-history             Ignore compatible retained failure history for this new run
   --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning/test
   --cpu MHZ                Exact CPU clock for test TARGET
@@ -274,7 +284,7 @@ apo_parse_cli() {
     while (( index < ${#arguments[@]} )); do
         token=${arguments[$index]}
         case $token in
-            --config|--mode|--output-dir|--ssh-port|--identity-file|--run-id|--cpu|--gpu|--minutes|--qualification-hours|--final-hours|--restart-from|--cpu-min|--gpu-min|--cpu-max|--gpu-max)
+            --config|--mode|--output-dir|--ssh-port|--identity-file|--run-id|--cpu|--gpu|--minutes|--qualification-hours|--final-hours|--restart-from|--cpu-min|--gpu-min|--cpu-max|--gpu-max|--cpu-resolution|--gpu-resolution)
                 (( index + 1 < ${#arguments[@]} )) || apo_die "$token requires a value." "$APO_EXIT_USAGE"
                 case $token in
                     --config) APO_CONFIG_FILE=${arguments[$((index + 1))]}; APO_CONFIG_OPTION_SEEN=1 ;;
@@ -309,6 +319,16 @@ apo_parse_cli() {
                         APO_GPU_MAX=${arguments[$((index + 1))]}
                         APO_GPU_MAX_REQUESTED=$APO_GPU_MAX
                         APO_GPU_MAX_OPTION_SEEN=1
+                        ;;
+                    --cpu-resolution)
+                        (( APO_CPU_RESOLUTION_OPTION_SEEN == 0 )) || apo_die '--cpu-resolution may be specified only once.' "$APO_EXIT_USAGE"
+                        APO_CPU_RESOLUTION_MHZ=${arguments[$((index + 1))]}
+                        APO_CPU_RESOLUTION_OPTION_SEEN=1
+                        ;;
+                    --gpu-resolution)
+                        (( APO_GPU_RESOLUTION_OPTION_SEEN == 0 )) || apo_die '--gpu-resolution may be specified only once.' "$APO_EXIT_USAGE"
+                        APO_GPU_RESOLUTION_MHZ=${arguments[$((index + 1))]}
+                        APO_GPU_RESOLUTION_OPTION_SEEN=1
                         ;;
                     --cpu)
                         (( APO_MANUAL_CPU_OPTION_SEEN == 0 )) || apo_die '--cpu may be specified only once.' "$APO_EXIT_USAGE"
@@ -393,22 +413,20 @@ apo_parse_cli() {
         apo_die "--gpu-min must be ${APO_GPU_CLOCK_MIN_MHZ}-${APO_AUTO_GPU_MAX_MHZ} MHz." "$APO_EXIT_USAGE"
     [[ -z $APO_GPU_MAX ]] || apo_validate_uint_range "$APO_GPU_MAX" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
         apo_die "--gpu-max must be ${APO_GPU_CLOCK_MIN_MHZ}-${APO_AUTO_GPU_MAX_MHZ} MHz." "$APO_EXIT_USAGE"
-    [[ -z $APO_CPU_MIN ]] || (( 10#$APO_CPU_MIN % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
-        apo_die "--cpu-min must use a ${APO_AUTO_REFINE_STEP_MHZ} MHz increment." "$APO_EXIT_USAGE"
-    [[ -z $APO_CPU_MAX ]] || (( 10#$APO_CPU_MAX % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
-        apo_die "--cpu-max must use a ${APO_AUTO_REFINE_STEP_MHZ} MHz increment." "$APO_EXIT_USAGE"
-    [[ -z $APO_GPU_MIN ]] || (( 10#$APO_GPU_MIN % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
-        apo_die "--gpu-min must use a ${APO_AUTO_REFINE_STEP_MHZ} MHz increment." "$APO_EXIT_USAGE"
-    [[ -z $APO_GPU_MAX ]] || (( 10#$APO_GPU_MAX % APO_AUTO_REFINE_STEP_MHZ == 0 )) ||
-        apo_die "--gpu-max must use a ${APO_AUTO_REFINE_STEP_MHZ} MHz increment." "$APO_EXIT_USAGE"
+    apo_validate_uint_range "$APO_CPU_RESOLUTION_MHZ" 1 1000 ||
+        apo_die '--cpu-resolution must be a whole number from 1 to 1000 MHz.' "$APO_EXIT_USAGE"
+    apo_validate_uint_range "$APO_GPU_RESOLUTION_MHZ" 1 1000 ||
+        apo_die '--gpu-resolution must be a whole number from 1 to 1000 MHz.' "$APO_EXIT_USAGE"
     [[ -z $APO_CPU_MIN || -z $APO_CPU_MAX ]] || (( 10#$APO_CPU_MIN <= 10#$APO_CPU_MAX )) ||
         apo_die '--cpu-min cannot be greater than --cpu-max.' "$APO_EXIT_USAGE"
     [[ -z $APO_GPU_MIN || -z $APO_GPU_MAX ]] || (( 10#$APO_GPU_MIN <= 10#$APO_GPU_MAX )) ||
         apo_die '--gpu-min cannot be greater than --gpu-max.' "$APO_EXIT_USAGE"
-    [[ $APO_SWEEP_DOMAIN != cpu || ( -z $APO_GPU_MIN && -z $APO_GPU_MAX ) ]] ||
-        apo_die '--gpu-min and --gpu-max cannot be used with --cpu-only.' "$APO_EXIT_USAGE"
-    [[ $APO_SWEEP_DOMAIN != gpu || ( -z $APO_CPU_MIN && -z $APO_CPU_MAX ) ]] ||
-        apo_die '--cpu-min and --cpu-max cannot be used with --gpu-only.' "$APO_EXIT_USAGE"
+    (( APO_CPU_MAX_OPTION_SEEN == 0 )) || APO_CPU_SEARCH_DIRECTION=descending
+    (( APO_GPU_MAX_OPTION_SEEN == 0 )) || APO_GPU_SEARCH_DIRECTION=descending
+    [[ $APO_SWEEP_DOMAIN != cpu || ( -z $APO_GPU_MIN && -z $APO_GPU_MAX && $APO_GPU_RESOLUTION_OPTION_SEEN == 0 ) ]] ||
+        apo_die '--gpu-min, --gpu-max, and --gpu-resolution cannot be used with --cpu-only.' "$APO_EXIT_USAGE"
+    [[ $APO_SWEEP_DOMAIN != gpu || ( -z $APO_CPU_MIN && -z $APO_CPU_MAX && $APO_CPU_RESOLUTION_OPTION_SEEN == 0 ) ]] ||
+        apo_die '--cpu-min, --cpu-max, and --cpu-resolution cannot be used with --gpu-only.' "$APO_EXIT_USAGE"
     case $APO_MODE_REQUESTED in auto|graphical|headless) ;; *) apo_die '--mode must be auto, graphical, or headless.' "$APO_EXIT_USAGE" ;; esac
     apo_validate_uint_range "$APO_SSH_PORT" 1 65535 || apo_die '--ssh-port must be 1-65535.' "$APO_EXIT_USAGE"
     [[ -z $APO_SELECTED_RUN_ID ]] || apo_is_safe_run_id "$APO_SELECTED_RUN_ID" || apo_die 'Invalid --run-id.' "$APO_EXIT_USAGE"
@@ -458,8 +476,9 @@ apo_parse_cli() {
        (( APO_CPU_ONLY_OPTION_SEEN == 1 || APO_GPU_ONLY_OPTION_SEEN == 1 ||
           APO_CPU_MIN_OPTION_SEEN == 1 || APO_GPU_MIN_OPTION_SEEN == 1 ||
           APO_CPU_MAX_OPTION_SEEN == 1 || APO_GPU_MAX_OPTION_SEEN == 1 ||
+          APO_CPU_RESOLUTION_OPTION_SEEN == 1 || APO_GPU_RESOLUTION_OPTION_SEEN == 1 ||
           APO_HISTORY_OPTION_SEEN == 1 )); then
-        apo_die '--cpu-only, --gpu-only, --cpu-min/max, --gpu-min/max, and --no-history are valid only with overclock TARGET.' "$APO_EXIT_USAGE"
+        apo_die '--cpu-only, --gpu-only, --cpu-min/max/resolution, --gpu-min/max/resolution, and --no-history are valid only with overclock TARGET.' "$APO_EXIT_USAGE"
     fi
     if [[ $APO_PUBLIC_COMMAND != overclock && $APO_COMMAND != resume ]] &&
        (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 )); then
@@ -505,7 +524,7 @@ apo_parse_cli() {
         (( APO_RESTART_FROM_OPTION_SEEN == 0 )) ||
             apo_die '--restart-from belongs to resume TARGET; overclock TARGET always starts a fresh history-guided run.' "$APO_EXIT_USAGE"
         APO_EDGE_CPU_24H=0
-        APO_EDGE_ORDER=floor-first
+        APO_EDGE_ORDER='floor-first'
         APO_ASSUME_YES=1
     fi
     if [[ $APO_COMMAND == run && -z $APO_PUBLIC_COMMAND ]]; then
@@ -1035,7 +1054,7 @@ apo_post_floor_final_normalize_after_rollback() {
         return 1
     }
     APO_EDGE_CPU_24H=0
-    APO_EDGE_ORDER=floor-first
+    APO_EDGE_ORDER='floor-first'
     APO_PERMANENT_CONFIG_HASH=$(apo_state_get APPLY_OLD_HASH '')
     APO_NORMAL_CPU=$APO_AUTO_BASELINE_CPU
     APO_NORMAL_GPU=$APO_AUTO_BASELINE_GPU
@@ -1362,7 +1381,7 @@ apo_start_post_floor_final() {
     for key in "${!APO_STATE[@]}"; do source_state["$key"]=${APO_STATE[$key]}; done
 
     APO_EDGE_CPU_24H=0
-    APO_EDGE_ORDER=floor-first
+    APO_EDGE_ORDER='floor-first'
     APO_MAX_FAN=$APO_POST_FLOOR_FINAL_MAX_FAN
     APO_FINAL_DURATION_S=$APO_POST_FLOOR_FINAL_DURATION_S
     APO_CFG[FINAL_DURATION_S]=$APO_FINAL_DURATION_S
@@ -1451,8 +1470,9 @@ apo_start_new_run() {
     apo_summary_line "Backoff steps: ${APO_CFG[BACKOFF_STEPS]}"
     apo_summary_line "Maximum fan cooling during tuning: $([[ $APO_MAX_FAN == 1 ]] && printf enabled || printf disabled)"
     if (( APO_AUTO_GENERATED_CANDIDATES == 1 )); then
-        apo_summary_line "Automatic refinement: ${APO_AUTO_REFINE_STEP_MHZ}MHz"
-        apo_summary_line "Automatic selection policy: ${APO_SELECTION_POLICY:-refined-max-25}"
+        apo_summary_line "Automatic resolution: CPU ${APO_CPU_RESOLUTION_MHZ}MHz / GPU ${APO_GPU_RESOLUTION_MHZ}MHz"
+        apo_summary_line "Initial search direction: CPU ${APO_CPU_SEARCH_DIRECTION} / GPU ${APO_GPU_SEARCH_DIRECTION}; retained history may select descending search after discovery"
+        apo_summary_line "Automatic selection policy: ${APO_SELECTION_POLICY:-adaptive-refined-v1}"
         apo_summary_line "CPU qualification: ${APO_QUALIFICATION_DURATION_S}s with GPU held at its selected clock"
         apo_summary_line "GPU qualification: ${APO_QUALIFICATION_DURATION_S}s with CPU held at its selected clock"
         apo_summary_line "Final validation: ${APO_CFG[FINAL_DURATION_S]}s uninterrupted combined CPU/GPU/I/O"

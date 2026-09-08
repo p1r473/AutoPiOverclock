@@ -159,6 +159,10 @@ apo_state_initialize() {
     apo_state_set GPU_REFINE_INDEX 0
     apo_state_set CPU_REFINE_COMPLETE 0
     apo_state_set GPU_REFINE_COMPLETE 0
+    apo_state_set CPU_REVERSE_PASS ''
+    apo_state_set GPU_REVERSE_PASS ''
+    apo_state_set CPU_REVERSE_FAILURES ''
+    apo_state_set GPU_REVERSE_FAILURES ''
     apo_state_set CPU_GUARD_TARGET ''
     apo_state_set GPU_GUARD_TARGET ''
     apo_state_set CPU_GUARD_VERIFIED 0

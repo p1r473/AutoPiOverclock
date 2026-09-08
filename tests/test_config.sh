@@ -127,6 +127,9 @@ apo_state_load "$TEMP_DIR/debian-auto.state"
 [[ ${APO_STATE[CFG_CPU_CANDIDATES]} == '2500,2600,2700,2800,2900,3000,3100,3200' ]]
 [[ ${APO_STATE[CFG_GPU_CANDIDATES]} == '1000,1050,1100,1150,1200' ]]
 [[ ${APO_STATE[CFG_AUTO_GENERATED_CANDIDATES]} == 1 ]]
+[[ ${APO_STATE[CFG_SELECTION_POLICY]} == adaptive-refined-v1 ]]
+[[ ${APO_STATE[CFG_CPU_RESOLUTION_MHZ]} == 25 && ${APO_STATE[CFG_GPU_RESOLUTION_MHZ]} == 25 ]]
+[[ ${APO_STATE[CFG_CPU_SEARCH_DIRECTION]} == forward && ${APO_STATE[CFG_GPU_SEARCH_DIRECTION]} == forward ]]
 [[ ${APO_STATE[CFG_EDGE_CPU_24H]} == 0 ]]
 [[ ${APO_STATE[CFG_EDGE_ORDER]} == floor-first ]]
 [[ ${APO_STATE[CFG_QUALIFICATION_DURATION_S]} == 7200 ]]
@@ -403,10 +406,14 @@ fi
     APO_GPU_MIN=1150
     APO_CPU_MAX=3175
     APO_GPU_MAX=1175
+    APO_CPU_RESOLUTION_MHZ=5
+    APO_GPU_RESOLUTION_MHZ=1
+    APO_CPU_SEARCH_DIRECTION=descending
+    APO_GPU_SEARCH_DIRECTION=descending
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 2400 960 0
-    [[ ${APO_CFG[CPU_CANDIDATES]} == '3000,3100,3175' ]]
-    [[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1175' ]]
+    [[ ${APO_CFG[CPU_CANDIDATES]} == 3175 ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == 1175 ]]
 )
 
 expect_auto_max_below_current_rejection() {
@@ -436,8 +443,8 @@ expect_auto_max_below_current_rejection() {
     fi
     grep -Fq -- "$expected" "$output_file"
 }
-expect_auto_max_below_current_rejection cpu 2300 1200 '--cpu-max cannot be below the protected current CPU clock (2400 MHz).'
-expect_auto_max_below_current_rejection gpu 3200 900 '--gpu-max cannot be below the protected current GPU/V3D clock (960 MHz).'
+expect_auto_max_below_current_rejection cpu 2300 1200 '--cpu-max must be above the protected current CPU clock (2400 MHz).'
+expect_auto_max_below_current_rejection gpu 3200 900 '--gpu-max must be above the protected current GPU/V3D clock (960 MHz).'
 
 (
     APO_COMMAND=run
@@ -450,6 +457,9 @@ expect_auto_max_below_current_rejection gpu 3200 900 '--gpu-max cannot be below 
     APO_GPU_MIN=1150
     APO_CPU_MAX=''
     APO_GPU_MAX=1175
+    APO_CPU_SEARCH_DIRECTION=forward
+    APO_GPU_SEARCH_DIRECTION=descending
+    APO_GPU_RESOLUTION_MHZ=5
     APO_USE_HISTORY=0
     APO_SOURCE_APPLIED_RUN_ID=20260903-120000-0123456789abcdef
     APO_SOURCE_APPLIED_PERMANENT_HASH=$(printf 'b%.0s' {1..64})
@@ -468,17 +478,19 @@ expect_auto_max_below_current_rejection gpu 3200 900 '--gpu-max cannot be below 
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 3100 1125 0 explicit-override arm_freq,v3d_freq
     [[ -z ${APO_CFG[CPU_CANDIDATES]} ]]
-    [[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1175' ]]
-    [[ ${APO_GPU_CANDIDATES[*]} == '1150 1175' ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == 1175 ]]
+    [[ ${APO_GPU_CANDIDATES[*]} == 1175 ]]
     finalize_discovered_fixture gpu-only-applied
     apo_store_discovery_state
     (( APO_REQUIRE_GPU_STRESS == 1 ))
     APO_STATE=()
     apo_state_load "$TEMP_DIR/gpu-only-applied.state"
     [[ ${APO_STATE[CFG_SWEEP_DOMAIN]} == gpu ]]
-    [[ ${APO_STATE[CFG_SELECTION_POLICY]} == refined-max-25 ]]
+    [[ ${APO_STATE[CFG_SELECTION_POLICY]} == adaptive-refined-v1 ]]
     [[ ${APO_STATE[CFG_GPU_MIN]} == 1150 && -z ${APO_STATE[CFG_CPU_MIN]} ]]
     [[ ${APO_STATE[CFG_GPU_MAX]} == 1175 && -z ${APO_STATE[CFG_CPU_MAX]} ]]
+    [[ ${APO_STATE[CFG_CPU_RESOLUTION_MHZ]} == 25 && ${APO_STATE[CFG_GPU_RESOLUTION_MHZ]} == 5 ]]
+    [[ ${APO_STATE[CFG_CPU_SEARCH_DIRECTION]} == forward && ${APO_STATE[CFG_GPU_SEARCH_DIRECTION]} == descending ]]
     [[ ${APO_STATE[CFG_USE_HISTORY]} == 0 ]]
     [[ ${APO_STATE[SOURCE_APPLIED_RUN_ID]} == 20260903-120000-0123456789abcdef ]]
     [[ ${APO_STATE[SOURCE_APPLIED_CPU]} == 3100 && ${APO_STATE[SOURCE_APPLIED_GPU]} == 1125 ]]
@@ -655,6 +667,9 @@ grep -Fq 'malformed or mismatched AutoPiOverclock clock markers' "$TEMP_DIR/doma
     APO_GPU_MIN=''
     APO_CPU_MAX=3175
     APO_GPU_MAX=''
+    APO_CPU_SEARCH_DIRECTION=descending
+    APO_GPU_SEARCH_DIRECTION=forward
+    APO_CPU_RESOLUTION_MHZ=5
     APO_SOURCE_APPLIED_RUN_ID=20260903-120000-fedcba9876543210
     APO_SOURCE_APPLIED_PERMANENT_HASH=$(printf 'b%.0s' {1..64})
     APO_SOURCE_APPLIED_CPU=2900
@@ -671,7 +686,7 @@ grep -Fq 'malformed or mismatched AutoPiOverclock clock markers' "$TEMP_DIR/doma
     APO_SOURCE_APPLIED_GPU_KEY=v3d_freq
     apo_config_load_for_new_run
     resolve_discovered_auto_plan debian 2900 1175 0 explicit-override arm_freq,v3d_freq
-    [[ ${APO_CFG[CPU_CANDIDATES]} == '3000,3100,3175' ]]
+    [[ ${APO_CFG[CPU_CANDIDATES]} == 3175 ]]
     [[ -z ${APO_CFG[GPU_CANDIDATES]} ]]
 )
 
@@ -681,25 +696,69 @@ grep -Fq 'malformed or mismatched AutoPiOverclock clock markers' "$TEMP_DIR/doma
     apo_state_set CFG_SWEEP_DOMAIN all
     apo_config_restore_from_state
     [[ $APO_SELECTION_POLICY == refined-max-25 && $APO_SWEEP_DOMAIN == all ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 25 && $APO_GPU_RESOLUTION_MHZ == 25 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == forward && $APO_GPU_SEARCH_DIRECTION == forward ]]
+)
+
+# New adaptive plans persist arbitrary hard bounds, per-domain resolution, and
+# the chosen search direction.  Keep the refined-max-25 fixture above as an
+# explicit legacy restore check rather than rewriting it to the new policy.
+(
+    APO_STATE=()
+    apo_config_defaults
+    APO_AUTO_GENERATED_CANDIDATES=1
+    APO_SELECTION_POLICY=adaptive-refined-v1
+    APO_SWEEP_DOMAIN=all
+    APO_CPU_MIN=3010
+    APO_CPU_MAX=3173
+    APO_CPU_MAX_REQUESTED=3173
+    APO_GPU_MIN=1160
+    APO_GPU_MAX=1187
+    APO_GPU_MAX_REQUESTED=1187
+    APO_CPU_RESOLUTION_MHZ=5
+    APO_GPU_RESOLUTION_MHZ=1
+    APO_CPU_SEARCH_DIRECTION=descending
+    APO_GPU_SEARCH_DIRECTION=descending
+    APO_USE_HISTORY=1
+    APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
+    APO_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
+    APO_DURATION_POLICY=default
+    apo_config_store_in_state
+    [[ $(apo_state_get CFG_SELECTION_POLICY '') == adaptive-refined-v1 ]]
+    [[ $(apo_state_get CFG_CPU_MIN '') == 3010 && $(apo_state_get CFG_GPU_MIN '') == 1160 ]]
+    [[ $(apo_state_get CFG_CPU_RESOLUTION_MHZ '') == 5 && $(apo_state_get CFG_GPU_RESOLUTION_MHZ '') == 1 ]]
+    [[ $(apo_state_get CFG_CPU_SEARCH_DIRECTION '') == descending && $(apo_state_get CFG_GPU_SEARCH_DIRECTION '') == descending ]]
+
+    APO_SELECTION_POLICY=guarded-v1
+    APO_CPU_RESOLUTION_MHZ=25
+    APO_GPU_RESOLUTION_MHZ=25
+    APO_CPU_SEARCH_DIRECTION=forward
+    APO_GPU_SEARCH_DIRECTION=forward
+    apo_config_restore_from_state
+    [[ $APO_SELECTION_POLICY == adaptive-refined-v1 ]]
+    [[ $APO_CPU_MIN == 3010 && $APO_CPU_MAX == 3173 ]]
+    [[ $APO_GPU_MIN == 1160 && $APO_GPU_MAX == 1187 ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 5 && $APO_GPU_RESOLUTION_MHZ == 1 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == descending && $APO_GPU_SEARCH_DIRECTION == descending ]]
 )
 if (
     APO_STATE=()
-    apo_state_set CFG_SELECTION_POLICY refined-max-25
+    apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
     apo_state_set CFG_SWEEP_DOMAIN all
-    apo_state_set CFG_CPU_MIN 3010
+    apo_state_set CFG_CPU_RESOLUTION_MHZ 0
     apo_config_restore_from_state
 ) >/dev/null 2>&1; then
-    echo 'saved CPU minimum not aligned to 25 MHz was accepted' >&2
+    echo 'saved zero CPU resolution was accepted' >&2
     exit 1
 fi
 if (
     APO_STATE=()
-    apo_state_set CFG_SELECTION_POLICY refined-max-25
+    apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
     apo_state_set CFG_SWEEP_DOMAIN all
-    apo_state_set CFG_GPU_MIN 1160
+    apo_state_set CFG_GPU_SEARCH_DIRECTION sideways
     apo_config_restore_from_state
 ) >/dev/null 2>&1; then
-    echo 'saved GPU minimum not aligned to 25 MHz was accepted' >&2
+    echo 'saved malformed GPU search direction was accepted' >&2
     exit 1
 fi
 (

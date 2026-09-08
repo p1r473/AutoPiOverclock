@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.54 — 2026-09-08
+
+- Added independently configurable `--cpu-resolution` and `--gpu-resolution` controls, defaulting to 25 MHz and accepting 1–1000 MHz. Automatic refinement, qualification backoff, ambiguous-domain isolation, final backoff, reports, and progress estimates all use the saved per-domain values; a larger resolution also raises that domain's coarse step.
+- Changed explicit maxima and trustworthy clear-domain history ceilings into exact-ceiling-first reverse searches. CPU and GPU still receive their complete isolated sweeps and qualifications, but known ceilings descend only until a pass brackets the failure, then refine upward at the requested resolution. User minima are hard inclusive floors, and an unstable floor fails clearly rather than being crossed.
+- Hardened reverse-search and retained-history continuation at every durable checkpoint, including ceiling/intermediate failures, implicit-baseline refinement, repeated one-domain isolation at the opposite floor, effective-maximum/floor binding, and deterministic pair trials. Every changed pair clears prior validation evidence and must complete the full requested final duration from zero; explanatory isolation journals are no longer promoted into independent clock-boundary authority.
+
 ## 0.1.0-alpha.53 — 2026-09-08
 
 - Made retained-history screening reject authority from old state schemas by ignoring and preserving them before current metadata is required. Only current-schema compatible evidence can constrain a fresh plan; malformed current-schema evidence still fails closed.

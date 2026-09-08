@@ -386,6 +386,7 @@ Sweep scope:    $(apo_report_state_value CFG_SWEEP_DOMAIN all)
 Selection:      $(apo_report_state_value CFG_SELECTION_POLICY guarded-v1)
 Requested bounds: CPU $(apo_report_value "${cpu_min:-auto}")..$(apo_report_value "${cpu_requested_max:-$auto_cpu_max}") MHz / GPU $(apo_report_value "${gpu_min:-auto}")..$(apo_report_value "${gpu_requested_max:-$auto_gpu_max}") MHz
 Effective caps:  CPU $(apo_report_value "${cpu_effective_max:-$auto_cpu_max}") MHz / GPU $(apo_report_value "${gpu_effective_max:-$auto_gpu_max}") MHz (history $history_policy)
+Search policy:   CPU $(apo_report_state_value CFG_CPU_SEARCH_DIRECTION forward) at $(apo_report_state_value CFG_CPU_RESOLUTION_MHZ 25) MHz resolution / GPU $(apo_report_state_value CFG_GPU_SEARCH_DIRECTION forward) at $(apo_report_state_value CFG_GPU_RESOLUTION_MHZ 25) MHz resolution
 History evidence: clear CPU=$(apo_report_state_value HISTORY_CPU_FAILURE_BOUNDARY none) MHz / clear GPU=$(apo_report_state_value HISTORY_GPU_FAILURE_BOUNDARY none) MHz / ambiguous pairs=$(apo_report_state_value HISTORY_PAIR_FRONTIERS none) / accepted states=$(apo_report_state_value HISTORY_ACCEPTED_STATES 0)
 Normal clocks:  CPU $(apo_report_state_value NORMAL_CPU '?') MHz / GPU $(apo_report_state_value NORMAL_GPU '?') MHz
 Auto baseline:  CPU $(apo_report_state_value AUTO_BASELINE_CPU n/a) MHz / GPU $(apo_report_state_value AUTO_BASELINE_GPU n/a) MHz
@@ -405,7 +406,7 @@ GPU boundary:   $(apo_report_state_value GPU_FAILURE_BOUNDARY none)
 CPU qualify:    $(apo_report_state_value CPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value CPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)MHz duration=$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s
 GPU qualify:    $(apo_report_state_value GPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value GPU_QUALIFICATION_CPU pending)/$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value GPU_QUALIFIED_CPU pending)/$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)MHz duration=$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s
 EOF_STATUS
-    if [[ $policy == refined-max-25 ]]; then
+    if [[ $policy == refined-max-25 || $policy == adaptive-refined-v1 ]]; then
         printf 'Selected clocks: CPU %s MHz / GPU %s MHz\n' \
             "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
             "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
@@ -573,6 +574,9 @@ apo_generate_report() {
         printf 'Effective automatic caps: CPU %s MHz, GPU %s MHz (history %s)\n' \
             "$(apo_report_value "${cpu_effective_max:-$auto_cpu_max}")" \
             "$(apo_report_value "${gpu_effective_max:-$auto_gpu_max}")" "$history_policy"
+        printf 'Automatic search: CPU %s at %s MHz resolution, GPU %s at %s MHz resolution\n' \
+            "$(apo_report_state_value CFG_CPU_SEARCH_DIRECTION forward)" "$(apo_report_state_value CFG_CPU_RESOLUTION_MHZ 25)" \
+            "$(apo_report_state_value CFG_GPU_SEARCH_DIRECTION forward)" "$(apo_report_state_value CFG_GPU_RESOLUTION_MHZ 25)"
         printf 'Retained history: clear CPU failure=%s MHz, clear GPU failure=%s MHz, ambiguous pairs=%s, accepted states=%s\n' \
             "$(apo_report_state_value HISTORY_CPU_FAILURE_BOUNDARY none)" \
             "$(apo_report_state_value HISTORY_GPU_FAILURE_BOUNDARY none)" \
@@ -600,7 +604,7 @@ apo_generate_report() {
             "$(apo_report_state_value GPU_QUALIFICATION_STATUS NOT_STARTED)" "$(apo_report_state_value GPU_QUALIFICATION_CPU pending)" \
             "$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)" "$(apo_report_state_value GPU_QUALIFIED_CPU pending)" \
             "$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)" "$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")"
-        if [[ $policy == refined-max-25 ]]; then
+        if [[ $policy == refined-max-25 || $policy == adaptive-refined-v1 ]]; then
             printf 'Highest selected passing clocks: CPU %s MHz, GPU %s MHz\n' \
                 "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
                 "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
@@ -620,7 +624,7 @@ apo_generate_report() {
         printf 'Last automatic backoff boundary: stage=%s, class=%s, reason=%s\n' \
             "$(apo_report_state_value FINAL_BACKOFF_LAST_STAGE none)" "$(apo_report_state_value FINAL_BACKOFF_LAST_CLASS none)" \
             "$(apo_report_sensitive_value "$(apo_report_state_value FINAL_BACKOFF_LAST_REASON none)")"
-        if [[ $policy != refined-max-25 ]]; then
+        if [[ $policy != refined-max-25 && $policy != adaptive-refined-v1 ]]; then
             printf 'Validated production floor: CPU %s MHz, GPU %s MHz (validated=%s, duration=%ss)\n' \
                 "$(apo_report_state_value FLOOR_CPU pending)" "$(apo_report_state_value FLOOR_GPU pending)" \
                 "$(apo_report_state_value FLOOR_VALIDATED 0)" "$(apo_report_state_value FLOOR_DURATION_S pending)"
@@ -633,7 +637,7 @@ apo_generate_report() {
         fi
         printf 'Maximum fan cooling during tuning: %s\n' \
             "$(apo_report_fan_policy)"
-        if [[ $policy != refined-max-25 ]]; then
+        if [[ $policy != refined-max-25 && $policy != adaptive-refined-v1 ]]; then
             printf 'Longer final extension: enabled=%s, source=%s, stage=%s\n' \
                 "$(apo_report_state_value POST_FLOOR_FINAL 0)" "$(apo_report_state_value SOURCE_FINAL_RUN_ID none)" \
                 "$(apo_report_state_value POST_FLOOR_FINAL_STAGE none)"
@@ -646,7 +650,7 @@ apo_generate_report() {
             "$(apo_report_state_value MANUAL_TEST_STATUS NOT_REQUESTED)" "$(apo_report_state_value MANUAL_CPU n/a)" \
             "$(apo_report_state_value MANUAL_GPU n/a)" "$(apo_report_manual_duration)"
         printf 'Maximum observed run temperature: %sC\n' "$(apo_report_state_value RUN_MAX_TEMP pending)"
-        if [[ $policy != refined-max-25 ]]; then
+        if [[ $policy != refined-max-25 && $policy != adaptive-refined-v1 ]]; then
             printf 'Edge failure: class=%s, reason=%s\n' \
                 "$(apo_report_state_value EDGE_CPU_FAILURE_CLASS none)" "$(apo_report_sensitive_value "$(apo_report_state_value EDGE_CPU_FAILURE_REASON none)")"
         fi

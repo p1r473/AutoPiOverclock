@@ -106,8 +106,8 @@ apo_progress_qualification_cost() {
 
 apo_progress_domain_remaining_count() {
     local domain=$1 phase=${2:-} index boundary refine_csv refine_index refine_complete guard_verified coarse_count remaining=0
-    local refine_reserve selection_policy
-    local candidates_name
+    local refine_reserve selection_policy resolution coarse_step direction floor reverse_pass
+    local candidates_name explicit_floor=0
     apo_progress_domain_is_selected "$domain" || { printf 0; return; }
     selection_policy=$(apo_state_get CFG_SELECTION_POLICY "${APO_SELECTION_POLICY:-guarded-v1}")
     case $domain in
@@ -119,7 +119,12 @@ apo_progress_domain_remaining_count() {
             refine_index=$(apo_state_get CPU_REFINE_INDEX 0)
             refine_complete=$(apo_state_get CPU_REFINE_COMPLETE 0)
             guard_verified=$(apo_state_get CPU_GUARD_VERIFIED 0)
-            refine_reserve=$((APO_AUTO_CPU_STEP_MHZ / APO_AUTO_REFINE_STEP_MHZ - 1))
+            resolution=$(apo_state_get CFG_CPU_RESOLUTION_MHZ "${APO_CPU_RESOLUTION_MHZ:-$APO_AUTO_REFINE_STEP_MHZ}")
+            coarse_step=$APO_AUTO_CPU_STEP_MHZ
+            direction=$(apo_state_get CFG_CPU_SEARCH_DIRECTION "${APO_CPU_SEARCH_DIRECTION:-forward}")
+            floor=${APO_CPU_MIN:-${APO_NORMAL_CPU:-$APO_AUTO_BASELINE_CPU}}
+            [[ -z ${APO_CPU_MIN:-} ]] || explicit_floor=1
+            reverse_pass=$(apo_state_get CPU_REVERSE_PASS '')
             ;;
         GPU)
             candidates_name=APO_GPU_CANDIDATES
@@ -129,10 +134,18 @@ apo_progress_domain_remaining_count() {
             refine_index=$(apo_state_get GPU_REFINE_INDEX 0)
             refine_complete=$(apo_state_get GPU_REFINE_COMPLETE 0)
             guard_verified=$(apo_state_get GPU_GUARD_VERIFIED 0)
-            refine_reserve=$((APO_AUTO_GPU_STEP_MHZ / APO_AUTO_REFINE_STEP_MHZ - 1))
+            resolution=$(apo_state_get CFG_GPU_RESOLUTION_MHZ "${APO_GPU_RESOLUTION_MHZ:-$APO_AUTO_REFINE_STEP_MHZ}")
+            coarse_step=$APO_AUTO_GPU_STEP_MHZ
+            direction=$(apo_state_get CFG_GPU_SEARCH_DIRECTION "${APO_GPU_SEARCH_DIRECTION:-forward}")
+            floor=${APO_GPU_MIN:-${APO_NORMAL_GPU:-$APO_AUTO_BASELINE_GPU}}
+            [[ -z ${APO_GPU_MIN:-} ]] || explicit_floor=1
+            reverse_pass=$(apo_state_get GPU_REVERSE_PASS '')
             ;;
         *) printf 0; return ;;
     esac
+    [[ $resolution =~ ^[1-9][0-9]*$ ]] || resolution=$APO_AUTO_REFINE_STEP_MHZ
+    (( resolution > coarse_step )) && coarse_step=$resolution
+    refine_reserve=$(((coarse_step + resolution - 1) / resolution - 1))
     local -n candidates=$candidates_name
     [[ $index =~ ^[0-9]+$ ]] || index=0
     coarse_count=${#candidates[@]}
@@ -143,6 +156,16 @@ apo_progress_domain_remaining_count() {
         esac
     fi
     if [[ -z $boundary ]] && (( index < coarse_count )); then remaining=$((remaining + coarse_count - index)); fi
+    if [[ $selection_policy == adaptive-refined-v1 && $direction == descending && -n $boundary && -z $reverse_pass &&
+          $boundary =~ ^[0-9]+$ && $floor =~ ^[0-9]+$ && $boundary -gt $floor ]]; then
+        if (( explicit_floor == 1 )); then
+            remaining=$((remaining + (boundary - floor + coarse_step - 1) / coarse_step))
+        else
+            # The protected baseline is an implicit fallback, not another
+            # overclock candidate. Runtime stops before testing it.
+            remaining=$((remaining + (boundary - floor - 1) / coarse_step))
+        fi
+    fi
     if (( ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 )); then
         if [[ $refine_complete != 1 ]]; then
             if [[ -n $refine_csv ]]; then
@@ -157,7 +180,7 @@ apo_progress_domain_remaining_count() {
                 remaining=$((remaining + refine_reserve))
             fi
         fi
-        if [[ $selection_policy != refined-max-25 && $guard_verified != 1 ]]; then
+        if [[ $selection_policy != refined-max-25 && $selection_policy != adaptive-refined-v1 && $guard_verified != 1 ]]; then
             remaining=$((remaining + 1))
         fi
     fi

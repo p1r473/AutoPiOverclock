@@ -39,6 +39,8 @@ seed_plan() {
     apo_state_set RUN_ID history-scheduler
     apo_state_set HISTORY_ISOLATION_STAGE PLANNED
     apo_state_set HISTORY_PAIR_FRONTIERS 3100/1200
+    apo_state_set CFG_CPU_MAX_EFFECTIVE 3200
+    apo_state_set CFG_GPU_MAX_EFFECTIVE 1200
     apo_state_set HISTORY_ISOLATION_ANCHOR_CPU 3100
     apo_state_set HISTORY_ISOLATION_ANCHOR_GPU 1200
     apo_state_set HISTORY_CPU_TRIAL_CPU 3075
@@ -247,5 +249,60 @@ fi
 [[ $(apo_state_get HISTORY_ISOLATION_STAGE '') == DONE ]]
 [[ $(apo_state_get HISTORY_ISOLATION_HISTORY '') == *'|STABILITY_FAILURE|CPU|'* ]]
 [[ -z $(apo_state_get FINAL_BACKOFF_HISTORY '') ]]
+
+# The adaptive policy uses the configured CPU resolution for an exact-domain
+# final failure and clamps the last step to a non-aligned hard minimum.
+seed_active_trial
+APO_SELECTION_POLICY=adaptive-refined-v1
+APO_CPU_RESOLUTION_MHZ=5
+APO_GPU_RESOLUTION_MHZ=1
+APO_CPU_MIN=3072
+APO_GPU_MIN=1100
+apo_state_set HISTORY_ISOLATION_STAGE NONE
+apo_state_set SAFE_CPU 3075
+apo_state_set SAFE_GPU 1200
+apo_refined_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'Adaptive exact CPU fixture.' CPU
+[[ $(apo_state_get RECOMMENDED_CPU '') == 3072 && $(apo_state_get RECOMMENDED_GPU '') == 1200 ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY '') == 'EXACT_CPU:3075/1200>3072/1200' ]]
+[[ $(apo_state_get CPU_QUALIFICATION_TARGET '') == 3072 ]]
+[[ $(apo_state_get PHASE '') == CPU_QUALIFICATION ]]
+apo_refined_validate_final_backoff_state
+
+# Ambiguous current-run isolation also honors each domain independently: CPU
+# moves by 5 MHz, GPU by 1 MHz, then the pair branch combines those exact
+# tested coordinates.  These fixtures are separate from the legacy 25 MHz
+# retained-history scheduler cases above.
+seed_active_trial
+APO_SELECTION_POLICY=adaptive-refined-v1
+APO_CPU_RESOLUTION_MHZ=5
+APO_GPU_RESOLUTION_MHZ=1
+APO_CPU_MIN=3000
+APO_GPU_MIN=1100
+apo_state_set HISTORY_ISOLATION_STAGE NONE
+apo_state_set SAFE_CPU 3075
+apo_state_set SAFE_GPU 1200
+apo_refined_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'Adaptive ambiguous anchor.' ''
+[[ $(apo_state_get RECOMMENDED_CPU '') == 3070 && $(apo_state_get RECOMMENDED_GPU '') == 1200 ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL '') == CPU ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY '') == 'TRIAL_CPU:3075/1200>3070/1200' ]]
+
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3070
+apo_state_set CPU_QUALIFIED_CLOCK 3070
+apo_refined_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'Adaptive CPU-only trial failed ambiguously.' ''
+[[ $(apo_state_get RECOMMENDED_CPU '') == 3075 && $(apo_state_get RECOMMENDED_GPU '') == 1199 ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL '') == GPU ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY '') == 'TRIAL_CPU:3075/1200>3070/1200,TRIAL_GPU:3070/1200>3075/1199' ]]
+
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3075
+apo_state_set GPU_QUALIFICATION_TARGET 1199
+apo_state_set GPU_QUALIFIED_CPU 3075
+apo_state_set GPU_QUALIFIED_CLOCK 1199
+apo_refined_schedule_stress_backoff ENDURANCE STABILITY_FAILURE 'Adaptive GPU-only trial failed ambiguously.' ''
+[[ $(apo_state_get RECOMMENDED_CPU '') == 3070 && $(apo_state_get RECOMMENDED_GPU '') == 1199 ]]
+[[ $(apo_state_get FINAL_BACKOFF_TRIAL '') == PAIR ]]
+[[ $(apo_state_get FINAL_BACKOFF_HISTORY '') == 'TRIAL_CPU:3075/1200>3070/1200,TRIAL_GPU:3070/1200>3075/1199,TRIAL_PAIR:3075/1199>3070/1199' ]]
+apo_refined_validate_final_backoff_state
 
 printf 'test_history_scheduler: PASS\n'

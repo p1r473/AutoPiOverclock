@@ -23,6 +23,13 @@ APO_HISTORY_SCAN_ERROR=''
 APO_HISTORY_PLAN_ANNOUNCED=0
 APO_HISTORY_CPU_APPROACH_START=''
 APO_HISTORY_GPU_APPROACH_START=''
+APO_HISTORY_CPU_REVERSE_SEARCH=0
+APO_HISTORY_GPU_REVERSE_SEARCH=0
+APO_HISTORY_CPU_RETAINED_CAP=''
+APO_HISTORY_GPU_RETAINED_CAP=''
+APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=0
+APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=0
+APO_HISTORY_PLAN_WARNING=''
 
 apo_history_reset() {
     APO_HISTORY_CPU_FAILURE_BOUNDARY=''
@@ -36,6 +43,13 @@ apo_history_reset() {
     APO_HISTORY_SCAN_ERROR=''
     APO_HISTORY_CPU_APPROACH_START=''
     APO_HISTORY_GPU_APPROACH_START=''
+    APO_HISTORY_CPU_REVERSE_SEARCH=0
+    APO_HISTORY_GPU_REVERSE_SEARCH=0
+    APO_HISTORY_CPU_RETAINED_CAP=''
+    APO_HISTORY_GPU_RETAINED_CAP=''
+    APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=0
+    APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=0
+    APO_HISTORY_PLAN_WARNING=''
     APO_HISTORY_RECORDS=()
     APO_HISTORY_RAW_PAIRS=()
     APO_HISTORY_LEDGER_RECORDS=()
@@ -412,6 +426,12 @@ apo_history_emit_loaded_evidence() {
 
     history=$(apo_state_get FINAL_BACKOFF_HISTORY '')
     selection_policy=$(apo_state_get CFG_SELECTION_POLICY guarded-v1)
+    # Schema-10 evidence may use either the original fixed-order policy name
+    # or the adaptive scheduler introduced for new runs.  Both policies commit
+    # the same domain-attributed FINAL_BACKOFF_HISTORY record shapes.
+    if [[ $selection_policy == adaptive-refined-v1 ]]; then
+        selection_policy=refined-max-25
+    fi
     if [[ -n $history ]]; then
         IFS=',' read -r -a entries <<< "$history"
         for entry in "${entries[@]}"; do
@@ -463,13 +483,17 @@ apo_history_emit_loaded_evidence() {
     fi
 
     apo_history_emit_failure_events "$run_id" "$basename" || return 1
-    apo_history_emit_isolation_history "$run_id" "$basename" || return 1
+    # HISTORY_ISOLATION_HISTORY is an explanatory transition journal.  The
+    # same committed failures are recorded in HISTORY_FAILURE_EVENTS and/or
+    # replay-validated backoff fields.  Do not promote the journal itself to
+    # future clock-boundary authority.
 }
 
 # Run all parsing, restore, validation, compatibility checks, and extraction in
 # a subshell so a retained file cannot alter the new run's controller state.
 apo_history_screen_validate_emit_file() (
     local source_file=$1 basename run_id origin schema read_only auto_generated edge_status edge_class
+    local post_floor_final post_floor_final_stage
     local expected_profile=${APO_PROFILE:-} expected_gpu_key=${APO_GPU_KEY:-}
     local expected_test_voltage=${APO_TEST_VOLTAGE:-}
     local expected_baseline_cpu expected_baseline_gpu expected_baseline_voltage
@@ -506,7 +530,8 @@ apo_history_screen_validate_emit_file() (
     # because it shares the target's artifact namespace.
     apo_history_load_screen_fields "$source_file" metadata \
         FORMAT_VERSION RUN_SCHEMA RUN_ID REMOTE_TARGET TARGET_SLUG ORIGIN_COMMAND \
-        READ_ONLY_RUN CFG_AUTO_GENERATED_CANDIDATES || return 1
+        READ_ONLY_RUN CFG_AUTO_GENERATED_CANDIDATES POST_FLOOR_FINAL \
+        POST_FLOOR_FINAL_STAGE || return 1
     [[ $(apo_history_state_value metadata FORMAT_VERSION '') == 1 ]] || {
         [[ -n $(apo_history_state_value metadata FORMAT_VERSION '') ]] && return 3
         return 1
@@ -528,6 +553,19 @@ apo_history_screen_validate_emit_file() (
     auto_generated=$(apo_history_state_value metadata CFG_AUTO_GENERATED_CANDIDATES '')
     case $auto_generated in 1) ;; 0) return 3 ;; *) return 1 ;; esac
 
+    # A linked longer-final run is deliberately saved around its verified
+    # apply rollback, before inherited final markers are normalized.  It is
+    # resumable controller state, not a completed source of new clock-boundary
+    # evidence.  The original source run remains available, so ignore only
+    # these exact transitions during a fresh history scan.
+    post_floor_final=$(apo_history_state_value metadata POST_FLOOR_FINAL 0)
+    post_floor_final_stage=$(apo_history_state_value metadata POST_FLOOR_FINAL_STAGE '')
+    if [[ $post_floor_final == 1 ]]; then
+        case $post_floor_final_stage in
+            ROLLBACK_PENDING|ROLLBACK_COMPLETE) return 3 ;;
+        esac
+    fi
+
     # Only fields that record a committed failure/backoff result make an
     # automatic state a history authority.  Imported HISTORY_* plan snapshots
     # deliberately do not count, otherwise merely consuming old history would
@@ -536,7 +574,7 @@ apo_history_screen_validate_emit_file() (
     apo_history_load_screen_fields "$source_file" evidence \
         CPU_FAILURE_BOUNDARY GPU_FAILURE_BOUNDARY CPU_QUALIFICATION_HISTORY \
         FINAL_BACKOFF_HISTORY EDGE_CPU_STATUS EDGE_CPU_FAILURE_CLASS EDGE_CPU_TARGET \
-        HISTORY_FAILURE_EVENTS HISTORY_ISOLATION_HISTORY || return 1
+        HISTORY_FAILURE_EVENTS || return 1
     edge_status=$(apo_history_state_value evidence EDGE_CPU_STATUS NOT_REQUESTED)
     edge_class=$(apo_history_state_value evidence EDGE_CPU_FAILURE_CLASS '')
     if [[ -z $(apo_history_state_value evidence CPU_FAILURE_BOUNDARY '') &&
@@ -544,7 +582,6 @@ apo_history_screen_validate_emit_file() (
           -z $(apo_history_state_value evidence CPU_QUALIFICATION_HISTORY '') &&
           -z $(apo_history_state_value evidence FINAL_BACKOFF_HISTORY '') &&
           -z $(apo_history_state_value evidence HISTORY_FAILURE_EVENTS '') &&
-          -z $(apo_history_state_value evidence HISTORY_ISOLATION_HISTORY '') &&
           $edge_status != REJECTED && -z $edge_class ]]; then
         return 3
     fi
@@ -679,114 +716,188 @@ apo_history_finalize_frontiers() {
     done
 }
 
+apo_history_domain_resolution_mhz() {
+    local resolution
+    case $1 in
+        CPU) resolution=${APO_CPU_RESOLUTION_MHZ:-${APO_AUTO_REFINE_STEP_MHZ:-25}} ;;
+        GPU) resolution=${APO_GPU_RESOLUTION_MHZ:-${APO_AUTO_REFINE_STEP_MHZ:-25}} ;;
+        *) return 1 ;;
+    esac
+    apo_is_uint "$resolution" && (( resolution > 0 )) || return 1
+    printf '%s' "$resolution"
+}
+
+apo_history_domain_candidate_floor_mhz() {
+    local floor
+    case $1 in
+        CPU)
+            floor=${APO_CPU_MIN:-$(( ${APO_NORMAL_CPU:-0} + 1 ))}
+            ;;
+        GPU)
+            floor=${APO_GPU_MIN:-$(( ${APO_NORMAL_GPU:-0} + 1 ))}
+            ;;
+        *) return 1 ;;
+    esac
+    apo_is_uint "$floor" || return 1
+    printf '%s' "$floor"
+}
+
+apo_history_clamp_candidate_floor() {
+    local domain=$1 candidate=$2 floor
+    apo_is_uint "$candidate" || return 1
+    floor=$(apo_history_domain_candidate_floor_mhz "$domain") || return 1
+    (( candidate < floor )) && candidate=$floor
+    printf '%s' "$candidate"
+}
+
+apo_history_failure_exclusive_cap() {
+    local domain=$1 boundary=$2 resolution=$3 candidate floor
+    apo_is_uint "$boundary" && apo_is_uint "$resolution" && (( resolution > 0 )) || return 1
+    floor=$(apo_history_domain_candidate_floor_mhz "$domain") || return 1
+    candidate=$floor
+    if (( boundary > resolution )); then
+        candidate=$((boundary - resolution))
+    fi
+    apo_history_clamp_candidate_floor "$domain" "$candidate"
+}
+
 apo_history_resolve_scalar_caps() {
-    local requested_cpu=$1 requested_gpu=$2 cap
+    local requested_cpu=$1 requested_gpu=$2 cap resolution
     APO_HISTORY_EFFECTIVE_CPU_MAX=$requested_cpu
     APO_HISTORY_EFFECTIVE_GPU_MAX=$requested_gpu
+    APO_HISTORY_CPU_RETAINED_CAP=''
+    APO_HISTORY_GPU_RETAINED_CAP=''
     [[ -z $requested_cpu ]] || apo_is_uint "$requested_cpu" || return 1
     [[ -z $requested_gpu ]] || apo_is_uint "$requested_gpu" || return 1
     if [[ -n $APO_HISTORY_EFFECTIVE_CPU_MAX && -n $APO_HISTORY_CPU_FAILURE_BOUNDARY ]]; then
-        (( APO_HISTORY_CPU_FAILURE_BOUNDARY > 25 )) || return 1
-        cap=$((APO_HISTORY_CPU_FAILURE_BOUNDARY - 25))
-        if [[ -z $APO_HISTORY_EFFECTIVE_CPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_CPU_MAX ]]; then
+        resolution=$(apo_history_domain_resolution_mhz CPU) || return 1
+        cap=$(apo_history_failure_exclusive_cap CPU "$APO_HISTORY_CPU_FAILURE_BOUNDARY" "$resolution") || return 1
+        if (( cap >= APO_HISTORY_CPU_FAILURE_BOUNDARY && ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 )); then
+            return 1
+        fi
+        APO_HISTORY_CPU_RETAINED_CAP=$cap
+        if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 )) &&
+           [[ -z $APO_HISTORY_EFFECTIVE_CPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_CPU_MAX ]]; then
             APO_HISTORY_EFFECTIVE_CPU_MAX=$cap
         fi
     fi
     if [[ -n $APO_HISTORY_EFFECTIVE_GPU_MAX && -n $APO_HISTORY_GPU_FAILURE_BOUNDARY ]]; then
-        (( APO_HISTORY_GPU_FAILURE_BOUNDARY > 25 )) || return 1
-        cap=$((APO_HISTORY_GPU_FAILURE_BOUNDARY - 25))
-        if [[ -z $APO_HISTORY_EFFECTIVE_GPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_GPU_MAX ]]; then
+        resolution=$(apo_history_domain_resolution_mhz GPU) || return 1
+        cap=$(apo_history_failure_exclusive_cap GPU "$APO_HISTORY_GPU_FAILURE_BOUNDARY" "$resolution") || return 1
+        if (( cap >= APO_HISTORY_GPU_FAILURE_BOUNDARY && ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 )); then
+            return 1
+        fi
+        APO_HISTORY_GPU_RETAINED_CAP=$cap
+        if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 )) &&
+           [[ -z $APO_HISTORY_EFFECTIVE_GPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_GPU_MAX ]]; then
             APO_HISTORY_EFFECTIVE_GPU_MAX=$cap
         fi
     fi
 }
 
-apo_history_derive_approach_start() {
-    local maximum=$1 normal=$2 coarse_step=$3 candidate minimum
-    apo_is_uint "$maximum" && apo_is_uint "$normal" && apo_is_uint "$coarse_step" || return 1
-    (( maximum > normal )) || return 0
-    candidate=$((maximum - coarse_step))
-    minimum=$((normal + 1))
-    (( candidate >= minimum )) || candidate=$minimum
-    candidate=$(( ((candidate + APO_AUTO_REFINE_STEP_MHZ - 1) / APO_AUTO_REFINE_STEP_MHZ) * APO_AUTO_REFINE_STEP_MHZ ))
-    (( candidate < maximum )) || return 0
-    printf '%s' "$candidate"
+apo_history_append_plan_warning() {
+    local warning=$1
+    [[ -n $warning ]] || return 1
+    if [[ -n $APO_HISTORY_PLAN_WARNING ]]; then
+        APO_HISTORY_PLAN_WARNING+=" $warning"
+    else
+        APO_HISTORY_PLAN_WARNING=$warning
+    fi
+    return 0
 }
 
-# Retained failures bound the top of a new search.  When compatible evidence
-# exists and the user did not choose an explicit minimum, re-prove one coarse
-# step below that ceiling and approach it from below.  This avoids replaying the
-# entire low ladder while preserving a passing predecessor for 25 MHz
-# refinement if the ceiling fails again.
+apo_history_finalize_ceiling_warnings() {
+    local effective_cpu=$1 effective_gpu=$2
+    APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=0
+    APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=0
+    APO_HISTORY_PLAN_WARNING=''
+
+    if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 1 )) &&
+       [[ $effective_cpu =~ ^[0-9]+$ && $APO_HISTORY_CPU_RETAINED_CAP =~ ^[0-9]+$ ]] &&
+       (( effective_cpu > APO_HISTORY_CPU_RETAINED_CAP )); then
+        APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=1
+        apo_history_append_plan_warning "Explicit --cpu-max ${effective_cpu} MHz exceeds the retained CPU ceiling ${APO_HISTORY_CPU_RETAINED_CAP} MHz; the explicit value is the reverse-search starting ceiling."
+    fi
+    if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 1 )) &&
+       [[ $effective_gpu =~ ^[0-9]+$ && $APO_HISTORY_GPU_RETAINED_CAP =~ ^[0-9]+$ ]] &&
+       (( effective_gpu > APO_HISTORY_GPU_RETAINED_CAP )); then
+        APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=1
+        apo_history_append_plan_warning "Explicit --gpu-max ${effective_gpu} MHz exceeds the retained GPU ceiling ${APO_HISTORY_GPU_RETAINED_CAP} MHz; the explicit value is the reverse-search starting ceiling."
+    fi
+    return 0
+}
+
+apo_history_derive_approach_start() {
+    local maximum=$1 normal=$2 coarse_step=$3
+    apo_is_uint "$maximum" && apo_is_uint "$normal" && apo_is_uint "$coarse_step" || return 1
+    (( maximum > normal )) || return 0
+    printf '%s' "$maximum"
+}
+
+# A user-selected maximum or compatible retained failure turns each affected
+# domain into a reverse search.  The first candidate is the effective ceiling
+# itself.  APO_CPU_MIN and APO_GPU_MIN remain exclusively user-selected lower
+# exhaustion bounds; the reverse scheduler consumes the separate
+# approach-start fields below.
 apo_history_apply_approach_starts() {
-    local domain=$1 effective_cpu=$2 effective_gpu=$3 cpu_start='' gpu_start='' trial
+    local domain=$1 effective_cpu=$2 effective_gpu=$3 cpu_start='' gpu_start=''
     local normal_cpu=${APO_NORMAL_CPU:-} normal_gpu=${APO_NORMAL_GPU:-}
     local cpu_min_source=automatic-baseline gpu_min_source=automatic-baseline
-    local cpu_history_relevant=0 gpu_history_relevant=0
+    local cpu_reverse_relevant=0 gpu_reverse_relevant=0
     APO_HISTORY_CPU_APPROACH_START=''
     APO_HISTORY_GPU_APPROACH_START=''
+    APO_HISTORY_CPU_REVERSE_SEARCH=0
+    APO_HISTORY_GPU_REVERSE_SEARCH=0
 
-    if (( APO_HISTORY_ACCEPTED_STATES == 0 )); then
-        if (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 0 )); then APO_CPU_MIN=''; fi
-        if (( ${APO_GPU_MIN_OPTION_SEEN:-0} == 0 )); then APO_GPU_MIN=''; fi
-        (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 0 )) || cpu_min_source=cli
-        (( ${APO_GPU_MIN_OPTION_SEEN:-0} == 0 )) || gpu_min_source=cli
-        apo_state_set CFG_CPU_MIN_SOURCE "$cpu_min_source"
-        apo_state_set CFG_GPU_MIN_SOURCE "$gpu_min_source"
-        return 0
+    if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 1 )); then
+        cpu_reverse_relevant=1
+    elif (( APO_HISTORY_ACCEPTED_STATES > 0 )) &&
+         [[ -n $APO_HISTORY_CPU_RETAINED_CAP ]]; then
+        cpu_reverse_relevant=1
     fi
-
-    [[ -z $APO_HISTORY_CPU_FAILURE_BOUNDARY && -z $APO_HISTORY_PAIR_FRONTIERS ]] || cpu_history_relevant=1
-    [[ -z $APO_HISTORY_GPU_FAILURE_BOUNDARY && -z $APO_HISTORY_PAIR_FRONTIERS ]] || gpu_history_relevant=1
+    if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 1 )); then
+        gpu_reverse_relevant=1
+    elif (( APO_HISTORY_ACCEPTED_STATES > 0 )) &&
+         [[ -n $APO_HISTORY_GPU_RETAINED_CAP ]]; then
+        gpu_reverse_relevant=1
+    fi
     if [[ $domain == gpu ]]; then
         APO_CPU_MIN=''
-        cpu_history_relevant=0
+        cpu_reverse_relevant=0
     elif [[ $domain == cpu ]]; then
         APO_GPU_MIN=''
-        gpu_history_relevant=0
+        gpu_reverse_relevant=0
     fi
-    if (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 0 && cpu_history_relevant == 0 )); then APO_CPU_MIN=''; fi
-    if (( ${APO_GPU_MIN_OPTION_SEEN:-0} == 0 && gpu_history_relevant == 0 )); then APO_GPU_MIN=''; fi
 
-    if [[ $domain != gpu ]] && (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 0 && cpu_history_relevant == 1 )); then
+    if [[ $domain != gpu ]] && (( cpu_reverse_relevant == 1 )); then
         apo_is_uint "$normal_cpu" || return 1
         cpu_start=$(apo_history_derive_approach_start "$effective_cpu" "$normal_cpu" "$APO_AUTO_CPU_STEP_MHZ") || return 1
-        if [[ $(apo_state_get HISTORY_ISOLATION_STAGE NONE) == PLANNED ]]; then
-            for trial in "$(apo_state_get HISTORY_CPU_TRIAL_CPU '')" "$(apo_state_get HISTORY_PAIR_TRIAL_CPU '')"; do
-                [[ $trial =~ ^[0-9]+$ && $trial -gt $normal_cpu ]] || continue
-                [[ -n $cpu_start && $trial -lt $cpu_start ]] && cpu_start=$trial
-            done
+        if [[ -n $cpu_start ]]; then
+            APO_HISTORY_CPU_APPROACH_START=$cpu_start
+            APO_HISTORY_CPU_REVERSE_SEARCH=1
         fi
-        APO_CPU_MIN=$cpu_start
-        APO_HISTORY_CPU_APPROACH_START=$cpu_start
     fi
-    if [[ $domain != cpu ]] && (( ${APO_GPU_MIN_OPTION_SEEN:-0} == 0 && gpu_history_relevant == 1 )); then
+    if [[ $domain != cpu ]] && (( gpu_reverse_relevant == 1 )); then
         apo_is_uint "$normal_gpu" || return 1
         gpu_start=$(apo_history_derive_approach_start "$effective_gpu" "$normal_gpu" "$APO_AUTO_GPU_STEP_MHZ") || return 1
-        if [[ $(apo_state_get HISTORY_ISOLATION_STAGE NONE) == PLANNED ]]; then
-            for trial in "$(apo_state_get HISTORY_GPU_TRIAL_GPU '')" "$(apo_state_get HISTORY_PAIR_TRIAL_GPU '')"; do
-                [[ $trial =~ ^[0-9]+$ && $trial -gt $normal_gpu ]] || continue
-                [[ -n $gpu_start && $trial -lt $gpu_start ]] && gpu_start=$trial
-            done
+        if [[ -n $gpu_start ]]; then
+            APO_HISTORY_GPU_APPROACH_START=$gpu_start
+            APO_HISTORY_GPU_REVERSE_SEARCH=1
         fi
-        APO_GPU_MIN=$gpu_start
-        APO_HISTORY_GPU_APPROACH_START=$gpu_start
     fi
 
     if (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 1 )); then
         cpu_min_source=cli
-    elif [[ -n $APO_HISTORY_CPU_APPROACH_START ]]; then
-        cpu_min_source=history
     fi
     if (( ${APO_GPU_MIN_OPTION_SEEN:-0} == 1 )); then
         gpu_min_source=cli
-    elif [[ -n $APO_HISTORY_GPU_APPROACH_START ]]; then
-        gpu_min_source=history
     fi
     apo_state_set CFG_CPU_MIN_SOURCE "$cpu_min_source"
     apo_state_set CFG_GPU_MIN_SOURCE "$gpu_min_source"
     apo_state_set HISTORY_CPU_APPROACH_START "$APO_HISTORY_CPU_APPROACH_START"
     apo_state_set HISTORY_GPU_APPROACH_START "$APO_HISTORY_GPU_APPROACH_START"
+    apo_state_set HISTORY_CPU_REVERSE_SEARCH "$APO_HISTORY_CPU_REVERSE_SEARCH"
+    apo_state_set HISTORY_GPU_REVERSE_SEARCH "$APO_HISTORY_GPU_REVERSE_SEARCH"
 }
 
 apo_history_pair_is_forbidden() {
@@ -831,7 +942,8 @@ apo_history_validate_plan_pair() {
 # is safe for alpha.49 schema-10 states: absent fields mean NONE/no plan.
 apo_history_validate_plan_state() {
     local stage frontiers anchor_cpu anchor_gpu cpu_trial_cpu cpu_trial_gpu
-    local gpu_trial_cpu gpu_trial_gpu pair_trial_cpu pair_trial_gpu handoff_cpu handoff_gpu
+    local gpu_trial_cpu gpu_trial_gpu pair_trial_cpu pair_trial_gpu handoff_cpu handoff_gpu cpu_floor gpu_floor
+    local cpu_max gpu_max base_cpu handoff_valid=0
     APO_HISTORY_VALIDATION_REASON=''
     APO_HISTORY_ERROR=''
     stage=$(apo_state_get HISTORY_ISOLATION_STAGE NONE)
@@ -853,7 +965,18 @@ apo_history_validate_plan_state() {
     pair_trial_gpu=$(apo_state_get HISTORY_PAIR_TRIAL_GPU '')
     handoff_cpu=$(apo_state_get HISTORY_ISOLATION_HANDOFF_CPU '')
     handoff_gpu=$(apo_state_get HISTORY_ISOLATION_HANDOFF_GPU '')
+    cpu_floor=$(apo_history_domain_candidate_floor_mhz CPU) || return 1
+    gpu_floor=$(apo_history_domain_candidate_floor_mhz GPU) || return 1
+    cpu_max=$(apo_state_get CFG_CPU_MAX_EFFECTIVE '')
+    gpu_max=$(apo_state_get CFG_GPU_MAX_EFFECTIVE '')
+    base_cpu=$(apo_state_get HISTORY_BASE_CPU_QUALIFIED_CLOCK '')
 
+    apo_is_uint "$cpu_max" && apo_is_uint "$gpu_max" &&
+        (( cpu_max >= cpu_floor && gpu_max >= gpu_floor )) || {
+        APO_HISTORY_VALIDATION_REASON='History isolation has no valid effective maximum pair.'
+        APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
+        return 1
+    }
     apo_is_uint "$anchor_cpu" && apo_is_uint "$anchor_gpu" || {
         APO_HISTORY_VALIDATION_REASON='History isolation has no numeric anchor pair.'
         APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
@@ -862,6 +985,22 @@ apo_history_validate_plan_state() {
     apo_history_validate_plan_pair 'CPU trial' "$cpu_trial_cpu" "$cpu_trial_gpu" "$frontiers" || return 1
     apo_history_validate_plan_pair 'GPU trial' "$gpu_trial_cpu" "$gpu_trial_gpu" "$frontiers" || return 1
     apo_history_validate_plan_pair 'pair trial' "$pair_trial_cpu" "$pair_trial_gpu" "$frontiers" || return 1
+    if (( anchor_cpu < cpu_floor || anchor_gpu < gpu_floor ||
+          cpu_trial_cpu < cpu_floor || cpu_trial_gpu < gpu_floor ||
+          gpu_trial_cpu < cpu_floor || gpu_trial_gpu < gpu_floor ||
+          pair_trial_cpu < cpu_floor || pair_trial_gpu < gpu_floor )); then
+        APO_HISTORY_VALIDATION_REASON='History isolation contains a clock below its protected or user-requested floor.'
+        APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
+        return 1
+    fi
+    if (( anchor_cpu > cpu_max || anchor_gpu > gpu_max ||
+          cpu_trial_cpu > cpu_max || cpu_trial_gpu > gpu_max ||
+          gpu_trial_cpu > cpu_max || gpu_trial_gpu > gpu_max ||
+          pair_trial_cpu > cpu_max || pair_trial_gpu > gpu_max )); then
+        APO_HISTORY_VALIDATION_REASON='History isolation contains a clock above its persisted effective maximum.'
+        APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
+        return 1
+    fi
     if (( cpu_trial_cpu >= anchor_cpu || cpu_trial_gpu != anchor_gpu )); then
         APO_HISTORY_VALIDATION_REASON='CPU trial must lower only CPU from the isolation anchor.'
         APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
@@ -872,8 +1011,8 @@ apo_history_validate_plan_state() {
         APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
         return 1
     fi
-    if (( pair_trial_cpu > cpu_trial_cpu || pair_trial_gpu > gpu_trial_gpu )); then
-        APO_HISTORY_VALIDATION_REASON='Pair trial cannot exceed either one-domain trial.'
+    if (( pair_trial_cpu != cpu_trial_cpu || pair_trial_gpu != gpu_trial_gpu )); then
+        APO_HISTORY_VALIDATION_REASON='Pair trial must combine the exact CPU-only and GPU-only trial reductions.'
         APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
         return 1
     fi
@@ -883,6 +1022,32 @@ apo_history_validate_plan_state() {
             APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
             return 1
         fi
+        if (( handoff_cpu < cpu_floor || handoff_gpu < gpu_floor )); then
+            APO_HISTORY_VALIDATION_REASON='History isolation handoff crosses a protected or user-requested floor.'
+            APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
+            return 1
+        fi
+        if (( handoff_cpu > cpu_max || handoff_gpu > gpu_max )); then
+            APO_HISTORY_VALIDATION_REASON='History isolation handoff exceeds its persisted effective maximum.'
+            APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
+            return 1
+        fi
+        if (( ( handoff_cpu == anchor_cpu && handoff_gpu == anchor_gpu ) ||
+              ( handoff_cpu == cpu_trial_cpu && handoff_gpu == cpu_trial_gpu ) ||
+              ( handoff_cpu == gpu_trial_cpu && handoff_gpu == gpu_trial_gpu ) ||
+              ( handoff_cpu == pair_trial_cpu && handoff_gpu == pair_trial_gpu ) )); then
+            handoff_valid=1
+        elif apo_is_uint "$base_cpu" && (( handoff_cpu == base_cpu && handoff_gpu <= gpu_trial_gpu )); then
+            # When a fresh GPU sweep itself drops below the retained ambiguous
+            # quadrant, the scheduler restores the freshly-qualified CPU and
+            # hands off that exact newly-proved GPU clock.
+            handoff_valid=1
+        fi
+        (( handoff_valid == 1 )) || {
+            APO_HISTORY_VALIDATION_REASON='History isolation handoff is not one of its planned or freshly-qualified trial pairs.'
+            APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
+            return 1
+        }
     elif [[ -n $handoff_cpu || -n $handoff_gpu ]]; then
         APO_HISTORY_VALIDATION_REASON='History isolation handoff clocks are present before the plan is complete.'
         APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
@@ -1091,6 +1256,15 @@ apo_history_refresh() {
 }
 
 apo_history_clear_plan_state() {
+    APO_HISTORY_CPU_APPROACH_START=''
+    APO_HISTORY_GPU_APPROACH_START=''
+    APO_HISTORY_CPU_REVERSE_SEARCH=0
+    APO_HISTORY_GPU_REVERSE_SEARCH=0
+    APO_HISTORY_CPU_RETAINED_CAP=''
+    APO_HISTORY_GPU_RETAINED_CAP=''
+    APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=0
+    APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=0
+    APO_HISTORY_PLAN_WARNING=''
     apo_state_set HISTORY_CPU_FAILURE_BOUNDARY ''
     apo_state_set HISTORY_GPU_FAILURE_BOUNDARY ''
     apo_state_set HISTORY_PAIR_FRONTIERS ''
@@ -1101,6 +1275,13 @@ apo_history_clear_plan_state() {
     apo_state_set HISTORY_EVIDENCE_COUNT 0
     apo_state_set HISTORY_CPU_APPROACH_START ''
     apo_state_set HISTORY_GPU_APPROACH_START ''
+    apo_state_set HISTORY_CPU_REVERSE_SEARCH 0
+    apo_state_set HISTORY_GPU_REVERSE_SEARCH 0
+    apo_state_set HISTORY_CPU_RETAINED_CAP ''
+    apo_state_set HISTORY_GPU_RETAINED_CAP ''
+    apo_state_set HISTORY_CPU_EXPLICIT_MAX_OVERRIDE 0
+    apo_state_set HISTORY_GPU_EXPLICIT_MAX_OVERRIDE 0
+    apo_state_set HISTORY_PLAN_WARNING ''
     apo_state_set HISTORY_ISOLATION_STAGE NONE
     apo_state_set HISTORY_ISOLATION_ANCHOR_CPU ''
     apo_state_set HISTORY_ISOLATION_ANCHOR_GPU ''
@@ -1136,7 +1317,8 @@ apo_history_set_validation_error() {
 apo_history_announce_resolved_plan() {
     local use_history=$1 requested_cpu requested_gpu cpu_cap gpu_cap cpu_boundary gpu_boundary pair_frontier line
     local requested_cpu_display requested_gpu_display cpu_cap_display gpu_cap_display
-    local cpu_start_display gpu_start_display
+    local cpu_start_display gpu_start_display cpu_floor gpu_floor cpu_direction gpu_direction
+    local cpu_resolution gpu_resolution cpu_coarse gpu_coarse warning
     (( APO_HISTORY_PLAN_ANNOUNCED == 0 )) || return 0
     case ${APO_SWEEP_DOMAIN:-all} in
         all)
@@ -1165,22 +1347,36 @@ apo_history_announce_resolved_plan() {
     cpu_boundary=${APO_HISTORY_CPU_FAILURE_BOUNDARY:-none}
     gpu_boundary=${APO_HISTORY_GPU_FAILURE_BOUNDARY:-none}
     pair_frontier=${APO_HISTORY_PAIR_FRONTIERS:-none}
+    cpu_resolution=$(apo_history_domain_resolution_mhz CPU) || return 1
+    gpu_resolution=$(apo_history_domain_resolution_mhz GPU) || return 1
+    cpu_coarse=${APO_AUTO_CPU_STEP_MHZ:-100}
+    gpu_coarse=${APO_AUTO_GPU_STEP_MHZ:-50}
+    (( cpu_resolution > cpu_coarse )) && cpu_coarse=$cpu_resolution
+    (( gpu_resolution > gpu_coarse )) && gpu_coarse=$gpu_resolution
+    cpu_direction=${APO_CPU_SEARCH_DIRECTION:-forward}
+    gpu_direction=${APO_GPU_SEARCH_DIRECTION:-forward}
+    cpu_floor=${APO_CPU_MIN:-${APO_NORMAL_CPU:-automatic baseline}}
+    gpu_floor=${APO_GPU_MIN:-${APO_NORMAL_GPU:-automatic baseline}}
     if [[ ${APO_SWEEP_DOMAIN:-all} == gpu ]]; then
         cpu_start_display='not swept'
     else
-        cpu_start_display=${APO_CPU_MIN:-automatic baseline ladder}
+        if [[ $cpu_direction == descending ]]; then
+            cpu_start_display="${APO_HISTORY_CPU_APPROACH_START:-$cpu_cap} MHz exact ceiling first"
+        else
+            cpu_start_display='forward baseline ladder'
+        fi
     fi
     if [[ ${APO_SWEEP_DOMAIN:-all} == cpu ]]; then
         gpu_start_display='not swept'
     else
-        gpu_start_display=${APO_GPU_MIN:-automatic baseline ladder}
+        if [[ $gpu_direction == descending ]]; then
+            gpu_start_display="${APO_HISTORY_GPU_APPROACH_START:-$gpu_cap} MHz exact ceiling first"
+        else
+            gpu_start_display='forward baseline ladder'
+        fi
     fi
-    [[ $cpu_start_display == 'automatic baseline ladder' ]] || cpu_start_display+=" MHz"
-    [[ $gpu_start_display == 'automatic baseline ladder' ]] || gpu_start_display+=" MHz"
-    [[ $cpu_start_display != 'not swept MHz' ]] || cpu_start_display='not swept'
-    [[ $gpu_start_display != 'not swept MHz' ]] || gpu_start_display='not swept'
     if (( use_history == 1 )); then
-        line="History ceilings: CPU=${cpu_cap_display} (requested ${requested_cpu_display}); GPU=${gpu_cap_display} (requested ${requested_gpu_display}). Candidate starts: CPU=${cpu_start_display}; GPU=${gpu_start_display}. Retained failures: clear CPU=${cpu_boundary}, clear GPU=${gpu_boundary}, ambiguous pairs=${pair_frontier}; accepted states=${APO_HISTORY_ACCEPTED_STATES}; ledger=${APO_HISTORY_LEDGER_FILE:-unavailable}"
+        line="History ceilings: CPU=${cpu_cap_display} (requested ${requested_cpu_display}); GPU=${gpu_cap_display} (requested ${requested_gpu_display}). Retained failures: clear CPU=${cpu_boundary}, clear GPU=${gpu_boundary}, ambiguous pairs=${pair_frontier}; accepted states=${APO_HISTORY_ACCEPTED_STATES}; ledger=${APO_HISTORY_LEDGER_FILE:-unavailable}"
     else
         line="History disabled for this new run. Ceilings: CPU=${cpu_cap_display} (requested ${requested_cpu_display}); GPU=${gpu_cap_display} (requested ${requested_gpu_display})."
     fi
@@ -1192,16 +1388,36 @@ apo_history_announce_resolved_plan() {
     if declare -F apo_summary_line >/dev/null 2>&1; then
         apo_summary_line "$line"
     fi
+    if [[ ${APO_SWEEP_DOMAIN:-all} != gpu ]]; then
+        line="CPU search: ${cpu_direction}; start=${cpu_start_display}; floor=${cpu_floor} MHz; coarse step=${cpu_coarse} MHz; final resolution=${cpu_resolution} MHz."
+        if declare -F apo_info >/dev/null 2>&1; then apo_info "$line"; else printf '%s\n' "$line"; fi
+        if declare -F apo_summary_line >/dev/null 2>&1; then apo_summary_line "$line"; fi
+    fi
+    if [[ ${APO_SWEEP_DOMAIN:-all} != cpu ]]; then
+        line="GPU search: ${gpu_direction}; start=${gpu_start_display}; floor=${gpu_floor} MHz; coarse step=${gpu_coarse} MHz; final resolution=${gpu_resolution} MHz."
+        if declare -F apo_info >/dev/null 2>&1; then apo_info "$line"; else printf '%s\n' "$line"; fi
+        if declare -F apo_summary_line >/dev/null 2>&1; then apo_summary_line "$line"; fi
+    fi
+    line="Final validation: every accepted pair must complete the full ${APO_FINAL_DURATION_S:-unknown}s duration; any clock backoff restarts that timer from zero."
+    if declare -F apo_info >/dev/null 2>&1; then apo_info "$line"; else printf '%s\n' "$line"; fi
+    if declare -F apo_summary_line >/dev/null 2>&1; then apo_summary_line "$line"; fi
+    warning=${APO_HISTORY_PLAN_WARNING:-}
+    if [[ -n $warning ]]; then
+        if declare -F apo_warn >/dev/null 2>&1; then apo_warn "$warning"; else printf 'WARNING: %s\n' "$warning"; fi
+        if declare -F apo_summary_line >/dev/null 2>&1; then apo_summary_line "WARNING: $warning"; fi
+    fi
     APO_HISTORY_PLAN_ANNOUNCED=1
 }
 
 # Resolve a fresh public automatic run once, before candidate ladders are
-# generated.  Requested caps remain separately available while APO_CPU_MAX and
-# APO_GPU_MAX become the effective, history-constrained maxima.
+# generated. Requested caps remain separately available while APO_CPU_MAX and
+# APO_GPU_MAX become the effective starting ceilings. Retained caps constrain
+# defaults; an explicit CLI maximum remains authoritative and emits metadata
+# that lets the public caller warn before reverse search begins.
 apo_history_resolve_new_overclock_plan() {
     local domain=${APO_SWEEP_DOMAIN:-all} use_history=${APO_USE_HISTORY:-1}
     local requested_cpu requested_gpu effective_cpu effective_gpu pair failed_cpu failed_gpu extra cap
-    local cpu_trial gpu_trial pair_cpu pair_gpu
+    local cpu_trial gpu_trial pair_cpu pair_gpu cpu_resolution gpu_resolution
     local -a frontiers=()
 
     [[ ${APO_ORIGIN_COMMAND:-${APO_PUBLIC_COMMAND:-}} == overclock && ${APO_COMMAND:-} == run && ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 ]] || return 0
@@ -1249,12 +1465,22 @@ apo_history_resolve_new_overclock_plan() {
         apo_history_set_validation_error 'The requested GPU maximum is malformed.'
         return 1
     }
+    if [[ $domain != gpu && -n ${APO_CPU_MIN:-} ]] && (( APO_CPU_MIN <= APO_NORMAL_CPU )); then
+        apo_history_set_validation_error "--cpu-min must be above the protected current CPU clock (${APO_NORMAL_CPU} MHz)."
+        return 1
+    fi
+    if [[ $domain != cpu && -n ${APO_GPU_MIN:-} ]] && (( APO_GPU_MIN <= APO_NORMAL_GPU )); then
+        apo_history_set_validation_error "--gpu-min must be above the protected current GPU/V3D clock (${APO_NORMAL_GPU} MHz)."
+        return 1
+    fi
 
     if (( use_history == 0 )); then
         if (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 0 )); then APO_CPU_MIN=''; fi
         if (( ${APO_GPU_MIN_OPTION_SEEN:-0} == 0 )); then APO_GPU_MIN=''; fi
         APO_CPU_MAX=$effective_cpu
         APO_GPU_MAX=$effective_gpu
+        (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 )) || APO_CPU_SEARCH_DIRECTION=descending
+        (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 )) || APO_GPU_SEARCH_DIRECTION=descending
         apo_state_set CFG_CPU_MIN_SOURCE "$([[ ${APO_CPU_MIN_OPTION_SEEN:-0} == 1 ]] && printf cli || printf automatic-baseline)"
         apo_state_set CFG_GPU_MIN_SOURCE "$([[ ${APO_GPU_MIN_OPTION_SEEN:-0} == 1 ]] && printf cli || printf automatic-baseline)"
         apo_state_set CFG_CPU_MAX_EFFECTIVE "$effective_cpu"
@@ -1271,6 +1497,14 @@ apo_history_resolve_new_overclock_plan() {
     }
     effective_cpu=$APO_HISTORY_EFFECTIVE_CPU_MAX
     effective_gpu=$APO_HISTORY_EFFECTIVE_GPU_MAX
+    cpu_resolution=$(apo_history_domain_resolution_mhz CPU) || {
+        apo_history_set_validation_error 'The CPU resolution is malformed.'
+        return 1
+    }
+    gpu_resolution=$(apo_history_domain_resolution_mhz GPU) || {
+        apo_history_set_validation_error 'The GPU resolution is malformed.'
+        return 1
+    }
 
     if [[ $domain == cpu && -n $APO_HISTORY_PAIR_FRONTIERS ]]; then
         IFS=',' read -r -a frontiers <<< "$APO_HISTORY_PAIR_FRONTIERS"
@@ -1281,8 +1515,17 @@ apo_history_resolve_new_overclock_plan() {
                 return 1
             }
             if (( APO_NORMAL_GPU >= failed_gpu )); then
-                cap=$((failed_cpu - 25))
-                (( cap < effective_cpu )) && effective_cpu=$cap
+                cap=$(apo_history_failure_exclusive_cap CPU "$failed_cpu" "$cpu_resolution") || return 1
+                if (( cap >= failed_cpu && ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 )); then
+                    apo_history_set_validation_error 'A retained CPU failure is at or below the requested hard minimum, so no safe exclusive CPU ceiling exists.'
+                    return 1
+                fi
+                if [[ -z $APO_HISTORY_CPU_RETAINED_CAP ]] || (( cap < APO_HISTORY_CPU_RETAINED_CAP )); then
+                    APO_HISTORY_CPU_RETAINED_CAP=$cap
+                fi
+                if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 && cap < effective_cpu )); then
+                    effective_cpu=$cap
+                fi
             fi
         done
     elif [[ $domain == gpu && -n $APO_HISTORY_PAIR_FRONTIERS ]]; then
@@ -1294,11 +1537,30 @@ apo_history_resolve_new_overclock_plan() {
                 return 1
             }
             if (( APO_NORMAL_CPU >= failed_cpu )); then
-                cap=$((failed_gpu - 25))
-                (( cap < effective_gpu )) && effective_gpu=$cap
+                cap=$(apo_history_failure_exclusive_cap GPU "$failed_gpu" "$gpu_resolution") || return 1
+                if (( cap >= failed_gpu && ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 )); then
+                    apo_history_set_validation_error 'A retained GPU failure is at or below the requested hard minimum, so no safe exclusive GPU ceiling exists.'
+                    return 1
+                fi
+                if [[ -z $APO_HISTORY_GPU_RETAINED_CAP ]] || (( cap < APO_HISTORY_GPU_RETAINED_CAP )); then
+                    APO_HISTORY_GPU_RETAINED_CAP=$cap
+                fi
+                if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 && cap < effective_gpu )); then
+                    effective_gpu=$cap
+                fi
             fi
         done
     fi
+
+    apo_history_finalize_ceiling_warnings "$effective_cpu" "$effective_gpu" || {
+        apo_history_set_validation_error 'Could not resolve retained-history ceiling warnings.'
+        return 1
+    }
+    apo_state_set HISTORY_CPU_RETAINED_CAP "$APO_HISTORY_CPU_RETAINED_CAP"
+    apo_state_set HISTORY_GPU_RETAINED_CAP "$APO_HISTORY_GPU_RETAINED_CAP"
+    apo_state_set HISTORY_CPU_EXPLICIT_MAX_OVERRIDE "$APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE"
+    apo_state_set HISTORY_GPU_EXPLICIT_MAX_OVERRIDE "$APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE"
+    apo_state_set HISTORY_PLAN_WARNING "$APO_HISTORY_PLAN_WARNING"
 
     [[ -z ${APO_CPU_MIN:-} || -z $effective_cpu || ${APO_CPU_MIN} -le $effective_cpu ]] || {
         apo_history_set_validation_error "--cpu-min exceeds the retained-history CPU ceiling (${effective_cpu} MHz); use a lower minimum or explicitly pass --no-history."
@@ -1329,11 +1591,11 @@ apo_history_resolve_new_overclock_plan() {
                 return 1
             }
             if (( effective_gpu >= failed_gpu )); then
-                cap=$((failed_cpu - 25))
+                cap=$(apo_history_failure_exclusive_cap CPU "$failed_cpu" "$cpu_resolution") || return 1
                 (( cap < cpu_trial )) && cpu_trial=$cap
             fi
             if (( effective_cpu >= failed_cpu )); then
-                cap=$((failed_gpu - 25))
+                cap=$(apo_history_failure_exclusive_cap GPU "$failed_gpu" "$gpu_resolution") || return 1
                 (( cap < gpu_trial )) && gpu_trial=$cap
             fi
         done
@@ -1377,5 +1639,7 @@ apo_history_resolve_new_overclock_plan() {
         apo_history_set_validation_error 'Could not derive safe retained-history candidate starting points.'
         return 1
     }
+    (( APO_HISTORY_CPU_REVERSE_SEARCH == 0 )) || APO_CPU_SEARCH_DIRECTION=descending
+    (( APO_HISTORY_GPU_REVERSE_SEARCH == 0 )) || APO_GPU_SEARCH_DIRECTION=descending
     apo_history_announce_resolved_plan 1
 }

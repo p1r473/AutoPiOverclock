@@ -208,7 +208,7 @@ for advanced_command in run resume status summary recover restore apply report; 
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max; do
+for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 if grep -Fq -- '--cpu-start-at' <<< "$help_output"; then
@@ -227,7 +227,7 @@ done
 
 # The public README is the concise command reference, so every accepted public
 # option must remain discoverable there even when several share one table row.
-for documented_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --help --version; do
+for documented_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution --help --version; do
     grep -Fq -- "$documented_option" "$ROOT/README.md"
 done
 
@@ -247,9 +247,13 @@ for required_heading in \
     '## Results'; do
     grep -Fq "$required_heading" "$ROOT/README.md"
 done
-grep -Fq 'CPU starts at 2500 MHz and searches through 3200 MHz' "$ROOT/README.md"
-grep -Fq 'Searches GPU/V3D through 1200 MHz' "$ROOT/README.md"
-grep -Fq 'refines a proved failure gap in 25 MHz steps to the highest actual pass' "$ROOT/README.md"
+grep -Fq 'normal forward sweep starts at 2500 MHz and rises in 100 MHz coarse steps' "$ROOT/README.md"
+grep -Fq 'the reverse sweep tests that exact ceiling first and descends until it finds a pass' "$ROOT/README.md"
+grep -Fq 'forward in 50 MHz coarse steps with no clear GPU ceiling, or downward from a clear retained or explicit ceiling' "$ROOT/README.md"
+grep -Fq 'It then refines the proved pass/fail gap at `--cpu-resolution` granularity, 25 MHz by default, to find the highest actual pass.' "$ROOT/README.md"
+grep -Fq 'Exact CPU evidence lowers only CPU by `--cpu-resolution`; exact GPU evidence lowers only GPU by `--gpu-resolution`.' "$ROOT/README.md"
+grep -Fq 'If the domain is ambiguous, the pair becomes the anchor and a CPU-only reduction is tried first.' "$ROOT/README.md"
+grep -Fq 'A required reduction below either hard minimum fails clearly instead of silently changing the requested range.' "$ROOT/README.md"
 grep -Fq 'one fresh 48-hour combined CPU/GPU/I/O validation by default' "$ROOT/README.md"
 grep -Fq 'test pi@hostname --cpu 3100 --gpu 1150 --final-hours 72' "$ROOT/README.md"
 grep -Fq -- '--qualification-hours 3 --final-hours 72' "$ROOT/README.md"
@@ -271,7 +275,7 @@ if grep -Fq 'autopioverclock reset pi@hostname' <<< "$quick_start"; then
 fi
 grep -Fq 'Run every command on the separate Linux controller.' "$ROOT/docs/cli.md"
 grep -Fq 'The controller may be any supported Linux computer; it does not need to be a Raspberry Pi.' "$ROOT/docs/cli.md"
-grep -Fq 'Every failure or retry starts the complete requested `--final-hours` duration from zero.' "$ROOT/docs/cli.md"
+grep -Fq 'each adjusted pair restarts the complete requested `--final-hours` duration from zero.' "$ROOT/docs/cli.md"
 grep -Fq 'The common reason to use `--restart-from final` is simple:' "$ROOT/README.md"
 grep -Fq 'Headless Raspberry Pi OS/Debian requires neither a desktop nor audio hardware' "$ROOT/docs/cli.md"
 grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
@@ -279,7 +283,7 @@ grep -Fq 'ssh "$TARGET" true' "$ROOT/README.md"
 # Public examples stay generic and copyable; private lab hostnames belong only
 # in retained artifacts, never in README or reference documentation.
 for public_doc in "$ROOT/README.md" "$ROOT"/docs/*.md; do
-    if grep -Eiq 'tron|monkeebutt|harbormaster|pi@pi-host' "$public_doc"; then
+    if grep -Eiq '(^|[^[:alnum:]_])(tron|monkeebutt|harbormaster)([^[:alnum:]_]|$)|pi@pi-host' "$public_doc"; then
         echo "private or obsolete example target leaked into ${public_doc#"$ROOT"/}" >&2
         exit 1
     fi

@@ -139,4 +139,109 @@ apo_sweep_cpu
 [[ $(apo_state_get SAFE_CPU) == 3100 ]]
 [[ $(apo_state_get CPU_GUARD_VERIFIED) == 1 ]]
 [[ ${GUARD_CALLS[*]} == '2500 2600 2700 2800 2900 3000 3100 3200 3150' ]]
+
+# Adaptive explicit maxima are tested exactly first.  After that ceiling fails,
+# CPU descends coarsely to the first pass and refines upward at the configured
+# 5 MHz resolution without selecting an untested clock.
+APO_STATE=()
+APO_SELECTION_POLICY=adaptive-refined-v1
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=960
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_CPU_MIN=3003
+APO_CPU_MAX=3173
+APO_CPU_RESOLUTION_MHZ=5
+APO_GPU_RESOLUTION_MHZ=25
+APO_CPU_SEARCH_DIRECTION=descending
+APO_GPU_SEARCH_DIRECTION=forward
+APO_CPU_CANDIDATES=(3173)
+APO_GPU_CANDIDATES=()
+APO_CFG[CPU_CANDIDATES]=3173
+APO_CFG[GPU_CANDIDATES]=''
+APO_CFG[BACKOFF_STEPS]=0
+APO_CFG[VOLTAGE_DELTA_UV]=existing
+ADAPTIVE_CPU_CALLS=()
+apo_validate_auto_resume_state() { :; }
+apo_test_candidate() {
+    local cpu_mhz=$1
+    ADAPTIVE_CPU_CALLS+=("$cpu_mhz")
+    if (( cpu_mhz <= 3123 )); then return 0; fi
+    APO_LAST_CLASS=STABILITY_FAILURE
+    APO_LAST_REASON='adaptive CPU fixture boundary'
+    return 1
+}
+apo_sweep_cpu
+[[ ${ADAPTIVE_CPU_CALLS[0]} == 3173 ]]
+[[ ${ADAPTIVE_CPU_CALLS[1]} == 3073 ]]
+[[ ${ADAPTIVE_CPU_CALLS[-1]} == 3128 ]]
+[[ $(apo_state_get CPU_REVERSE_PASS '') == 3073 ]]
+[[ $(apo_state_get CPU_FAILURE_BOUNDARY '') == 3128 ]]
+[[ $(apo_state_get CPU_REFINE_CANDIDATES '') == '3078,3083,3088,3093,3098,3103,3108,3113,3118,3123' ]]
+[[ $(apo_state_get SAFE_CPU '') == 3123 ]]
+[[ $(apo_state_get CPU_GUARD_TARGET '') == 3123 && $(apo_state_get CPU_GUARD_VERIFIED 0) == 1 ]]
+
+# The GPU branch follows the same exact-first contract independently and uses
+# its own 1 MHz resolution.
+APO_STATE=()
+APO_CPU_MIN=''
+APO_GPU_MIN=1102
+APO_GPU_MAX=1187
+APO_CPU_RESOLUTION_MHZ=5
+APO_GPU_RESOLUTION_MHZ=1
+APO_CPU_SEARCH_DIRECTION=forward
+APO_GPU_SEARCH_DIRECTION=descending
+APO_CPU_CANDIDATES=()
+APO_GPU_CANDIDATES=(1187)
+APO_CFG[CPU_CANDIDATES]=''
+APO_CFG[GPU_CANDIDATES]=1187
+apo_state_set SAFE_CPU 3100
+apo_state_set CPU_QUALIFIED_CLOCK 3100
+ADAPTIVE_GPU_CALLS=()
+apo_test_candidate() {
+    local gpu_mhz=$2
+    ADAPTIVE_GPU_CALLS+=("$gpu_mhz")
+    if (( gpu_mhz <= 1160 )); then return 0; fi
+    APO_LAST_CLASS=STABILITY_FAILURE
+    APO_LAST_REASON='adaptive GPU fixture boundary'
+    return 1
+}
+apo_sweep_gpu
+[[ ${ADAPTIVE_GPU_CALLS[0]} == 1187 ]]
+[[ ${ADAPTIVE_GPU_CALLS[1]} == 1137 ]]
+[[ ${ADAPTIVE_GPU_CALLS[-1]} == 1161 ]]
+[[ $(apo_state_get GPU_REVERSE_PASS '') == 1137 ]]
+[[ $(apo_state_get GPU_FAILURE_BOUNDARY '') == 1161 ]]
+[[ $(apo_last_passed_clock "$(apo_state_get PASSED_GPUS '')" 960) == 1160 ]]
+[[ $(apo_state_get SAFE_GPU '') == 1160 ]]
+[[ $(apo_state_get GPU_GUARD_TARGET '') == 1160 && $(apo_state_get GPU_GUARD_VERIFIED 0) == 1 ]]
+
+# A descending coarse jump may not cross an explicit hard minimum.  The exact
+# minimum is tested even when it is not aligned to either the coarse step or
+# final resolution.
+APO_STATE=()
+APO_CPU_MIN=3003
+APO_CPU_MAX=3050
+APO_CPU_RESOLUTION_MHZ=5
+APO_CPU_SEARCH_DIRECTION=descending
+apo_state_set CPU_FAILURE_BOUNDARY 3050
+HARD_MIN_CALLS=()
+apo_test_candidate() { HARD_MIN_CALLS+=("CPU:$1"); return 0; }
+apo_auto_descend_to_pass CPU 2400 960 cpu
+[[ ${HARD_MIN_CALLS[*]} == 'CPU:3003' ]]
+[[ $(apo_state_get CPU_REVERSE_PASS '') == 3003 ]]
+
+APO_STATE=()
+APO_GPU_MIN=1102
+APO_GPU_MAX=1120
+APO_GPU_RESOLUTION_MHZ=1
+APO_GPU_SEARCH_DIRECTION=descending
+apo_state_set GPU_FAILURE_BOUNDARY 1120
+HARD_MIN_CALLS=()
+apo_test_candidate() { HARD_MIN_CALLS+=("GPU:$2"); return 0; }
+apo_auto_descend_to_pass GPU 960 3100 combined
+[[ ${HARD_MIN_CALLS[*]} == 'GPU:1102' ]]
+[[ $(apo_state_get GPU_REVERSE_PASS '') == 1102 ]]
+
 printf 'test_selection: PASS\n'

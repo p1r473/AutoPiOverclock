@@ -23,6 +23,10 @@ APO_EDGE_CPU_24H=0
 APO_MANUAL_TEST=0
 APO_SWEEP_DOMAIN=all
 APO_SELECTION_POLICY=refined-max-25
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_AUTO_BASELINE_CPU=2400
+APO_AUTO_BASELINE_GPU=960
 APO_CPU_CANDIDATES=()
 APO_GPU_CANDIDATES=()
 apo_state_set PHASE PREPARE
@@ -55,7 +59,7 @@ APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 APO_CFG[FINAL_DURATION_S]=86400
 APO_EDGE_DURATION_S=86400
 APO_EDGE_CPU_24H=1
-APO_EDGE_ORDER=edge-first
+APO_EDGE_ORDER='edge-first'
 [[ $(apo_progress_initial_final_sequence_cost) == 86880 ]]
 [[ $(apo_progress_future_validation_tests) == 1 ]]
 apo_state_set PHASE FINAL_VALIDATION
@@ -65,13 +69,54 @@ apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
 [[ $(apo_progress_final_remaining 0) == 86880 ]]
 apo_state_set EDGE_CPU_STATUS REJECTED
 [[ $(apo_progress_final_remaining 0) == 86880 ]]
-APO_EDGE_ORDER=floor-first
+APO_EDGE_ORDER='floor-first'
 apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
 [[ $(apo_progress_initial_final_sequence_cost) == 173760 ]]
 [[ $(apo_progress_future_validation_tests) == 2 ]]
 APO_EDGE_CPU_24H=0
-APO_EDGE_ORDER=floor-first
+APO_EDGE_ORDER='floor-first'
 APO_CFG[FINAL_DURATION_S]=28800
+
+# Adaptive reverse-search progress reserves the remaining coarse descent until
+# the first pass, then counts only the persisted fine-resolution suffix.
+(
+    APO_STATE=()
+    APO_AUTO_GENERATED_CANDIDATES=1
+    APO_SELECTION_POLICY=adaptive-refined-v1
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=960
+    APO_CPU_MIN=3000
+    APO_GPU_MIN=1100
+    APO_CPU_CANDIDATES=(3175)
+    APO_GPU_CANDIDATES=(1187)
+    apo_state_set CFG_SWEEP_DOMAIN all
+    apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
+    apo_state_set CFG_CPU_SEARCH_DIRECTION descending
+    apo_state_set CFG_CPU_RESOLUTION_MHZ 25
+    apo_state_set CPU_FAILURE_BOUNDARY 3175
+    apo_state_set CPU_REVERSE_PASS ''
+    apo_state_set CPU_REFINE_CANDIDATES ''
+    apo_state_set CPU_REFINE_INDEX 0
+    apo_state_set CPU_REFINE_COMPLETE 0
+    [[ $(apo_progress_domain_remaining_count CPU CURRENT) == 5 ]]
+    apo_state_set CPU_REVERSE_PASS 3075
+    apo_state_set CPU_REFINE_CANDIDATES 3100,3125,3150
+    apo_state_set CPU_REFINE_INDEX 1
+    [[ $(apo_progress_domain_remaining_count CPU CURRENT) == 2 ]]
+
+    apo_state_set CFG_GPU_SEARCH_DIRECTION descending
+    apo_state_set CFG_GPU_RESOLUTION_MHZ 10
+    apo_state_set GPU_FAILURE_BOUNDARY 1187
+    apo_state_set GPU_REVERSE_PASS ''
+    apo_state_set GPU_REFINE_CANDIDATES ''
+    apo_state_set GPU_REFINE_INDEX 0
+    apo_state_set GPU_REFINE_COMPLETE 0
+    [[ $(apo_progress_domain_remaining_count GPU CURRENT) == 6 ]]
+    apo_state_set GPU_REVERSE_PASS 1137
+    apo_state_set GPU_REFINE_CANDIDATES 1147,1157,1167,1177
+    apo_state_set GPU_REFINE_INDEX 2
+    [[ $(apo_progress_domain_remaining_count GPU CURRENT) == 2 ]]
+)
 
 APO_AUTO_GENERATED_CANDIDATES=0
 APO_AUTO_CANDIDATES_PENDING=0

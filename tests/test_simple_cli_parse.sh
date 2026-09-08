@@ -45,18 +45,34 @@ fi
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron
     [[ $APO_FINAL_DURATION_S == 172800 ]]
+    [[ $APO_SELECTION_POLICY == adaptive-refined-v1 ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 25 && $APO_GPU_RESOLUTION_MHZ == 25 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == forward && $APO_GPU_SEARCH_DIRECTION == forward ]]
 )
+for resolution in 1 5 25 50 100; do
+    (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        apo_parse_cli overclock tron --cpu-resolution "$resolution" --gpu-resolution "$resolution"
+        [[ $APO_CPU_RESOLUTION_MHZ == "$resolution" && $APO_GPU_RESOLUTION_MHZ == "$resolution" ]]
+        [[ $APO_CPU_RESOLUTION_OPTION_SEEN == 1 && $APO_GPU_RESOLUTION_OPTION_SEEN == 1 ]]
+        [[ $APO_CPU_SEARCH_DIRECTION == forward && $APO_GPU_SEARCH_DIRECTION == forward ]]
+    )
+done
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --cpu-min 3000 --cpu-max 3175 --gpu-min 1150 --gpu-max 1175
+    apo_parse_cli overclock tron --cpu-min 3003 --cpu-max 3173 --gpu-min 1102 --gpu-max 1187 --cpu-resolution 5 --gpu-resolution 1
     [[ $APO_COMMAND == run ]]
     [[ $APO_AUTO_APPLY == 1 ]]
     [[ $APO_ASSUME_YES == 1 ]]
     [[ $APO_EDGE_CPU_24H == 0 ]]
     [[ $APO_SWEEP_DOMAIN == all ]]
-    [[ $APO_CPU_MIN == 3000 && $APO_CPU_MAX == 3175 ]]
-    [[ $APO_GPU_MIN == 1150 && $APO_GPU_MAX == 1175 ]]
+    [[ $APO_CPU_MIN == 3003 && $APO_CPU_MAX == 3173 ]]
+    [[ $APO_GPU_MIN == 1102 && $APO_GPU_MAX == 1187 ]]
+    [[ $APO_CPU_MAX_REQUESTED == 3173 && $APO_GPU_MAX_REQUESTED == 1187 ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 5 && $APO_GPU_RESOLUTION_MHZ == 1 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == descending && $APO_GPU_SEARCH_DIRECTION == descending ]]
     [[ $APO_USE_HISTORY == 1 && $APO_HISTORY_OPTION_SEEN == 0 ]]
     [[ $APO_MAX_FAN == 1 ]]
     [[ $APO_MODE_REQUESTED == auto ]]
@@ -74,14 +90,18 @@ fi
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --cpu-only --cpu-min 3150 --cpu-max 3175
+    apo_parse_cli overclock tron --cpu-only --cpu-min 3150 --cpu-max 3175 --cpu-resolution 5
     [[ $APO_SWEEP_DOMAIN == cpu && $APO_CPU_MIN == 3150 && $APO_CPU_MAX == 3175 && -z $APO_GPU_MIN && -z $APO_GPU_MAX ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 5 && $APO_GPU_RESOLUTION_MHZ == 25 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == descending && $APO_GPU_SEARCH_DIRECTION == forward ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli overclock tron --gpu-only --gpu-min 1150 --gpu-max 1175
+    apo_parse_cli overclock tron --gpu-only --gpu-min 1150 --gpu-max 1175 --gpu-resolution 1
     [[ $APO_SWEEP_DOMAIN == gpu && $APO_GPU_MIN == 1150 && $APO_GPU_MAX == 1175 && -z $APO_CPU_MIN && -z $APO_CPU_MAX ]]
+    [[ $APO_CPU_RESOLUTION_MHZ == 25 && $APO_GPU_RESOLUTION_MHZ == 1 ]]
+    [[ $APO_CPU_SEARCH_DIRECTION == forward && $APO_GPU_SEARCH_DIRECTION == descending ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
@@ -169,16 +189,22 @@ for invalid_duration_args in \
 done
 for invalid_domain_args in \
     '--cpu-only --gpu-only' \
-    '--cpu-min 3010' \
-    '--gpu-min 1160' \
-    '--cpu-max 3010' \
-    '--gpu-max 1160' \
     '--cpu-min 3100 --cpu-max 3075' \
     '--gpu-min 1175 --gpu-max 1150' \
+    '--cpu-resolution 0' \
+    '--gpu-resolution 0' \
+    '--cpu-resolution 1001' \
+    '--gpu-resolution 1001' \
+    '--cpu-resolution 5.5' \
+    '--gpu-resolution nope' \
+    '--cpu-resolution 5 --cpu-resolution 25' \
+    '--gpu-resolution 5 --gpu-resolution 25' \
     '--cpu-only --gpu-min 1150' \
     '--cpu-only --gpu-max 1175' \
+    '--cpu-only --gpu-resolution 5' \
     '--gpu-only --cpu-min 3000' \
     '--gpu-only --cpu-max 3175' \
+    '--gpu-only --cpu-resolution 5' \
     '--cpu-start-at 3000' \
     '--gpu-start-at 1150' \
     '--restart-from current' \
@@ -213,6 +239,14 @@ if (
     apo_parse_cli prepare tron --no-history
 ) >/dev/null 2>&1; then
     echo 'prepare accepted the overclock history opt-out' >&2
+    exit 1
+fi
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli prepare tron --cpu-resolution 5
+) >/dev/null 2>&1; then
+    echo 'prepare accepted an overclock resolution option' >&2
     exit 1
 fi
 (

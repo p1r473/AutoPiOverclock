@@ -1310,6 +1310,10 @@ for WORKER_NAME in debian batocera; do
             command /bin/sleep 0.1
             SECONDS=$((SECONDS + 10))
         }
+        # SECONDS includes time spent loading the worker before this fixture
+        # starts. Reset its epoch so host/CI load cannot shave a second from
+        # the second synthetic segment and make this assertion intermittent.
+        SECONDS=0
         cmd_stress combined 20 75 headless "" 0 2400 800 throttled=0x0 60
     ' 2>&1)
     [[ $SEGMENT_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
