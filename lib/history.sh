@@ -30,6 +30,10 @@ APO_HISTORY_GPU_RETAINED_CAP=''
 APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=0
 APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=0
 APO_HISTORY_PLAN_WARNING=''
+APO_HISTORY_RECENT_PAIR_FRONTIER=''
+APO_HISTORY_RECENT_PAIR_RUN_ID=''
+APO_HISTORY_AUTO_PAIR_ANCHOR=''
+APO_HISTORY_AUTO_PAIR_RUN_ID=''
 
 apo_history_reset() {
     APO_HISTORY_CPU_FAILURE_BOUNDARY=''
@@ -50,6 +54,10 @@ apo_history_reset() {
     APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=0
     APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=0
     APO_HISTORY_PLAN_WARNING=''
+    APO_HISTORY_RECENT_PAIR_FRONTIER=''
+    APO_HISTORY_RECENT_PAIR_RUN_ID=''
+    APO_HISTORY_AUTO_PAIR_ANCHOR=''
+    APO_HISTORY_AUTO_PAIR_RUN_ID=''
     APO_HISTORY_RECORDS=()
     APO_HISTORY_RAW_PAIRS=()
     APO_HISTORY_LEDGER_RECORDS=()
@@ -691,6 +699,7 @@ apo_history_record_ledger() {
 
 apo_history_finalize_frontiers() {
     local candidate other candidate_cpu candidate_gpu other_cpu other_gpu dominated insert_at current
+    local kind value run_id source basename extra is_frontier
     local -a frontier=() sorted=()
 
     for candidate in "${APO_HISTORY_RAW_PAIRS[@]}"; do
@@ -731,11 +740,30 @@ apo_history_finalize_frontiers() {
     done
 
     APO_HISTORY_PROVENANCE=''
+    APO_HISTORY_RECENT_PAIR_FRONTIER=''
+    APO_HISTORY_RECENT_PAIR_RUN_ID=''
     for current in "${APO_HISTORY_RECORDS[@]}"; do
         if [[ -n $APO_HISTORY_PROVENANCE ]]; then
             APO_HISTORY_PROVENANCE+=$'\n'
         fi
         APO_HISTORY_PROVENANCE+=$current
+        kind=''; value=''; run_id=''; source=''; basename=''; extra=''
+        IFS='|' read -r kind value run_id source basename extra <<< "$current"
+        [[ -n $kind && -n $value && -n $run_id && -n $source && -n $basename && -z $extra ]] || return 1
+        [[ $kind == PAIR ]] || continue
+        is_frontier=0
+        for candidate in "${sorted[@]}"; do
+            if [[ $candidate == "$value" ]]; then
+                is_frontier=1
+                break
+            fi
+        done
+        (( is_frontier == 1 )) || continue
+        if [[ -z $APO_HISTORY_RECENT_PAIR_RUN_ID || $run_id > $APO_HISTORY_RECENT_PAIR_RUN_ID ||
+              $run_id == "$APO_HISTORY_RECENT_PAIR_RUN_ID" ]]; then
+            APO_HISTORY_RECENT_PAIR_FRONTIER=$value
+            APO_HISTORY_RECENT_PAIR_RUN_ID=$run_id
+        fi
     done
 }
 
@@ -785,7 +813,8 @@ apo_history_failure_exclusive_cap() {
 }
 
 apo_history_resolve_scalar_caps() {
-    local requested_cpu=$1 requested_gpu=$2 cap resolution
+    local requested_cpu=$1 requested_gpu=$2 preserve_pair_anchor=${3:-0} cap resolution
+    [[ $preserve_pair_anchor == 0 || $preserve_pair_anchor == 1 ]] || return 1
     APO_HISTORY_EFFECTIVE_CPU_MAX=$requested_cpu
     APO_HISTORY_EFFECTIVE_GPU_MAX=$requested_gpu
     APO_HISTORY_CPU_RETAINED_CAP=''
@@ -799,7 +828,7 @@ apo_history_resolve_scalar_caps() {
             return 1
         fi
         APO_HISTORY_CPU_RETAINED_CAP=$cap
-        if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 )) &&
+        if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 && preserve_pair_anchor == 0 )) &&
            [[ -z $APO_HISTORY_EFFECTIVE_CPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_CPU_MAX ]]; then
             APO_HISTORY_EFFECTIVE_CPU_MAX=$cap
         fi
@@ -811,7 +840,7 @@ apo_history_resolve_scalar_caps() {
             return 1
         fi
         APO_HISTORY_GPU_RETAINED_CAP=$cap
-        if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 )) &&
+        if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 && preserve_pair_anchor == 0 )) &&
            [[ -z $APO_HISTORY_EFFECTIVE_GPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_GPU_MAX ]]; then
             APO_HISTORY_EFFECTIVE_GPU_MAX=$cap
         fi
@@ -874,11 +903,15 @@ apo_history_apply_approach_starts() {
 
     if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 1 )); then
         cpu_reverse_relevant=1
+    elif [[ $domain == all && -n ${APO_HISTORY_AUTO_PAIR_ANCHOR:-} ]]; then
+        cpu_reverse_relevant=1
     elif (( APO_HISTORY_ACCEPTED_STATES > 0 )) &&
          [[ -n $APO_HISTORY_CPU_RETAINED_CAP ]]; then
         cpu_reverse_relevant=1
     fi
     if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 1 )); then
+        gpu_reverse_relevant=1
+    elif [[ $domain == all && -n ${APO_HISTORY_AUTO_PAIR_ANCHOR:-} ]]; then
         gpu_reverse_relevant=1
     elif (( APO_HISTORY_ACCEPTED_STATES > 0 )) &&
          [[ -n $APO_HISTORY_GPU_RETAINED_CAP ]]; then
@@ -1288,6 +1321,10 @@ apo_history_clear_plan_state() {
     APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE=0
     APO_HISTORY_GPU_EXPLICIT_MAX_OVERRIDE=0
     APO_HISTORY_PLAN_WARNING=''
+    APO_HISTORY_RECENT_PAIR_FRONTIER=''
+    APO_HISTORY_RECENT_PAIR_RUN_ID=''
+    APO_HISTORY_AUTO_PAIR_ANCHOR=''
+    APO_HISTORY_AUTO_PAIR_RUN_ID=''
     apo_state_set HISTORY_CPU_FAILURE_BOUNDARY ''
     apo_state_set HISTORY_GPU_FAILURE_BOUNDARY ''
     apo_state_set HISTORY_PAIR_FRONTIERS ''
@@ -1341,7 +1378,7 @@ apo_history_announce_resolved_plan() {
     local use_history=$1 requested_cpu requested_gpu cpu_cap gpu_cap cpu_boundary gpu_boundary pair_frontier line
     local requested_cpu_display requested_gpu_display cpu_cap_display gpu_cap_display
     local cpu_start_display gpu_start_display cpu_floor gpu_floor cpu_direction gpu_direction
-    local cpu_resolution gpu_resolution cpu_coarse gpu_coarse warning
+    local cpu_resolution gpu_resolution cpu_coarse gpu_coarse warning first_pair_cpu first_pair_gpu
     (( APO_HISTORY_PLAN_ANNOUNCED == 0 )) || return 0
     case ${APO_SWEEP_DOMAIN:-all} in
         all)
@@ -1400,6 +1437,11 @@ apo_history_announce_resolved_plan() {
     fi
     if (( use_history == 1 )); then
         line="History ceilings: CPU=${cpu_cap_display} (requested ${requested_cpu_display}); GPU=${gpu_cap_display} (requested ${requested_gpu_display}). Retained failures: clear CPU=${cpu_boundary}, clear GPU=${gpu_boundary}, ambiguous pairs=${pair_frontier}; accepted states=${APO_HISTORY_ACCEPTED_STATES}; ledger=${APO_HISTORY_LEDGER_FILE:-unavailable}"
+        if [[ -n ${APO_HISTORY_AUTO_PAIR_ANCHOR:-} ]]; then
+            first_pair_cpu=$(apo_state_get HISTORY_CPU_TRIAL_CPU '')
+            first_pair_gpu=$(apo_state_get HISTORY_CPU_TRIAL_GPU '')
+            line+=". Automatic ambiguous anchor=${APO_HISTORY_AUTO_PAIR_ANCHOR} from run ${APO_HISTORY_AUTO_PAIR_RUN_ID}; first isolated pair=${first_pair_cpu}/${first_pair_gpu}"
+        fi
     else
         line="History disabled for this new run. Ceilings: CPU=${cpu_cap_display} (requested ${requested_cpu_display}); GPU=${gpu_cap_display} (requested ${requested_gpu_display})."
     fi
@@ -1440,7 +1482,7 @@ apo_history_announce_resolved_plan() {
 apo_history_resolve_new_overclock_plan() {
     local domain=${APO_SWEEP_DOMAIN:-all} use_history=${APO_USE_HISTORY:-1}
     local requested_cpu requested_gpu effective_cpu effective_gpu pair failed_cpu failed_gpu extra cap
-    local cpu_trial gpu_trial pair_cpu pair_gpu cpu_resolution gpu_resolution
+    local cpu_trial gpu_trial pair_cpu pair_gpu cpu_resolution gpu_resolution auto_pair_anchor=0
     local -a frontiers=()
 
     [[ ${APO_ORIGIN_COMMAND:-${APO_PUBLIC_COMMAND:-}} == overclock && ${APO_COMMAND:-} == run && ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 ]] || return 0
@@ -1514,7 +1556,24 @@ apo_history_resolve_new_overclock_plan() {
 
     apo_history_refresh || return 1
     apo_history_snapshot_scan_state
-    apo_history_resolve_scalar_caps "$effective_cpu" "$effective_gpu" || {
+    if [[ $domain == all && ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 && ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 &&
+          -n $APO_HISTORY_RECENT_PAIR_FRONTIER ]]; then
+        failed_cpu=''; failed_gpu=''; extra=''
+        IFS='/' read -r failed_cpu failed_gpu extra <<< "$APO_HISTORY_RECENT_PAIR_FRONTIER"
+        [[ $failed_cpu =~ ^[0-9]+$ && $failed_gpu =~ ^[0-9]+$ && -z $extra ]] || {
+            apo_history_set_validation_error 'The most recent retained ambiguous pair frontier is malformed.'
+            return 1
+        }
+        if (( failed_cpu > APO_NORMAL_CPU && failed_gpu > APO_NORMAL_GPU &&
+              failed_cpu <= effective_cpu && failed_gpu <= effective_gpu )); then
+            effective_cpu=$failed_cpu
+            effective_gpu=$failed_gpu
+            auto_pair_anchor=1
+            APO_HISTORY_AUTO_PAIR_ANCHOR=$APO_HISTORY_RECENT_PAIR_FRONTIER
+            APO_HISTORY_AUTO_PAIR_RUN_ID=$APO_HISTORY_RECENT_PAIR_RUN_ID
+        fi
+    fi
+    apo_history_resolve_scalar_caps "$effective_cpu" "$effective_gpu" "$auto_pair_anchor" || {
         apo_history_set_validation_error 'A retained clear failure boundary cannot produce a safe exclusive ceiling.'
         return 1
     }

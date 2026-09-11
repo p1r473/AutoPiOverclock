@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.57 - 2026-09-11
+
+- Made a fresh full-domain history-guided run select the newest nondominated ambiguous failed pair as its automatic reverse-search anchor when neither maximum is supplied. The controller derives the first CPU-lowered isolation pair itself, keeps the ordered CPU-only, GPU-only, then paired fallback, and never gives the failed anchor a final validation attempt.
+- Kept `--cpu-max` and `--gpu-max` as optional authoritative manual overrides. Ordinary repeat tuning now needs only `autopioverclock overclock TARGET`, plus duration options when the user wants nondefault test lengths.
+
 ## 0.1.0-alpha.56 - 2026-09-11
 
 - Moved every timed stress gate into a token-bound detached job on the target. A controller SSH interruption no longer kills the workload, the target enforces the fixed duration with its boot-monotonic clock plus a bounded shutdown grace, and completed output is retained for hash-verified collection after connectivity returns.

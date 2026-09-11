@@ -137,6 +137,8 @@ apo_history_refresh
 [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2900 ]]
 [[ $APO_HISTORY_GPU_FAILURE_BOUNDARY == 1150 ]]
 [[ $APO_HISTORY_PAIR_FRONTIERS == '2975/1200,3000/1175' ]]
+[[ $APO_HISTORY_RECENT_PAIR_FRONTIER == 2975/1200 ]]
+[[ $APO_HISTORY_RECENT_PAIR_RUN_ID == run-c ]]
 [[ $APO_HISTORY_EVIDENCE_COUNT == 11 ]]
 [[ -f $old_schema_file && ! -L $old_schema_file ]]
 [[ -f $schema_seven_file && ! -L $schema_seven_file ]]
@@ -506,22 +508,25 @@ if apo_history_validate_plan_state; then
     exit 1
 fi
 
-# Fresh planning keeps requested maxima separate, applies clear ceilings, and
-# materializes an ambiguous-pair isolation plan before ladder generation.
+# With no explicit maxima, fresh planning selects the newest nondominated
+# ambiguous pair as its reverse-search anchor. Older clear-domain caps remain
+# visible evidence but do not hide that pair or force the user to repeat caps.
 refresh_calls=0
 history_announcements=()
 apo_info() { history_announcements+=("$1"); }
 apo_summary_line() { :; }
 apo_history_refresh() {
     refresh_calls=$((refresh_calls + 1))
-    APO_HISTORY_CPU_FAILURE_BOUNDARY=''
-    APO_HISTORY_GPU_FAILURE_BOUNDARY=''
-    APO_HISTORY_PAIR_FRONTIERS='3100/1200'
-    APO_HISTORY_PROVENANCE='PAIR|3100/1200|old-run|fixture|pi-one-old-run.state'
+    APO_HISTORY_CPU_FAILURE_BOUNDARY=3125
+    APO_HISTORY_GPU_FAILURE_BOUNDARY=1175
+    APO_HISTORY_PAIR_FRONTIERS='3075/1200,3100/1175,3125/1150'
+    APO_HISTORY_RECENT_PAIR_FRONTIER=3075/1200
+    APO_HISTORY_RECENT_PAIR_RUN_ID=latest-run
+    APO_HISTORY_PROVENANCE='PAIR|3075/1200|latest-run|fixture|pi-one-latest-run.state'
     APO_HISTORY_LEDGER_FILE="$TMP/planner-failures.txt"
     APO_HISTORY_SCANNED_STATES=1
     APO_HISTORY_ACCEPTED_STATES=1
-    APO_HISTORY_EVIDENCE_COUNT=1
+    APO_HISTORY_EVIDENCE_COUNT=5
 }
 APO_STATE=()
 APO_ORIGIN_COMMAND=overclock
@@ -535,8 +540,8 @@ APO_AUTO_GPU_MAX_MHZ=1200
 APO_AUTO_CPU_STEP_MHZ=100
 APO_AUTO_GPU_STEP_MHZ=50
 APO_AUTO_REFINE_STEP_MHZ=25
-APO_CPU_RESOLUTION_MHZ=5
-APO_GPU_RESOLUTION_MHZ=1
+APO_CPU_RESOLUTION_MHZ=25
+APO_GPU_RESOLUTION_MHZ=25
 APO_CPU_SEARCH_DIRECTION=forward
 APO_GPU_SEARCH_DIRECTION=forward
 APO_NORMAL_CPU=2400
@@ -552,32 +557,39 @@ APO_GPU_MIN=''
 apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 1 ]]
 [[ -z $APO_CPU_MAX_REQUESTED && -z $APO_GPU_MAX_REQUESTED ]]
-[[ $APO_CPU_MAX == 3200 && $APO_GPU_MAX == 1200 ]]
+[[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1200 ]]
 [[ $(apo_state_get HISTORY_ISOLATION_STAGE '') == PLANNED ]]
-[[ $(apo_state_get HISTORY_CPU_TRIAL_CPU '') == 3095 ]]
-[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1199 ]]
-[[ $(apo_state_get HISTORY_PAIR_TRIAL_CPU '') == 3095 ]]
-[[ $(apo_state_get HISTORY_PAIR_TRIAL_GPU '') == 1199 ]]
+[[ $(apo_state_get HISTORY_ISOLATION_ANCHOR_CPU '') == 3075 ]]
+[[ $(apo_state_get HISTORY_ISOLATION_ANCHOR_GPU '') == 1200 ]]
+[[ $(apo_state_get HISTORY_CPU_TRIAL_CPU '') == 3050 ]]
+[[ $(apo_state_get HISTORY_CPU_TRIAL_GPU '') == 1200 ]]
+[[ $(apo_state_get HISTORY_GPU_TRIAL_CPU '') == 3075 ]]
+[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1175 ]]
+[[ $(apo_state_get HISTORY_PAIR_TRIAL_CPU '') == 3050 ]]
+[[ $(apo_state_get HISTORY_PAIR_TRIAL_GPU '') == 1175 ]]
 [[ -z $APO_CPU_MIN && -z $APO_GPU_MIN ]]
 [[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == automatic-baseline ]]
 [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]
-[[ $APO_CPU_SEARCH_DIRECTION == forward && $APO_GPU_SEARCH_DIRECTION == forward ]]
-[[ -z $(apo_state_get HISTORY_CPU_APPROACH_START '') && -z $(apo_state_get HISTORY_GPU_APPROACH_START '') ]]
-[[ $(apo_state_get HISTORY_CPU_REVERSE_SEARCH 1) == 0 && $(apo_state_get HISTORY_GPU_REVERSE_SEARCH 1) == 0 ]]
+[[ $APO_CPU_SEARCH_DIRECTION == descending && $APO_GPU_SEARCH_DIRECTION == descending ]]
+[[ $(apo_state_get HISTORY_CPU_APPROACH_START '') == 3075 && $(apo_state_get HISTORY_GPU_APPROACH_START '') == 1200 ]]
+[[ $(apo_state_get HISTORY_CPU_REVERSE_SEARCH 0) == 1 && $(apo_state_get HISTORY_GPU_REVERSE_SEARCH 0) == 1 ]]
 [[ ${#history_announcements[@]} == 4 ]]
-[[ ${history_announcements[0]} == *'History ceilings: CPU=3200 MHz (requested 3200 MHz); GPU=1200 MHz (requested 1200 MHz).'* ]]
-[[ ${history_announcements[1]} == 'CPU search: forward; start=forward baseline ladder; floor=2400 MHz; coarse step=100 MHz; final resolution=5 MHz.' ]]
-[[ ${history_announcements[2]} == 'GPU search: forward; start=forward baseline ladder; floor=960 MHz; coarse step=50 MHz; final resolution=1 MHz.' ]]
+[[ ${history_announcements[0]} == *'History ceilings: CPU=3075 MHz (requested 3200 MHz); GPU=1200 MHz (requested 1200 MHz).'* ]]
+[[ ${history_announcements[0]} == *'Automatic ambiguous anchor=3075/1200 from run latest-run; first isolated pair=3050/1200'* ]]
+[[ ${history_announcements[1]} == 'CPU search: descending; start=3075 MHz exact ceiling first; floor=2400 MHz; coarse step=100 MHz; final resolution=25 MHz.' ]]
+[[ ${history_announcements[2]} == 'GPU search: descending; start=1200 MHz exact ceiling first; floor=960 MHz; coarse step=50 MHz; final resolution=25 MHz.' ]]
 # Discovery may be repeated after dependency/watchdog reconciliation.  The
 # effective cap must not become the next call's requested cap.
 apo_history_resolve_new_overclock_plan
 [[ $refresh_calls == 2 ]]
 [[ -z $APO_CPU_MAX_REQUESTED && -z $APO_GPU_MAX_REQUESTED ]]
-[[ $APO_CPU_MAX == 3200 && $APO_GPU_MAX == 1200 ]]
-[[ $(apo_state_get HISTORY_CPU_TRIAL_CPU '') == 3095 ]]
-[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1199 ]]
+[[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1200 ]]
+[[ $(apo_state_get HISTORY_CPU_TRIAL_CPU '') == 3050 ]]
+[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1175 ]]
 [[ -z $APO_CPU_MIN && -z $APO_GPU_MIN ]]
 [[ ${#history_announcements[@]} == 4 ]]
+APO_CPU_RESOLUTION_MHZ=5
+APO_GPU_RESOLUTION_MHZ=1
 
 # With no explicit maxima, --no-history skips the scan and keeps the ordinary
 # forward baseline ladders.
