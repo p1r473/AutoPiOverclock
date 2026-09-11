@@ -75,12 +75,16 @@ if grep -Eq '^[[:space:]]*external-sources=true' "$ROOT/.shellcheckrc"; then
     echo 'the global ShellCheck config defeats the bounded CLI-fixture lint policy' >&2
     exit 1
 fi
-for advanced_option in --config --dry-run --install-missing --mode --redact --repair-watchdogs --run-id --yes; do
+for advanced_option in --config --dry-run --install-missing --mode --redact --run-id --yes; do
     grep -Fq -- "$advanced_option" "$ROOT/docs/cli.md" || {
         echo "advanced option is implemented but missing from docs/cli.md: $advanced_option" >&2
         exit 1
     }
 done
+if grep -RIn -- '--repair-watchdogs' "$ROOT/autopioverclock" "$ROOT/README.md" "$ROOT/docs"; then
+    echo 'removed watchdog-mutation option remains public' >&2
+    exit 1
+fi
 if grep -RIn --include='*.sh' 'apo_wait_for_new_boot' "$ROOT/lib" "$ROOT/profiles" | grep -v 'lib/detect.sh' | grep -v 'lib/ssh.sh'; then
     echo 'a production reboot path bypasses the shared worker-redeployment handshake' >&2
     exit 1

@@ -11,6 +11,10 @@ APO_REMOTE_JOB_COMPLETE_END_EPOCH=''
 APO_REMOTE_JOB_COMPLETE_BOOT_ID=''
 APO_REMOTE_JOB_FOLLOW_ERROR=''
 APO_REMOTE_JOB_PROBE_BOOT=''
+APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=0
+APO_REMOTE_STRESS_CREDIT_ADDED=0
+APO_REMOTE_STRESS_CREDIT_TOTAL=0
+APO_REMOTE_STRESS_CREDIT_REMAINING=0
 
 apo_remote_job_pending() {
     [[ $(apo_state_get REMOTE_STRESS_STATUS IDLE) == RUNNING ]] || return 1
@@ -59,8 +63,17 @@ apo_remote_job_clear_state() {
     apo_state_set REMOTE_STRESS_SOURCE_BOOT_ID ''
     apo_state_set REMOTE_STRESS_PHASE ''
     apo_state_set REMOTE_STRESS_DURATION_S ''
+    apo_state_set REMOTE_STRESS_SEGMENT_DURATION_S ''
     apo_state_set REMOTE_STRESS_START_EPOCH ''
     apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
+    apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
+}
+
+apo_remote_stress_credit_clear() {
+    apo_state_set REMOTE_STRESS_CREDIT_CONTEXT ''
+    apo_state_set REMOTE_STRESS_CREDIT_SECONDS 0
+    apo_state_set REMOTE_STRESS_CREDIT_DURATION_S ''
+    apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
 }
 
 apo_remote_job_emit_structured_failure() {
@@ -70,18 +83,41 @@ apo_remote_job_emit_structured_failure() {
 }
 
 apo_remote_job_progress_tick() {
-    local now=${1:-} start=${2:-} duration=${3:-} elapsed
-    [[ $now =~ ^[0-9]+$ && $start =~ ^[0-9]+$ && $duration =~ ^[1-9][0-9]*$ ]] || return 0
+    local now=${1:-} start=${2:-} segment_duration=${3:-} elapsed
+    local duration credit credit_context expected_context spec_hash phase
+    [[ $now =~ ^[0-9]+$ && $start =~ ^[0-9]+$ && $segment_duration =~ ^[1-9][0-9]*$ ]] || return 0
     elapsed=$((now - start))
     (( elapsed < 0 )) && elapsed=0
+    (( elapsed > segment_duration )) && elapsed=$segment_duration
+    duration=$(apo_state_get REMOTE_STRESS_DURATION_S "$segment_duration")
+    credit=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+    credit_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+    spec_hash=$(apo_state_get REMOTE_STRESS_SPEC_HASH '')
+    phase=$(apo_state_get REMOTE_STRESS_PHASE '')
+    expected_context="${phase}:${spec_hash}"
+    if [[ ! $duration =~ ^[1-9][0-9]*$ || ! $credit =~ ^[0-9]+$ ||
+          $credit_context != "$expected_context" || $credit -ge $duration ]]; then
+        duration=$segment_duration
+        credit=0
+    fi
+    elapsed=$((credit + elapsed))
     (( elapsed > duration )) && elapsed=$duration
     APO_PROGRESS_STRESS_ELAPSED=$elapsed
     APO_PROGRESS_STRESS_DURATION=$duration
     if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render "$elapsed" "$duration"; fi
 }
 
+apo_remote_job_checkpoint_heartbeat() {
+    local now=$1
+    [[ $now =~ ^[1-9][0-9]*$ ]] || return 0
+    if (( APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH == 0 || now - APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH >= 60 )); then
+        apo_state_save
+        APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=$now
+    fi
+}
+
 apo_remote_job_follow_stream() {
-    local line record state now start duration source_boot size telemetry
+    local line record state now start duration source_boot size telemetry confirmed_elapsed confirmed_duration
     local rc output_hash end_epoch
     while IFS= read -r line || [[ -n $line ]]; do
         IFS=$'\t' read -r record state now start duration source_boot size telemetry <<<"$line"
@@ -96,11 +132,19 @@ apo_remote_job_follow_stream() {
                         line=$(apo_decode_b64 "$telemetry" || true)
                         if [[ -n $line ]] && apo_progress_line_is_telemetry "$line"; then
                             apo_progress_parse_telemetry_line "$line"
+                            if [[ $line =~ elapsed=([0-9]+)/([0-9]+)s ]]; then
+                                confirmed_elapsed=${BASH_REMATCH[1]}
+                                confirmed_duration=${BASH_REMATCH[2]}
+                                if [[ $confirmed_duration == "$duration" && $confirmed_elapsed -le $duration ]]; then
+                                    apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S "$confirmed_elapsed"
+                                fi
+                            fi
                             apo_remote_job_progress_tick "$now" "$start" "$duration"
                         fi
                     fi
                     apo_state_set REMOTE_STRESS_START_EPOCH "$start"
                     apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH "$now"
+                    apo_remote_job_checkpoint_heartbeat "$now"
                 else
                     APO_REMOTE_JOB_FOLLOW_ERROR='The detached stress heartbeat was malformed or did not match saved ownership.'
                     return 1
@@ -137,8 +181,9 @@ apo_remote_job_follow_stream() {
 }
 
 apo_validate_remote_job_state() {
-    local status job_id token spec_hash source_boot phase duration start_epoch last_seen
+    local status job_id token spec_hash source_boot phase duration segment_duration start_epoch last_seen confirmed_elapsed
     local unknown_context unknown_count network_count network_event network_target
+    local credit_context credit_seconds credit_duration credit_event expected_credit_context
     status=$(apo_state_get REMOTE_STRESS_STATUS IDLE)
     job_id=$(apo_state_get REMOTE_STRESS_JOB_ID '')
     token=$(apo_state_get REMOTE_STRESS_TOKEN '')
@@ -146,12 +191,14 @@ apo_validate_remote_job_state() {
     source_boot=$(apo_state_get REMOTE_STRESS_SOURCE_BOOT_ID '')
     phase=$(apo_state_get REMOTE_STRESS_PHASE '')
     duration=$(apo_state_get REMOTE_STRESS_DURATION_S '')
+    segment_duration=$(apo_state_get REMOTE_STRESS_SEGMENT_DURATION_S '')
     start_epoch=$(apo_state_get REMOTE_STRESS_START_EPOCH '')
     last_seen=$(apo_state_get REMOTE_STRESS_LAST_SEEN_EPOCH '')
+    confirmed_elapsed=$(apo_state_get REMOTE_STRESS_CONFIRMED_ELAPSED_S '')
     case $status in
         IDLE)
             if [[ -n $job_id || -n $token || -n $spec_hash || -n $source_boot || -n $phase ||
-                  -n $duration || -n $start_epoch || -n $last_seen ]]; then
+                  -n $duration || -n $segment_duration || -n $start_epoch || -n $last_seen || -n $confirmed_elapsed ]]; then
                 APO_AUTO_VALIDATION_REASON='Saved detached-stress state retains ownership fields while idle.'
                 return 1
             fi
@@ -163,6 +210,14 @@ apo_validate_remote_job_state() {
                     APO_AUTO_VALIDATION_REASON='Saved detached-stress ownership is incomplete or malformed.'
                     return 1
                 }
+            [[ -z $segment_duration || $segment_duration =~ ^[1-9][0-9]*$ ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved detached-stress segment duration is malformed.'
+                return 1
+            }
+            [[ -z $segment_duration || $segment_duration -le $duration ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved detached-stress segment duration exceeds its complete gate duration.'
+                return 1
+            }
             [[ -z $start_epoch || $start_epoch =~ ^[1-9][0-9]*$ ]] || {
                 APO_AUTO_VALIDATION_REASON='Saved detached-stress start time is malformed.'
                 return 1
@@ -171,12 +226,47 @@ apo_validate_remote_job_state() {
                 APO_AUTO_VALIDATION_REASON='Saved detached-stress heartbeat time is malformed.'
                 return 1
             }
+            [[ -z $confirmed_elapsed || $confirmed_elapsed =~ ^[0-9]+$ ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved detached-stress confirmed elapsed time is malformed.'
+                return 1
+            }
+            [[ -z $confirmed_elapsed || -z $segment_duration || $confirmed_elapsed -le $segment_duration ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved detached-stress confirmed elapsed time exceeds its segment duration.'
+                return 1
+            }
             ;;
         *)
             APO_AUTO_VALIDATION_REASON="Saved detached-stress status is malformed: ${status:-missing}"
             return 1
             ;;
     esac
+    credit_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+    credit_seconds=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+    credit_duration=$(apo_state_get REMOTE_STRESS_CREDIT_DURATION_S '')
+    credit_event=$(apo_state_get REMOTE_STRESS_CREDIT_EVENT_ID '')
+    [[ $credit_seconds =~ ^[0-9]+$ ]] || {
+        APO_AUTO_VALIDATION_REASON='Saved detached-stress network credit is malformed.'
+        return 1
+    }
+    if (( credit_seconds == 0 )); then
+        [[ -z $credit_context && -z $credit_duration && -z $credit_event ]] || {
+            APO_AUTO_VALIDATION_REASON='Saved detached-stress network credit metadata exists with zero credited time.'
+            return 1
+        }
+    else
+        [[ -n $credit_context && $credit_duration =~ ^[1-9][0-9]*$ &&
+           $credit_event =~ ^[0-9a-f]{32}$ && $credit_seconds -lt $credit_duration ]] || {
+            APO_AUTO_VALIDATION_REASON='Saved detached-stress network credit metadata is incomplete.'
+            return 1
+        }
+        if [[ $status == RUNNING ]]; then
+            expected_credit_context="${phase}:${spec_hash}"
+            [[ $credit_context == "$expected_credit_context" && $credit_duration == "$duration" ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved detached-stress network credit does not match the active gate.'
+                return 1
+            }
+        fi
+    fi
     unknown_context=$(apo_state_get UNATTRIBUTED_REBOOT_REPLAY_CONTEXT '')
     unknown_count=$(apo_state_get UNATTRIBUTED_REBOOT_REPLAY_COUNT 0)
     [[ $unknown_count =~ ^[0-9]+$ ]] || {
@@ -215,16 +305,17 @@ apo_validate_remote_job_state() {
 }
 
 apo_remote_job_probe_boot_with_ticks() {
-    local temporary_file probe_pid now start duration
+    local temporary_file probe_pid now start segment_duration
     temporary_file=$(mktemp)
     start=$(apo_state_get REMOTE_STRESS_START_EPOCH '')
-    duration=$(apo_state_get REMOTE_STRESS_DURATION_S '')
+    segment_duration=$(apo_state_get REMOTE_STRESS_SEGMENT_DURATION_S \
+        "$(apo_state_get REMOTE_STRESS_DURATION_S '')")
     APO_REMOTE_JOB_PROBE_BOOT=''
     apo_remote_boot_id_once >"$temporary_file" 2>/dev/null &
     probe_pid=$!
     while kill -0 "$probe_pid" 2>/dev/null; do
         now=$(date +%s)
-        apo_remote_job_progress_tick "$now" "$start" "$duration"
+        apo_remote_job_progress_tick "$now" "$start" "$segment_duration"
         sleep 1
     done
     if wait "$probe_pid"; then
@@ -234,15 +325,18 @@ apo_remote_job_probe_boot_with_ticks() {
 }
 
 apo_remote_job_wait_for_boot() {
-    local context=$1 source_boot=$2 next_notice now start duration
+    local context=$1 source_boot=$2 next_notice now start segment_duration
     start=$(apo_state_get REMOTE_STRESS_START_EPOCH '')
-    duration=$(apo_state_get REMOTE_STRESS_DURATION_S '')
+    segment_duration=$(apo_state_get REMOTE_STRESS_SEGMENT_DURATION_S \
+        "$(apo_state_get REMOTE_STRESS_DURATION_S '')")
     apo_recovery_wait_checkpoint WAITING "$context"
+    if declare -F apo_progress_reconnect_begin >/dev/null 2>&1; then apo_progress_reconnect_begin "$context"; fi
     apo_recovery_wait_event WARN "$context" 'Cannot reach the target stress job. Retrying indefinitely without starting a duplicate or changing clocks.'
     next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
     while :; do
         apo_remote_job_probe_boot_with_ticks
         if apo_remote_job_valid_boot_id "$APO_REMOTE_JOB_PROBE_BOOT"; then
+            if declare -F apo_progress_reconnect_finish >/dev/null 2>&1; then apo_progress_reconnect_finish; fi
             apo_recovery_wait_checkpoint RETURNED "$context"
             if [[ $APO_REMOTE_JOB_PROBE_BOOT == "$source_boot" ]]; then
                 apo_recovery_wait_event INFO "$context" 'SSH returned on the same target boot. Reattaching to the existing stress job.'
@@ -252,7 +346,7 @@ apo_remote_job_wait_for_boot() {
             return 0
         fi
         now=$(date +%s)
-        apo_remote_job_progress_tick "$now" "$start" "$duration"
+        apo_remote_job_progress_tick "$now" "$start" "$segment_duration"
         if (( SECONDS >= next_notice )); then
             apo_recovery_wait_event INFO "$context" 'The target is still unreachable. The controller will keep retrying and the target-side deadline remains authoritative.'
             next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
@@ -261,8 +355,56 @@ apo_remote_job_wait_for_boot() {
     done
 }
 
+apo_remote_job_record_network_credit() {
+    local phase=$1 event_id=$2 requested_epoch=$3
+    local spec_hash duration segment_duration start_epoch last_seen confirmed_elapsed context
+    local prior_context prior_credit prior_duration observed_seconds total_credit maximum_credit
+    spec_hash=$(apo_state_get REMOTE_STRESS_SPEC_HASH '')
+    duration=$(apo_state_get REMOTE_STRESS_DURATION_S '')
+    segment_duration=$(apo_state_get REMOTE_STRESS_SEGMENT_DURATION_S "$duration")
+    start_epoch=$(apo_state_get REMOTE_STRESS_START_EPOCH '')
+    last_seen=$(apo_state_get REMOTE_STRESS_LAST_SEEN_EPOCH '')
+    confirmed_elapsed=$(apo_state_get REMOTE_STRESS_CONFIRMED_ELAPSED_S '')
+    context="${phase}:${spec_hash}"
+    prior_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+    prior_credit=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+    prior_duration=$(apo_state_get REMOTE_STRESS_CREDIT_DURATION_S '')
+    APO_REMOTE_STRESS_CREDIT_ADDED=0
+    APO_REMOTE_STRESS_CREDIT_TOTAL=0
+    APO_REMOTE_STRESS_CREDIT_REMAINING=${duration:-0}
+    [[ $spec_hash =~ ^[0-9a-f]{64}$ && $event_id =~ ^[0-9a-f]{32}$ &&
+       $requested_epoch =~ ^[1-9][0-9]*$ && $duration =~ ^[1-9][0-9]*$ &&
+       $segment_duration =~ ^[1-9][0-9]*$ && $segment_duration -le $duration ]] || {
+        apo_remote_stress_credit_clear
+        return 0
+    }
+    if [[ $prior_context != "$context" || $prior_duration != "$duration" || ! $prior_credit =~ ^[0-9]+$ ]]; then
+        prior_credit=0
+    fi
+    observed_seconds=0
+    if [[ $start_epoch =~ ^[1-9][0-9]*$ && $last_seen =~ ^[1-9][0-9]*$ &&
+          $last_seen -ge $start_epoch && $last_seen -le $requested_epoch &&
+          $confirmed_elapsed =~ ^[0-9]+$ && $confirmed_elapsed -le $segment_duration ]]; then
+        observed_seconds=$confirmed_elapsed
+    fi
+    total_credit=$((prior_credit + observed_seconds))
+    maximum_credit=$((duration - 1))
+    (( total_credit > maximum_credit )) && total_credit=$maximum_credit
+    if (( total_credit > 0 )); then
+        apo_state_set REMOTE_STRESS_CREDIT_CONTEXT "$context"
+        apo_state_set REMOTE_STRESS_CREDIT_SECONDS "$total_credit"
+        apo_state_set REMOTE_STRESS_CREDIT_DURATION_S "$duration"
+        apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID "$event_id"
+    else
+        apo_remote_stress_credit_clear
+    fi
+    APO_REMOTE_STRESS_CREDIT_ADDED=$observed_seconds
+    APO_REMOTE_STRESS_CREDIT_TOTAL=$total_credit
+    APO_REMOTE_STRESS_CREDIT_REMAINING=$((duration - total_credit))
+}
+
 apo_remote_job_classify_reboot() {
-    local phase=$1 output_file=$2 old_boot=$3 new_boot=$4 proof_reason replay_context replay_count
+    local phase=$1 output_file=$2 old_boot=$3 new_boot=$4 proof_reason replay_context replay_count credit_reason
     if ! apo_redeploy_worker_for_boot "$new_boot" "${phase}-reboot-proof"; then
         apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE \
             "The target rebooted during stress, but the worker needed for strict reboot proof could not be restored: $APO_LAST_REASON"
@@ -271,13 +413,24 @@ apo_remote_job_classify_reboot() {
     if declare -F apo_profile_prove_network_watchdog_reboot >/dev/null 2>&1 &&
        apo_profile_prove_network_watchdog_reboot "$phase" "$old_boot" "$new_boot"; then
         proof_reason=${APO_NETWORK_WATCHDOG_PROOF_REASON:-A project-owned network-watchdog reboot was strictly proved.}
+        apo_remote_job_record_network_credit "$phase" "${APO_NETWORK_WATCHDOG_EVENT_ID:-}" \
+            "${APO_NETWORK_WATCHDOG_REQUESTED_EPOCH:-}"
         apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID "${APO_NETWORK_WATCHDOG_EVENT_ID:-}"
         apo_state_set NETWORK_WATCHDOG_LAST_TARGET "${APO_NETWORK_WATCHDOG_TARGET:-}"
         apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT "$(( $(apo_state_get NETWORK_WATCHDOG_REPLAY_COUNT 0) + 1 ))"
         apo_state_save
-        apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE "[PROVED_NETWORK_WATCHDOG] $proof_reason The complete stress duration must restart at the same clocks."
+        if (( ${APO_REMOTE_STRESS_CREDIT_TOTAL:-0} > 0 )); then
+            credit_reason="${APO_REMOTE_STRESS_CREDIT_TOTAL}s of target-reported completed stress is preserved; ${APO_REMOTE_STRESS_CREDIT_REMAINING}s remains at the same clocks."
+        else
+            credit_reason='No completed stress heartbeat was safely creditable, so the complete duration remains at the same clocks.'
+        fi
+        apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE "[PROVED_NETWORK_WATCHDOG] $proof_reason $credit_reason"
         return 1
     fi
+    # Any reboot without complete network-watchdog proof invalidates every
+    # partial-duration credit. The ordinary same-clock replay and, if needed,
+    # stability isolation must start this gate from zero.
+    apo_remote_stress_credit_clear
     replay_context="${phase}:$(apo_state_get REMOTE_STRESS_SPEC_HASH '')"
     replay_count=$(apo_state_get UNATTRIBUTED_REBOOT_REPLAY_COUNT 0)
     [[ $replay_count =~ ^[0-9]+$ ]] || replay_count=0
@@ -317,6 +470,7 @@ apo_remote_job_fetch_complete() {
     rm -f -- "$temporary_file"
     APO_REMOTE_STRESS_RC=$APO_REMOTE_JOB_COMPLETE_RC
     apo_remote_job_clear_state
+    apo_remote_stress_credit_clear
     apo_state_set UNATTRIBUTED_REBOOT_REPLAY_CONTEXT ''
     apo_state_set UNATTRIBUTED_REBOOT_REPLAY_COUNT 0
     apo_state_save
@@ -325,11 +479,14 @@ apo_remote_job_fetch_complete() {
 apo_run_remote_stress_capture() {
     local phase=$1 worker_command=$2 output_file=$3
     shift 3
-    local duration=${2:-} spec_hash job_id token source_boot start_output remote_rc current_boot lastpipe_was_set=0
+    local duration=${2:-} segment_duration spec_hash job_id token source_boot start_output remote_rc current_boot lastpipe_was_set=0
+    local credit_context credit_seconds credit_duration expected_credit_context
     local launch_attempt=0 launch_attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5} launch_reason
+    local -a original_arguments=("$@") segment_arguments=("$@")
     [[ $worker_command == stress && $duration =~ ^[1-9][0-9]*$ ]] || return 2
     [[ $launch_attempts =~ ^[1-9][0-9]*$ ]] || launch_attempts=5
-    spec_hash=$(apo_remote_job_spec_hash "$phase" "$worker_command" "$@")
+    spec_hash=$(apo_remote_job_spec_hash "$phase" "$worker_command" "${original_arguments[@]}")
+    expected_credit_context="${phase}:${spec_hash}"
     if [[ $(apo_state_get REMOTE_STRESS_STATUS IDLE) == RUNNING ]]; then
         job_id=$(apo_state_get REMOTE_STRESS_JOB_ID '')
         token=$(apo_state_get REMOTE_STRESS_TOKEN '')
@@ -343,7 +500,22 @@ apo_run_remote_stress_capture() {
                 'Saved detached-stress ownership does not match the requested gate. Automatic adoption is refused.'
             return 1
         fi
+        segment_duration=$(apo_state_get REMOTE_STRESS_SEGMENT_DURATION_S "$duration")
+        [[ $segment_duration =~ ^[1-9][0-9]*$ && $segment_duration -le $duration ]] || {
+            apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE \
+                'Saved detached-stress segment duration is invalid. Automatic adoption is refused.'
+            return 1
+        }
     else
+        credit_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+        credit_seconds=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+        credit_duration=$(apo_state_get REMOTE_STRESS_CREDIT_DURATION_S '')
+        if [[ ! $credit_seconds =~ ^[0-9]+$ || $credit_seconds -ge $duration ||
+              $credit_context != "$expected_credit_context" || $credit_duration != "$duration" ]]; then
+            credit_seconds=0
+            apo_remote_stress_credit_clear
+        fi
+        segment_duration=$((duration - credit_seconds))
         token=$(apo_remote_job_token)
         apo_remote_job_valid_hash "$token" || {
             apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE 'Could not create a detached-stress ownership token.'
@@ -362,10 +534,18 @@ apo_run_remote_stress_capture() {
         apo_state_set REMOTE_STRESS_SOURCE_BOOT_ID "$source_boot"
         apo_state_set REMOTE_STRESS_PHASE "$phase"
         apo_state_set REMOTE_STRESS_DURATION_S "$duration"
+        apo_state_set REMOTE_STRESS_SEGMENT_DURATION_S "$segment_duration"
         apo_state_set REMOTE_STRESS_START_EPOCH ''
         apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
+        apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
         apo_state_save
+        APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=0
+        if (( credit_seconds > 0 )); then
+            apo_recovery_wait_event INFO "${phase}-network-watchdog-resume" \
+                "Resuming the exact same stress gate with ${credit_seconds}s safely credited and ${segment_duration}s remaining."
+        fi
     fi
+    segment_arguments[1]=$segment_duration
 
     while :; do
         current_boot=$(apo_remote_boot_id_once 2>/dev/null || true)
@@ -381,7 +561,7 @@ apo_run_remote_stress_capture() {
         fi
         start_output=''
         if ! start_output=$(apo_remote_job_command start "$APO_REMOTE_WORK_DIR" "$job_id" "$token" \
-            "$spec_hash" "$source_boot" "$duration" "$APO_REMOTE_WORKER" "$@" 2>/dev/null); then
+            "$spec_hash" "$source_boot" "$segment_duration" "$APO_REMOTE_WORKER" "${segment_arguments[@]}" 2>/dev/null); then
             if [[ $start_output =~ ^APO_JOB_ERROR$'\t'(.+)$ ]]; then
                 launch_reason=${BASH_REMATCH[1]}
                 apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE \

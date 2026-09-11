@@ -108,6 +108,8 @@ if grep -Fq 'apo_remote_job_command follow "$APO_REMOTE_WORK_DIR" "$job_id" "$to
     exit 1
 fi
 
+# The controller globals are intentionally isolated inside this fixture.
+# shellcheck disable=SC2030
 (
     declare -A TEST_STATE=()
     source "$ROOT/lib/remote_job.sh"
@@ -143,6 +145,7 @@ fi
     apo_transient_read_delay() { :; }
     apo_progress_render() { :; }
     apo_progress_line_is_telemetry() { return 1; }
+    apo_validate_remote_job_state
     apo_remote_job_command() {
         local operation=$1 count
         if [[ $operation == start ]]; then
@@ -178,6 +181,163 @@ fi
     [[ $(<"$START_COUNT_FILE") == 4 ]]
     [[ $(<"$FOLLOW_COUNT_FILE") == 2 ]]
     [[ ${TEST_STATE[REMOTE_STRESS_STATUS]} == IDLE ]]
+)
+
+# Only a workload telemetry sample can populate confirmed elapsed time. A
+# target-side heartbeat without that sample still proves liveness, not work.
+(
+    declare -A TEST_STATE=()
+    source "$ROOT/lib/remote_job.sh"
+    TEST_BOOT=12345678-1234-1234-1234-123456789abc
+    TEST_STATE[REMOTE_STRESS_SOURCE_BOOT_ID]=$TEST_BOOT
+    TEST_STATE[REMOTE_STRESS_DURATION_S]=100
+    TEST_STATE['REMOTE_STRESS_PHASE']='telemetry-credit'
+    TEST_STATE[REMOTE_STRESS_SPEC_HASH]=$(printf '9%.0s' {1..64})
+
+    apo_state_get() { printf '%s' "${TEST_STATE[$1]:-${2-}}"; }
+    apo_state_set() { TEST_STATE[$1]=$2; }
+    apo_state_save() { :; }
+    apo_decode_b64() { printf '%s' "$1" | base64 -d; }
+    apo_progress_line_is_telemetry() { return 0; }
+    apo_progress_parse_telemetry_line() { :; }
+    apo_progress_render() { :; }
+
+    TELEMETRY=$(printf 'fixture temp=40C arm=2500MHz v3d=960MHz expected=2500/960 throttled=0x0 elapsed=35/100s' | base64 | tr -d '\n')
+    apo_remote_job_follow_stream <<<"$(printf 'APO_JOB_HEARTBEAT\tRUNNING\t1035\t1000\t100\t%s\t0\t%s' "$TEST_BOOT" "$TELEMETRY")"
+    [[ ${TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]} == 35 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]} == 1035 ]]
+)
+
+# A strictly proved network-watchdog reboot may retain only stress time already
+# reported by the target heartbeat. The next detached segment runs exactly the
+# uncredited remainder while ownership stays bound to the original full gate.
+# The controller globals are intentionally isolated inside this fixture.
+# shellcheck disable=SC2030
+(
+    declare -A TEST_STATE=()
+    source "$ROOT/lib/remote_job.sh"
+    TEST_PHASE=network-credit
+    TEST_SPEC=$(apo_remote_job_spec_hash "$TEST_PHASE" stress combined 100)
+    TEST_EVENT=$(printf '4%.0s' {1..32})
+    TEST_BOOT=12345678-1234-1234-1234-123456789abc
+    TEST_STATE[REMOTE_STRESS_STATUS]=RUNNING
+    TEST_STATE[REMOTE_STRESS_SPEC_HASH]=$TEST_SPEC
+    TEST_STATE[REMOTE_STRESS_PHASE]=$TEST_PHASE
+    TEST_STATE[REMOTE_STRESS_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_SEGMENT_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_START_EPOCH]=1000
+    TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1060
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
+    TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]=''
+    TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]=0
+    TEST_STATE[REMOTE_STRESS_CREDIT_DURATION_S]=''
+    TEST_STATE[REMOTE_STRESS_CREDIT_EVENT_ID]=''
+
+    apo_state_get() { printf '%s' "${TEST_STATE[$1]:-${2-}}"; }
+    apo_state_set() { TEST_STATE[$1]=$2; }
+    apo_state_save() { :; }
+
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 60 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_DURATION_S]} == 100 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} == "$TEST_PHASE:$TEST_SPEC" ]]
+    [[ $APO_REMOTE_STRESS_CREDIT_REMAINING == 40 ]]
+
+    # A second proved event accumulates only the newly reported work from the
+    # shorter remainder segment.
+    TEST_EVENT_2=$(printf '7%.0s' {1..32})
+    TEST_STATE[REMOTE_STRESS_SEGMENT_DURATION_S]=40
+    TEST_STATE[REMOTE_STRESS_START_EPOCH]=2000
+    TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=2020
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=20
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT_2" 2030
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 80 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_EVENT_ID]} == "$TEST_EVENT_2" ]]
+    [[ $APO_REMOTE_STRESS_CREDIT_REMAINING == 20 ]]
+
+    # Rebuild the first-event fixture for the launch/remainder assertions.
+    TEST_STATE[REMOTE_STRESS_SEGMENT_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_START_EPOCH]=1000
+    TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1060
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
+    apo_remote_stress_credit_clear
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+
+    apo_remote_job_clear_state
+    [[ ${TEST_STATE[REMOTE_STRESS_STATUS]} == IDLE ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 60 ]]
+
+    CAPTURED_START=$TEMP_DIR/network-credit-start
+    CONTROLLER_OUTPUT=$TEMP_DIR/network-credit-output
+    TEST_STATE[REMOTE_STRESS_STATUS]=IDLE
+    APO_REMOTE_WORK_DIR=/tmp/network-credit
+    APO_REMOTE_WORKER=/tmp/network-credit/worker.sh
+    APO_REMOTE_JOB_HELPER=/tmp/network-credit/remote-stress-job.sh
+    apo_remote_job_token() { printf '5%.0s' {1..64}; }
+    apo_remote_boot_id() { printf '%s' "$TEST_BOOT"; }
+    apo_remote_boot_id_once() { printf '%s' "$TEST_BOOT"; }
+    apo_recovery_wait_event() { :; }
+    apo_progress_render() { :; }
+    apo_progress_line_is_telemetry() { return 1; }
+    apo_remote_job_command() {
+        local operation=$1
+        if [[ $operation == start ]]; then
+            printf '%s\n' "$@" > "$CAPTURED_START"
+            printf 'APO_JOB_STARTED\tRUNNING\t2000\n'
+            return 0
+        fi
+        printf 'APO_JOB_HEARTBEAT\tCOMPLETE\t2040\t2000\t40\t%s\t0\t\n' "$TEST_BOOT"
+        printf 'APO_JOB_COMPLETE\t0\t0\t%s\t2040\t%s\n' "$(printf '6%.0s' {1..64})" "$TEST_BOOT"
+    }
+    apo_remote_job_fetch_complete() {
+        printf 'APO_RESULT_CLASS=PASS\n' > "$1"
+        APO_REMOTE_STRESS_RC=0
+        apo_remote_job_clear_state
+        apo_remote_stress_credit_clear
+    }
+
+    apo_run_remote_stress_capture "$TEST_PHASE" stress "$CONTROLLER_OUTPUT" combined 100
+    mapfile -t START_ARGUMENTS < "$CAPTURED_START"
+    [[ ${START_ARGUMENTS[6]} == 40 ]]
+    [[ ${START_ARGUMENTS[8]} == combined ]]
+    [[ ${START_ARGUMENTS[9]} == 40 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+)
+
+# Wall-clock heartbeat time alone is never stress credit. The target must have
+# emitted a matching workload elapsed sample before the proved reboot request.
+(
+    declare -A TEST_STATE=()
+    source "$ROOT/lib/remote_job.sh"
+    TEST_PHASE=no-unproved-credit
+    TEST_SPEC=$(apo_remote_job_spec_hash "$TEST_PHASE" stress combined 100)
+    TEST_EVENT=$(printf '8%.0s' {1..32})
+    TEST_STATE[REMOTE_STRESS_STATUS]=RUNNING
+    TEST_STATE[REMOTE_STRESS_SPEC_HASH]=$TEST_SPEC
+    TEST_STATE[REMOTE_STRESS_PHASE]=$TEST_PHASE
+    TEST_STATE[REMOTE_STRESS_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_SEGMENT_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_START_EPOCH]=1000
+    TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1060
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=''
+    TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]=''
+    TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]=0
+    TEST_STATE[REMOTE_STRESS_CREDIT_DURATION_S]=''
+    TEST_STATE[REMOTE_STRESS_CREDIT_EVENT_ID]=''
+
+    apo_state_get() { printf '%s' "${TEST_STATE[$1]:-${2-}}"; }
+    apo_state_set() { TEST_STATE[$1]=$2; }
+
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+    [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
+
+    # Even reported workload time is rejected when its controller heartbeat
+    # was observed after the target says its watchdog reboot was requested.
+    TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1090
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
 )
 
 printf 'test_remote_job: PASS\n'

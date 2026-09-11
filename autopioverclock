@@ -63,7 +63,6 @@ APO_IDENTITY_FILE=''
 APO_SELECTED_RUN_ID=''
 APO_RUN_ID_OPTION_SEEN=0
 APO_INSTALL_MISSING=0
-APO_REPAIR_WATCHDOGS=0
 APO_DRY_RUN=0
 APO_ASSUME_YES=0
 APO_YES_OPTION_SEEN=0
@@ -172,7 +171,7 @@ Usage:
   autopioverclock report TARGET [--run-id RUN_ID] [--redact]
 
 Commands:
-  prepare    Install and verify required dependencies and watchdog recovery
+  prepare    Install workload dependencies and verify the existing recovery chain
   overclock  Start a fresh history-guided tune, validate, and apply operation
   test       Stability-test one exact CPU/GPU pair, then return to normal clocks
   reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
@@ -226,7 +225,6 @@ Advanced options:
   --config FILE            Strict tuning plan for run
   --mode MODE              auto, graphical, or headless for run
   --install-missing        Permit run to install missing workload dependencies
-  --repair-watchdogs       Permit run to repair a planned watchdog deficiency
   --dry-run                Read-only discovery and plan generation
   --run-id RUN_ID          Select a retained run for saved-run commands
   --yes                    Skip the ordinary run confirmation; never apply confirmation
@@ -370,7 +368,6 @@ apo_parse_cli() {
                 index=$((index + 2))
                 ;;
             --install-missing) APO_INSTALL_MISSING=1; index=$((index + 1)) ;;
-            --repair-watchdogs) APO_REPAIR_WATCHDOGS=1; index=$((index + 1)) ;;
             --dry-run) APO_DRY_RUN=1; index=$((index + 1)) ;;
             --cpu-only)
                 (( APO_CPU_ONLY_OPTION_SEEN == 0 )) || apo_die '--cpu-only may be specified only once.' "$APO_EXIT_USAGE"
@@ -467,7 +464,6 @@ apo_parse_cli() {
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'test TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with test TARGET; repeat the same test command to continue it.' "$APO_EXIT_USAGE"
         (( APO_INSTALL_MISSING == 0 )) || apo_die 'Run prepare TARGET to install dependencies; test does not change host prerequisites.' "$APO_EXIT_USAGE"
-        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die 'Run prepare TARGET to install watchdogs; test does not change host prerequisites.' "$APO_EXIT_USAGE"
         (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with test TARGET.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with test TARGET.' "$APO_EXIT_USAGE"
         APO_ASSUME_YES=1
@@ -495,7 +491,6 @@ apo_parse_cli() {
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die '--mode is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with reset TARGET; reset records a new standalone operation.' "$APO_EXIT_USAGE"
         (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is not valid with reset TARGET.' "$APO_EXIT_USAGE"
-        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan is not valid with reset TARGET.' "$APO_EXIT_USAGE"
         (( APO_ASSUME_YES == 0 )) || apo_die '--yes is not valid with reset TARGET; reset does not prompt.' "$APO_EXIT_USAGE"
@@ -509,18 +504,15 @@ apo_parse_cli() {
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'prepare TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
         (( APO_INSTALL_MISSING == 0 )) || apo_die 'prepare TARGET already installs missing dependencies automatically; do not add --install-missing.' "$APO_EXIT_USAGE"
-        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die 'prepare TARGET already repairs a planned watchdog deficiency automatically; do not add --repair-watchdogs.' "$APO_EXIT_USAGE"
         (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan belongs on overclock TARGET, test TARGET, or the advanced run command, not prepare TARGET.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with prepare TARGET.' "$APO_EXIT_USAGE"
         APO_INSTALL_MISSING=1
-        APO_REPAIR_WATCHDOGS=1
     fi
     if [[ $APO_PUBLIC_COMMAND == overclock ]]; then
         (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'overclock TARGET is automatic; advanced custom plans use run TARGET --config FILE.' "$APO_EXIT_USAGE"
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'overclock TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with overclock TARGET.' "$APO_EXIT_USAGE"
         (( APO_INSTALL_MISSING == 0 )) || apo_die 'Run prepare TARGET to install dependencies; overclock does not change host prerequisites.' "$APO_EXIT_USAGE"
-        (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die 'Run prepare TARGET to install watchdogs; overclock does not change host prerequisites.' "$APO_EXIT_USAGE"
         (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with overclock TARGET; use prepare TARGET --dry-run for inspection.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with overclock TARGET.' "$APO_EXIT_USAGE"
         (( APO_RESTART_FROM_OPTION_SEEN == 0 )) ||
@@ -542,7 +534,6 @@ apo_parse_cli() {
             [[ -z $APO_CONFIG_FILE ]] || apo_die '--config is valid only with run or prepare; resume uses its recorded plan.' "$APO_EXIT_USAGE"
             [[ $APO_MODE_REQUESTED == auto ]] || apo_die '--mode is valid only with run or prepare; saved runs use their recorded mode.' "$APO_EXIT_USAGE"
             (( APO_INSTALL_MISSING == 0 )) || apo_die '--install-missing is valid only with run or prepare.' "$APO_EXIT_USAGE"
-            (( APO_REPAIR_WATCHDOGS == 0 )) || apo_die '--repair-watchdogs is valid only with run or prepare.' "$APO_EXIT_USAGE"
             (( APO_MAX_FAN_OPTION_SEEN == 0 )) || apo_die '--no-max-fan is valid only with a new run or overclock TARGET.' "$APO_EXIT_USAGE"
             ;;
     esac
@@ -1490,13 +1481,13 @@ apo_start_new_run() {
             apo_state_phase COMPLETE HOST_READY PASS
             apo_summary_line "HOST READY: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
             apo_summary_line "Next: autopioverclock overclock $APO_RAW_TARGET"
-            apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. The stock host is ready to overclock.'
+            apo_event prepare PASS '' 'Required workload dependencies are installed and the existing watchdog recovery chain is verified. The stock host is ready to overclock.'
         else
             apo_state_phase COMPLETE HOST_PREPARED PASS
             apo_summary_line 'HOST PREPARED: dependencies and watchdog recovery are ready; explicit clocks are currently active.'
             apo_summary_line "Fresh full search: autopioverclock reset $APO_RAW_TARGET"
             apo_summary_line "Extend a retained applied result without resetting: autopioverclock overclock $APO_RAW_TARGET --cpu-only or --gpu-only"
-            apo_event prepare PASS '' 'Required dependencies and the watchdog recovery chain are installed and verified. Reset only before a fresh full search; a retained applied result can continue with --cpu-only or --gpu-only without resetting.'
+            apo_event prepare PASS '' 'Required workload dependencies are installed and the existing watchdog recovery chain is verified. Reset only before a fresh full search; a retained applied result can continue with --cpu-only or --gpu-only without resetting.'
         fi
         return 0
     fi

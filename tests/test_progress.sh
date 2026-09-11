@@ -165,6 +165,30 @@ progress_line=$(< "$progress_file")
 [[ $progress_line == *'fan=pwm:255,rpm:5200'* ]]
 [[ $progress_line == *'manual-cpu-3100 gpu-1150'* ]]
 
+# The visible current-test countdown must change every second rather than
+# leaving a minute-only row that appears stalled during long endurance tests.
+apo_progress_render 151 600 2> "$progress_file"
+progress_second_tick=$(< "$progress_file")
+[[ $progress_second_tick == *'current 7m29s left'* ]]
+[[ $progress_second_tick != "$progress_line" ]]
+
+# Extended transport loss uses one in-place animated row. It never emits a
+# newline and never implies that an unclassified reboot was network-caused.
+APO_TEST_PROGRESS_NOW=1000
+apo_progress_now_epoch() { printf '%s' "$APO_TEST_PROGRESS_NOW"; }
+APO_PROGRESS_RECONNECTING=0
+apo_progress_reconnect_begin fixture-reconnect 2> "$progress_file"
+reconnect_first=$(< "$progress_file")
+[[ $reconnect_first == *'monkeebutt [|] waiting to reconnect 0s'* ]]
+[[ $reconnect_first == *'clocks unchanged pending boot proof'* ]]
+APO_TEST_PROGRESS_NOW=1001
+apo_progress_render 2> "$progress_file"
+reconnect_second=$(< "$progress_file")
+[[ $reconnect_second == *'monkeebutt [/] waiting to reconnect 1s'* ]]
+[[ $reconnect_second != *$'\n'* && $reconnect_second != *$'\r'* ]]
+apo_progress_reconnect_finish
+apo_progress_now_epoch() { date +%s; }
+
 COLUMNS=200
 APO_PROGRESS_LINE_ACTIVE=0
 apo_progress_render 150 600 2> "$progress_file"

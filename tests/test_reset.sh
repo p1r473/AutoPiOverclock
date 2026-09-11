@@ -78,7 +78,6 @@ assert_reset_option_rejected --run-id --run-id fixture-run
 assert_reset_option_rejected --config --config "$MISSING_CONFIG"
 assert_reset_option_rejected --mode --mode auto
 assert_reset_option_rejected --install-missing --install-missing
-assert_reset_option_rejected --repair-watchdogs --repair-watchdogs
 assert_reset_option_rejected --dry-run --dry-run
 assert_reset_option_rejected --qualification-hours --qualification-hours 3
 assert_reset_option_rejected --final-hours --final-hours 6

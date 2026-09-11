@@ -57,13 +57,24 @@ apo_recovery_wait_event() {
 apo_recovery_wait_begin() {
     local context=$1 timeout_seconds=$2
     apo_recovery_wait_checkpoint WAITING "$context"
+    if declare -F apo_progress_reconnect_begin >/dev/null 2>&1; then apo_progress_reconnect_begin "$context"; fi
     apo_recovery_wait_event WARN "$context" "The target has not returned to SSH after ${timeout_seconds}s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves saved work resumable."
 }
 
 apo_recovery_wait_finish() {
     local context=$1
+    if declare -F apo_progress_reconnect_finish >/dev/null 2>&1; then apo_progress_reconnect_finish; fi
     apo_recovery_wait_checkpoint RETURNED "$context"
     apo_recovery_wait_event INFO "$context" 'SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.'
+}
+
+apo_recovery_wait_sleep() {
+    local duration=$1 second
+    [[ $duration =~ ^[1-9][0-9]*$ ]] || duration=1
+    for (( second=0; second<duration; second++ )); do
+        if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
+        sleep 1
+    done
 }
 
 apo_ssh_init() {
@@ -305,7 +316,7 @@ apo_wait_for_ssh() {
             apo_recovery_wait_event INFO "$context" 'The target is still unreachable; unattended recovery monitoring remains active and no additional reboot is being requested.'
             next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
         fi
-        sleep "$APO_PERSISTENT_SSH_POLL_SECONDS"
+        apo_recovery_wait_sleep "$APO_PERSISTENT_SSH_POLL_SECONDS"
     done
 }
 
@@ -363,6 +374,6 @@ apo_wait_for_new_boot() {
             apo_recovery_wait_event INFO "$context" 'The target is still unreachable; unattended recovery monitoring remains active and no additional reboot is being requested.'
             next_notice=$((SECONDS + APO_PERSISTENT_SSH_NOTICE_SECONDS))
         fi
-        sleep "$APO_PERSISTENT_SSH_POLL_SECONDS"
+        apo_recovery_wait_sleep "$APO_PERSISTENT_SSH_POLL_SECONDS"
     done
 }

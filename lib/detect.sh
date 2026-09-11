@@ -672,42 +672,29 @@ apo_dependency_preflight() {
     apo_summary_line "Dependencies: READY after approved staging ($dependency_detail)"
 }
 
+apo_network_watchdog_observation_summary() {
+    local kind=${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-}
+    local target=${APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]:-}
+    local active=${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]:-0}
+    if declare -F apo_profile_network_watchdog_ready >/dev/null 2>&1 && apo_profile_network_watchdog_ready; then
+        apo_summary_line "Network watchdog: OBSERVED and proof-ready (kind=$kind target=$target active=$active)"
+    elif [[ -n $kind || -n $target || $active == 1 ]]; then
+        apo_summary_line "Network watchdog: OBSERVED but not eligible for strict reboot attribution (kind=${kind:-unknown} target=${target:-unknown} active=$active)"
+    else
+        apo_summary_line 'Network watchdog: NOT DETECTED (optional; AutoPiOverclock observes existing services but never installs or configures them)'
+    fi
+}
+
 apo_watchdog_preflight() {
-    local expected_repair_hash repair_class repair_reason
     if apo_profile_watchdogs_ready; then
-        apo_summary_line "Watchdogs: READY ($(apo_profile_watchdog_description))"
+        apo_summary_line "Hardware watchdog recovery: READY ($(apo_profile_watchdog_description))"
+        apo_network_watchdog_observation_summary
         return 0
     fi
-    apo_summary_line "Watchdogs: NOT READY ($(apo_profile_watchdog_description))"
+    apo_summary_line "Hardware watchdog recovery: NOT READY ($(apo_profile_watchdog_description))"
+    apo_network_watchdog_observation_summary
     if (( APO_DRY_RUN == 1 )); then return 0; fi
-    (( APO_REPAIR_WATCHDOGS == 1 )) || apo_die "The tryboot/watchdog recovery chain is not ready. Run autopioverclock prepare ${APO_RAW_TARGET} first." "$APO_EXIT_PREFLIGHT"
-    # Persist the complete, still-unmodified target context before the separately
-    # confirmed repair path plans or changes any permanent target file.
-    apo_store_discovery_state
-    apo_reset_throttle_history watchdog-remediation-baseline || apo_die "$APO_LAST_REASON" "$APO_EXIT_PREFLIGHT"
-    if ! apo_profile_repair_watchdogs; then
-        repair_class=${APO_LAST_CLASS:-PREFLIGHT_FAILURE}
-        repair_reason=${APO_LAST_REASON:-'Watchdog remediation failed or was refused.'}
-        case $repair_class in
-            PREFLIGHT_FAILURE|HARNESS_FAILURE|RECOVERY_FAILURE) ;;
-            *) repair_class=PREFLIGHT_FAILURE ;;
-        esac
-        apo_die "$repair_reason" "$(apo_class_exit_code "$repair_class")"
-    fi
-    expected_repair_hash=$(apo_state_get WATCHDOG_REPAIR_EXPECTED_HASH '')
-    apo_discovery_capture
-    if [[ ! $expected_repair_hash =~ ^[0-9a-f]{64}$ || ${APO_DISCOVERY[PERMANENT_HASH]:-} != "$expected_repair_hash" ]]; then
-        apo_state_set WATCHDOG_REPAIR_STATUS HASH_MISMATCH
-        apo_state_save
-        apo_die "Watchdog remediation returned with an unrecognized permanent-config hash (expected ${expected_repair_hash:-missing}, found ${APO_DISCOVERY[PERMANENT_HASH]:-missing})." "$APO_EXIT_RECOVERY"
-    fi
-    apo_throttle_clean_relative "${APO_DISCOVERY[RECENT_THROTTLED]:-}" "$APO_THROTTLE_RUNTIME_BASELINE" || apo_die "A current or new throttle condition appeared during watchdog remediation: ${APO_DISCOVERY[RECENT_THROTTLED]:-missing}" "$APO_EXIT_PREFLIGHT"
-    apo_context_from_discovery
-    apo_profile_watchdogs_ready || apo_die 'Watchdogs remain unready after remediation.' "$APO_EXIT_PREFLIGHT"
-    apo_state_set WATCHDOG_REPAIR_STATUS VERIFIED
-    apo_state_set WATCHDOG_REPAIR_NEW_HASH "$expected_repair_hash"
-    apo_state_set SUBPHASE WATCHDOG_REPAIR_VERIFIED
-    apo_state_save
+    apo_die 'The existing hardware watchdog recovery chain is not ready. AutoPiOverclock never installs or configures watchdogs; configure the target recovery chain separately, then run prepare again.' "$APO_EXIT_PREFLIGHT"
 }
 
 apo_finalize_discovered_config() {

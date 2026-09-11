@@ -112,8 +112,13 @@ apo_transient_phase_retry_schedule() {
             "$state_rewind" "${@:6}" || return 1
         fi
         apo_state_save
-        apo_event automatic-network-watchdog-replay WARN HARNESS_FAILURE "Strict project evidence attributes reboot $network_count to network-watchdog target $network_target. Repeating the complete affected gate at identical clocks without consuming a harness retry: $original_reason"
+        apo_event automatic-network-watchdog-resume WARN HARNESS_FAILURE "Strict project evidence attributes reboot $network_count to network-watchdog target $network_target. Preserving only target-reported completed stress and resuming the remaining duration at identical clocks without consuming a harness retry: $original_reason"
         return 0
+    fi
+    # A harness failure without complete network-watchdog proof never retains
+    # partial stress time. Its conservative same-clock replay starts at zero.
+    if declare -F apo_remote_stress_credit_clear >/dev/null 2>&1; then
+        apo_remote_stress_credit_clear
     fi
     (( retry_count < APO_TRANSIENT_PHASE_RETRY_MAX )) || return 1
     retry_count=$((retry_count + 1))

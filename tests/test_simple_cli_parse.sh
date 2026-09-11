@@ -23,7 +23,6 @@ parse_fixture prepare prepare prepare prepare tron
     source "$ROOT/autopioverclock"
     apo_parse_cli prepare tron
     [[ $APO_INSTALL_MISSING == 1 ]]
-    [[ $APO_REPAIR_WATCHDOGS == 1 ]]
     [[ $APO_AUTO_PREPARE == 1 ]]
     [[ $APO_AUTO_APPLY == 0 ]]
 )
@@ -280,7 +279,7 @@ assert_cli_rejects() {
 # own prerequisite permissions, new runs do not select old IDs, and --yes is
 # meaningful only for the advanced run confirmation.
 assert_cli_rejects 'prepare accepted redundant --install-missing' prepare tron --install-missing
-assert_cli_rejects 'prepare accepted redundant --repair-watchdogs' prepare tron --repair-watchdogs
+assert_cli_rejects 'removed --repair-watchdogs option was accepted' prepare tron --repair-watchdogs
 assert_cli_rejects 'prepare accepted irrelevant --yes' prepare tron --yes
 assert_cli_rejects 'advanced run accepted a saved --run-id' run tron --run-id 20260901-195530-ad946cde6c24975f
 assert_cli_rejects 'public overclock accepted irrelevant --yes' overclock tron --yes

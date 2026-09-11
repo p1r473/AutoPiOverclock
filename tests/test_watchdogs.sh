@@ -346,7 +346,8 @@ for PROFILE_NAME in debian batocera; do
         if apo_profile_watchdogs_ready; then exit 1; fi
         APO_DISCOVERY[WATCHDOG_OWNER]="pid=1;comm=watchdog;fd=7"
         APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]=0
-        if apo_profile_watchdogs_ready; then exit 1; fi
+        apo_profile_watchdogs_ready
+        if apo_profile_network_watchdog_ready; then exit 1; fi
     '
 done
 
@@ -519,7 +520,6 @@ WATCHDOG_CONTROLLER_OUTPUT=$(APO_ROOT="$ROOT" bash -c '
     source "$APO_ROOT/lib/detect.sh"
 
     APO_DRY_RUN=0
-    APO_REPAIR_WATCHDOGS=1
     APO_RAW_TARGET=fixture
     APO_LAST_CLASS=
     APO_LAST_REASON=
@@ -529,18 +529,15 @@ WATCHDOG_CONTROLLER_OUTPUT=$(APO_ROOT="$ROOT" bash -c '
     apo_reset_throttle_history() { :; }
     apo_profile_watchdogs_ready() { return 1; }
     apo_profile_watchdog_description() { printf fixture; }
-    apo_profile_repair_watchdogs() {
-        APO_LAST_CLASS=RECOVERY_FAILURE
-        APO_LAST_REASON="structured watchdog recovery fixture"
-        return 1
-    }
+    apo_profile_repair_watchdogs() { printf "unexpected-watchdog-mutation\n"; return 1; }
 
     apo_watchdog_preflight
 ' 2>&1)
 WATCHDOG_CONTROLLER_RC=$?
 set -e
-[[ $WATCHDOG_CONTROLLER_RC -eq 24 ]]
-[[ $WATCHDOG_CONTROLLER_OUTPUT == *'structured watchdog recovery fixture'* ]]
+[[ $WATCHDOG_CONTROLLER_RC -eq 20 ]]
+[[ $WATCHDOG_CONTROLLER_OUTPUT == *'AutoPiOverclock never installs or configures watchdogs'* ]]
+[[ $WATCHDOG_CONTROLLER_OUTPUT != *'unexpected-watchdog-mutation'* ]]
 
 grep -q 'WATCHDOG_RUNTIME_TIMEOUT' "$ROOT/lib/detect.sh"
 grep -q 'NETWORK_WATCHDOG_SERVICE_ACTIVE' "$ROOT/lib/detect.sh"

@@ -22,6 +22,9 @@ APO_PROGRESS_LAST_FAN=''
 APO_PROGRESS_RUN_MAX_TEMP=''
 APO_PROGRESS_STRESS_ELAPSED=0
 APO_PROGRESS_STRESS_DURATION=0
+APO_PROGRESS_RECONNECTING=0
+APO_PROGRESS_RECONNECT_STARTED_EPOCH=0
+APO_PROGRESS_RECONNECT_CONTEXT=''
 
 apo_progress_available() {
     (( ${APO_PROGRESS_SHUTTING_DOWN:-0} == 0 )) || return 1
@@ -541,12 +544,59 @@ apo_progress_terminal_columns() {
     printf '%s' "$columns"
 }
 
+apo_progress_paint_line() {
+    local line=$1 columns=$2 render_width
+    render_width=$((columns - APO_PROGRESS_RIGHT_MARGIN))
+    (( render_width > 0 )) || render_width=1
+    (( ${#line} > render_width )) && line=${line:0:render_width}
+    printf '\033[?7l\033[1G\033[2K%s\033[1G\033[?7h' "$line" >&2
+    APO_PROGRESS_LINE_ACTIVE=1
+    APO_PROGRESS_LINE_WIDTH=${#line}
+}
+
+apo_progress_reconnect_begin() {
+    local context=${1:-ssh}
+    if (( APO_PROGRESS_RECONNECTING == 0 )); then
+        APO_PROGRESS_RECONNECT_STARTED_EPOCH=$(apo_progress_now_epoch)
+    fi
+    APO_PROGRESS_RECONNECTING=1
+    APO_PROGRESS_RECONNECT_CONTEXT=$context
+    apo_progress_render
+}
+
+apo_progress_reconnect_finish() {
+    APO_PROGRESS_RECONNECTING=0
+    APO_PROGRESS_RECONNECT_STARTED_EPOCH=0
+    APO_PROGRESS_RECONNECT_CONTEXT=''
+}
+
 apo_progress_render() {
     local elapsed=${1:-${APO_PROGRESS_STRESS_ELAPSED:-0}} duration=${2:-${APO_PROGRESS_STRESS_DURATION:-0}}
     local remaining active percent filled empty bar eta target cpu gpu temp max_temp throttle fan phase columns render_width line
-    local wide_line medium_line narrow_line
+    local wide_line medium_line narrow_line now waited spinner reconnect_line
     local bar_width=$APO_PROGRESS_BAR_WIDTH tests current_remaining='' stress_label
     apo_progress_available || return 0
+    if (( APO_PROGRESS_RECONNECTING == 1 )); then
+        now=$(apo_progress_now_epoch)
+        waited=$((now - APO_PROGRESS_RECONNECT_STARTED_EPOCH))
+        (( waited < 0 )) && waited=0
+        case $((waited % 4)) in
+            0) spinner='|' ;;
+            1) spinner='/' ;;
+            2) spinner='-' ;;
+            *) spinner="\\" ;;
+        esac
+        target=${APO_RAW_TARGET:-$(apo_state_get RAW_TARGET target)}
+        cpu=$(apo_progress_resolve_clock cpu)
+        gpu=$(apo_progress_resolve_clock gpu)
+        columns=$(apo_progress_terminal_columns)
+        reconnect_line="$target [$spinner] waiting to reconnect ${waited}s"
+        if (( columns >= 90 )); then
+            reconnect_line+=" | CPU: ${cpu}MHz | GPU: ${gpu}MHz | clocks unchanged pending boot proof"
+        fi
+        apo_progress_paint_line "$reconnect_line" "$columns"
+        return 0
+    fi
     active=$(apo_progress_active_seconds)
     if remaining=$(apo_progress_estimate_remaining_seconds "$elapsed" "$duration"); then
         if (( remaining == 0 )); then percent=100
@@ -612,16 +662,13 @@ apo_progress_render() {
     else
         line=$narrow_line
     fi
-    (( ${#line} > render_width )) && line=${line:0:render_width}
     # Repaint only the current logical row. A reserved blank row plus cursor-up
     # and cursor-down controls is not stable when client geometry is reflowed
     # from a narrow phone viewport to a wider client: the resting cursor can
     # be remapped onto the display row and strand the previous paint. Disabling
     # autowrap, keeping a right-edge margin, and parking at column one leaves one
     # unwrapped logical row without emitting a newline or vertical movement.
-    printf '\033[?7l\033[1G\033[2K%s\033[1G\033[?7h' "$line" >&2
-    APO_PROGRESS_LINE_ACTIVE=1
-    APO_PROGRESS_LINE_WIDTH=${#line}
+    apo_progress_paint_line "$line" "$columns"
 }
 
 apo_progress_clear_line() {
@@ -660,6 +707,19 @@ apo_progress_parse_telemetry_line() {
     if [[ $line =~ elapsed=([0-9]+)/([0-9]+)s ]]; then
         APO_PROGRESS_STRESS_ELAPSED=${BASH_REMATCH[1]}
         APO_PROGRESS_STRESS_DURATION=${BASH_REMATCH[2]}
+        local original_duration segment_duration credit_seconds credit_context expected_context
+        original_duration=$(apo_state_get REMOTE_STRESS_DURATION_S '')
+        segment_duration=$(apo_state_get REMOTE_STRESS_SEGMENT_DURATION_S "$original_duration")
+        credit_seconds=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+        credit_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+        expected_context="$(apo_state_get REMOTE_STRESS_PHASE ''):$(apo_state_get REMOTE_STRESS_SPEC_HASH '')"
+        if [[ $credit_seconds =~ ^[1-9][0-9]*$ && $original_duration =~ ^[1-9][0-9]*$ &&
+              $segment_duration == "$APO_PROGRESS_STRESS_DURATION" &&
+              $credit_context == "$expected_context" && $credit_seconds -lt $original_duration ]]; then
+            APO_PROGRESS_STRESS_ELAPSED=$((APO_PROGRESS_STRESS_ELAPSED + credit_seconds))
+            (( APO_PROGRESS_STRESS_ELAPSED > original_duration )) && APO_PROGRESS_STRESS_ELAPSED=$original_duration
+            APO_PROGRESS_STRESS_DURATION=$original_duration
+        fi
     fi
 }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.58 - 2026-09-11
+
+- Removed every public watchdog-repair path. `prepare` may install missing workload dependencies, but it now treats hardware and network watchdogs as read-only external prerequisites and never installs, enables, updates, replaces, or configures either one. A recognized existing network watcher remains optional and is recorded only for later reboot attribution.
+- Preserved detached target stress across controller or SSH interruption. The controller reattaches to the exact owned target job on the same boot and shows one in-place reconnect spinner until ownership and boot identity are reconciled.
+- Tightened network-watchdog continuation so only target-reported workload time observed before a strictly proved watcher request can survive the reboot. The unchanged pair runs the exact remaining duration; stale telemetry, wall-clock time, SSH-outage time, and controller estimates receive no credit. An unproved reboot receives one full same-clock replay before the existing stability-isolation policy can apply.
+- Made normal progress countdowns visibly tick in seconds and added regression coverage for reconnect rendering, controller restart, strict workload-time credit, exact remainder execution, and non-mutating watchdog preflight.
+
 ## 0.1.0-alpha.57 - 2026-09-11
 
 - Made a fresh full-domain history-guided run select the newest nondominated ambiguous failed pair as its automatic reverse-search anchor when neither maximum is supplied. The controller derives the first CPU-lowered isolation pair itself, keeps the ordered CPU-only, GPU-only, then paired fallback, and never gives the failed anchor a final validation attempt.

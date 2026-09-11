@@ -208,7 +208,7 @@ for advanced_command in run resume status summary recover restore apply report; 
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution; do
+for retained_option in --config --mode --run-id --install-missing --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 if grep -Fq -- '--cpu-start-at' <<< "$help_output"; then
@@ -227,7 +227,7 @@ done
 
 # The public README is the concise command reference, so every accepted public
 # option must remain discoverable there even when several share one table row.
-for documented_option in --config --mode --run-id --install-missing --repair-watchdogs --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution --help --version; do
+for documented_option in --config --mode --run-id --install-missing --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution --help --version; do
     grep -Fq -- "$documented_option" "$ROOT/README.md"
 done
 

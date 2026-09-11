@@ -310,8 +310,14 @@ apo_state_initialize() {
     apo_state_set REMOTE_STRESS_SOURCE_BOOT_ID ''
     apo_state_set REMOTE_STRESS_PHASE ''
     apo_state_set REMOTE_STRESS_DURATION_S ''
+    apo_state_set REMOTE_STRESS_SEGMENT_DURATION_S ''
     apo_state_set REMOTE_STRESS_START_EPOCH ''
     apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
+    apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
+    apo_state_set REMOTE_STRESS_CREDIT_CONTEXT ''
+    apo_state_set REMOTE_STRESS_CREDIT_SECONDS 0
+    apo_state_set REMOTE_STRESS_CREDIT_DURATION_S ''
+    apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
     apo_state_set UNATTRIBUTED_REBOOT_REPLAY_CONTEXT ''
     apo_state_set UNATTRIBUTED_REBOOT_REPLAY_COUNT 0
     apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 0

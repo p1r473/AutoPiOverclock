@@ -2801,7 +2801,7 @@ cmd_prove_network_watchdog_reboot() {
     }
     network_watchdog_valid_ipv4 "$expected_target" && valid_sha256 "$expected_config_hash" &&
         valid_sha256 "$expected_keeper_hash" && valid_sha256 "$expected_service_hash" || {
-        emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed packaged asset hashes.'
+        emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed saved discovery hashes.'
         return 1
     }
     for required_file in "$config" "$keeper" "$event" "$log" "$service"; do
