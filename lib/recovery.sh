@@ -90,12 +90,31 @@ apo_reboot_observation_scope_is_active() {
 
 apo_transient_phase_retry_schedule() {
     local retry_context=$1 original_class=$2 original_reason=$3 eligible=${4:-0}
-    local state_rewind=${5:-} saved_context retry_count
+    local state_rewind=${5:-} saved_context retry_count network_count network_event network_target
     [[ $eligible == 1 && $original_class == HARNESS_FAILURE && -n $original_reason ]] || return 1
     saved_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
     retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
     [[ $retry_count =~ ^[0-9]+$ ]] || return 1
     if [[ $saved_context != "$retry_context" ]]; then retry_count=0; fi
+    if [[ $original_reason == \[PROVED_NETWORK_WATCHDOG\]* ]]; then
+        network_count=$(apo_state_get NETWORK_WATCHDOG_REPLAY_COUNT 0)
+        network_event=$(apo_state_get NETWORK_WATCHDOG_LAST_EVENT_ID '')
+        network_target=$(apo_state_get NETWORK_WATCHDOG_LAST_TARGET '')
+        [[ $network_count =~ ^[1-9][0-9]*$ && $network_event =~ ^[0-9a-f]{32}$ &&
+           $network_target =~ ^[0-9]+([.][0-9]+){3}$ ]] || return 1
+        apo_state_set TRANSIENT_RETRY_CONTEXT "$retry_context"
+        apo_state_set TRANSIENT_RETRY_COUNT "$retry_count"
+        apo_state_set STATUS RUNNING
+        apo_state_set FAILURE_CLASS ''
+        apo_state_set FAILURE_REASON ''
+        if [[ -n $state_rewind ]]; then
+            declare -F "$state_rewind" >/dev/null 2>&1 || return 1
+            "$state_rewind" "${@:6}" || return 1
+        fi
+        apo_state_save
+        apo_event automatic-network-watchdog-replay WARN HARNESS_FAILURE "Strict project evidence attributes reboot $network_count to network-watchdog target $network_target. Repeating the complete affected gate at identical clocks without consuming a harness retry: $original_reason"
+        return 0
+    fi
     (( retry_count < APO_TRANSIENT_PHASE_RETRY_MAX )) || return 1
     retry_count=$((retry_count + 1))
     apo_state_set TRANSIENT_RETRY_CONTEXT "$retry_context"

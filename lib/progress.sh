@@ -67,8 +67,8 @@ apo_progress_format_duration() {
     hours=$(((total % 86400) / 3600))
     minutes=$(((total % 3600) / 60))
     seconds=$((total % 60))
-    if (( days > 0 )); then printf '%dd%02dh%02dm' "$days" "$hours" "$minutes"
-    elif (( hours > 0 )); then printf '%dh%02dm' "$hours" "$minutes"
+    if (( days > 0 )); then printf '%dd%02dh%02dm%02ds' "$days" "$hours" "$minutes" "$seconds"
+    elif (( hours > 0 )); then printf '%dh%02dm%02ds' "$hours" "$minutes" "$seconds"
     elif (( minutes > 0 )); then printf '%dm%02ds' "$minutes" "$seconds"
     else printf '%ds' "$seconds"; fi
 }

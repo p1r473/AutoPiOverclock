@@ -136,6 +136,17 @@ default_gateway() {
     printf '%s' "$gateway"
 }
 
+configured_target() {
+    local target count
+    regular_file "$LIVE_CONFIG" || return 1
+    grep -Fq "$MANAGED_MARKER" "$LIVE_CONFIG" || return 1
+    count=$(grep -Ec '^[[:space:]]*TARGET[[:space:]]*=' "$LIVE_CONFIG" 2>/dev/null || true)
+    [[ $count == 1 ]] || return 1
+    target=$(awk -F= '/^[[:space:]]*TARGET[[:space:]]*=/ {value=$2; gsub(/[[:space:]]/, "", value); print value}' "$LIVE_CONFIG")
+    valid_ipv4 "$target" || return 1
+    printf '%s' "$target"
+}
+
 managed_or_absent() {
     local candidate=$1
     if [[ -L $candidate || ( -e $candidate && ! -f $candidate ) ]]; then return 1; fi
@@ -359,7 +370,7 @@ preflight() {
 plan_values() {
     local keeper_source=$1 service_source=$2 run_id=$3 plan_dir=$4
     preflight "$keeper_source" "$service_source" "$run_id" || return 1
-    PLAN_TARGET=$(default_gateway) || return 1
+    PLAN_TARGET=$(configured_target || default_gateway) || return 1
     ping -c 3 -W "$PING_TIMEOUT" "$PLAN_TARGET" >/dev/null 2>&1 || return 1
     PLAN_KEEPER_HASH=$(file_hash "$keeper_source" || true)
     PLAN_SERVICE_HASH=$(file_hash "$service_source" || true)
@@ -579,7 +590,7 @@ apply_plan() {
     emit_data WATCHDOG_CONFIG_BACKUP "$backup_dir"
     emit_data WATCHDOG_REPAIR_NEW_HASH "$PLAN_BOOT_NEW_HASH"
     emit_data WATCHDOG_REPAIR_TARGET "$PLAN_TARGET"
-    emit_result PASS "Batocera watchdog installed for default gateway $PLAN_TARGET; reboot required for activation."
+    emit_result PASS "Batocera watchdog installed for liveness target $PLAN_TARGET; reboot required for activation."
 }
 
 main() {

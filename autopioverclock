@@ -25,6 +25,8 @@ source "${APO_ROOT}/lib/logging.sh"
 source "${APO_ROOT}/lib/progress.sh"
 # shellcheck source=lib/ssh.sh
 source "${APO_ROOT}/lib/ssh.sh"
+# shellcheck source=lib/remote_job.sh
+source "${APO_ROOT}/lib/remote_job.sh"
 # shellcheck source=lib/classify.sh
 source "${APO_ROOT}/lib/classify.sh"
 # shellcheck source=lib/health.sh
@@ -1595,7 +1597,16 @@ apo_prepare_remote_for_saved_run() {
             apo_die "Saved target $APO_REMOTE_TARGET did not return to SSH." "$APO_EXIT_RECOVERY"
     fi
     apo_ssh_preflight
-    apo_deploy_worker
+    if apo_remote_job_pending; then
+        # The exact deployed worker and helper are part of the running job's
+        # ownership. Replacing either file while Bash is still reading it can
+        # corrupt the live workload. Reuse them until the job completes or a
+        # changed boot requires a deliberate redeploy for reboot proof.
+        APO_WORKER_DEPLOYED=1
+        APO_WORKER_BOOT_ID=$(apo_remote_boot_id_once 2>/dev/null || true)
+    else
+        apo_deploy_worker
+    fi
     APO_HAVE_REMOTE_CONTEXT=1
 }
 
@@ -1624,6 +1635,22 @@ apo_cleanup_handler() {
     case ${APO_COMMAND:-} in
         status|summary|report) exit "$exit_code" ;;
     esac
+    if [[ -n ${APO_STATE_FILE:-} && -f ${APO_STATE_FILE:-} ]] && apo_remote_job_pending &&
+       [[ ${APO_EXIT_SIGNAL:-} == TERM || ${APO_EXIT_SIGNAL:-} == HUP ]]; then
+        # A controller shutdown or lost controlling terminal must not stop a
+        # target-owned fixed-deadline job. Its saved ownership remains RUNNING
+        # so `resume TARGET` can reattach after the controller returns.
+        if declare -F apo_progress_clear_line >/dev/null 2>&1; then apo_progress_clear_line; fi
+        exit "$exit_code"
+    fi
+    if [[ -n ${APO_STATE_FILE:-} && -f ${APO_STATE_FILE:-} ]] && apo_remote_job_pending; then
+        # An orderly controller exit cannot leave a detached stress process
+        # credited as unattended work. Clear local ownership before the normal
+        # recovery reboot terminates the target-side job. A hard controller
+        # outage never reaches this trap, so resume can still reattach.
+        apo_remote_job_clear_state
+        apo_state_save
+    fi
     if [[ ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && ${APO_MUTATING_COMMAND:-0} == 1 ]]; then
         local tryboot_flag=''
         tryboot_flag=$(apo_remote_tryboot_flag_once || true)
@@ -1694,9 +1721,9 @@ main() {
     esac
     apo_progress_start_session
     trap apo_cleanup_handler EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    trap 'exit 129' HUP
+    trap 'APO_EXIT_SIGNAL=INT; exit 130' INT
+    trap 'APO_EXIT_SIGNAL=TERM; exit 143' TERM
+    trap 'APO_EXIT_SIGNAL=HUP; exit 129' HUP
     case $APO_COMMAND in
         run|prepare)
             APO_MUTATING_COMMAND=$([[ $APO_DRY_RUN == 0 ]] && printf 1 || printf 0)
@@ -1827,7 +1854,11 @@ main() {
                 saved_failure_reason=$(apo_state_get FAILURE_REASON '')
             fi
             apo_prepare_remote_for_saved_run
-            apo_recover_normal resume-initial-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
+            if apo_remote_job_pending; then
+                apo_event resume-detached-stress INFO '' 'A bound target-side stress job is pending. Resume will reattach before requesting any normal recovery reboot.'
+            else
+                apo_recover_normal resume-initial-recovery || { apo_state_fail RECOVERY_FAILURE "$APO_LAST_REASON"; return "$APO_EXIT_RECOVERY"; }
+            fi
             if (( APO_RESTART_PENDING == 1 )); then
                 apo_restart_active_automatic_state "$APO_RESTART_FROM" ||
                     apo_die "Checkpoint restart was refused: ${APO_LAST_REASON:-saved prerequisites are incomplete}." "$APO_EXIT_USAGE"

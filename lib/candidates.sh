@@ -2385,6 +2385,9 @@ apo_validate_auto_resume_state() {
     apo_validate_recovery_wait_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_validate_transient_retry_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_validate_normal_return_retry_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    if declare -F apo_validate_remote_job_state >/dev/null 2>&1; then
+        apo_validate_remote_job_state || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
+    fi
     apo_auto_validate_boolean 'automatic-candidate' "$auto_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_auto_validate_boolean 'edge CPU option' "$edge_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     selection_policy=${APO_SELECTION_POLICY:-$(apo_state_get CFG_SELECTION_POLICY guarded-v1)}

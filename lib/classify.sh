@@ -56,7 +56,7 @@ apo_parse_data_file() {
 
 apo_worker_command_is_safe_to_retry() {
     case $1 in
-        health|plan-candidate|verify-tryboot|verify-stock-reset|reset-throttle-history|plan-watchdog-repair|render-permanent|classify-kernel-log)
+        health|plan-candidate|verify-tryboot|verify-stock-reset|reset-throttle-history|plan-watchdog-repair|plan-network-watchdog|render-permanent|classify-kernel-log)
             return 0
             ;;
         *)
@@ -86,7 +86,10 @@ apo_run_worker_capture_once() {
     # appends line-by-line and therefore needs this explicit reset.
     : > "$output_file"
     set +e
-    if declare -F apo_progress_capture_worker_stream >/dev/null 2>&1; then
+    if [[ $worker_command == stress ]] && declare -F apo_run_remote_stress_capture >/dev/null 2>&1; then
+        apo_run_remote_stress_capture "$phase" "$worker_command" "$output_file" "$@"
+        remote_rc=$?
+    elif declare -F apo_progress_capture_worker_stream >/dev/null 2>&1; then
         # The progress consumer is the final pipeline command. Run it in this
         # shell so its progress-line and telemetry state remain identical to the
         # parent after the worker exits; a subshell copy can otherwise leave the

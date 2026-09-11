@@ -1,10 +1,13 @@
 SHELL := /usr/bin/env bash
-SHELLCHECK_FILES := autopioverclock $(wildcard lib/*.sh profiles/*.sh workers/*.sh tools/*.sh examples/*.sh tests/*.sh assets/batocera/*.sh) assets/batocera/AutoPiOverclockWatchdog
+SHELLCHECK_FILES := autopioverclock $(wildcard lib/*.sh profiles/*.sh workers/*.sh tools/*.sh examples/*.sh tests/*.sh assets/batocera/*.sh assets/debian/*.sh) assets/batocera/AutoPiOverclockWatchdog
 SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh
 BATOCERA_ASSETS := \
 	assets/batocera/AutoPiOverclockWatchdog \
 	assets/batocera/install_watchdog.sh \
 	assets/batocera/watchdog_keeper.py
+DEBIAN_EXECUTABLE_ASSETS := \
+	assets/debian/install_network_watchdog.sh \
+	assets/debian/network_watchdog_keeper.py
 
 PREFIX ?= /usr/local
 DESTDIR ?=
@@ -32,7 +35,7 @@ package:
 	./tools/package.sh
 
 install:
-	install -d "$(INSTALL_ROOT)/lib" "$(INSTALL_ROOT)/profiles" "$(INSTALL_ROOT)/workers" "$(INSTALL_ROOT)/tools" "$(INSTALL_ROOT)/assets/batocera" "$(INSTALL_BIN)"
+	install -d "$(INSTALL_ROOT)/lib" "$(INSTALL_ROOT)/profiles" "$(INSTALL_ROOT)/workers" "$(INSTALL_ROOT)/tools" "$(INSTALL_ROOT)/assets/batocera" "$(INSTALL_ROOT)/assets/debian" "$(INSTALL_BIN)"
 	install -m 755 autopioverclock "$(INSTALL_ROOT)/autopioverclock"
 	install -m 644 VERSION "$(INSTALL_ROOT)/VERSION"
 	install -m 644 lib/*.sh "$(INSTALL_ROOT)/lib/"
@@ -40,4 +43,6 @@ install:
 	install -m 755 workers/*.sh "$(INSTALL_ROOT)/workers/"
 	install -m 755 tools/*.sh "$(INSTALL_ROOT)/tools/"
 	install -m 755 $(BATOCERA_ASSETS) "$(INSTALL_ROOT)/assets/batocera/"
+	install -m 755 $(DEBIAN_EXECUTABLE_ASSETS) "$(INSTALL_ROOT)/assets/debian/"
+	install -m 644 assets/debian/autopioverclock-network-watchdog.service "$(INSTALL_ROOT)/assets/debian/"
 	ln -sfn ../lib/autopioverclock/autopioverclock "$(INSTALL_BIN)/autopioverclock"

@@ -1,0 +1,14 @@
+# AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG
+[Unit]
+Description=AutoPiOverclock network-loss reboot companion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/autopioverclock/network-watchdog-keeper.py /var/lib/autopioverclock/network-watchdog/watchdog.conf
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

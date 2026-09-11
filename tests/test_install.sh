@@ -20,6 +20,7 @@ fi
 make -C "$ROOT" install DESTDIR="$TEMP_DIR" PREFIX=/usr/local >/dev/null
 INSTALLED="$TEMP_DIR/usr/local/bin/autopioverclock"
 INSTALLED_ASSETS="$TEMP_DIR/usr/local/lib/autopioverclock/assets/batocera"
+INSTALLED_DEBIAN_ASSETS="$TEMP_DIR/usr/local/lib/autopioverclock/assets/debian"
 [[ -L $INSTALLED ]]
 [[ $("$INSTALLED" --version) == "$(<"$ROOT/VERSION")" ]]
 [[ -x $TEMP_DIR/usr/local/lib/autopioverclock/autopioverclock ]]
@@ -29,5 +30,9 @@ INSTALLED_ASSETS="$TEMP_DIR/usr/local/lib/autopioverclock/assets/batocera"
 [[ -x $INSTALLED_ASSETS/install_watchdog.sh ]]
 [[ -x $INSTALLED_ASSETS/watchdog_keeper.py ]]
 [[ ! -e $INSTALLED_ASSETS/__pycache__ ]]
+[[ -x $INSTALLED_DEBIAN_ASSETS/install_network_watchdog.sh ]]
+[[ -x $INSTALLED_DEBIAN_ASSETS/network_watchdog_keeper.py ]]
+[[ -r $INSTALLED_DEBIAN_ASSETS/autopioverclock-network-watchdog.service ]]
+[[ ! -x $INSTALLED_DEBIAN_ASSETS/autopioverclock-network-watchdog.service ]]
 
 printf 'test_install: PASS\n'

@@ -303,6 +303,20 @@ apo_state_initialize() {
     apo_state_set PROGRESS_STRESS_ELAPSED 0
     apo_state_set PROGRESS_STRESS_DURATION 0
     apo_state_set RUN_MAX_TEMP ''
+    apo_state_set REMOTE_STRESS_STATUS IDLE
+    apo_state_set REMOTE_STRESS_JOB_ID ''
+    apo_state_set REMOTE_STRESS_TOKEN ''
+    apo_state_set REMOTE_STRESS_SPEC_HASH ''
+    apo_state_set REMOTE_STRESS_SOURCE_BOOT_ID ''
+    apo_state_set REMOTE_STRESS_PHASE ''
+    apo_state_set REMOTE_STRESS_DURATION_S ''
+    apo_state_set REMOTE_STRESS_START_EPOCH ''
+    apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
+    apo_state_set UNATTRIBUTED_REBOOT_REPLAY_CONTEXT ''
+    apo_state_set UNATTRIBUTED_REBOOT_REPLAY_COUNT 0
+    apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 0
+    apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID ''
+    apo_state_set NETWORK_WATCHDOG_LAST_TARGET ''
     apo_state_save
 }
 

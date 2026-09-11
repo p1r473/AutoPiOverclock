@@ -80,6 +80,54 @@ set_stock_discovery_fixture() {
     apo_prepare_remote_for_saved_run
     [[ ${PREPARE_ACTIONS[*]} == 'wait:300:resume-connect preflight deploy' ]]
 )
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    APO_PUBLIC_COMMAND=overclock
+    APO_MUTATING_COMMAND=1
+    APO_PERSISTENT_SSH_RECOVERY=1
+    APO_BOOT_TIMEOUT=300
+    APO_REMOTE_TARGET=root@hostname
+    PREPARE_ACTIONS=()
+    apo_wait_for_ssh() { PREPARE_ACTIONS+=("wait:$1:$2"); }
+    apo_ssh_preflight() { PREPARE_ACTIONS+=(preflight); }
+    apo_remote_job_pending() { return 0; }
+    apo_remote_boot_id_once() {
+        printf 'called\n' >"$TEMP_DIR/pending-boot-id"
+        printf '12345678-1234-1234-1234-123456789abc'
+    }
+    apo_deploy_worker() { PREPARE_ACTIONS+=(deploy); }
+    apo_prepare_remote_for_saved_run
+    [[ ${PREPARE_ACTIONS[*]} == 'wait:300:resume-connect preflight' ]]
+    [[ -f $TEMP_DIR/pending-boot-id ]]
+    [[ $APO_WORKER_DEPLOYED == 1 ]]
+    [[ $APO_WORKER_BOOT_ID == 12345678-1234-1234-1234-123456789abc ]]
+)
+
+# TERM and HUP represent controller loss. They preserve a target-owned stress
+# job for resume and must not run normal-recovery cleanup against that target.
+set +e
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    STATE_FILE=$TEMP_DIR/controller-loss.state
+    RECOVERY_MARKER=$TEMP_DIR/controller-loss-recovery
+    : >"$STATE_FILE"
+    APO_STATE_FILE=$STATE_FILE
+    APO_COMMAND=overclock
+    APO_EXIT_SIGNAL=TERM
+    apo_remote_job_pending() { return 0; }
+    apo_progress_begin_shutdown() { :; }
+    apo_progress_clear_line() { :; }
+    apo_recover_normal() { printf 'called\n' >"$RECOVERY_MARKER"; }
+    set +e
+    (exit 143)
+    apo_cleanup_handler
+)
+CONTROLLER_LOSS_RC=$?
+set -e
+[[ $CONTROLLER_LOSS_RC == 143 ]]
+[[ ! -e $TEMP_DIR/controller-loss-recovery ]]
 
 CONTINUATION_OUTPUT="$TEMP_DIR/continuation-output"
 mkdir -p "$CONTINUATION_OUTPUT"

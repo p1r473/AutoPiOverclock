@@ -113,7 +113,9 @@ if ! awk '
 fi
 grep -q 'git -C "$ROOT" archive' "$ROOT/tools/package.sh"
 grep -q 'status --porcelain --untracked-files=normal' "$ROOT/tools/package.sh"
-grep -q "trap 'exit 143' TERM" "$ROOT/autopioverclock"
+grep -q "trap 'APO_EXIT_SIGNAL=INT; exit 130' INT" "$ROOT/autopioverclock"
+grep -q "trap 'APO_EXIT_SIGNAL=TERM; exit 143' TERM" "$ROOT/autopioverclock"
+grep -q "trap 'APO_EXIT_SIGNAL=HUP; exit 129' HUP" "$ROOT/autopioverclock"
 grep -q '^/dist export-ignore$' "$ROOT/.gitattributes"
 for fixture in debian-pass.log batocera-canvas-failure.log undervoltage.log root-usb-reset.log ext4-error.log kernel-fatal-signatures.log black-null-display.log missing-audio.log interrupted-tryboot.state; do
     [[ -f "$ROOT/tests/fixtures/$fixture" ]]

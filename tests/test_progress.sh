@@ -55,8 +55,8 @@ APO_QUALIFICATION_DURATION_S=3600
 APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 [[ $(apo_progress_format_duration 45) == 45s ]]
 [[ $(apo_progress_format_duration 452) == 7m32s ]]
-[[ $(apo_progress_format_duration 22320) == 6h12m ]]
-[[ $(apo_progress_format_duration 90000) == 1d01h00m ]]
+[[ $(apo_progress_format_duration 22320) == 6h12m00s ]]
+[[ $(apo_progress_format_duration 90000) == 1d01h00m00s ]]
 
 # The default edge-first policy budgets one long test, not edge plus floor.
 # A floor workload is added dynamically only after a safe edge rejection.

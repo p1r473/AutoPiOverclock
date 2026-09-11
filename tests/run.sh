@@ -5,6 +5,7 @@ TESTS=(
     test_simple_cli.sh
     test_manual_test.sh
     test_progress.sh
+    test_remote_job.sh
     test_install.sh
     test_batocera_watchdog_install.sh
     test_common.sh

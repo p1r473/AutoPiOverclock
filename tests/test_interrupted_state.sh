@@ -145,6 +145,31 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
     [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 5 ]]
 )
 
+# Strict, project-owned network-watchdog proof does not consume the bounded
+# harness retry budget. Every event still rewinds and repeats the complete gate
+# at identical clocks for its full requested duration.
+(
+    reset_recovery_fixture
+    REWIND_CALLS=0
+    network_rewind_fixture() { REWIND_CALLS=$((REWIND_CALLS + 1)); }
+    apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 1
+    apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    apo_state_set NETWORK_WATCHDOG_LAST_TARGET 192.0.2.1
+    for replay in 1 2 3 4 5 6 7; do
+        apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT "$replay"
+        apo_transient_phase_retry_schedule final-ENDURANCE-stress HARNESS_FAILURE \
+            '[PROVED_NETWORK_WATCHDOG] exact fixture proof' 1 network_rewind_fixture
+    done
+    [[ $REWIND_CALLS == 7 ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
+    apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID ''
+    if apo_transient_phase_retry_schedule final-ENDURANCE-stress HARNESS_FAILURE \
+        '[PROVED_NETWORK_WATCHDOG] unbound fixture claim' 1 network_rewind_fixture; then
+        echo 'unbound network-watchdog claim bypassed the retry limit' >&2
+        exit 1
+    fi
+)
+
 # An already-normal target uses the complete profile timeout and records its
 # current boot ID instead of leaving stale candidate/recovery state behind.
 reset_recovery_fixture

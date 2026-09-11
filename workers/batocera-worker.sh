@@ -1067,6 +1067,8 @@ cmd_discover() {
     local boot_config=/boot/config.txt tryboot_config=/boot/tryboot.txt gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
     local model compatible version boot_watchdog kernel_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source baseline display_present audio_baseline permanent_hash glmark_binary glmark_wayland_binary glmark_drm_binary glmark_data
     local openssl_binary tryboot_exists tryboot_type tryboot_hash
+    local network_root=/userdata/system/autopioverclock/watchdog network_config network_keeper network_service
+    local network_target='' network_config_hash='' network_keeper_hash='' network_service_hash='' network_service_active=0
     [[ -f $boot_config ]] || { emit_result PREFLIGHT_FAILURE 'Batocera boot config /boot/config.txt was not found.'; return 1; }
     audit_permanent_tuning_config "$boot_config"
     inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
@@ -1111,6 +1113,21 @@ cmd_discover() {
     glmark_data=$(find_glmark_data || true)
     openssl_binary=$(command -v openssl 2>/dev/null || true)
     fan_pwm_snapshot >/dev/null 2>&1 || true
+    network_config=$network_root/watchdog.conf
+    network_keeper=$network_root/watchdog_keeper.py
+    network_service=/userdata/system/services/AutoPiOverclockWatchdog
+    if [[ -f $network_config && ! -L $network_config && -f $network_keeper && ! -L $network_keeper &&
+          -f $network_service && ! -L $network_service ]] &&
+       grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG' "$network_config"; then
+        network_target=$(awk -F= '/^TARGET=/ {value=$2; count++} END {if (count == 1) print value}' "$network_config")
+        network_watchdog_valid_ipv4 "$network_target" || network_target=''
+        network_config_hash=$(sha256sum "$network_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        network_keeper_hash=$(sha256sum "$network_keeper" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        network_service_hash=$(sha256sum "$network_service" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        if [[ -n $network_target ]] && batocera_network_watchdog_service_ready "$network_keeper" "$network_config" "$network_service"; then
+            network_service_active=1
+        fi
+    fi
 
     emit_data PROFILE batocera
     emit_data MODEL "$model"
@@ -1141,6 +1158,12 @@ cmd_discover() {
     emit_data WATCHDOG_DEVICE "$watchdog_device"
     emit_data WATCHDOG_RUNTIME_TIMEOUT "$watchdog_runtime_timeout_value"
     emit_data WATCHDOG_OWNER "$watchdog_owner"
+    emit_data NETWORK_WATCHDOG_KIND batocera-hardware-keeper
+    emit_data NETWORK_WATCHDOG_TARGET "$network_target"
+    emit_data NETWORK_WATCHDOG_CONFIG_HASH "$network_config_hash"
+    emit_data NETWORK_WATCHDOG_KEEPER_HASH "$network_keeper_hash"
+    emit_data NETWORK_WATCHDOG_SERVICE_HASH "$network_service_hash"
+    emit_data NETWORK_WATCHDOG_SERVICE_ACTIVE "$network_service_active"
     emit_data ROOT_SOURCE "$root_device"
     emit_data BOOT_SOURCE "$boot_source"
     emit_data DISPLAY_BASELINE "$baseline"
@@ -2698,6 +2721,169 @@ cmd_repair_watchdogs() {
     "$installer" apply "$keeper" "$service" "${@:4}"
 }
 
+network_watchdog_valid_ipv4() {
+    awk -F. '
+        NF != 4 {exit 1}
+        {for (i=1; i<=4; i++) if ($i !~ /^[0-9]+$/ || $i+0 > 255 || $i != $i+0) exit 1}
+    ' <<< "${1-}"
+}
+
+network_watchdog_event_fields() {
+    local event_file=$1
+    awk -F= '
+        BEGIN {
+            allowed["FORMAT"]=1; allowed["EVENT_ID"]=1; allowed["SOURCE_BOOT_ID"]=1
+            allowed["TARGET"]=1; allowed["FAILURE_STARTED_EPOCH"]=1
+            allowed["REBOOT_REQUESTED_EPOCH"]=1; allowed["CONFIG_SHA256"]=1
+            allowed["KEEPER_SHA256"]=1; allowed["SERVICE_SHA256"]=1; allowed["REASON"]=1
+        }
+        $0 == "# AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1" {
+            if (marker) invalid=1
+            marker=1
+            next
+        }
+        /^[[:space:]]*$/ {next}
+        /^[[:space:]]*#/ {invalid=1; next}
+        {
+            key=$1
+            value=substr($0, index($0, "=")+1)
+            if (NF < 2 || !allowed[key] || seen[key]++) {invalid=1; next}
+            values[key]=value
+            count++
+        }
+        END {
+            if (invalid || marker != 1 || count != 10) exit 1
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+                values["FORMAT"], values["EVENT_ID"], values["SOURCE_BOOT_ID"],
+                values["TARGET"], values["FAILURE_STARTED_EPOCH"],
+                values["REBOOT_REQUESTED_EPOCH"], values["CONFIG_SHA256"],
+                values["KEEPER_SHA256"], values["SERVICE_SHA256"], values["REASON"]
+        }
+    ' "$event_file"
+}
+
+batocera_network_watchdog_service_ready() {
+    local keeper=$1 config=$2 service=$3 pid services argument found=0
+    services=$(awk -F= '
+        /^[[:space:]]*#/ {next}
+        /^[[:space:]]*system[.]services[[:space:]]*=/ {
+            value=$0; sub(/^[^=]*=[[:space:]]*/, "", value)
+        }
+        END {print value}
+    ' /userdata/system/batocera.conf 2>/dev/null) || return 1
+    for argument in $services; do
+        if [[ $argument == AutoPiOverclockWatchdog ]]; then found=1; break; fi
+    done
+    (( found == 1 )) || return 1
+    pid=$(sed -n '1p' /run/autopioverclock-watchdog.pid 2>/dev/null || true)
+    [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/cmdline ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null | grep -Fqx -- "$keeper" || return 1
+    tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null | grep -Fqx -- "$config" || return 1
+    [[ -x $service ]]
+}
+
+cmd_prove_network_watchdog_reboot() {
+    local expected_old_boot=${1:-} expected_new_boot=${2:-} expected_target=${3:-}
+    local expected_config_hash=${4:-} expected_keeper_hash=${5:-} expected_service_hash=${6:-}
+    local previous_event=${7:-}
+    local root=/userdata/system/autopioverclock/watchdog
+    local config=$root/watchdog.conf keeper=$root/watchdog_keeper.py event=$root/last-network-reboot
+    local pending=$root/pending-network-reboot
+    local log=$root/watchdog.log service=/userdata/system/services/AutoPiOverclockWatchdog
+    local fields format event_id source_boot target failure_epoch request_epoch marker_config_hash marker_keeper_hash marker_service_hash reason
+    local current_boot config_target config_hash keeper_hash service_hash now uptime boot_epoch
+    [[ $expected_old_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
+       $expected_new_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
+       $expected_old_boot != "$expected_new_boot" && ( -z $previous_event || $previous_event =~ ^[0-9a-f]{32}$ ) ]] || {
+        emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed boot identity.'
+        return 1
+    }
+    network_watchdog_valid_ipv4 "$expected_target" && valid_sha256 "$expected_config_hash" &&
+        valid_sha256 "$expected_keeper_hash" && valid_sha256 "$expected_service_hash" || {
+        emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed packaged asset hashes.'
+        return 1
+    }
+    for required_file in "$config" "$keeper" "$event" "$log" "$service"; do
+        [[ -f $required_file && ! -L $required_file ]] || {
+            emit_result HARNESS_FAILURE 'Strict network-watchdog proof is missing a regular project-owned evidence file.'
+            return 1
+        }
+    done
+    [[ ! -e $pending && ! -L $pending ]] || {
+        emit_result HARNESS_FAILURE 'The network-watchdog reboot still has an unresolved pending marker.'
+        return 1
+    }
+    current_boot=$(tr -d '\r\n' </proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    [[ $current_boot == "$expected_new_boot" ]] || {
+        emit_result HARNESS_FAILURE 'Strict network-watchdog proof does not match the current target boot.'
+        return 1
+    }
+    fields=$(network_watchdog_event_fields "$event" 2>/dev/null) || {
+        emit_result HARNESS_FAILURE 'The project-owned network-watchdog marker is malformed.'
+        return 1
+    }
+    IFS=$'\t' read -r format event_id source_boot target failure_epoch request_epoch marker_config_hash marker_keeper_hash marker_service_hash reason <<<"$fields"
+    [[ $format == 1 && $event_id =~ ^[0-9a-f]{32}$ && $event_id != "$previous_event" &&
+       $source_boot == "$expected_old_boot" && $reason == TARGET_UNREACHABLE &&
+       $failure_epoch =~ ^[1-9][0-9]*$ && $request_epoch =~ ^[1-9][0-9]*$ &&
+       $failure_epoch -le $request_epoch ]] || {
+        emit_result HARNESS_FAILURE 'The project-owned network-watchdog marker does not identify this reboot uniquely.'
+        return 1
+    }
+    config_target=$(awk -F= '/^TARGET=/ {value=$2; count++} END {if (count == 1) print value}' "$config")
+    network_watchdog_valid_ipv4 "$config_target" && [[ $target == "$config_target" && $target == "$expected_target" ]] || {
+        emit_result HARNESS_FAILURE 'The network-watchdog marker target does not match the active managed configuration.'
+        return 1
+    }
+    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG' "$config" || {
+        emit_result HARNESS_FAILURE 'The active network-watchdog configuration lacks project ownership.'
+        return 1
+    }
+    config_hash=$(sha256sum "$config" | awk 'NR == 1 {print $1}')
+    keeper_hash=$(sha256sum "$keeper" | awk 'NR == 1 {print $1}')
+    service_hash=$(sha256sum "$service" | awk 'NR == 1 {print $1}')
+    [[ $config_hash == "$marker_config_hash" && $config_hash == "$expected_config_hash" &&
+       $keeper_hash == "$marker_keeper_hash" &&
+       $service_hash == "$marker_service_hash" && $keeper_hash == "$expected_keeper_hash" &&
+       $service_hash == "$expected_service_hash" ]] || {
+        emit_result HARNESS_FAILURE 'The network-watchdog marker is not hash-bound to the active packaged service.'
+        return 1
+    }
+    now=$(date +%s)
+    uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null || true)
+    [[ $now =~ ^[1-9][0-9]*$ && $uptime =~ ^[0-9]+$ ]] || {
+        emit_result HARNESS_FAILURE 'The current boot time could not be established for strict watchdog proof.'
+        return 1
+    }
+    boot_epoch=$((now - uptime))
+    (( request_epoch >= boot_epoch - 120 && request_epoch <= boot_epoch + 120 )) || {
+        emit_result HARNESS_FAILURE 'The network-watchdog marker timestamp does not bound the current boot.'
+        return 1
+    }
+    grep -Fq "network_reboot_prepared event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch" "$log" || {
+        emit_result HARNESS_FAILURE 'The durable watchdog log does not corroborate preparation of the reboot marker.'
+        return 1
+    }
+    grep -Fq "network_reboot_committed event_id=$event_id target=$target method=hardware-watchdog-starvation" "$log" || {
+        emit_result HARNESS_FAILURE 'The durable watchdog log does not prove entry into hardware-watchdog starvation.'
+        return 1
+    }
+    grep -Fq "network_reboot_accepted event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch current_boot_id=$current_boot" "$log" || {
+        emit_result HARNESS_FAILURE 'The durable watchdog log does not prove acceptance of the marker on this boot.'
+        return 1
+    }
+    batocera_network_watchdog_service_ready "$keeper" "$config" "$service" || {
+        emit_result HARNESS_FAILURE 'The project-owned network-watchdog service is not active with the verified assets.'
+        return 1
+    }
+    emit_data NETWORK_WATCHDOG_EVENT_ID "$event_id"
+    emit_data NETWORK_WATCHDOG_TARGET "$target"
+    emit_data NETWORK_WATCHDOG_SOURCE_BOOT_ID "$source_boot"
+    emit_data NETWORK_WATCHDOG_REQUESTED_EPOCH "$request_epoch"
+    emit_result PASS "Project-owned network watchdog strictly proved that target $target caused the reboot from boot $source_boot."
+}
+
 cmd_classify_kernel_log() {
     local log_file=$1 common_errors usb_errors
     [[ -r $log_file ]] || { emit_result HARNESS_FAILURE "Kernel-log fixture is unreadable: $log_file"; return 1; }
@@ -2732,6 +2918,7 @@ main() {
         restore-backup) run_with_mutation_lock "restore-${2:-}" APPLY_FAILURE cmd_restore_backup "$@" ;;
         plan-watchdog-repair) cmd_plan_watchdog_repair "$@" ;;
         repair-watchdogs) run_with_mutation_lock "watchdog-${4:-}" PREFLIGHT_FAILURE cmd_repair_watchdogs "$@" ;;
+        prove-network-watchdog-reboot) cmd_prove_network_watchdog_reboot "$@" ;;
         classify-kernel-log) cmd_classify_kernel_log "$@" ;;
         *) emit_result HARNESS_FAILURE "Unknown worker command: $command_name"; return 2 ;;
     esac

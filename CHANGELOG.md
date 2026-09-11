@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.56 - 2026-09-11
+
+- Moved every timed stress gate into a token-bound detached job on the target. A controller SSH interruption no longer kills the workload, the target enforces the fixed duration with its boot-monotonic clock plus a bounded shutdown grace, and completed output is retained for hash-verified collection after connectivity returns.
+- Made the controller reconnect indefinitely to the exact saved target job while the target stays on the same boot. Repeated launch requests are idempotent, partial SSH records are discarded before reattachment, and the target verifies the supervisor command line plus worker path so PID reuse or mismatched ownership cannot impersonate a live job. If the controller itself restarts, `resume TARGET` reattaches to the saved job.
+- Added strict project-owned network-watchdog reboot evidence for Debian-family and Batocera targets. Proof binds the source and current boot IDs, configured liveness target, event time and identity, installed asset hashes, active service, and matching prepared, committed, and next-boot-accepted durable records. A pending intent is withdrawn or invalidated if the requested reset does not begin within its bounded window. Only complete proof repeats the same clocks for the full duration without consuming the ordinary five-retry harness budget; an unattributed reboot receives one conservative same-clock replay and is never labeled as network-caused.
+- Added a Debian network-liveness companion installed by `prepare` without taking ownership of `/dev/watchdog`; systemd remains the hardware-watchdog owner. Batocera retains its managed keeper. Both record durable reboot intent and retain arbitrary configured ping targets rather than assuming a gateway.
+- Added second-level progress movement during detached stress and fixtures for disconnect, reattachment, hard deadlines, exact ownership, strict reboot proof, packaging, and both watchdog profiles. The suite now contains 24 scripted fixtures.
+
 ## 0.1.0-alpha.55 — 2026-09-08
 
 - Fixed retained-history validation for alpha.48 schema-10 automatic runs whose legacy `CFG_CPU_START_AT`/`CFG_GPU_START_AT` fields were search seeds rather than hard minimums. The read-only history scanner now validates those states against their original stock/source floors, so coherent failure and backoff evidence remains usable without changing the state file; malformed evidence still fails closed.

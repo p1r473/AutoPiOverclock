@@ -22,6 +22,10 @@ CHECKSUM_FILE="$OUTPUT_DIR/AutoPiOverclock-${VERSION}-source-SHA256SUMS.txt"
 tar -tzf "$TAR_FILE" > "$TEMP_DIR/tar.list"
 unzip -Z1 "$ZIP_FILE" > "$TEMP_DIR/zip.list"
 for required in \
+    source/assets/debian/install_network_watchdog.sh \
+    source/assets/debian/network_watchdog_keeper.py \
+    source/lib/remote_job.sh \
+    source/tools/remote-stress-job.sh \
     source/tests/fixtures/debian-pass.log \
     source/tests/fixtures/interrupted-tryboot.state; do
     grep -qx "$required" "$TEMP_DIR/tar.list"

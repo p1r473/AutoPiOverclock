@@ -136,17 +136,64 @@ apo_profile_watchdogs_ready() {
     local watchdog_device=${APO_DISCOVERY[WATCHDOG_DEVICE]:-}
     local watchdog_runtime_timeout=${APO_DISCOVERY[WATCHDOG_RUNTIME_TIMEOUT]:-0}
     local watchdog_owner=${APO_DISCOVERY[WATCHDOG_OWNER]:-}
+    local local_keeper=${APO_ROOT}/assets/batocera/watchdog_keeper.py
+    local local_service=${APO_ROOT}/assets/batocera/AutoPiOverclockWatchdog
+    local expected_keeper_hash expected_service_hash
     apo_is_uint "$boot_timeout" && (( boot_timeout > 0 )) || return 1
     apo_is_uint "$kernel_timeout" && (( kernel_timeout > 0 )) || return 1
     apo_is_uint "$watchdog_runtime_timeout" && (( watchdog_runtime_timeout > 0 )) || return 1
-    [[ -n $watchdog_device && -n $watchdog_owner ]]
+    [[ -n $watchdog_device && -n $watchdog_owner ]] || return 1
+    [[ ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-} == batocera-hardware-keeper &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]:-0} == 1 &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]:-} =~ ^[0-9]+([.][0-9]+){3}$ &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]:-} =~ ^[0-9a-f]{64}$ ]] || return 1
+    expected_keeper_hash=$(sha256sum "$local_keeper" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    expected_service_hash=$(sha256sum "$local_service" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ ${APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]:-} == "$expected_keeper_hash" &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]:-} == "$expected_service_hash" ]]
 }
 
 apo_profile_watchdog_description() {
-    printf 'EEPROM=%s kernel-handoff=%s watchdog-device=%s runtime-timeout=%s owner=%s' \
+    printf 'EEPROM=%s kernel-handoff=%s watchdog-device=%s runtime-timeout=%s owner=%s network-target=%s managed-network-service=%s' \
         "${APO_DISCOVERY[BOOT_WATCHDOG_TIMEOUT]:-missing}" "${APO_DISCOVERY[KERNEL_WATCHDOG_TIMEOUT]:-missing}" "${APO_DISCOVERY[WATCHDOG_DEVICE]:-missing}" \
         "${APO_DISCOVERY[WATCHDOG_RUNTIME_TIMEOUT]:-missing}" \
-        "${APO_DISCOVERY[WATCHDOG_OWNER]:-missing}"
+        "${APO_DISCOVERY[WATCHDOG_OWNER]:-missing}" \
+        "${APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]:-missing}" \
+        "${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]:-0}"
+}
+
+apo_profile_prove_network_watchdog_reboot() {
+    local context=$1 old_boot=$2 new_boot=$3 output_file rc attempt attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5}
+    local expected_target expected_config_hash expected_keeper_hash expected_service_hash previous_event
+    output_file=$(apo_candidate_log_file "${context}-network-watchdog-proof")
+    expected_target=$(apo_state_get DISC_NETWORK_WATCHDOG_TARGET '')
+    expected_config_hash=$(apo_state_get DISC_NETWORK_WATCHDOG_CONFIG_HASH '')
+    expected_keeper_hash=$(sha256sum "${APO_ROOT}/assets/batocera/watchdog_keeper.py" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    expected_service_hash=$(sha256sum "${APO_ROOT}/assets/batocera/AutoPiOverclockWatchdog" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    previous_event=$(apo_state_get NETWORK_WATCHDOG_LAST_EVENT_ID '')
+    [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=5
+    for (( attempt=1; attempt<=attempts; attempt++ )); do
+        set +e
+        apo_remote_worker_read_file "$output_file" "$APO_REMOTE_WORKER" prove-network-watchdog-reboot \
+            "$old_boot" "$new_boot" "$expected_target" "$expected_config_hash" \
+            "$expected_keeper_hash" "$expected_service_hash" "$previous_event"
+        rc=$?
+        set -e
+        [[ -z ${APO_LOG_FILE:-} || ! -f ${APO_LOG_FILE:-} ]] || cat "$output_file" >>"$APO_LOG_FILE"
+        apo_classify_output "$output_file" "${context}-network-watchdog-proof"
+        if (( rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then break; fi
+        (( attempt < attempts )) || return 1
+        apo_event "${context}-network-watchdog-proof-retry" WARN HARNESS_FAILURE \
+            "Strict network-watchdog evidence is not complete yet; retrying the read-only proof (attempt $((attempt + 1))/$attempts)."
+        if declare -F apo_transient_read_delay >/dev/null 2>&1; then apo_transient_read_delay; else sleep 10; fi
+    done
+    apo_parse_data_file "$output_file" APO_WORKER_DATA
+    APO_NETWORK_WATCHDOG_EVENT_ID=${APO_WORKER_DATA[NETWORK_WATCHDOG_EVENT_ID]:-}
+    APO_NETWORK_WATCHDOG_TARGET=${APO_WORKER_DATA[NETWORK_WATCHDOG_TARGET]:-}
+    [[ $APO_NETWORK_WATCHDOG_EVENT_ID =~ ^[0-9a-f]{32}$ &&
+       $APO_NETWORK_WATCHDOG_TARGET == "$expected_target" &&
+       ${APO_WORKER_DATA[NETWORK_WATCHDOG_SOURCE_BOOT_ID]:-} == "$old_boot" ]] || return 1
+    APO_NETWORK_WATCHDOG_PROOF_REASON="Project-owned Batocera watchdog evidence proves that liveness target $APO_NETWORK_WATCHDOG_TARGET caused the reboot from boot $old_boot."
 }
 
 apo_profile_repair_watchdogs() {
@@ -221,9 +268,9 @@ apo_profile_repair_watchdogs() {
         apo_info "The EEPROM boot watchdog is disabled; prepare will schedule a ${eeprom_timeout}s timeout and retain the updater diagnostics."
     fi
     if (( ${APO_AUTO_PREPARE:-0} == 1 )); then
-        apo_info "The explicit prepare command authorizes the planned Batocera watchdog installation for default gateway $target and its verification reboot."
+        apo_info "The explicit prepare command authorizes the planned Batocera watchdog installation for liveness target $target and its verification reboot."
     else
-        apo_confirm_exact "Prepare will install a project-owned Batocera watchdog, preserve verified backups, use the current default gateway $target as its liveness target, bound network-loss recovery to three reboots per 30 minutes, and reboot ${APO_REMOTE_TARGET}." "$expected" || return 1
+        apo_confirm_exact "Prepare will install a project-owned Batocera watchdog, preserve verified backups, use $target as its liveness target, bound network-loss recovery to three reboots per 30 minutes, and reboot ${APO_REMOTE_TARGET}." "$expected" || return 1
     fi
     apo_state_set MUTATIONS_STARTED 1
     apo_state_set WATCHDOG_REPAIR_STATUS MUTATING

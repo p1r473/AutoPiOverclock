@@ -463,22 +463,28 @@ APO_LOG_FILE=''
     HANDSHAKE_ROOT=$(mktemp -d)
     trap 'rm -rf "$HANDSHAKE_ROOT"' EXIT
     APO_LOCAL_WORKER="$HANDSHAKE_ROOT/local-worker.sh"
+    APO_LOCAL_REMOTE_JOB="$HANDSHAKE_ROOT/remote-stress-job.sh"
     APO_REMOTE_WORKER=/tmp/autopioverclock-fixture/worker.sh
+    APO_REMOTE_JOB_HELPER=/tmp/autopioverclock-fixture/remote-stress-job.sh
     printf '#!/usr/bin/env bash\nexit 0\n' > "$APO_LOCAL_WORKER"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$APO_LOCAL_REMOTE_JOB"
     UPLOADS=0
     apo_wait_for_new_boot() {
         [[ $2 == 30 ]]
         case $1 in old-boot) printf new-boot ;; new-boot) printf newer-boot ;; *) return 1 ;; esac
     }
     apo_remote_upload_root() {
-        [[ $1 == "$APO_LOCAL_WORKER" && $2 == "$APO_REMOTE_WORKER" ]]
+        case "$1:$2" in
+            "$APO_LOCAL_WORKER:$APO_REMOTE_WORKER"|"$APO_LOCAL_REMOTE_JOB:$APO_REMOTE_JOB_HELPER") ;;
+            *) return 1 ;;
+        esac
         UPLOADS=$((UPLOADS + 1))
     }
     apo_post_reboot_handshake old-boot 30 candidate-boot
     [[ $APO_REBOOT_BOOT_ID == new-boot ]]
     [[ $APO_REBOOT_OBSERVED_BOOT_ID == new-boot ]]
     [[ $APO_REBOOT_HANDSHAKE_STAGE == complete ]]
-    [[ $APO_WORKER_BOOT_ID == new-boot && $UPLOADS == 1 ]]
+    [[ $APO_WORKER_BOOT_ID == new-boot && $UPLOADS == 2 ]]
 
     apo_remote_upload_root() { return 1; }
     if apo_post_reboot_handshake new-boot 30 normal-recovery; then
