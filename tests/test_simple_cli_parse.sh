@@ -31,6 +31,16 @@ parse_fixture run overclock overclock overclock tron
 
 # Every operation uses an explicit command.  A bare target is not an undocumented
 # alias for the advanced run interface.
+unknown_command_error=''
+if unknown_command_error=$("$ROOT/autopioverclock" version 2>&1); then
+    echo 'an unsupported version command was accepted' >&2
+    exit 1
+fi
+expected_unknown_command_error='ERROR: Unknown command: version. Valid commands: prepare, overclock, test, reset, run, resume, status, summary, recover, restore, apply, and report. Global options: --help and --version.'
+if [[ $unknown_command_error != "$expected_unknown_command_error" ]]; then
+    printf 'unknown-command guidance was incomplete:\n%s\n' "$unknown_command_error" >&2
+    exit 1
+fi
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"

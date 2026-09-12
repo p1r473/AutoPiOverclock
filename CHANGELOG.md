@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.61 - 2026-09-12
+
+- Expanded unknown-command guidance to list every accepted command and both global options, including the required `--version` spelling.
+
 ## 0.1.0-alpha.60 - 2026-09-12
 
 - Removed the per-state-value encoder pipeline from atomic checkpoints, reducing each changed field from three child processes to one compared with alpha.58. Successfully decoded or committed encodings are reused for unchanged fields, so resumed runs and recurring progress checkpoints no longer relaunch encoders for the full state. Every failed attempt now records the state key, retry number, input-writer and Base64 exit codes, escaped command stderr, controller PID, descriptor use and limits, system and controller-cgroup task counts, available memory, and allocated file handles without recording the state value. The diagnostic collector uses Bash built-ins and procfs so it remains useful when process creation is the failing resource.

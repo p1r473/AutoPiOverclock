@@ -278,7 +278,7 @@ apo_parse_cli() {
             if (( ${#arguments[@]} >= 2 )) && [[ ${arguments[0]} != -* && ${arguments[1]} == reset ]]; then
                 apo_die 'Unsupported command order. Use: autopioverclock reset TARGET.' "$APO_EXIT_USAGE"
             fi
-            apo_die "Unknown command: ${arguments[0]}. Use prepare, overclock, test, reset, run, resume, status, summary, recover, restore, apply, or report." "$APO_EXIT_USAGE"
+            apo_die "Unknown command: ${arguments[0]}. Valid commands: prepare, overclock, test, reset, run, resume, status, summary, recover, restore, apply, and report. Global options: --help and --version." "$APO_EXIT_USAGE"
             ;;
     esac
     while (( index < ${#arguments[@]} )); do
