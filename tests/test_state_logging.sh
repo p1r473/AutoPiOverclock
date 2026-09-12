@@ -47,16 +47,55 @@ base64() {
     local attempt_count
     attempt_count=$(wc -l < "$ENCODER_ATTEMPTS_FILE")
     printf 'attempt\n' >> "$ENCODER_ATTEMPTS_FILE"
-    if (( attempt_count < 2 )); then return 75; fi
+    if (( attempt_count < 2 )); then
+        printf 'simulated base64 failure\n' >&2
+        return 75
+    fi
     command base64 "$@"
 }
 apo_state_set ENCODER_RETRY $'retry value\nwith a second line'
-apo_state_save
+TRANSIENT_ENCODER_OUTPUT=$TEMP_DIR/transient-encoder-output
+apo_state_save 2> "$TRANSIENT_ENCODER_OUTPUT"
 unset -f base64
-[[ $(wc -l < "$ENCODER_ATTEMPTS_FILE") -ge 3 ]]
+[[ $(wc -l < "$ENCODER_ATTEMPTS_FILE") == 3 ]]
+[[ $(grep -c 'state-checkpoint-encode:' "$TRANSIENT_ENCODER_OUTPUT") == 2 ]]
+grep -Fq 'key=ENCODER_RETRY attempt=1/3 stage=base64 input_rc=0 base64_rc=75' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq "stderr=\$'simulated base64 failure\\n'" "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'open_fds=' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'nofile_limit=' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'nproc_limit=' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'system_tasks=' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'cgroup_pids=' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'cgroup_pids_max=' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'mem_available_kb=' "$TRANSIENT_ENCODER_OUTPUT"
+grep -Fq 'file_handles_allocated=' "$TRANSIENT_ENCODER_OUTPUT"
+[[ $(grep -c 'state-checkpoint-encode:' "$APO_LOG_FILE") == 2 ]]
+if grep -Fq 'retry value' "$TRANSIENT_ENCODER_OUTPUT" || grep -Fq 'retry value' "$APO_LOG_FILE"; then
+    echo 'state encoder diagnostic exposed the state value' >&2
+    exit 1
+fi
+
+# Once a canonical checkpoint commits, unchanged values reuse its exact
+# encoding instead of launching hundreds of redundant Base64 processes.
+CACHE_BASE64_CALLED=$TEMP_DIR/cache-base64-called
+(
+    cached_updated_at=$(apo_state_get UPDATED_AT)
+    apo_now_iso() { printf '%s' "$cached_updated_at"; }
+    base64() { : > "$CACHE_BASE64_CALLED"; return 75; }
+    apo_state_save
+)
+[[ ! -e $CACHE_BASE64_CALLED ]]
 APO_STATE=()
 apo_state_load "$FIRST_STATE"
 [[ $(apo_state_get ENCODER_RETRY) == $'retry value\nwith a second line' ]]
+LOAD_CACHE_BASE64_CALLED=$TEMP_DIR/load-cache-base64-called
+(
+    cached_updated_at=$(apo_state_get UPDATED_AT)
+    apo_now_iso() { printf '%s' "$cached_updated_at"; }
+    base64() { : > "$LOAD_CACHE_BASE64_CALLED"; return 75; }
+    apo_state_save
+)
+[[ ! -e $LOAD_CACHE_BASE64_CALLED ]]
 
 # A persistent encoder failure still fails closed, removes its temporary file,
 # and leaves the last committed checkpoint byte-for-byte unchanged.
@@ -64,7 +103,7 @@ PERSISTENT_ENCODER_HASH=$(sha256sum "$FIRST_STATE" | awk '{print $1}')
 set +e
 persistent_encoder_output=$(
     {
-        base64() { return 75; }
+        base64() { printf 'simulated persistent base64 failure\n' >&2; return 75; }
         apo_state_set ENCODER_RETRY unsaved
         apo_state_save
         exit 0
@@ -74,11 +113,44 @@ persistent_encoder_status=$?
 set -e
 [[ $persistent_encoder_status == "$APO_EXIT_INTERNAL" ]]
 grep -Fq "after $APO_STATE_ENCODE_ATTEMPTS attempts" <<< "$persistent_encoder_output"
+[[ $(grep -c 'state-checkpoint-encode:' <<< "$persistent_encoder_output") == 3 ]]
+grep -Fq 'stage=base64 input_rc=0 base64_rc=75' <<< "$persistent_encoder_output"
+grep -Fq "stderr=\$'simulated persistent base64 failure\\n'" <<< "$persistent_encoder_output"
 [[ $(sha256sum "$FIRST_STATE" | awk '{print $1}') == "$PERSISTENT_ENCODER_HASH" ]]
 if compgen -G "${FIRST_STATE}.tmp.*" >/dev/null; then
     echo 'failed state encoding left a temporary checkpoint behind' >&2
     exit 1
 fi
+
+# Input-side and base64 failures are distinguishable without recording the
+# encoded value itself.
+set +e
+input_encoder_output=$(
+    {
+        apo_state_encode_input() { printf 'simulated input failure\n' >&2; return 74; }
+        apo_state_set ENCODER_RETRY another-unsaved-value
+        apo_state_save
+        exit 0
+    } 2>&1
+)
+input_encoder_status=$?
+set -e
+[[ $input_encoder_status == "$APO_EXIT_INTERNAL" ]]
+[[ $(grep -c 'state-checkpoint-encode:' <<< "$input_encoder_output") == 3 ]]
+grep -Fq 'stage=input input_rc=74 base64_rc=not-run' <<< "$input_encoder_output"
+grep -Fq "stderr=\$'simulated input failure\\n'" <<< "$input_encoder_output"
+if grep -Fq 'another-unsaved-value' <<< "$input_encoder_output"; then
+    echo 'input-side encoder diagnostic exposed the state value' >&2
+    exit 1
+fi
+[[ $(sha256sum "$FIRST_STATE" | awk '{print $1}') == "$PERSISTENT_ENCODER_HASH" ]]
+if compgen -G "${FIRST_STATE}.tmp.*" >/dev/null; then
+    echo 'input-side encoding failure left a temporary checkpoint behind' >&2
+    exit 1
+fi
+
+grep -Fq 'apo_state_encode_input "$state_value" 2>> "$error_file" > "$input_file"' "$ROOT/lib/state.sh"
+grep -Fq 'base64 2>> "$error_file" < "$input_file" > "$output_file"' "$ROOT/lib/state.sh"
 
 SENTINEL="$TEMP_DIR/fixture-target-old-run.log"
 printf keep > "$SENTINEL"

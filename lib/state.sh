@@ -2,25 +2,110 @@
 # Atomic non-executable state. Values are base64 encoded and never sourced.
 
 declare -Ag APO_STATE=()
+declare -Ag APO_STATE_ENCODED_CACHE=()
+declare -Ag APO_STATE_ENCODED_VALUES=()
 APO_STATE_BASE64_DECODE_OPTION=''
+APO_STATE_ENCODE_LAST_STAGE=''
+APO_STATE_ENCODE_LAST_INPUT_RC=''
+APO_STATE_ENCODE_LAST_BASE64_RC=''
+APO_STATE_ENCODE_LAST_STDERR=''
 
 readonly APO_CURRENT_RUN_SCHEMA=10
 readonly APO_CURRENT_VALIDATION_SCHEMA=8
 readonly APO_STATE_ENCODE_ATTEMPTS=3
 
 apo_state_valid_key() { [[ ${1-} =~ ^[A-Z][A-Z0-9_]*$ ]]; }
+apo_state_encode_input() { printf '%s' "${1-}"; }
 apo_state_encode_once() {
-    local encoded_value
-    encoded_value=$(printf '%s' "${1-}" | base64) || return 1
-    printf '%s' "${encoded_value//$'\n'/}"
+    local state_value=$1 output_name=$2 input_file=$3 output_file=$4 error_file=$5 input_rc
+    local -n encoded_output=$output_name
+    encoded_output=''
+    APO_STATE_ENCODE_LAST_STAGE=prepare-error
+    APO_STATE_ENCODE_LAST_INPUT_RC=not-run
+    APO_STATE_ENCODE_LAST_BASE64_RC=not-run
+    APO_STATE_ENCODE_LAST_STDERR=''
+    if ! : > "$error_file"; then
+        APO_STATE_ENCODE_LAST_STDERR='could not prepare the encoder error file'
+        return 1
+    fi
+    APO_STATE_ENCODE_LAST_STAGE=input
+    if apo_state_encode_input "$state_value" 2>> "$error_file" > "$input_file"; then
+        APO_STATE_ENCODE_LAST_INPUT_RC=0
+    else
+        input_rc=$?
+        APO_STATE_ENCODE_LAST_INPUT_RC=$input_rc
+        IFS= read -r -d '' APO_STATE_ENCODE_LAST_STDERR < "$error_file" || true
+        return 1
+    fi
+    APO_STATE_ENCODE_LAST_STAGE=base64
+    if base64 2>> "$error_file" < "$input_file" > "$output_file"; then
+        APO_STATE_ENCODE_LAST_BASE64_RC=0
+    else
+        APO_STATE_ENCODE_LAST_BASE64_RC=$?
+    fi
+    IFS= read -r -d '' APO_STATE_ENCODE_LAST_STDERR < "$error_file" || true
+    if [[ $APO_STATE_ENCODE_LAST_INPUT_RC == 0 && $APO_STATE_ENCODE_LAST_BASE64_RC == 0 ]]; then
+        IFS= read -r -d '' encoded_output < "$output_file" || true
+        encoded_output=${encoded_output//$'\n'/}
+        return 0
+    fi
+    return 1
 }
-apo_state_encode() {
-    local state_value=${1-} encoded_value attempt
-    for (( attempt=1; attempt<=APO_STATE_ENCODE_ATTEMPTS; attempt++ )); do
-        if encoded_value=$(apo_state_encode_once "$state_value"); then
-            printf '%s' "$encoded_value"
-            return 0
+
+apo_state_encode_log_failure() {
+    local state_key=$1 attempt=$2 severity=WARN timestamp stderr_excerpt stderr_quoted
+    local open_fds=unknown nofile_limit=unknown nproc_limit=unknown system_tasks=unknown
+    local mem_available_kb=unknown file_handles_allocated=unknown cgroup_path='' cgroup_pids=unknown cgroup_pids_max=unknown
+    local rendered limit_line mem_key mem_value
+    local -a fd_paths=()
+    (( attempt == APO_STATE_ENCODE_ATTEMPTS )) && severity=ERROR
+    printf -v timestamp '%(%Y-%m-%d %H:%M:%S)T' -1
+    stderr_excerpt=${APO_STATE_ENCODE_LAST_STDERR:0:512}
+    printf -v stderr_quoted '%q' "$stderr_excerpt"
+    fd_paths=(/proc/$BASHPID/fd/*)
+    if [[ -e ${fd_paths[0]} ]]; then open_fds=${#fd_paths[@]}; fi
+    while IFS= read -r limit_line; do
+        if [[ $limit_line =~ ^Max[[:space:]]open[[:space:]]files[[:space:]]+([^[:space:]]+) ]]; then
+            nofile_limit=${BASH_REMATCH[1]}
+        elif [[ $limit_line =~ ^Max[[:space:]]processes[[:space:]]+([^[:space:]]+) ]]; then
+            nproc_limit=${BASH_REMATCH[1]}
         fi
+    done < "/proc/$BASHPID/limits"
+    if read -r _ _ _ system_tasks _ < /proc/loadavg; then :; else system_tasks=unknown; fi
+    while read -r mem_key mem_value _; do
+        if [[ $mem_key == MemAvailable: ]]; then mem_available_kb=$mem_value; break; fi
+    done < /proc/meminfo
+    read -r file_handles_allocated _ < /proc/sys/fs/file-nr || file_handles_allocated=unknown
+    while IFS=: read -r _ _ cgroup_path; do
+        [[ -n $cgroup_path ]] && break
+    done < "/proc/$BASHPID/cgroup"
+    if [[ -n $cgroup_path && -r /sys/fs/cgroup$cgroup_path/pids.current ]]; then
+        read -r cgroup_pids < "/sys/fs/cgroup$cgroup_path/pids.current" || cgroup_pids=unknown
+    fi
+    if [[ -n $cgroup_path && -r /sys/fs/cgroup$cgroup_path/pids.max ]]; then
+        read -r cgroup_pids_max < "/sys/fs/cgroup$cgroup_path/pids.max" || cgroup_pids_max=unknown
+    fi
+    rendered="$timestamp [$severity] state-checkpoint-encode: key=$state_key attempt=$attempt/$APO_STATE_ENCODE_ATTEMPTS stage=$APO_STATE_ENCODE_LAST_STAGE input_rc=$APO_STATE_ENCODE_LAST_INPUT_RC base64_rc=$APO_STATE_ENCODE_LAST_BASE64_RC stderr=$stderr_quoted pid=$BASHPID open_fds=$open_fds nofile_limit=$nofile_limit nproc_limit=$nproc_limit system_tasks=$system_tasks cgroup_pids=$cgroup_pids cgroup_pids_max=$cgroup_pids_max mem_available_kb=$mem_available_kb file_handles_allocated=$file_handles_allocated"
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
+    printf '%s\n' "$rendered" >&2
+    if [[ -n ${APO_LOG_FILE:-} ]]; then printf '%s\n' "$rendered" >> "$APO_LOG_FILE" 2>/dev/null || true; fi
+    if declare -F apo_progress_after_output >/dev/null 2>&1; then apo_progress_after_output; fi
+}
+
+apo_state_encode() {
+    local state_value=${1-} encoded_compat
+    if (( $# == 1 )); then
+        encoded_compat=$(apo_state_encode_input "$state_value" | base64) || return 1
+        encoded_compat=${encoded_compat//$'\n'/}
+        printf '%s' "$encoded_compat"
+        return 0
+    fi
+    (( $# == 6 )) || return 2
+    local state_key=$1 output_name=$3 input_file=$4 output_file=$5 error_file=$6 attempt
+    state_value=${2-}
+    for (( attempt=1; attempt<=APO_STATE_ENCODE_ATTEMPTS; attempt++ )); do
+        if apo_state_encode_once "$state_value" "$output_name" "$input_file" "$output_file" "$error_file"; then return 0; fi
+        apo_state_encode_log_failure "$state_key" "$attempt"
     done
     return 1
 }
@@ -76,23 +161,47 @@ apo_state_get() {
 }
 
 apo_state_save() {
-    local temporary_file state_key encoded_value
+    local temporary_file encode_input_file encode_output_file encode_error_file state_key encoded_value
+    local -A checkpoint_encoded=() checkpoint_values=()
     [[ -n ${APO_STATE_FILE:-} ]] || apo_die 'Internal error: state filename is unset.' "$APO_EXIT_INTERNAL"
     if declare -F apo_progress_checkpoint_state >/dev/null 2>&1; then apo_progress_checkpoint_state; fi
     apo_state_set UPDATED_AT "$(apo_now_iso)"
     temporary_file=$(mktemp "${APO_STATE_FILE}.tmp.XXXXXX") || apo_die 'Could not create a temporary state checkpoint.' "$APO_EXIT_INTERNAL"
+    encode_input_file="${temporary_file}.encode-input"
+    encode_output_file="${temporary_file}.encode-output"
+    encode_error_file="${temporary_file}.encode-error"
     chmod 600 "$temporary_file" || { rm -f -- "$temporary_file"; apo_die 'Could not protect the temporary state checkpoint.' "$APO_EXIT_INTERNAL"; }
     if ! while IFS= read -r state_key; do
-        encoded_value=$(apo_state_encode "${APO_STATE[$state_key]}") || { rm -f -- "$temporary_file"; apo_die "Could not encode state key $state_key after $APO_STATE_ENCODE_ATTEMPTS attempts." "$APO_EXIT_INTERNAL"; }
-        printf '%s\t%s\n' "$state_key" "$encoded_value" || { rm -f -- "$temporary_file"; apo_die 'Could not write the temporary state checkpoint.' "$APO_EXIT_INTERNAL"; }
+        if [[ -v APO_STATE_ENCODED_CACHE[$state_key] && -v APO_STATE_ENCODED_VALUES[$state_key] &&
+              ${APO_STATE_ENCODED_VALUES[$state_key]} == "${APO_STATE[$state_key]}" ]]; then
+            encoded_value=${APO_STATE_ENCODED_CACHE[$state_key]}
+        else
+            apo_state_encode "$state_key" "${APO_STATE[$state_key]}" encoded_value "$encode_input_file" "$encode_output_file" "$encode_error_file" || {
+                rm -f -- "$temporary_file" "$encode_input_file" "$encode_output_file" "$encode_error_file"
+                apo_die "Could not encode state key $state_key after $APO_STATE_ENCODE_ATTEMPTS attempts." "$APO_EXIT_INTERNAL"
+            }
+        fi
+        checkpoint_encoded[$state_key]=$encoded_value
+        checkpoint_values[$state_key]=${APO_STATE[$state_key]}
+        printf '%s\t%s\n' "$state_key" "$encoded_value" || {
+            rm -f -- "$temporary_file" "$encode_input_file" "$encode_output_file" "$encode_error_file"
+            apo_die 'Could not write the temporary state checkpoint.' "$APO_EXIT_INTERNAL"
+        }
     done < <(printf '%s\n' "${!APO_STATE[@]}" | LC_ALL=C sort) > "$temporary_file"; then
-        rm -f -- "$temporary_file"
+        rm -f -- "$temporary_file" "$encode_input_file" "$encode_output_file" "$encode_error_file"
         apo_die 'Could not complete the temporary state checkpoint.' "$APO_EXIT_INTERNAL"
     fi
+    rm -f -- "$encode_input_file" "$encode_output_file" "$encode_error_file"
     sync "$temporary_file" || { rm -f -- "$temporary_file"; apo_die 'Could not durably flush the temporary state checkpoint.' "$APO_EXIT_INTERNAL"; }
     mv -f -- "$temporary_file" "$APO_STATE_FILE" || { rm -f -- "$temporary_file"; apo_die 'Could not atomically commit the state checkpoint.' "$APO_EXIT_INTERNAL"; }
     sync "$APO_STATE_FILE" || apo_die 'Could not durably flush the committed state checkpoint.' "$APO_EXIT_INTERNAL"
     sync "$(dirname "$APO_STATE_FILE")" || apo_die 'Could not durably flush the state directory checkpoint.' "$APO_EXIT_INTERNAL"
+    APO_STATE_ENCODED_CACHE=()
+    APO_STATE_ENCODED_VALUES=()
+    for state_key in "${!checkpoint_encoded[@]}"; do
+        APO_STATE_ENCODED_CACHE[$state_key]=${checkpoint_encoded[$state_key]}
+        APO_STATE_ENCODED_VALUES[$state_key]=${checkpoint_values[$state_key]}
+    done
 }
 
 apo_state_load() {
@@ -103,6 +212,8 @@ apo_state_load() {
         apo_die "State file not found or unreadable: $source_label" "$APO_EXIT_USAGE"
     fi
     APO_STATE=()
+    APO_STATE_ENCODED_CACHE=()
+    APO_STATE_ENCODED_VALUES=()
     apo_state_decode_policy_init
     while IFS=$'\t' read -r state_key encoded_value || [[ -n ${state_key:-} ]]; do
         [[ -n ${state_key:-} ]] || continue
@@ -114,6 +225,10 @@ apo_state_load() {
         fi
         decoded_value=$(apo_state_decode "$encoded_value") || apo_die "Corrupt state value for $state_key in $source_label" "$APO_EXIT_INTERNAL"
         APO_STATE[$state_key]=$decoded_value
+        # A successfully decoded token is safe to reuse while its value stays
+        # unchanged. State is parsed as data and is never sourced.
+        APO_STATE_ENCODED_CACHE[$state_key]=$encoded_value
+        APO_STATE_ENCODED_VALUES[$state_key]=$decoded_value
     done <&"$state_fd"
     exec {state_fd}<&-
     [[ $(apo_state_get FORMAT_VERSION '') == 1 ]] || apo_die "Unsupported or missing state format in $source_label" "$APO_EXIT_INTERNAL"
@@ -122,6 +237,8 @@ apo_state_load() {
 
 apo_state_initialize() {
     APO_STATE=()
+    APO_STATE_ENCODED_CACHE=()
+    APO_STATE_ENCODED_VALUES=()
     apo_state_set FORMAT_VERSION 1
     apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
     apo_state_set APP_VERSION "$APO_VERSION"
