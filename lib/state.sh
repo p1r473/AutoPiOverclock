@@ -6,9 +6,24 @@ APO_STATE_BASE64_DECODE_OPTION=''
 
 readonly APO_CURRENT_RUN_SCHEMA=10
 readonly APO_CURRENT_VALIDATION_SCHEMA=8
+readonly APO_STATE_ENCODE_ATTEMPTS=3
 
 apo_state_valid_key() { [[ ${1-} =~ ^[A-Z][A-Z0-9_]*$ ]]; }
-apo_state_encode() { printf '%s' "${1-}" | base64 | tr -d '\n'; }
+apo_state_encode_once() {
+    local encoded_value
+    encoded_value=$(printf '%s' "${1-}" | base64) || return 1
+    printf '%s' "${encoded_value//$'\n'/}"
+}
+apo_state_encode() {
+    local state_value=${1-} encoded_value attempt
+    for (( attempt=1; attempt<=APO_STATE_ENCODE_ATTEMPTS; attempt++ )); do
+        if encoded_value=$(apo_state_encode_once "$state_value"); then
+            printf '%s' "$encoded_value"
+            return 0
+        fi
+    done
+    return 1
+}
 apo_state_decode_policy_init() {
     [[ -z $APO_STATE_BASE64_DECODE_OPTION ]] || return 0
     if base64 --help 2>&1 | grep -q -- '--decode'; then
@@ -68,7 +83,7 @@ apo_state_save() {
     temporary_file=$(mktemp "${APO_STATE_FILE}.tmp.XXXXXX") || apo_die 'Could not create a temporary state checkpoint.' "$APO_EXIT_INTERNAL"
     chmod 600 "$temporary_file" || { rm -f -- "$temporary_file"; apo_die 'Could not protect the temporary state checkpoint.' "$APO_EXIT_INTERNAL"; }
     if ! while IFS= read -r state_key; do
-        encoded_value=$(apo_state_encode "${APO_STATE[$state_key]}") || { rm -f -- "$temporary_file"; apo_die "Could not encode state key $state_key." "$APO_EXIT_INTERNAL"; }
+        encoded_value=$(apo_state_encode "${APO_STATE[$state_key]}") || { rm -f -- "$temporary_file"; apo_die "Could not encode state key $state_key after $APO_STATE_ENCODE_ATTEMPTS attempts." "$APO_EXIT_INTERNAL"; }
         printf '%s\t%s\n' "$state_key" "$encoded_value" || { rm -f -- "$temporary_file"; apo_die 'Could not write the temporary state checkpoint.' "$APO_EXIT_INTERNAL"; }
     done < <(printf '%s\n' "${!APO_STATE[@]}" | LC_ALL=C sort) > "$temporary_file"; then
         rm -f -- "$temporary_file"

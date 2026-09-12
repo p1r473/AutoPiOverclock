@@ -100,13 +100,49 @@ printf '%s\n' "$$" >"$STALE_DIR/supervisor.pid"
 STALE_INSPECT=$("$HELPER" inspect "$RUN_ROOT" "$STALE_JOB" "$STALE_TOKEN" "$STALE_SPEC")
 [[ $STALE_INSPECT == APO_JOB_INSPECT$'\t'ORPHANED$'\t'* ]]
 
-grep -Fq 'apo_remote_job_command follow "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>/dev/null |' \
+grep -Fq 'apo_remote_job_follow_command "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>/dev/null |' \
     "$ROOT/lib/remote_job.sh"
-if grep -Fq 'apo_remote_job_command follow "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>&1 |' \
+if grep -Fq 'apo_remote_job_follow_command "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>&1 |' \
     "$ROOT/lib/remote_job.sh"; then
     echo 'SSH diagnostics are still entering the detached-job protocol parser' >&2
     exit 1
 fi
+
+# The follow transport runs for the complete target stress duration. It must
+# drop its inherited copy of the controller lock while the parent controller
+# keeps the authoritative lock open.
+# shellcheck disable=SC2030
+(
+    source "$ROOT/lib/remote_job.sh"
+    LOCK_FILE=$TEMP_DIR/controller-lock
+    exec {APO_LOCK_FD}>"$LOCK_FILE"
+    flock -n "$APO_LOCK_FD"
+    TEST_LOCK_FD=$APO_LOCK_FD
+    CONTROLLER_TEST_PID=$BASHPID
+    APO_REMOTE_JOB_HELPER=/tmp/remote-stress-job.sh
+    apo_remote_job_command() {
+        if [[ -e /proc/$BASHPID/fd/$TEST_LOCK_FD ]]; then
+            printf 'inherited\n'
+        else
+            printf 'closed\n'
+        fi
+    }
+    shopt -s lastpipe
+    lock_observation=''
+    apo_remote_job_follow_command /tmp/run job-00000000000000000000000000000000 \
+        "$(printf '0%.0s' {1..64})" "$(printf '1%.0s' {1..64})" |
+        IFS= read -r lock_observation
+    [[ $lock_observation == closed ]]
+    [[ -e /proc/$CONTROLLER_TEST_PID/fd/$TEST_LOCK_FD ]]
+    if (
+        exec {probe_fd}>"$LOCK_FILE"
+        flock -n "$probe_fd"
+    ); then
+        echo 'follow transport released the parent controller lock' >&2
+        exit 1
+    fi
+    exec {APO_LOCK_FD}>&-
+)
 
 # The controller globals are intentionally isolated inside this fixture.
 # shellcheck disable=SC2030

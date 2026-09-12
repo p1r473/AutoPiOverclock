@@ -38,6 +38,48 @@ mapfile -t durability_calls < "$STATE_DURABILITY_TRACE"
 [[ ${durability_calls[2]} == sync:"$APO_STATE_FILE" ]]
 [[ ${durability_calls[3]} == sync:"$TEMP_DIR" ]]
 FIRST_STATE=$APO_STATE_FILE
+
+# A transient encoder process failure must not terminate a long controller
+# run. Retry the exact value and preserve the atomic checkpoint contract.
+ENCODER_ATTEMPTS_FILE=$TEMP_DIR/encoder-attempts
+: > "$ENCODER_ATTEMPTS_FILE"
+base64() {
+    local attempt_count
+    attempt_count=$(wc -l < "$ENCODER_ATTEMPTS_FILE")
+    printf 'attempt\n' >> "$ENCODER_ATTEMPTS_FILE"
+    if (( attempt_count < 2 )); then return 75; fi
+    command base64 "$@"
+}
+apo_state_set ENCODER_RETRY $'retry value\nwith a second line'
+apo_state_save
+unset -f base64
+[[ $(wc -l < "$ENCODER_ATTEMPTS_FILE") -ge 3 ]]
+APO_STATE=()
+apo_state_load "$FIRST_STATE"
+[[ $(apo_state_get ENCODER_RETRY) == $'retry value\nwith a second line' ]]
+
+# A persistent encoder failure still fails closed, removes its temporary file,
+# and leaves the last committed checkpoint byte-for-byte unchanged.
+PERSISTENT_ENCODER_HASH=$(sha256sum "$FIRST_STATE" | awk '{print $1}')
+set +e
+persistent_encoder_output=$(
+    {
+        base64() { return 75; }
+        apo_state_set ENCODER_RETRY unsaved
+        apo_state_save
+        exit 0
+    } 2>&1
+)
+persistent_encoder_status=$?
+set -e
+[[ $persistent_encoder_status == "$APO_EXIT_INTERNAL" ]]
+grep -Fq "after $APO_STATE_ENCODE_ATTEMPTS attempts" <<< "$persistent_encoder_output"
+[[ $(sha256sum "$FIRST_STATE" | awk '{print $1}') == "$PERSISTENT_ENCODER_HASH" ]]
+if compgen -G "${FIRST_STATE}.tmp.*" >/dev/null; then
+    echo 'failed state encoding left a temporary checkpoint behind' >&2
+    exit 1
+fi
+
 SENTINEL="$TEMP_DIR/fixture-target-old-run.log"
 printf keep > "$SENTINEL"
 apo_event test INFO '' 'event one'

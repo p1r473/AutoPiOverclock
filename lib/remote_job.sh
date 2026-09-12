@@ -46,6 +46,14 @@ apo_remote_job_command() {
     apo_remote_root "$command_line"
 }
 
+# This function is used only as the left side of the long-lived follow
+# pipeline. Close the inherited controller lock in that pipeline process so a
+# controller failure cannot leave the target follow transport owning the lock.
+apo_remote_job_follow_command() {
+    if [[ ${APO_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {APO_LOCK_FD}>&-; fi
+    apo_remote_job_command follow "$@"
+}
+
 apo_remote_job_read_file() {
     local output_file=$1
     shift
@@ -611,7 +619,7 @@ apo_run_remote_stress_capture() {
         shopt -q lastpipe && lastpipe_was_set=1
         shopt -s lastpipe
         # SSH diagnostics belong to the transport, not the target job protocol.
-        apo_remote_job_command follow "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>/dev/null |
+        apo_remote_job_follow_command "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>/dev/null |
             apo_remote_job_follow_stream
         remote_rc=${PIPESTATUS[0]}
         (( lastpipe_was_set == 1 )) || shopt -u lastpipe

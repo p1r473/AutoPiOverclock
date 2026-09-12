@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.59 - 2026-09-12
+
+- Made atomic controller checkpoints retry a transient Base64 encoder failure three times and removed the separate newline-filter process from every encoded state value. A persistent failure still leaves the previous checkpoint unchanged and reports the exhausted retry count.
+- Closed the controller lock descriptor inside the long-lived detached-job follow transport. If a controller exits during target stress, an orphaned SSH follow process can no longer block `resume` while the target-owned workload continues.
+
 ## 0.1.0-alpha.58 - 2026-09-11
 
 - Removed every public watchdog-repair path. `prepare` may install missing workload dependencies, but it now treats hardware and network watchdogs as read-only external prerequisites and never installs, enables, updates, replaces, or configures either one. A recognized existing network watcher remains optional and is recorded only for later reboot attribution.
