@@ -12,8 +12,8 @@ if grep -REq 'shopt[[:space:]]+-s[[:space:]]+lastpipe|\$\{?PIPESTATUS' "$ROOT/au
     echo 'controller capture still depends on lastpipe or PIPESTATUS' >&2
     exit 1
 fi
-if grep -REq '^[[:space:]]*set[[:space:]]+[+-]e([[:space:]]|$)' "$ROOT/lib"; then
-    echo 'a library function still mutates the caller error mode' >&2
+if grep -REq '^[[:space:]]*set[[:space:]]+[+-]e([[:space:]]|$)' "$ROOT/lib" "$ROOT/profiles"; then
+    echo 'a controller library or profile still mutates the caller error mode' >&2
     exit 1
 fi
 

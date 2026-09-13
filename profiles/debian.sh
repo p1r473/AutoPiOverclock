@@ -204,12 +204,13 @@ apo_profile_prove_network_watchdog_reboot() {
     APO_NETWORK_WATCHDOG_REQUESTED_EPOCH=''
     [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=5
     for (( attempt=1; attempt<=attempts; attempt++ )); do
-        set +e
-        apo_remote_worker_read_file "$output_file" "$APO_REMOTE_WORKER" prove-network-watchdog-reboot \
+        if apo_remote_worker_read_file "$output_file" "$APO_REMOTE_WORKER" prove-network-watchdog-reboot \
             "$old_boot" "$new_boot" "$expected_target" "$expected_config_hash" \
-            "$expected_keeper_hash" "$expected_service_hash" "$previous_event"
-        rc=$?
-        set -e
+            "$expected_keeper_hash" "$expected_service_hash" "$previous_event"; then
+            rc=0
+        else
+            rc=$?
+        fi
         [[ -z ${APO_LOG_FILE:-} || ! -f ${APO_LOG_FILE:-} ]] || cat "$output_file" >>"$APO_LOG_FILE"
         apo_classify_output "$output_file" "${context}-network-watchdog-proof"
         if (( rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then break; fi

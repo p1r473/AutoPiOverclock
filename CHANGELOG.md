@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.64 - 2026-09-13
+
+- Removed the two remaining sourced-profile error-mode toggles from Debian and Batocera network-watchdog proof. The static regression check now covers both controller libraries and profiles.
+- Added bounded controller-side detached-job stage markers so an abnormal return identifies the last completed ownership boundary without logging commands, arguments, tokens, hashes, or state values.
+
 ## 0.1.0-alpha.63 - 2026-09-13
 
 - Removed every library-level `set +e` and `set -e` toggle. Nested transport helpers can no longer change the caller's global Bash error mode and bypass the worker classifier with a bare controller exit code.

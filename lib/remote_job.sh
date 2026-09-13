@@ -89,6 +89,13 @@ apo_remote_job_child_status_log() {
     if declare -F apo_progress_after_output >/dev/null 2>&1; then apo_progress_after_output || true; fi
 }
 
+apo_remote_job_stage_log() {
+    local phase=$1 stage=$2 detail=${3:-none} timestamp rendered
+    printf -v timestamp '%(%Y-%m-%d %H:%M:%S)T' -1
+    rendered="$timestamp [INFO] remote-job-stage: phase=$phase stage=$stage detail=$detail shell_pid=$BASHPID controller_pid=${APO_CONTROLLER_SHELL_PID:-unknown} shell_flags=$-"
+    if [[ -n ${APO_LOG_FILE:-} ]]; then printf '%s\n' "$rendered" >>"$APO_LOG_FILE" 2>/dev/null || true; fi
+}
+
 apo_remote_job_create_temporary_file() {
     local output_name=$1 prefix=$2 attempt candidate created=0 noclobber_was_set=0
     [[ $output_name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 2
@@ -701,18 +708,20 @@ apo_run_remote_stress_capture() {
     local phase=$1 worker_command=$2 output_file=$3
     shift 3
     local duration=${2:-} segment_duration spec_hash job_id token source_boot start_output remote_rc current_boot
-    local spec_rc=1 token_rc=1 start_rc=1 follow_stream_rc=1
+    local spec_rc=1 token_rc=1 start_rc=1 follow_stream_rc=1 start_shape=empty
     local credit_context credit_seconds credit_duration expected_credit_context
     local launch_attempt=0 launch_attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5} launch_reason
     local -a original_arguments=("$@") segment_arguments=("$@")
     [[ $worker_command == stress && $duration =~ ^[1-9][0-9]*$ ]] || return 2
     [[ $launch_attempts =~ ^[1-9][0-9]*$ ]] || launch_attempts=5
+    apo_remote_job_stage_log "$phase" entered "duration_valid=1"
     if spec_hash=$(apo_remote_job_spec_hash "$phase" "$worker_command" "${original_arguments[@]}"); then spec_rc=0; else spec_rc=$?; fi
     if ! apo_remote_job_valid_hash "$spec_hash"; then
         apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE 'Could not calculate the detached-stress specification hash.'
         return 1
     fi
     if (( spec_rc != 0 )); then apo_remote_job_child_status_log spec-hash-call "$spec_rc" 1 1; fi
+    apo_remote_job_stage_log "$phase" spec-ready "rc=$spec_rc"
     expected_credit_context="${phase}:${spec_hash}"
     if [[ $(apo_state_get REMOTE_STRESS_STATUS IDLE) == RUNNING ]]; then
         job_id=$(apo_state_get REMOTE_STRESS_JOB_ID '')
@@ -733,6 +742,7 @@ apo_run_remote_stress_capture() {
                 'Saved detached-stress segment duration is invalid. Automatic adoption is refused.'
             return 1
         }
+        apo_remote_job_stage_log "$phase" owned-state-loaded "duration_valid=1"
     else
         credit_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
         credit_seconds=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
@@ -749,12 +759,14 @@ apo_run_remote_stress_capture() {
             return 1
         }
         if (( token_rc != 0 )); then apo_remote_job_child_status_log token-call "$token_rc" 1 1; fi
+        apo_remote_job_stage_log "$phase" token-ready "rc=$token_rc"
         job_id="job-${token:0:32}"
         source_boot=$(apo_remote_boot_id || true)
         apo_remote_job_valid_boot_id "$source_boot" || {
             apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE 'Could not read the target boot ID before detached stress launch.'
             return 1
         }
+        apo_remote_job_stage_log "$phase" source-boot-ready "boot_id_valid=1"
         apo_state_set REMOTE_STRESS_STATUS RUNNING
         apo_state_set REMOTE_STRESS_JOB_ID "$job_id"
         apo_state_set REMOTE_STRESS_TOKEN "$token"
@@ -767,6 +779,7 @@ apo_run_remote_stress_capture() {
         apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
         apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
         apo_state_save
+        apo_remote_job_stage_log "$phase" ownership-checkpointed "duration_valid=1"
         APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=0
         if (( credit_seconds > 0 )); then
             apo_recovery_wait_event INFO "${phase}-network-watchdog-resume" \
@@ -774,6 +787,7 @@ apo_run_remote_stress_capture() {
         fi
     fi
     segment_arguments[1]=$segment_duration
+    apo_remote_job_stage_log "$phase" dispatch-ready "segment_valid=1"
 
     while :; do
         current_boot=$(apo_remote_boot_id_once 2>/dev/null || true)
@@ -788,12 +802,22 @@ apo_run_remote_stress_capture() {
             return 1
         fi
         start_output=''
+        apo_remote_job_stage_log "$phase" launcher-call "attempt=$((launch_attempt + 1))"
         if start_output=$(apo_remote_job_command start "$APO_REMOTE_WORK_DIR" "$job_id" "$token" \
             "$spec_hash" "$source_boot" "$segment_duration" "$APO_REMOTE_WORKER" "${segment_arguments[@]}" 2>/dev/null); then
             start_rc=0
         else
             start_rc=$?
         fi
+        start_shape=malformed
+        if [[ -z $start_output ]]; then
+            start_shape=empty
+        elif [[ $start_output =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'([0-9]+)$ ]]; then
+            start_shape=started
+        elif [[ $start_output =~ ^APO_JOB_ERROR$'\t'(.+)$ ]]; then
+            start_shape=error
+        fi
+        apo_remote_job_stage_log "$phase" launcher-return "rc=$start_rc,shape=$start_shape"
         if [[ $start_output =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'([0-9]+)$ ]]; then
             if (( start_rc != 0 )); then apo_remote_job_child_status_log detached-start "$start_rc" 1 1; fi
             launch_attempt=0
@@ -839,8 +863,10 @@ apo_run_remote_stress_capture() {
 
         APO_REMOTE_JOB_COMPLETE=0
         APO_REMOTE_JOB_FOLLOW_ERROR=''
+        apo_remote_job_stage_log "$phase" follow-call "attempt=$((launch_attempt + 1))"
         if apo_remote_job_follow_capture "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash"; then follow_stream_rc=0; else follow_stream_rc=$?; fi
         remote_rc=$APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC
+        apo_remote_job_stage_log "$phase" follow-return "producer_rc=$remote_rc,parser_rc=$follow_stream_rc,complete=$APO_REMOTE_JOB_COMPLETE"
         if (( APO_REMOTE_JOB_COMPLETE == 1 )); then
             if ! apo_remote_job_fetch_complete "$output_file"; then
                 apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE 'Completed detached-stress evidence could not be fetched and hash-verified.'
