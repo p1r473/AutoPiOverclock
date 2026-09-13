@@ -328,6 +328,7 @@ fi
 # capture path.  It must clear a run-start progress row before that stream and
 # leave repainting to a later logged event, otherwise the first field is
 # corrupted on the user's terminal.
+source "$ROOT/lib/classify.sh"
 source "$ROOT/lib/detect.sh"
 APO_DISCOVERY_FILE=$(mktemp)
 APO_LOG_FILE=$(mktemp)
@@ -353,6 +354,20 @@ COLUMNS=80
 discovery_bytes=$(< "$discovery_stream")
 discovery_after_clear=${discovery_bytes##*"$progress_clear"}
 [[ $discovery_after_clear == $'APO_DATA\tPROFILE\tZGViaWFu\nAPO_RESULT_CLASS=PASS' ]]
+
+# Discovery also waits for its exact producer PID. A complete PASS trailer
+# cannot hide a failed producer transport.
+set +e
+(
+    apo_remote_worker() {
+        printf 'APO_DATA\tPROFILE\tZGViaWFu\nAPO_RESULT_CLASS=PASS\n'
+        return 23
+    }
+    apo_discovery_capture
+) > /dev/null 2>&1
+discovery_failed_transport_rc=$?
+set -e
+(( discovery_failed_transport_rc == APO_EXIT_HARNESS ))
 
 # Fatal and plain output paths also erase a live progress row before writing,
 # so a later preflight refusal or recovery warning cannot recreate the same

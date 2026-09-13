@@ -103,6 +103,11 @@ APO_RESTART_PENDING=0
 APO_RESTART_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 APO_RESTART_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
 APO_RESTART_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
+APO_RESTART_SOURCE_STATUS=''
+APO_RESTART_SOURCE_PHASE=''
+APO_RESTART_SOURCE_FINAL_STAGE=''
+APO_RESTART_SOURCE_FAILURE_CLASS=''
+APO_RESTART_SOURCE_REMOTE_CLEAR=0
 APO_SWEEP_DOMAIN=all
 APO_SELECTION_POLICY=adaptive-refined-v1
 APO_CPU_ONLY_OPTION_SEEN=0
@@ -1612,6 +1617,14 @@ apo_restore_saved_command_policy() {
 apo_cleanup_handler() {
     local exit_code=$? saved_failure_class='' original_failure_class='' original_failure_reason='' recovery_reason=''
     trap - EXIT INT TERM HUP
+    # Stop only the controller-side SSH observer before any exit recovery.
+    # The detached target job remains owned by its fixed deadline and state.
+    if declare -F apo_remote_job_follow_transport_cleanup >/dev/null 2>&1; then
+        apo_remote_job_follow_transport_cleanup
+    fi
+    if declare -F apo_worker_capture_transport_cleanup >/dev/null 2>&1; then
+        apo_worker_capture_transport_cleanup
+    fi
     # Ctrl-C must remain bounded. Persistent SSH monitoring is for the live
     # unattended command, never for an exit-trap recovery attempt.
     APO_PERSISTENT_SSH_RECOVERY=0
@@ -1626,6 +1639,9 @@ apo_cleanup_handler() {
     case ${APO_COMMAND:-} in
         status|summary|report) exit "$exit_code" ;;
     esac
+    if [[ ${APO_STATE_SAVE_FATAL:-0} == 1 ]]; then
+        apo_warn_plain "Controller state checkpoint failure entered cleanup: exit_code=$exit_code signal=${APO_EXIT_SIGNAL:-none} detached_status=$(apo_state_get REMOTE_STRESS_STATUS IDLE)."
+    fi
     if [[ -n ${APO_STATE_FILE:-} && -f ${APO_STATE_FILE:-} ]] && apo_remote_job_pending &&
        [[ ${APO_EXIT_SIGNAL:-} == TERM || ${APO_EXIT_SIGNAL:-} == HUP ]]; then
         # A controller shutdown or lost controlling terminal must not stop a
@@ -1633,6 +1649,17 @@ apo_cleanup_handler() {
         # so `resume TARGET` can reattach after the controller returns.
         if declare -F apo_progress_clear_line >/dev/null 2>&1; then apo_progress_clear_line; fi
         exit "$exit_code"
+    fi
+    if [[ ${APO_STATE_SAVE_FATAL:-0} == 1 ]]; then
+        if apo_remote_job_durable_pending; then
+            # A controller-only checkpoint fault cannot invalidate an exact
+            # durable target-job identity. Leave the fixed-deadline workload
+            # untouched so the next controller can reattach normally.
+            apo_warn_plain 'Controller checkpointing failed after exact detached-stress ownership was already committed. The target job remains active and resumable; no recovery reboot was requested.'
+            if declare -F apo_progress_clear_line >/dev/null 2>&1; then apo_progress_clear_line; fi
+            exit "$exit_code"
+        fi
+        apo_warn_plain "Controller checkpointing failed, but detached-stress preservation was not authorized: ${APO_REMOTE_JOB_DURABLE_REASON:-unknown}. Normal owned recovery will continue."
     fi
     if [[ -n ${APO_STATE_FILE:-} && -f ${APO_STATE_FILE:-} ]] && apo_remote_job_pending; then
         # An orderly controller exit cannot leave a detached stress process
@@ -1822,6 +1849,18 @@ main() {
                 apo_die "This run has an unresolved permanent-config mismatch: $(apo_state_get APPLY_FAILURE_REASON 'manual recovery required')" "$APO_EXIT_APPLY"
             fi
             status=$(apo_state_get STATUS)
+            if (( APO_RESTART_PENDING == 1 )); then
+                APO_RESTART_SOURCE_STATUS=$status
+                APO_RESTART_SOURCE_PHASE=$(apo_state_get PHASE '')
+                APO_RESTART_SOURCE_FINAL_STAGE=$(apo_state_get FINAL_STAGE '')
+                APO_RESTART_SOURCE_FAILURE_CLASS=$(apo_state_get FAILURE_CLASS '')
+                if apo_restart_remote_stress_state_clear; then
+                    APO_RESTART_SOURCE_REMOTE_CLEAR=1
+                else
+                    APO_RESTART_SOURCE_REMOTE_CLEAR=0
+                    apo_die 'Checkpoint restart was refused because the saved state still owns or describes a target-side stress job. Use plain resume TARGET to reconcile that exact job before requesting a checkpoint restart.' "$APO_EXIT_USAGE"
+                fi
+            fi
             if [[ $status == PASS && $(apo_state_get PHASE) == COMPLETE ]]; then
                 if (( APO_AUTO_APPLY == 1 )); then
                     apo_prepare_remote_for_saved_run

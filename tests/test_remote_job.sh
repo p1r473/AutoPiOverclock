@@ -100,11 +100,11 @@ printf '%s\n' "$$" >"$STALE_DIR/supervisor.pid"
 STALE_INSPECT=$("$HELPER" inspect "$RUN_ROOT" "$STALE_JOB" "$STALE_TOKEN" "$STALE_SPEC")
 [[ $STALE_INSPECT == APO_JOB_INSPECT$'\t'ORPHANED$'\t'* ]]
 
-grep -Fq 'apo_remote_job_follow_command "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>/dev/null |' \
-    "$ROOT/lib/remote_job.sh"
-if grep -Fq 'apo_remote_job_follow_command "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>&1 |' \
+grep -Fq 'coproc APO_REMOTE_JOB_FOLLOW_COPROC' "$ROOT/lib/remote_job.sh"
+grep -Fq 'apo_remote_job_follow_stream <&"$follow_fd"' "$ROOT/lib/remote_job.sh"
+if grep -Eq 'apo_remote_job_(command|follow_command) follow .*\|[[:space:]]*apo_remote_job_follow_stream' \
     "$ROOT/lib/remote_job.sh"; then
-    echo 'SSH diagnostics are still entering the detached-job protocol parser' >&2
+    echo 'the detached-job parser still runs inside the long-lived producer pipeline' >&2
     exit 1
 fi
 
@@ -126,13 +126,20 @@ fi
         else
             printf 'closed\n'
         fi
+        return 23
     }
-    shopt -s lastpipe
+    apo_remote_job_follow_stream() { IFS= read -r lock_observation; }
+    lastpipe_before=$(shopt -p lastpipe || true)
+    follow_fds_before=(/proc/$BASHPID/fd/*)
     lock_observation=''
-    apo_remote_job_follow_command /tmp/run job-00000000000000000000000000000000 \
-        "$(printf '0%.0s' {1..64})" "$(printf '1%.0s' {1..64})" |
-        IFS= read -r lock_observation
+    apo_remote_job_follow_capture /tmp/run job-00000000000000000000000000000000 \
+        "$(printf '0%.0s' {1..64})" "$(printf '1%.0s' {1..64})"
     [[ $lock_observation == closed ]]
+    [[ $APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC == 23 ]]
+    [[ -z $APO_REMOTE_JOB_FOLLOW_PID && -z $APO_REMOTE_JOB_FOLLOW_FD && -z $APO_REMOTE_JOB_FOLLOW_INPUT_FD ]]
+    follow_fds_after=(/proc/$BASHPID/fd/*)
+    [[ ${#follow_fds_after[@]} == ${#follow_fds_before[@]} ]]
+    [[ $(shopt -p lastpipe || true) == "$lastpipe_before" ]]
     [[ -e /proc/$CONTROLLER_TEST_PID/fd/$TEST_LOCK_FD ]]
     if (
         exec {probe_fd}>"$LOCK_FILE"
@@ -142,6 +149,23 @@ fi
         exit 1
     fi
     exec {APO_LOCK_FD}>&-
+)
+
+# Exit recovery closes and terminates a live controller-side follow transport.
+# It must not wait for the observer's original lifetime.
+(
+    source "$ROOT/lib/remote_job.sh"
+    apo_remote_job_command() { sleep 60; }
+    coproc APO_REMOTE_JOB_FOLLOW_COPROC {
+        apo_remote_job_follow_command fixture
+    }
+    APO_REMOTE_JOB_FOLLOW_PID=${APO_REMOTE_JOB_FOLLOW_COPROC_PID:-}
+    APO_REMOTE_JOB_FOLLOW_FD=${APO_REMOTE_JOB_FOLLOW_COPROC[0]:-}
+    APO_REMOTE_JOB_FOLLOW_INPUT_FD=${APO_REMOTE_JOB_FOLLOW_COPROC[1]:-}
+    cleanup_started=$SECONDS
+    apo_remote_job_follow_transport_cleanup
+    (( SECONDS - cleanup_started < 5 ))
+    [[ -z $APO_REMOTE_JOB_FOLLOW_PID && -z $APO_REMOTE_JOB_FOLLOW_FD && -z $APO_REMOTE_JOB_FOLLOW_INPUT_FD ]]
 )
 
 # The controller globals are intentionally isolated inside this fixture.
@@ -374,6 +398,33 @@ fi
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+)
+
+# Periodic progress checkpoints are advisory once exact target-job ownership
+# is durable. Failures are rate-limited to one attempt per minute, leave the
+# target job alone, and report recovery after a later successful checkpoint.
+(
+    source "$ROOT/lib/remote_job.sh"
+    SAVE_CALLS=0
+    EVENTS=()
+    APO_STATE_SAVE_ERROR='simulated checkpoint failure'
+    apo_state_save_try() {
+        SAVE_CALLS=$((SAVE_CALLS + 1))
+        (( SAVE_CALLS >= 3 ))
+    }
+    apo_recovery_wait_event() { EVENTS+=("$1:$2:$3"); }
+    apo_remote_job_checkpoint_heartbeat 100
+    [[ $SAVE_CALLS == 1 && $APO_REMOTE_JOB_CHECKPOINT_FAILURES == 1 ]]
+    apo_remote_job_checkpoint_heartbeat 159
+    [[ $SAVE_CALLS == 1 ]]
+    apo_remote_job_checkpoint_heartbeat 160
+    [[ $SAVE_CALLS == 2 && $APO_REMOTE_JOB_CHECKPOINT_FAILURES == 2 ]]
+    apo_remote_job_checkpoint_heartbeat 220
+    [[ $SAVE_CALLS == 3 && $APO_REMOTE_JOB_CHECKPOINT_FAILURES == 0 ]]
+    [[ ${#EVENTS[@]} == 3 ]]
+    [[ ${EVENTS[0]} == WARN:detached-stress-checkpoint:*'remains active'* ]]
+    [[ ${EVENTS[1]} == WARN:detached-stress-checkpoint:*'retry after another 60 seconds'* ]]
+    [[ ${EVENTS[2]} == INFO:detached-stress-checkpoint-recovered:*'remained active throughout'* ]]
 )
 
 printf 'test_remote_job: PASS\n'

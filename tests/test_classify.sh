@@ -8,6 +8,11 @@ FIXTURES="$ROOT/tests/fixtures"
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
+if grep -REq 'shopt[[:space:]]+-s[[:space:]]+lastpipe|\$\{?PIPESTATUS' "$ROOT/autopioverclock" "$ROOT/lib"; then
+    echo 'controller capture still depends on lastpipe or PIPESTATUS' >&2
+    exit 1
+fi
+
 apo_classify_output "$FIXTURES/debian-pass.log" pass
 [[ $APO_LAST_CLASS == PASS ]]
 [[ $APO_LAST_RESULT_STRUCTURED == 1 ]]
@@ -42,15 +47,25 @@ apo_classify_output "$TEMP_DIR/ssh-timeout.log" stress
 [[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
 [[ $APO_LAST_RESULT_STRUCTURED == 0 ]]
 
-# The live worker-stream consumer must run in the controller shell. Otherwise
-# progress-line and telemetry updates disappear with a pipeline subshell while
-# the terminal itself remains changed, which can stack a later progress paint.
+# The live worker-stream consumer runs directly in the controller shell while
+# a named coprocess owns the SSH producer. Progress state must be preserved
+# without enabling lastpipe or relying on PIPESTATUS.
 APO_LOG_FILE="$TEMP_DIR/controller.log"
 APO_REMOTE_WORKER=/tmp/fixture-worker
 APO_PIPELINE_STATE=before
+WORKER_LOCK_OBSERVATION="$TEMP_DIR/worker-lock-observation"
+exec {APO_LOCK_FD}>"$TEMP_DIR/worker-controller.lock"
+flock -n "$APO_LOCK_FD"
+TEST_WORKER_LOCK_FD=$APO_LOCK_FD
+TEST_WORKER_CONTROLLER_PID=$BASHPID
 lastpipe_before=$(shopt -p lastpipe || true)
 apo_candidate_log_file() { printf '%s' "$TEMP_DIR/worker.log"; }
 apo_remote_worker() {
+    if [[ -e /proc/$BASHPID/fd/$TEST_WORKER_LOCK_FD ]]; then
+        printf 'inherited\n' > "$WORKER_LOCK_OBSERVATION"
+    else
+        printf 'closed\n' > "$WORKER_LOCK_OBSERVATION"
+    fi
     printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
         "$(printf '%s' 'pipeline fixture passed' | base64 | tr -d '\n')"
 }
@@ -66,6 +81,28 @@ apo_event() { :; }
 apo_run_worker_capture pipeline-fixture stress
 [[ $APO_PIPELINE_STATE == preserved ]]
 [[ $(shopt -p lastpipe || true) == "$lastpipe_before" ]]
+[[ $APO_LAST_WORKER_CAPTURE_KIND == progress-coprocess ]]
+[[ $APO_LAST_WORKER_PIPE_STATUS == 'producer=0 consumer=0' ]]
+[[ -z $APO_WORKER_CAPTURE_PID && -z $APO_WORKER_CAPTURE_FD && -z $APO_WORKER_CAPTURE_INPUT_FD ]]
+[[ $(<"$WORKER_LOCK_OBSERVATION") == closed ]]
+[[ -e /proc/$TEST_WORKER_CONTROLLER_PID/fd/$TEST_WORKER_LOCK_FD ]]
+exec {APO_LOCK_FD}>&-
+
+# Exit recovery must terminate a live controller-side worker transport instead
+# of waiting for that observer's original lifetime.
+(
+    apo_remote_worker() { sleep 60; }
+    coproc APO_WORKER_CAPTURE_COPROC {
+        apo_worker_capture_command fixture
+    }
+    APO_WORKER_CAPTURE_PID=${APO_WORKER_CAPTURE_COPROC_PID:-}
+    APO_WORKER_CAPTURE_FD=${APO_WORKER_CAPTURE_COPROC[0]:-}
+    APO_WORKER_CAPTURE_INPUT_FD=${APO_WORKER_CAPTURE_COPROC[1]:-}
+    cleanup_started=$SECONDS
+    apo_worker_capture_transport_cleanup
+    (( SECONDS - cleanup_started < 5 ))
+    [[ -z $APO_WORKER_CAPTURE_PID && -z $APO_WORKER_CAPTURE_FD && -z $APO_WORKER_CAPTURE_INPUT_FD ]]
+)
 
 # Safe read-only worker gates retry repeatedly on the same boot. Long stress
 # and mutation commands are never replayed by this transport layer.
@@ -84,6 +121,58 @@ apo_remote_worker() {
 apo_run_worker_capture retryable-health health
 [[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 5 ]]
 [[ $APO_LAST_CLASS == PASS ]]
+
+# A complete PASS paired with a disagreeing transport rc authorizes exactly
+# one same-boot replay of the idempotent clear-tryboot postcondition check.
+: > "$WORKER_ATTEMPT_FILE"
+apo_remote_worker() {
+    printf x >> "$WORKER_ATTEMPT_FILE"
+    printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'tryboot cleanup verified' | base64 | tr -d '\n')"
+    if (( $(wc -c < "$WORKER_ATTEMPT_FILE") == 1 )); then return 1; fi
+    return 0
+}
+apo_run_worker_capture reconcile-clear-tryboot clear-tryboot fixture-arguments
+[[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 2 ]]
+[[ $APO_LAST_CLASS == PASS ]]
+grep -Fq 'worker-transport-status: phase=reconcile-clear-tryboot command=clear-tryboot remote_rc=1 capture=progress-coprocess pipeline_statuses=producer=1 consumer=0 lastpipe_preexisting=not-used controller_exit_signal=none' "$APO_LOG_FILE"
+
+# Duplicate structured trailers are ambiguous and can never authorize replay
+# of a target mutation, even when the last trailer says PASS.
+: > "$WORKER_ATTEMPT_FILE"
+apo_remote_worker() {
+    printf x >> "$WORKER_ATTEMPT_FILE"
+    printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'first result' | base64 | tr -d '\n')"
+    printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'second result' | base64 | tr -d '\n')"
+    return 1
+}
+if apo_run_worker_capture reject-ambiguous-clear clear-tryboot fixture-arguments; then
+    echo 'ambiguous mutation PASS evidence was replayed or accepted' >&2
+    exit 1
+fi
+[[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 1 ]]
+[[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+[[ $APO_LAST_REASON == 'The worker emitted an incomplete, invalid, or ambiguous structured result.' ]]
+
+# Ambiguous PASS evidence is invalid even when the transport itself exits 0.
+# Structured success always requires exactly one class and one valid reason.
+: > "$WORKER_ATTEMPT_FILE"
+apo_remote_worker() {
+    printf x >> "$WORKER_ATTEMPT_FILE"
+    printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'first result' | base64 | tr -d '\n')"
+    printf 'APO_RESULT_CLASS=PASS\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'second result' | base64 | tr -d '\n')"
+    return 0
+}
+if apo_run_worker_capture reject-zero-rc-ambiguous health fixture-arguments; then
+    echo 'zero-rc ambiguous PASS evidence was accepted' >&2
+    exit 1
+fi
+[[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+[[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 1 ]]
 
 : > "$WORKER_ATTEMPT_FILE"
 apo_remote_worker() { printf x >> "$WORKER_ATTEMPT_FILE"; return 255; }

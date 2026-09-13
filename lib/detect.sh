@@ -173,32 +173,43 @@ apo_normalize_initial_boot() {
     esac
 }
 
+apo_discovery_capture_command() {
+    local wrapper
+    if [[ ${APO_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {APO_LOCK_FD}>&-; fi
+    if (( APO_WORKER_DEPLOYED == 1 )); then
+        apo_remote_worker "$APO_REMOTE_WORKER" discover
+    else
+        if (( APO_REMOTE_IS_ROOT == 1 )); then wrapper='/bin/bash -s -- discover';
+        else wrapper='sudo -n /bin/bash -s -- discover'; fi
+        command ssh "${APO_SSH_OPTIONS[@]}" -T "$APO_REMOTE_TARGET" "$wrapper" < "$APO_LOCAL_WORKER"
+    fi
+}
+
 apo_discovery_capture() {
-    local output_file=${APO_DISCOVERY_FILE:-/tmp/autopioverclock-discovery.$$} remote_rc attempt attempts_used=0 wrapper
+    local output_file=${APO_DISCOVERY_FILE:-/tmp/autopioverclock-discovery.$$} remote_rc stream_rc attempt attempts_used=0
     apo_transient_read_policy_normalize
     for (( attempt=1; attempt<=APO_TRANSIENT_READ_ATTEMPTS; attempt++ )); do
         attempts_used=$attempt
         : > "$output_file"
         # run-start leaves the interactive progress row painted.  Discovery is
-        # intentionally streamed verbatim, outside the normal worker-capture
-        # path, so clear that row before the first APO_DATA line.  A later
+        # intentionally streamed verbatim, outside the normal worker result
+        # path, so clear that row before the first APO_DATA line. A later
         # ordinary logged event repaints after the complete stream.
         if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
         set +e
-        if (( APO_WORKER_DEPLOYED == 1 )); then
-            apo_remote_worker "$APO_REMOTE_WORKER" discover 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
-            remote_rc=${PIPESTATUS[0]}
-        else
-            if (( APO_REMOTE_IS_ROOT == 1 )); then wrapper='/bin/bash -s -- discover';
-            else wrapper='sudo -n /bin/bash -s -- discover'; fi
-            command ssh "${APO_SSH_OPTIONS[@]}" -T "$APO_REMOTE_TARGET" "$wrapper" < "$APO_LOCAL_WORKER" 2>&1 | tee "$output_file" | tee -a "$APO_LOG_FILE"
-            remote_rc=${PIPESTATUS[0]}
-        fi
+        apo_worker_capture_function_progress "$output_file" apo_discovery_capture_command
+        remote_rc=$APO_WORKER_CAPTURE_TRANSPORT_RC
+        stream_rc=$APO_WORKER_CAPTURE_STREAM_RC
         set -e
+        APO_LAST_WORKER_CAPTURE_KIND=discovery-coprocess
+        APO_LAST_WORKER_PIPE_STATUS="producer=$remote_rc consumer=$stream_rc"
         apo_classify_output "$output_file" discovery
-        if (( remote_rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then
+        if (( remote_rc == 0 && stream_rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then
             apo_parse_data_file "$output_file" APO_DISCOVERY
             return 0
+        fi
+        if (( remote_rc != 0 || stream_rc != 0 )); then
+            apo_worker_transport_status_log discovery discover "$remote_rc"
         fi
         if (( APO_LAST_RESULT_STRUCTURED == 1 )) && [[ $APO_LAST_CLASS != PASS ]]; then break; fi
         if [[ $APO_LAST_CLASS != HARNESS_FAILURE && $APO_LAST_CLASS != PASS ]]; then break; fi
@@ -209,7 +220,7 @@ apo_discovery_capture() {
     done
     [[ $APO_LAST_CLASS != PASS ]] || {
         APO_LAST_CLASS=HARNESS_FAILURE
-        APO_LAST_REASON='Discovery returned PASS evidence through a failed SSH transport.'
+        APO_LAST_REASON="Discovery returned PASS evidence through a failed transport: producer=$remote_rc consumer=$stream_rc."
     }
     apo_die "Discovery failed after $attempts_used attempts: $APO_LAST_REASON" "$(apo_class_exit_code "$APO_LAST_CLASS")"
 }

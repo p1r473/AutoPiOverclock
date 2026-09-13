@@ -39,118 +39,82 @@ mapfile -t durability_calls < "$STATE_DURABILITY_TRACE"
 [[ ${durability_calls[3]} == sync:"$TEMP_DIR" ]]
 FIRST_STATE=$APO_STATE_FILE
 
-# A transient encoder process failure must not terminate a long controller
-# run. Retry the exact value and preserve the atomic checkpoint contract.
-ENCODER_ATTEMPTS_FILE=$TEMP_DIR/encoder-attempts
-: > "$ENCODER_ATTEMPTS_FILE"
-base64() {
-    local attempt_count
-    attempt_count=$(wc -l < "$ENCODER_ATTEMPTS_FILE")
-    printf 'attempt\n' >> "$ENCODER_ATTEMPTS_FILE"
-    if (( attempt_count < 2 )); then
-        printf 'simulated base64 failure\n' >&2
-        return 75
-    fi
-    command base64 "$@"
+# A transient durability status is retried with resource diagnostics. The
+# checkpoint commits without exposing any state value in the diagnostic.
+SYNC_ATTEMPTS=$TEMP_DIR/sync-attempts
+: > "$SYNC_ATTEMPTS"
+TRANSIENT_SYNC_OUTPUT=$TEMP_DIR/transient-sync-output
+sync() {
+    printf 'attempt\n' >> "$SYNC_ATTEMPTS"
+    if (( $(wc -l < "$SYNC_ATTEMPTS") < 3 )); then return 75; fi
+    command sync "$@"
 }
-apo_state_set ENCODER_RETRY $'retry value\nwith a second line'
-TRANSIENT_ENCODER_OUTPUT=$TEMP_DIR/transient-encoder-output
-apo_state_save 2> "$TRANSIENT_ENCODER_OUTPUT"
-unset -f base64
-[[ $(wc -l < "$ENCODER_ATTEMPTS_FILE") == 3 ]]
-[[ $(grep -c 'state-checkpoint-encode:' "$TRANSIENT_ENCODER_OUTPUT") == 2 ]]
-grep -Fq 'key=ENCODER_RETRY attempt=1/3 stage=base64 input_rc=0 base64_rc=75' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq "stderr=\$'simulated base64 failure\\n'" "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'open_fds=' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'nofile_limit=' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'nproc_limit=' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'system_tasks=' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'cgroup_pids=' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'cgroup_pids_max=' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'mem_available_kb=' "$TRANSIENT_ENCODER_OUTPUT"
-grep -Fq 'file_handles_allocated=' "$TRANSIENT_ENCODER_OUTPUT"
-[[ $(grep -c 'state-checkpoint-encode:' "$APO_LOG_FILE") == 2 ]]
-if grep -Fq 'retry value' "$TRANSIENT_ENCODER_OUTPUT" || grep -Fq 'retry value' "$APO_LOG_FILE"; then
-    echo 'state encoder diagnostic exposed the state value' >&2
+apo_state_set IO_RETRY $'private retry value\nsecond line'
+apo_state_save 2> "$TRANSIENT_SYNC_OUTPUT"
+unset -f sync
+[[ $(wc -l < "$SYNC_ATTEMPTS") == 5 ]]
+[[ $(grep -c 'state-checkpoint-io: stage=temp-sync' "$TRANSIENT_SYNC_OUTPUT") == 2 ]]
+[[ $(grep -c 'state-checkpoint-debug:' "$TRANSIENT_SYNC_OUTPUT") == 1 ]]
+grep -Fq 'attempt=1/3 rc=75' "$TRANSIENT_SYNC_OUTPUT"
+grep -Fq 'open_fds=' "$TRANSIENT_SYNC_OUTPUT"
+grep -Fq 'nofile_limit=' "$TRANSIENT_SYNC_OUTPUT"
+grep -Fq 'nproc_limit=' "$TRANSIENT_SYNC_OUTPUT"
+grep -Fq 'system_tasks=' "$TRANSIENT_SYNC_OUTPUT"
+grep -Fq 'cgroup_pids=' "$TRANSIENT_SYNC_OUTPUT"
+grep -Fq 'mem_available_kb=' "$TRANSIENT_SYNC_OUTPUT"
+grep -Fq 'file_handles_allocated=' "$TRANSIENT_SYNC_OUTPUT"
+grep -Eq 'external_true_rc=0 .*subshell_rc=0 .*base64_rc=0 .*base64_output_match=1 .*pipeline_rc=0 .*pipeline_output_match=1 .*mktemp_rc=0 .*mktemp_created=1 .*df_rc=0' "$TRANSIENT_SYNC_OUTPUT"
+if grep -Fq 'private retry value' "$TRANSIENT_SYNC_OUTPUT" || grep -Fq 'private retry value' "$APO_LOG_FILE"; then
+    echo 'state checkpoint diagnostic exposed a state value' >&2
     exit 1
 fi
-
-# Once a canonical checkpoint commits, unchanged values reuse its exact
-# encoding instead of launching hundreds of redundant Base64 processes.
-CACHE_BASE64_CALLED=$TEMP_DIR/cache-base64-called
-(
-    cached_updated_at=$(apo_state_get UPDATED_AT)
-    apo_now_iso() { printf '%s' "$cached_updated_at"; }
-    base64() { : > "$CACHE_BASE64_CALLED"; return 75; }
-    apo_state_save
-)
-[[ ! -e $CACHE_BASE64_CALLED ]]
 APO_STATE=()
 apo_state_load "$FIRST_STATE"
-[[ $(apo_state_get ENCODER_RETRY) == $'retry value\nwith a second line' ]]
-LOAD_CACHE_BASE64_CALLED=$TEMP_DIR/load-cache-base64-called
-(
-    cached_updated_at=$(apo_state_get UPDATED_AT)
-    apo_now_iso() { printf '%s' "$cached_updated_at"; }
-    base64() { : > "$LOAD_CACHE_BASE64_CALLED"; return 75; }
-    apo_state_save
-)
-[[ ! -e $LOAD_CACHE_BASE64_CALLED ]]
 
-# A persistent encoder failure still fails closed, removes its temporary file,
-# and leaves the last committed checkpoint byte-for-byte unchanged.
-PERSISTENT_ENCODER_HASH=$(sha256sum "$FIRST_STATE" | awk '{print $1}')
+# If rename performs the commit but its observed status disagrees, exact
+# byte-for-byte destination verification reconciles it without a second move.
+FALSE_RENAME_CALLS=$TEMP_DIR/false-rename-calls
+: > "$FALSE_RENAME_CALLS"
+mv() {
+    printf 'attempt\n' >> "$FALSE_RENAME_CALLS"
+    command mv "$@"
+    return 75
+}
+apo_state_set RENAME_RECONCILE committed
+apo_state_save
+unset -f mv
+[[ $(wc -l < "$FALSE_RENAME_CALLS") == 1 ]]
+grep -Fq $'RENAME_RECONCILE\tY29tbWl0dGVk' "$FIRST_STATE"
+
+# A persistent pre-commit sync failure leaves the prior checkpoint unchanged,
+# removes its temporary file, and returns a precise nonfatal error to callers
+# such as the detached-job heartbeat.
+PERSISTENT_STATE_HASH=$(sha256sum "$FIRST_STATE" | awk '{print $1}')
+PERSISTENT_SYNC_OUTPUT=$TEMP_DIR/persistent-sync-output
 set +e
-persistent_encoder_output=$(
-    {
-        base64() { printf 'simulated persistent base64 failure\n' >&2; return 75; }
-        apo_state_set ENCODER_RETRY unsaved
-        apo_state_save
-        exit 0
-    } 2>&1
-)
-persistent_encoder_status=$?
+sync() { return 76; }
+apo_state_set UNSAVED_VALUE private-unsaved-value
+apo_state_save_try 2> "$PERSISTENT_SYNC_OUTPUT"
+persistent_sync_status=$?
+unset -f sync
 set -e
-[[ $persistent_encoder_status == "$APO_EXIT_INTERNAL" ]]
-grep -Fq "after $APO_STATE_ENCODE_ATTEMPTS attempts" <<< "$persistent_encoder_output"
-[[ $(grep -c 'state-checkpoint-encode:' <<< "$persistent_encoder_output") == 3 ]]
-grep -Fq 'stage=base64 input_rc=0 base64_rc=75' <<< "$persistent_encoder_output"
-grep -Fq "stderr=\$'simulated persistent base64 failure\\n'" <<< "$persistent_encoder_output"
-[[ $(sha256sum "$FIRST_STATE" | awk '{print $1}') == "$PERSISTENT_ENCODER_HASH" ]]
+[[ $persistent_sync_status == 1 ]]
+[[ $(grep -c 'state-checkpoint-io: stage=temp-sync' "$PERSISTENT_SYNC_OUTPUT") == 3 ]]
+[[ $(grep -c 'state-checkpoint-debug:' "$PERSISTENT_SYNC_OUTPUT" || true) == 0 ]]
+[[ $(sha256sum "$FIRST_STATE" | awk '{print $1}') == "$PERSISTENT_STATE_HASH" ]]
 if compgen -G "${FIRST_STATE}.tmp.*" >/dev/null; then
-    echo 'failed state encoding left a temporary checkpoint behind' >&2
+    echo 'failed state checkpoint left a temporary file behind' >&2
+    exit 1
+fi
+if grep -Fq private-unsaved-value "$PERSISTENT_SYNC_OUTPUT"; then
+    echo 'persistent checkpoint diagnostic exposed a state value' >&2
     exit 1
 fi
 
-# Input-side and base64 failures are distinguishable without recording the
-# encoded value itself.
-set +e
-input_encoder_output=$(
-    {
-        apo_state_encode_input() { printf 'simulated input failure\n' >&2; return 74; }
-        apo_state_set ENCODER_RETRY another-unsaved-value
-        apo_state_save
-        exit 0
-    } 2>&1
-)
-input_encoder_status=$?
-set -e
-[[ $input_encoder_status == "$APO_EXIT_INTERNAL" ]]
-[[ $(grep -c 'state-checkpoint-encode:' <<< "$input_encoder_output") == 3 ]]
-grep -Fq 'stage=input input_rc=74 base64_rc=not-run' <<< "$input_encoder_output"
-grep -Fq "stderr=\$'simulated input failure\\n'" <<< "$input_encoder_output"
-if grep -Fq 'another-unsaved-value' <<< "$input_encoder_output"; then
-    echo 'input-side encoder diagnostic exposed the state value' >&2
-    exit 1
-fi
-[[ $(sha256sum "$FIRST_STATE" | awk '{print $1}') == "$PERSISTENT_ENCODER_HASH" ]]
-if compgen -G "${FIRST_STATE}.tmp.*" >/dev/null; then
-    echo 'input-side encoding failure left a temporary checkpoint behind' >&2
-    exit 1
-fi
-
-grep -Fq 'apo_state_encode_input "$state_value" 2>> "$error_file" > "$input_file"' "$ROOT/lib/state.sh"
-grep -Fq 'base64 2>> "$error_file" < "$input_file" > "$output_file"' "$ROOT/lib/state.sh"
+APO_STATE=()
+apo_state_load "$FIRST_STATE"
+[[ $(apo_state_get IO_RETRY) == $'private retry value\nsecond line' ]]
+[[ $(apo_state_get RENAME_RECONCILE) == committed ]]
 
 SENTINEL="$TEMP_DIR/fixture-target-old-run.log"
 printf keep > "$SENTINEL"

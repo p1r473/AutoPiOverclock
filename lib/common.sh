@@ -73,7 +73,17 @@ apo_trim() {
     printf '%s' "$value"
 }
 
-apo_now_iso() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+apo_now_iso() {
+    local timestamp output_name=${1-}
+    printf -v timestamp '%(%Y-%m-%dT%H:%M:%S%z)T' -1 || return 1
+    if (( $# == 0 )); then
+        printf '%s' "$timestamp"
+    elif (( $# == 1 )) && [[ $output_name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        printf -v "$output_name" '%s' "$timestamp"
+    else
+        return 2
+    fi
+}
 apo_new_run_id() {
     local timestamp random_suffix
     timestamp=$(date '+%Y%m%d-%H%M%S') || return 1

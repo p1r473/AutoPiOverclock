@@ -12,6 +12,12 @@ APO_REMOTE_JOB_COMPLETE_BOOT_ID=''
 APO_REMOTE_JOB_FOLLOW_ERROR=''
 APO_REMOTE_JOB_PROBE_BOOT=''
 APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=0
+APO_REMOTE_JOB_CHECKPOINT_FAILURES=0
+APO_REMOTE_JOB_DURABLE_REASON='not-checked'
+APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC=1
+APO_REMOTE_JOB_FOLLOW_PID=''
+APO_REMOTE_JOB_FOLLOW_FD=''
+APO_REMOTE_JOB_FOLLOW_INPUT_FD=''
 APO_REMOTE_STRESS_CREDIT_ADDED=0
 APO_REMOTE_STRESS_CREDIT_TOTAL=0
 APO_REMOTE_STRESS_CREDIT_REMAINING=0
@@ -28,6 +34,49 @@ apo_remote_job_pending() {
 apo_remote_job_valid_id() { [[ ${1-} =~ ^job-[0-9a-f]{32}$ ]]; }
 apo_remote_job_valid_hash() { [[ ${1-} =~ ^[0-9a-f]{64}$ ]]; }
 apo_remote_job_valid_boot_id() { [[ ${1-} =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; }
+
+# A controller checkpoint failure may leave a valid target-owned stress job
+# running. Preserve it only when the last committed state contains the exact
+# same run, target, boot, workload, and ownership identity as controller memory.
+apo_remote_job_durable_pending() {
+    local state_key
+    local -A durable_job=()
+    local -a identity_keys=(
+        FORMAT_VERSION RUN_ID TARGET_SLUG REMOTE_TARGET STATUS
+        REMOTE_STRESS_STATUS REMOTE_STRESS_JOB_ID REMOTE_STRESS_TOKEN
+        REMOTE_STRESS_SPEC_HASH REMOTE_STRESS_SOURCE_BOOT_ID
+        REMOTE_STRESS_PHASE REMOTE_STRESS_DURATION_S REMOTE_STRESS_SEGMENT_DURATION_S
+    )
+    APO_REMOTE_JOB_DURABLE_REASON='not-proven'
+    if [[ -z ${APO_STATE_FILE:-} || ! -f ${APO_STATE_FILE:-} ]]; then
+        APO_REMOTE_JOB_DURABLE_REASON='committed-state-unavailable'
+        return 1
+    fi
+    if ! apo_remote_job_pending; then
+        APO_REMOTE_JOB_DURABLE_REASON='memory-job-not-pending'
+        return 1
+    fi
+    if ! apo_state_load_fields "$APO_STATE_FILE" durable_job "${identity_keys[@]}"; then
+        APO_REMOTE_JOB_DURABLE_REASON='committed-state-invalid'
+        return 1
+    fi
+    if [[ ${durable_job[FORMAT_VERSION]:-} != 1 || ${durable_job[STATUS]:-} != RUNNING ]]; then
+        APO_REMOTE_JOB_DURABLE_REASON='committed-run-not-running'
+        return 1
+    fi
+    for state_key in "${identity_keys[@]}"; do
+        if [[ ! -v durable_job[$state_key] || ! -v APO_STATE[$state_key] ]]; then
+            APO_REMOTE_JOB_DURABLE_REASON="missing-identity-$state_key"
+            return 1
+        fi
+        if [[ ${durable_job[$state_key]} != "${APO_STATE[$state_key]}" ]]; then
+            APO_REMOTE_JOB_DURABLE_REASON="identity-mismatch-$state_key"
+            return 1
+        fi
+    done
+    APO_REMOTE_JOB_DURABLE_REASON='exact-match'
+    return 0
+}
 
 apo_remote_job_token() {
     od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n'
@@ -46,12 +95,68 @@ apo_remote_job_command() {
     apo_remote_root "$command_line"
 }
 
-# This function is used only as the left side of the long-lived follow
-# pipeline. Close the inherited controller lock in that pipeline process so a
-# controller failure cannot leave the target follow transport owning the lock.
+# This function runs only in the long-lived follow producer. Close its inherited
+# controller lock so a controller failure cannot leave the local transport
+# owning the lock.
 apo_remote_job_follow_command() {
     if [[ ${APO_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {APO_LOCK_FD}>&-; fi
     apo_remote_job_command follow "$@"
+}
+
+apo_remote_job_follow_transport_cleanup() {
+    local follow_pid=${APO_REMOTE_JOB_FOLLOW_PID:-}
+    if [[ ${APO_REMOTE_JOB_FOLLOW_FD:-} =~ ^[0-9]+$ ]]; then
+        exec {APO_REMOTE_JOB_FOLLOW_FD}<&- 2>/dev/null || true
+    fi
+    APO_REMOTE_JOB_FOLLOW_FD=''
+    if [[ ${APO_REMOTE_JOB_FOLLOW_INPUT_FD:-} =~ ^[0-9]+$ ]]; then
+        exec {APO_REMOTE_JOB_FOLLOW_INPUT_FD}>&- 2>/dev/null || true
+    fi
+    APO_REMOTE_JOB_FOLLOW_INPUT_FD=''
+    if [[ $follow_pid =~ ^[1-9][0-9]*$ ]]; then
+        kill -TERM "$follow_pid" 2>/dev/null || true
+        wait "$follow_pid" 2>/dev/null || true
+    fi
+    APO_REMOTE_JOB_FOLLOW_PID=''
+    unset APO_REMOTE_JOB_FOLLOW_COPROC APO_REMOTE_JOB_FOLLOW_COPROC_PID 2>/dev/null || true
+}
+
+# Keep the long-lived SSH producer outside the shell that parses heartbeats and
+# writes controller checkpoints. A coprocess supplies the pipe, while the
+# controller consumes it as an ordinary redirected function and waits for the
+# exact producer PID. This avoids running checkpoint children from inside a
+# lastpipe pipeline and keeps the transport status independent of PIPESTATUS.
+apo_remote_job_follow_capture() {
+    local follow_pid='' follow_fd='' follow_input_fd='' stream_rc=0
+    APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC=1
+    coproc APO_REMOTE_JOB_FOLLOW_COPROC {
+        apo_remote_job_follow_command "$@" 2>/dev/null
+    }
+    follow_pid=${APO_REMOTE_JOB_FOLLOW_COPROC_PID:-}
+    follow_fd=${APO_REMOTE_JOB_FOLLOW_COPROC[0]:-}
+    follow_input_fd=${APO_REMOTE_JOB_FOLLOW_COPROC[1]:-}
+    APO_REMOTE_JOB_FOLLOW_PID=$follow_pid
+    APO_REMOTE_JOB_FOLLOW_FD=$follow_fd
+    APO_REMOTE_JOB_FOLLOW_INPUT_FD=$follow_input_fd
+    # The SSH wrapper uses -n and never accepts controller input. Close the
+    # unused coprocess write side immediately so reattachments cannot leak it.
+    if [[ $follow_input_fd =~ ^[0-9]+$ ]]; then
+        exec {APO_REMOTE_JOB_FOLLOW_INPUT_FD}>&- 2>/dev/null || true
+        APO_REMOTE_JOB_FOLLOW_INPUT_FD=''
+    fi
+    if [[ ! $follow_pid =~ ^[1-9][0-9]*$ || ! $follow_fd =~ ^[0-9]+$ ]]; then
+        APO_REMOTE_JOB_FOLLOW_ERROR='The controller could not create the detached-stress follow transport.'
+        apo_remote_job_follow_transport_cleanup
+        return 1
+    fi
+    if apo_remote_job_follow_stream <&"$follow_fd"; then stream_rc=0; else stream_rc=$?; fi
+    exec {APO_REMOTE_JOB_FOLLOW_FD}<&- 2>/dev/null || true
+    APO_REMOTE_JOB_FOLLOW_FD=''
+    if (( stream_rc != 0 )); then kill -TERM "$follow_pid" 2>/dev/null || true; fi
+    if wait "$follow_pid"; then APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC=0; else APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC=$?; fi
+    APO_REMOTE_JOB_FOLLOW_PID=''
+    unset APO_REMOTE_JOB_FOLLOW_COPROC APO_REMOTE_JOB_FOLLOW_COPROC_PID
+    (( stream_rc == 0 ))
 }
 
 apo_remote_job_read_file() {
@@ -119,8 +224,26 @@ apo_remote_job_checkpoint_heartbeat() {
     local now=$1
     [[ $now =~ ^[1-9][0-9]*$ ]] || return 0
     if (( APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH == 0 || now - APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH >= 60 )); then
-        apo_state_save
         APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=$now
+        if declare -F apo_state_save_try >/dev/null 2>&1; then
+            if apo_state_save_try; then
+                if (( APO_REMOTE_JOB_CHECKPOINT_FAILURES > 0 )) && declare -F apo_recovery_wait_event >/dev/null 2>&1; then
+                    apo_recovery_wait_event INFO detached-stress-checkpoint-recovered \
+                        "Controller state checkpointing recovered after $APO_REMOTE_JOB_CHECKPOINT_FAILURES failed attempt(s); the exact target job remained active throughout."
+                fi
+                APO_REMOTE_JOB_CHECKPOINT_FAILURES=0
+            else
+                APO_REMOTE_JOB_CHECKPOINT_FAILURES=$((APO_REMOTE_JOB_CHECKPOINT_FAILURES + 1))
+                if declare -F apo_recovery_wait_event >/dev/null 2>&1; then
+                    apo_recovery_wait_event WARN detached-stress-checkpoint \
+                        "Controller progress checkpoint failed: ${APO_STATE_SAVE_ERROR:-unknown checkpoint error}. The exact target-owned stress job remains active; checkpointing will retry after another 60 seconds."
+                elif declare -F apo_warn_plain >/dev/null 2>&1; then
+                    apo_warn_plain "Controller progress checkpoint failed: ${APO_STATE_SAVE_ERROR:-unknown checkpoint error}. The exact target-owned stress job remains active."
+                fi
+            fi
+        else
+            apo_state_save
+        fi
     fi
 }
 
@@ -487,7 +610,7 @@ apo_remote_job_fetch_complete() {
 apo_run_remote_stress_capture() {
     local phase=$1 worker_command=$2 output_file=$3
     shift 3
-    local duration=${2:-} segment_duration spec_hash job_id token source_boot start_output remote_rc current_boot lastpipe_was_set=0
+    local duration=${2:-} segment_duration spec_hash job_id token source_boot start_output remote_rc current_boot
     local credit_context credit_seconds credit_duration expected_credit_context
     local launch_attempt=0 launch_attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5} launch_reason
     local -a original_arguments=("$@") segment_arguments=("$@")
@@ -607,7 +730,7 @@ apo_run_remote_stress_capture() {
         if [[ $start_output =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'([0-9]+)$ ]]; then
             launch_attempt=0
             apo_state_set REMOTE_STRESS_START_EPOCH "${BASH_REMATCH[2]}"
-            apo_state_save
+            apo_remote_job_checkpoint_heartbeat "${BASH_REMATCH[2]}"
         else
             apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE 'The detached stress launcher returned malformed ownership evidence.'
             return 1
@@ -616,13 +739,8 @@ apo_run_remote_stress_capture() {
         APO_REMOTE_JOB_COMPLETE=0
         APO_REMOTE_JOB_FOLLOW_ERROR=''
         set +e
-        shopt -q lastpipe && lastpipe_was_set=1
-        shopt -s lastpipe
-        # SSH diagnostics belong to the transport, not the target job protocol.
-        apo_remote_job_follow_command "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash" 2>/dev/null |
-            apo_remote_job_follow_stream
-        remote_rc=${PIPESTATUS[0]}
-        (( lastpipe_was_set == 1 )) || shopt -u lastpipe
+        apo_remote_job_follow_capture "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash"
+        remote_rc=$APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC
         set -e
         if (( APO_REMOTE_JOB_COMPLETE == 1 )); then
             if ! apo_remote_job_fetch_complete "$output_file"; then

@@ -10,6 +10,7 @@ TESTS=(
     test_batocera_watchdog_install.sh
     test_common.sh
     test_config.sh
+    test_state_codec.sh
     test_state_logging.sh
     test_observers.sh
     test_classify.sh

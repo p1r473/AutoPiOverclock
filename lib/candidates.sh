@@ -3675,7 +3675,22 @@ apo_restart_clear_final_sequence() {
     done
     apo_state_set FLOOR_VALIDATED 0
     apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+    apo_state_set REMOTE_STRESS_CREDIT_CONTEXT ''
+    apo_state_set REMOTE_STRESS_CREDIT_SECONDS 0
+    apo_state_set REMOTE_STRESS_CREDIT_DURATION_S ''
+    apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
     apo_clear_candidate_checkpoint
+}
+
+apo_restart_remote_stress_state_clear() {
+    local key
+    [[ $(apo_state_get REMOTE_STRESS_STATUS IDLE) == IDLE ]] || return 1
+    for key in REMOTE_STRESS_JOB_ID REMOTE_STRESS_TOKEN REMOTE_STRESS_SPEC_HASH \
+               REMOTE_STRESS_SOURCE_BOOT_ID REMOTE_STRESS_PHASE REMOTE_STRESS_DURATION_S \
+               REMOTE_STRESS_SEGMENT_DURATION_S REMOTE_STRESS_START_EPOCH \
+               REMOTE_STRESS_LAST_SEEN_EPOCH REMOTE_STRESS_CONFIRMED_ELAPSED_S; do
+        [[ -z $(apo_state_get "$key" '') ]] || return 1
+    done
 }
 
 apo_restart_clear_abandoned_retry_state() {
@@ -3732,7 +3747,37 @@ apo_restart_active_automatic_state() {
     if [[ $phase == FINAL_VALIDATION || -n $(apo_state_get FINAL_STAGE '') ||
           $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) != NOT_REQUESTED ||
           $(apo_state_get FLOOR_VALIDATED 0) != 0 ]]; then
-        APO_LAST_REASON='An active final sequence cannot be relabeled or rewound. Resume it as saved, or use a completed applied result for a new final extension.'
+        if [[ $checkpoint != final ]]; then
+            APO_LAST_REASON='An active final sequence can be restarted only from final. Plain resume continues the saved final progress.'
+            return 1
+        fi
+        if [[ ${APO_RESTART_SOURCE_PHASE:-} != FINAL_VALIDATION ||
+              -z ${APO_RESTART_SOURCE_FINAL_STAGE:-} ||
+              ${APO_RESTART_SOURCE_REMOTE_CLEAR:-0} != 1 ]]; then
+            APO_LAST_REASON='Active-final restart requires an interrupted final-stage checkpoint with no saved target-side stress ownership.'
+            return 1
+        fi
+        case ${APO_RESTART_SOURCE_STATUS:-} in
+            INTERRUPTED)
+                [[ -z ${APO_RESTART_SOURCE_FAILURE_CLASS:-} ]] || {
+                    APO_LAST_REASON='Active-final restart refuses an interrupted checkpoint that retains a classified failure.'
+                    return 1
+                }
+                ;;
+            FAILED)
+                [[ ${APO_RESTART_SOURCE_FAILURE_CLASS:-} == RECOVERY_FAILURE ]] || {
+                    APO_LAST_REASON='Active-final restart refuses a failed clock or harness result. Only a recovery-only failure may be cleared after verified normal recovery.'
+                    return 1
+                }
+                ;;
+            *)
+                APO_LAST_REASON='Active-final restart requires a saved INTERRUPTED checkpoint or a recovery-only FAILED checkpoint.'
+                return 1
+                ;;
+        esac
+    fi
+    if [[ $checkpoint != current ]] && ! apo_restart_remote_stress_state_clear; then
+        APO_LAST_REASON='Checkpoint restart requires every target-side stress ownership field to be clear.'
         return 1
     fi
     if [[ $checkpoint != current ]]; then

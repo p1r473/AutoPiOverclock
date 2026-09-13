@@ -129,6 +129,67 @@ set -e
 [[ $CONTROLLER_LOSS_RC == 143 ]]
 [[ ! -e $TEMP_DIR/controller-loss-recovery ]]
 
+# A controller state-save fatal after exact detached-job ownership was already
+# committed must also preserve the target job. A mismatched durable token is
+# rejected by the same proof and therefore cannot authorize preservation.
+DURABLE_JOB_RUN=20260913-010203-aaaaaaaaaaaaaaaa
+DURABLE_JOB_STATE=$TEMP_DIR/durable-job.state
+DURABLE_JOB_TOKEN=$(printf 'a%.0s' {1..64})
+DURABLE_JOB_SPEC=$(printf 'b%.0s' {1..64})
+DURABLE_JOB_ID=job-${DURABLE_JOB_TOKEN:0:32}
+DURABLE_JOB_BOOT=12345678-1234-1234-1234-123456789abc
+write_state_fixture "$DURABLE_JOB_STATE" \
+    FORMAT_VERSION 1 RUN_ID "$DURABLE_JOB_RUN" TARGET_SLUG tron REMOTE_TARGET root@tron STATUS RUNNING \
+    REMOTE_STRESS_STATUS RUNNING REMOTE_STRESS_JOB_ID "$DURABLE_JOB_ID" \
+    REMOTE_STRESS_TOKEN "$DURABLE_JOB_TOKEN" REMOTE_STRESS_SPEC_HASH "$DURABLE_JOB_SPEC" \
+    REMOTE_STRESS_SOURCE_BOOT_ID "$DURABLE_JOB_BOOT" REMOTE_STRESS_PHASE final-endurance \
+    REMOTE_STRESS_DURATION_S 360000 REMOTE_STRESS_SEGMENT_DURATION_S 360000
+set +e
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    APO_STATE_FILE=$DURABLE_JOB_STATE
+    apo_state_load "$DURABLE_JOB_STATE"
+    APO_COMMAND=overclock
+    APO_STATE_SAVE_FATAL=1
+    unset APO_EXIT_SIGNAL
+    APO_HAVE_REMOTE_CONTEXT=1
+    APO_MUTATING_COMMAND=1
+    RECOVERY_MARKER=$TEMP_DIR/checkpoint-fatal-recovery
+    apo_progress_begin_shutdown() { :; }
+    apo_progress_clear_line() { :; }
+    apo_recover_normal() { printf 'called\n' > "$RECOVERY_MARKER"; }
+    apo_profile_cleanup_worker() { :; }
+    apo_remote_tryboot_flag_once() { printf 00000001; }
+    if ! apo_remote_job_durable_pending; then
+        printf 'exact committed detached-job ownership was not recognized\n' >&2
+        exit 1
+    fi
+    set +e
+    (exit 70)
+    apo_cleanup_handler
+) 2> "$TEMP_DIR/checkpoint-fatal-output"
+CHECKPOINT_FATAL_RC=$?
+set -e
+[[ $CHECKPOINT_FATAL_RC == 70 ]]
+[[ ! -e $TEMP_DIR/checkpoint-fatal-recovery ]]
+if ! grep -Fq 'The target job remains active and resumable' "$TEMP_DIR/checkpoint-fatal-output"; then
+    printf 'durable pending-job cleanup did not explain preservation:\n' >&2
+    cat "$TEMP_DIR/checkpoint-fatal-output" >&2
+    exit 1
+fi
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    APO_STATE_FILE=$DURABLE_JOB_STATE
+    apo_state_load "$DURABLE_JOB_STATE"
+    apo_state_set REMOTE_STRESS_TOKEN "$(printf 'c%.0s' {1..64})"
+    if apo_remote_job_durable_pending; then
+        echo 'mismatched durable job ownership authorized preservation' >&2
+        exit 1
+    fi
+)
+
 CONTINUATION_OUTPUT="$TEMP_DIR/continuation-output"
 mkdir -p "$CONTINUATION_OUTPUT"
 CONTINUATION_RUN=20260827-010203-abcdef0123456789

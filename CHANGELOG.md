@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-alpha.62 - 2026-09-13
+
+- Replaced recurring controller checkpoint Base64, key sorting, timestamping, and temporary-file creation with Bash-only implementations. The state format remains canonical Base64, but a 100-hour detached stress run no longer launches hundreds of encoder processes per checkpoint or depends on an observed child status to create its private checkpoint file.
+- Removed `lastpipe` and `PIPESTATUS` from detached-stress following, ordinary worker capture, and discovery capture. The controller parses each stream directly, waits for the exact named producer PID, closes both coprocess pipe ends, and terminates only its local observer during exit recovery.
+- Made periodic detached-stress progress checkpoints nonfatal. Exact job ownership is committed before launch, failed progress saves are retried no faster than once per minute, and a controller state-save fatal preserves the target job only when the last committed state proves the exact same run, target, boot, phase, duration, specification, token, and job ID.
+- Added bounded retry and exact destination verification around checkpoint durability and atomic-rename operations. Diagnostics identify the failing I/O stage and controller resource snapshot without recording state values.
+- Reconciled the cleanup-only case where `clear-tryboot` emits exactly one complete PASS result but SSH reports a disagreeing status. The controller now repeats that idempotent cleanup once on the same boot and accepts success only after the fresh call verifies the permanent hash, owned-path absence, and required read-only boot mount.
+- Allowed an explicitly requested `resume TARGET --restart-from final` to reset an active final sequence after verified normal recovery. It retains the exact qualified pair and starts the newly requested final duration at zero only from an unclassified interrupted checkpoint or a recovery-only failure with every target-job and tryboot ownership field clear. Stability, boot, and harness results remain authoritative and cannot be erased by restart.
+- Added differential Base64, malformed-state, trailing-newline, no-child-checkpoint, collision, I/O retry, detached-job preservation, and ambiguous mutation-result regressions.
+
 ## 0.1.0-alpha.61 - 2026-09-12
 
 - Expanded unknown-command guidance to list every accepted command and both global options, including the required `--version` spelling.

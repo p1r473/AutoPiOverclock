@@ -1485,6 +1485,7 @@ apo_state_set APPLY_STATUS NOT_APPLIED
 apo_state_set POST_FLOOR_EDGE 0
 apo_state_set POST_FLOOR_FINAL 0
 apo_state_set PHASE CPU_QUALIFICATION
+apo_state_set FINAL_STAGE ''
 apo_state_set STATUS INTERRUPTED
 apo_state_set CPU_QUALIFICATION_STATUS RUNNING
 apo_state_set CPU_QUALIFICATION_TARGET 3000
@@ -1610,8 +1611,100 @@ apo_state_set RECOVERY_WAIT_STARTED_AT ''
 apo_state_set RECOVERY_WAIT_TIMEOUTS 0
 apo_validate_auto_resume_state
 
+# An explicit final restart may discard partial final progress only after the
+# controller has proved that the saved target job is gone and normal recovery
+# cleared every tryboot ownership field. The exact qualified pair is retained,
+# while the requested final duration starts again from zero.
+apo_state_set STATUS INTERRUPTED
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set SUBPHASE ENDURANCE
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+apo_state_set ORIGIN_COMMAND overclock
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_state_set POST_FLOOR_EDGE 0
+apo_state_set POST_FLOOR_FINAL 0
+apo_state_set REMOTE_STRESS_STATUS IDLE
+for remote_key in REMOTE_STRESS_JOB_ID REMOTE_STRESS_TOKEN REMOTE_STRESS_SPEC_HASH \
+                  REMOTE_STRESS_SOURCE_BOOT_ID REMOTE_STRESS_PHASE REMOTE_STRESS_DURATION_S \
+                  REMOTE_STRESS_SEGMENT_DURATION_S REMOTE_STRESS_START_EPOCH \
+                  REMOTE_STRESS_LAST_SEEN_EPOCH REMOTE_STRESS_CONFIRMED_ELAPSED_S; do
+    apo_state_set "$remote_key" ''
+done
+apo_state_set REMOTE_STRESS_CREDIT_CONTEXT final-endurance:old-spec
+apo_state_set REMOTE_STRESS_CREDIT_SECONDS 7200
+apo_state_set REMOTE_STRESS_CREDIT_DURATION_S 360000
+apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID old-credit
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set TRYBOOT_OWNED_HASH ''
+apo_state_set TRYBOOT_RESERVATION_HASH ''
+apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
+apo_state_set TRYBOOT_QUARANTINE_PATH ''
+APO_RESTART_SOURCE_STATUS=INTERRUPTED
+APO_RESTART_SOURCE_PHASE=FINAL_VALIDATION
+APO_RESTART_SOURCE_FINAL_STAGE=ENDURANCE
+APO_RESTART_SOURCE_FAILURE_CLASS=''
+APO_RESTART_SOURCE_REMOTE_CLEAR=1
+APO_RESTART_QUALIFICATION_DURATION_S=10800
+APO_RESTART_FINAL_DURATION_S=360000
+APO_RESTART_EDGE_DURATION_S=360000
+apo_restart_active_automatic_state final
+[[ $(apo_state_get STATUS) == RUNNING ]]
+[[ $(apo_state_get PHASE) == FINAL_VALIDATION && $(apo_state_get SUBPHASE) == RESTART_REQUESTED ]]
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == PASS && $(apo_state_get CPU_QUALIFIED_CLOCK) == 3175 ]]
+[[ $(apo_state_get GPU_QUALIFICATION_STATUS) == PASS && $(apo_state_get GPU_QUALIFIED_CPU) == 3175 && $(apo_state_get GPU_QUALIFIED_CLOCK) == 1175 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 3175 && $(apo_state_get RECOMMENDED_GPU) == 1175 ]]
+[[ $(apo_state_get FINAL_TARGET_CPU) == 3175 && $(apo_state_get FINAL_TARGET_GPU) == 1175 ]]
+[[ $(apo_state_get CFG_FINAL_DURATION_S) == 360000 && -z $(apo_state_get VALIDATION_DURATION_S '') ]]
+[[ $(apo_state_get REMOTE_STRESS_CREDIT_SECONDS) == 0 && -z $(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '') ]]
+
+# A real stability failure is not a recovery-only bookkeeping failure and may
+# never be erased by the final restart option.
+apo_state_set STATUS FAILED
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set FAILURE_CLASS STABILITY_FAILURE
+apo_state_set FAILURE_REASON 'fixture clock failure'
+APO_RESTART_SOURCE_STATUS=FAILED
+APO_RESTART_SOURCE_PHASE=FINAL_VALIDATION
+APO_RESTART_SOURCE_FINAL_STAGE=ENDURANCE
+APO_RESTART_SOURCE_FAILURE_CLASS=STABILITY_FAILURE
+APO_RESTART_SOURCE_REMOTE_CLEAR=1
+APO_LAST_REASON=''
+if apo_restart_active_automatic_state final; then
+    echo 'active final restart erased a real stability failure' >&2
+    exit 1
+fi
+[[ $APO_LAST_REASON == 'Active-final restart refuses a failed clock or harness result. Only a recovery-only failure may be cleared after verified normal recovery.' ]]
+[[ $(apo_state_get STATUS) == FAILED && $(apo_state_get FAILURE_CLASS) == STABILITY_FAILURE ]]
+
+# Residual target-job identity blocks a checkpoint rewind even when its status
+# was accidentally relabeled IDLE.
+apo_state_set STATUS INTERRUPTED
+apo_state_set FAILURE_CLASS ''
+apo_state_set FAILURE_REASON ''
+apo_state_set REMOTE_STRESS_JOB_ID job-0123456789abcdef0123456789abcdef
+APO_RESTART_SOURCE_STATUS=INTERRUPTED
+APO_RESTART_SOURCE_FAILURE_CLASS=''
+APO_RESTART_SOURCE_REMOTE_CLEAR=0
+if apo_restart_remote_stress_state_clear; then
+    echo 'residual target job identity was accepted as clear' >&2
+    exit 1
+fi
+APO_LAST_REASON=''
+if apo_restart_active_automatic_state final; then
+    echo 'active final restart accepted residual target job identity' >&2
+    exit 1
+fi
+[[ $APO_LAST_REASON == 'Active-final restart requires an interrupted final-stage checkpoint with no saved target-side stress ownership.' ]]
+apo_state_set REMOTE_STRESS_JOB_ID ''
+
 # A checkpoint restart for the refined policy changes only the requested
 # qualification/final durations. It must not resurrect the removed edge pass.
+apo_state_set STATUS INTERRUPTED
+apo_state_set FAILURE_CLASS ''
+apo_state_set FAILURE_REASON ''
 apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
 apo_state_set ORIGIN_COMMAND overclock
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
@@ -1619,6 +1712,7 @@ apo_state_set APPLY_STATUS NOT_APPLIED
 apo_state_set POST_FLOOR_EDGE 0
 apo_state_set POST_FLOOR_FINAL 0
 apo_state_set PHASE CPU_QUALIFICATION
+apo_state_set FINAL_STAGE ''
 apo_state_set STATUS INTERRUPTED
 APO_RESTART_QUALIFICATION_DURATION_S=10800
 APO_RESTART_FINAL_DURATION_S=86400

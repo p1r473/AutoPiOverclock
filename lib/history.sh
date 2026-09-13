@@ -77,7 +77,6 @@ apo_history_load_state_strict() {
 
     [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
     output_state=()
-    apo_state_decode_policy_init
     while IFS= read -r line || [[ -n $line ]]; do
         [[ -n $line ]] || continue
         [[ $line == *$'\t'* ]] || return 1
@@ -87,8 +86,8 @@ apo_history_load_state_strict() {
         apo_state_valid_key "$state_key" || return 1
         [[ ! -v seen_keys[$state_key] ]] || return 1
         [[ $encoded_value =~ ^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$ ]] || return 1
-        decoded_value=$(apo_state_decode "$encoded_value") || return 1
-        canonical=$(apo_state_encode "$decoded_value") || return 1
+        apo_state_decode "$encoded_value" decoded_value || return 1
+        apo_state_encode "$decoded_value" canonical || return 1
         [[ $canonical == "$encoded_value" ]] || return 1
         seen_keys[$state_key]=1
         # The nameref resolves to an associative array, not an indexed array.
@@ -119,7 +118,6 @@ apo_history_load_screen_fields() {
         apo_state_valid_key "$requested_key" || return 1
         requested_keys[$requested_key]=1
     done
-    apo_state_decode_policy_init
     while IFS= read -r line || [[ -n $line ]]; do
         [[ -n $line ]] || continue
         if [[ $line != *$'\t'* ]]; then
@@ -134,8 +132,8 @@ apo_history_load_screen_fields() {
         [[ $encoded_value != *$'\t'* ]] || return 1
         [[ ! -v seen_keys[$state_key] ]] || return 1
         [[ $encoded_value =~ ^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$ ]] || return 1
-        decoded_value=$(apo_state_decode "$encoded_value") || return 1
-        canonical=$(apo_state_encode "$decoded_value") || return 1
+        apo_state_decode "$encoded_value" decoded_value || return 1
+        apo_state_encode "$decoded_value" canonical || return 1
         [[ $canonical == "$encoded_value" ]] || return 1
         seen_keys[$state_key]=1
         # The nameref resolves to an associative array, not an indexed array.
@@ -204,8 +202,8 @@ apo_history_encode_field() {
 apo_history_decode_field() {
     local encoded=$1 decoded canonical
     [[ $encoded =~ ^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$ ]] || return 1
-    decoded=$(apo_state_decode "$encoded") || return 1
-    canonical=$(apo_state_encode "$decoded") || return 1
+    apo_state_decode "$encoded" decoded || return 1
+    apo_state_encode "$decoded" canonical || return 1
     [[ $canonical == "$encoded" ]] || return 1
     printf '%s' "$decoded"
 }
