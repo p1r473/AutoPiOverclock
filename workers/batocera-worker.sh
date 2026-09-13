@@ -1441,7 +1441,7 @@ cmd_prepare_candidate() {
     if (( result_code == 0 )); then sync "$temporary_file" || { result_code=1; failure_reason='Could not durably stage rendered tryboot config.'; }; fi
     if (( result_code == 0 )); then
         set -o noclobber
-        if ! exec {tryboot_fd}> "$tryboot_config" 2>/dev/null; then
+        if ! { exec {tryboot_fd}> "$tryboot_config"; } 2>/dev/null; then
             inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
             result_code=1; failure_class=RECOVERY_FAILURE; failure_reason="The tryboot path became occupied ($tryboot_type, hash $tryboot_hash); refusing to overwrite it."
         fi

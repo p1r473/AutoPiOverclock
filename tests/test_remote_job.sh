@@ -238,8 +238,13 @@ fi
     lastpipe_before=$(shopt -p lastpipe || true)
     follow_fds_before=(/proc/$BASHPID/fd/*)
     lock_observation=''
-    apo_remote_job_follow_capture /tmp/run job-00000000000000000000000000000000 \
-        "$(printf '0%.0s' {1..64})" "$(printf '1%.0s' {1..64})"
+    FOLLOW_STDERR_FILE=$TEMP_DIR/follow-stderr.log
+    {
+        apo_remote_job_follow_capture /tmp/run job-00000000000000000000000000000000 \
+            "$(printf '0%.0s' {1..64})" "$(printf '1%.0s' {1..64})"
+        printf 'follow-stderr-preserved\n' >&2
+    } 2>"$FOLLOW_STDERR_FILE"
+    grep -Fxq 'follow-stderr-preserved' "$FOLLOW_STDERR_FILE"
     [[ $lock_observation == closed ]]
     [[ $APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC == 23 ]]
     [[ -z $APO_REMOTE_JOB_FOLLOW_PID && -z $APO_REMOTE_JOB_FOLLOW_FD && -z $APO_REMOTE_JOB_FOLLOW_INPUT_FD ]]

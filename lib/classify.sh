@@ -113,11 +113,11 @@ apo_worker_capture_command() {
 apo_worker_capture_transport_cleanup() {
     local worker_pid=${APO_WORKER_CAPTURE_PID:-}
     if [[ ${APO_WORKER_CAPTURE_FD:-} =~ ^[0-9]+$ ]]; then
-        exec {APO_WORKER_CAPTURE_FD}<&- 2>/dev/null || true
+        { exec {APO_WORKER_CAPTURE_FD}<&-; } 2>/dev/null || true
     fi
     APO_WORKER_CAPTURE_FD=''
     if [[ ${APO_WORKER_CAPTURE_INPUT_FD:-} =~ ^[0-9]+$ ]]; then
-        exec {APO_WORKER_CAPTURE_INPUT_FD}>&- 2>/dev/null || true
+        { exec {APO_WORKER_CAPTURE_INPUT_FD}>&-; } 2>/dev/null || true
     fi
     APO_WORKER_CAPTURE_INPUT_FD=''
     if [[ $worker_pid =~ ^[1-9][0-9]*$ ]]; then
@@ -149,7 +149,7 @@ apo_worker_capture_function_progress() {
     APO_WORKER_CAPTURE_FD=$worker_fd
     APO_WORKER_CAPTURE_INPUT_FD=$worker_input_fd
     if [[ $worker_input_fd =~ ^[0-9]+$ ]]; then
-        exec {APO_WORKER_CAPTURE_INPUT_FD}>&- 2>/dev/null || true
+        { exec {APO_WORKER_CAPTURE_INPUT_FD}>&-; } 2>/dev/null || true
         APO_WORKER_CAPTURE_INPUT_FD=''
     fi
     if [[ ! $worker_pid =~ ^[1-9][0-9]*$ || ! $worker_fd =~ ^[0-9]+$ ]]; then
@@ -158,7 +158,7 @@ apo_worker_capture_function_progress() {
     fi
     if apo_progress_capture_worker_stream "$output_file" <&"$worker_fd"; then stream_rc=0; else stream_rc=$?; fi
     APO_WORKER_CAPTURE_STREAM_RC=$stream_rc
-    exec {APO_WORKER_CAPTURE_FD}<&- 2>/dev/null || true
+    { exec {APO_WORKER_CAPTURE_FD}<&-; } 2>/dev/null || true
     APO_WORKER_CAPTURE_FD=''
     if (( stream_rc != 0 )); then kill -TERM "$worker_pid" 2>/dev/null || true; fi
     if wait "$worker_pid"; then APO_WORKER_CAPTURE_TRANSPORT_RC=0; else APO_WORKER_CAPTURE_TRANSPORT_RC=$?; fi

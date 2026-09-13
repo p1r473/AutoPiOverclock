@@ -1196,7 +1196,7 @@ cmd_prepare_candidate() {
     [[ $rendered_hash == "$expected_tryboot_hash" ]] || { rm -f -- "$temporary_file"; emit_result RECOVERY_FAILURE 'Rendered tryboot config does not match the persisted ownership plan.'; return 1; }
     sync "$temporary_file" || { rm -f -- "$temporary_file"; emit_result HARNESS_FAILURE 'Could not durably stage rendered tryboot config.'; return 1; }
     set -o noclobber
-    if ! exec {tryboot_fd}> "$tryboot_config" 2>/dev/null; then
+    if ! { exec {tryboot_fd}> "$tryboot_config"; } 2>/dev/null; then
         set +o noclobber
         rm -f -- "$temporary_file"
         inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash

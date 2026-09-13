@@ -185,11 +185,11 @@ apo_remote_job_follow_command() {
 apo_remote_job_follow_transport_cleanup() {
     local follow_pid=${APO_REMOTE_JOB_FOLLOW_PID:-}
     if [[ ${APO_REMOTE_JOB_FOLLOW_FD:-} =~ ^[0-9]+$ ]]; then
-        exec {APO_REMOTE_JOB_FOLLOW_FD}<&- 2>/dev/null || true
+        { exec {APO_REMOTE_JOB_FOLLOW_FD}<&-; } 2>/dev/null || true
     fi
     APO_REMOTE_JOB_FOLLOW_FD=''
     if [[ ${APO_REMOTE_JOB_FOLLOW_INPUT_FD:-} =~ ^[0-9]+$ ]]; then
-        exec {APO_REMOTE_JOB_FOLLOW_INPUT_FD}>&- 2>/dev/null || true
+        { exec {APO_REMOTE_JOB_FOLLOW_INPUT_FD}>&-; } 2>/dev/null || true
     fi
     APO_REMOTE_JOB_FOLLOW_INPUT_FD=''
     if [[ $follow_pid =~ ^[1-9][0-9]*$ ]]; then
@@ -220,7 +220,7 @@ apo_remote_job_follow_capture() {
     # The SSH wrapper uses -n and never accepts controller input. Close the
     # unused coprocess write side immediately so reattachments cannot leak it.
     if [[ $follow_input_fd =~ ^[0-9]+$ ]]; then
-        exec {APO_REMOTE_JOB_FOLLOW_INPUT_FD}>&- 2>/dev/null || true
+        { exec {APO_REMOTE_JOB_FOLLOW_INPUT_FD}>&-; } 2>/dev/null || true
         APO_REMOTE_JOB_FOLLOW_INPUT_FD=''
     fi
     if [[ ! $follow_pid =~ ^[1-9][0-9]*$ || ! $follow_fd =~ ^[0-9]+$ ]]; then
@@ -229,7 +229,7 @@ apo_remote_job_follow_capture() {
         return 1
     fi
     if apo_remote_job_follow_stream <&"$follow_fd"; then stream_rc=0; else stream_rc=$?; fi
-    exec {APO_REMOTE_JOB_FOLLOW_FD}<&- 2>/dev/null || true
+    { exec {APO_REMOTE_JOB_FOLLOW_FD}<&-; } 2>/dev/null || true
     APO_REMOTE_JOB_FOLLOW_FD=''
     if (( stream_rc != 0 )); then kill -TERM "$follow_pid" 2>/dev/null || true; fi
     if wait "$follow_pid"; then APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC=0; else APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC=$?; fi

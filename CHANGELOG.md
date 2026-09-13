@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.68 - 2026-09-13
+
+- Fixed coprocess descriptor cleanup that permanently redirected the controller's standard error stream to `/dev/null`. Health output now clears the live progress row, later diagnostics remain visible, and detached-job progress continues rendering after the first worker call.
+- Scoped the same descriptor-open error suppression in both target workers so preparing a tryboot candidate cannot silence subsequent worker diagnostics.
+- Added controller, detached-follower, target-worker, and static regressions that fail if a dynamic descriptor operation changes the caller's standard error stream again.
+
 ## 0.1.0-alpha.67 - 2026-09-13
 
 - Made reflow cleanup finish on the last physical fragment instead of restoring a cursor position that a grouped Byobu resize may have remapped. Ordinary output can no longer overwrite the first fragment while leaving a progress suffix behind.

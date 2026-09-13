@@ -16,6 +16,10 @@ if grep -REq '^[[:space:]]*set[[:space:]]+[+-]e([[:space:]]|$)' "$ROOT/lib" "$RO
     echo 'a controller library or profile still mutates the caller error mode' >&2
     exit 1
 fi
+if grep -REq 'exec \{[A-Za-z_][A-Za-z0-9_]*\}[^;]*2>/dev/null' "$ROOT/lib" "$ROOT/workers"; then
+    echo 'an unscoped dynamic-fd exec can permanently redirect controller or worker stderr' >&2
+    exit 1
+fi
 
 apo_classify_output "$FIXTURES/debian-pass.log" pass
 [[ $APO_LAST_CLASS == PASS ]]
@@ -82,7 +86,12 @@ apo_progress_record_worker_result() { :; }
 apo_state_set() { :; }
 apo_state_save() { :; }
 apo_event() { :; }
-apo_run_worker_capture pipeline-fixture stress
+WORKER_STDERR_FILE="$TEMP_DIR/worker-stderr.log"
+{
+    apo_run_worker_capture pipeline-fixture stress
+    printf 'worker-stderr-preserved\n' >&2
+} 2>"$WORKER_STDERR_FILE"
+grep -Fxq 'worker-stderr-preserved' "$WORKER_STDERR_FILE"
 [[ $APO_PIPELINE_STATE == preserved ]]
 [[ $(shopt -p lastpipe || true) == "$lastpipe_before" ]]
 [[ $APO_LAST_WORKER_CAPTURE_KIND == progress-coprocess ]]

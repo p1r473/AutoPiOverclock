@@ -1417,7 +1417,12 @@ DEBIAN_IO_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); pr
     BOOT_TEST_PLANNED_HASH=$(sha256sum "$BOOT_TEST_DIR/planned.txt" | awk '{print $1}')
     BOOT_TEST_RESERVATION_HASH=$(render_tryboot_reservation fixture-run "$BOOT_TEST_TOKEN" | sha256sum | awk '{print $1}')
     rm -f -- "$BOOT_TEST_DIR/planned.txt"
-    cmd_prepare_candidate "$BOOT_TEST_DIR/config.txt" "$BOOT_TEST_DIR/tryboot.txt" v3d_freq 2900 900 50000 "$BOOT_TEST_HASH" fixture-run "$BOOT_TEST_PLANNED_HASH" "$BOOT_TEST_RESERVATION_HASH" "$BOOT_TEST_TOKEN" "$BOOT_TEST_QUARANTINE" >/dev/null
+    BOOT_TEST_STDERR="$BOOT_TEST_DIR/prepare-stderr.log"
+    {
+        cmd_prepare_candidate "$BOOT_TEST_DIR/config.txt" "$BOOT_TEST_DIR/tryboot.txt" v3d_freq 2900 900 50000 "$BOOT_TEST_HASH" fixture-run "$BOOT_TEST_PLANNED_HASH" "$BOOT_TEST_RESERVATION_HASH" "$BOOT_TEST_TOKEN" "$BOOT_TEST_QUARANTINE" >/dev/null
+        printf 'prepare-stderr-preserved\n' >&2
+    } 2>"$BOOT_TEST_STDERR"
+    grep -Fxq 'prepare-stderr-preserved' "$BOOT_TEST_STDERR"
     BOOT_TEST_TRYBOOT_HASH=$(sha256sum "$BOOT_TEST_DIR/tryboot.txt" | awk '{print $1}')
     [[ $BOOT_TEST_TRYBOOT_HASH == "$BOOT_TEST_PLANNED_HASH" ]]
     grep -q '^arm_freq=2900$' "$BOOT_TEST_DIR/tryboot.txt"
