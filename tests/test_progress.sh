@@ -225,7 +225,7 @@ apo_progress_clear_line 2> "$reflow_clear_file"
 reflow_clear_output=$(< "$reflow_clear_file")
 [[ $(grep -oF $'\033[2K' <<< "$reflow_clear_output" | wc -l) == 4 ]]
 [[ $(grep -oF $'\033[1B' <<< "$reflow_clear_output" | wc -l) == 2 ]]
-[[ $reflow_clear_output == *$'\033[s'*$'\033[u'* ]]
+[[ $reflow_clear_output != *$'\033[s'* && $reflow_clear_output != *$'\033[u'* ]]
 [[ $APO_PROGRESS_LINE_ACTIVE == 0 && $APO_PROGRESS_LINE_WIDTH == 0 && $APO_PROGRESS_LINE_COLUMNS == 0 ]]
 
 # A tmux pane can retain a wide logical PTY while a phone attaches with a much
@@ -287,10 +287,24 @@ repaint_output=$(< "$repaint_file")
 [[ $(grep -oF $'\033[?7l' <<< "$repaint_output" | wc -l) == 4 ]]
 [[ $(grep -oF $'\033[?7h' <<< "$repaint_output" | wc -l) == 4 ]]
 (( $(grep -oF $'\033[2K' <<< "$repaint_output" | wc -l) > 3 ))
-[[ $repaint_output == *$'\033[s'*$'\033[1B'*$'\033[u'* ]]
+[[ $repaint_output == *$'\033[1B'* ]]
+[[ $repaint_output != *$'\033[s'* && $repaint_output != *$'\033[u'* ]]
 [[ $repaint_output != *$'\n'* ]]
 [[ $repaint_output != *$'\r'* ]]
 [[ $repaint_output != *$'\033[1A'* ]]
+
+# Terminal painting is cosmetic. A failed clear or repaint must never alter the
+# controller's status, suppress a real error, or terminate a long-running job.
+saved_clear_definition=$(declare -f apo_progress_clear_line)
+saved_render_definition=$(declare -f apo_progress_render)
+apo_progress_clear_line() { return 73; }
+apo_progress_render() { return 74; }
+apo_progress_before_output
+apo_progress_after_output
+apo_progress_begin_shutdown
+eval "$saved_clear_definition"
+eval "$saved_render_definition"
+APO_PROGRESS_SHUTTING_DOWN=0
 
 # Exercise the renderer inside an isolated real tmux server. This catches the
 # physical-row reflow behavior that byte-only escape-sequence assertions cannot
@@ -355,6 +369,9 @@ apo_state_set PROGRESS_STRESS_LABEL final-stress
 apo_state_set QUALIFIED_CPU 2900
 apo_state_set QUALIFIED_GPU 1125
 
+# Force the first paint onto the bottom row so resize cleanup is also proven
+# across terminal scrolling, not only near the top of an otherwise empty pane.
+for (( row=0; row<60; row++ )); do printf '\n' >&2; done
 apo_progress_render 64800 360000
 : > "${marker}.ready"
 while [[ ! -e ${marker}.go ]]; do sleep 0.05; done

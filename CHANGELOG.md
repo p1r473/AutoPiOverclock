@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.67 - 2026-09-13
+
+- Made reflow cleanup finish on the last physical fragment instead of restoring a cursor position that a grouped Byobu resize may have remapped. Ordinary output can no longer overwrite the first fragment while leaving a progress suffix behind.
+- Made terminal progress callbacks explicitly best-effort. A renderer or terminal-control failure cannot suppress the real diagnostic or change the controller's exit status.
+
 ## 0.1.0-alpha.66 - 2026-09-13
 
 - Fixed interactive progress corruption after a Byobu or tmux pane narrows. The renderer now calculates how many physical rows the previous wide payload occupies after reflow and clears every fragment before ordinary output or the next progress repaint.

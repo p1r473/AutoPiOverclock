@@ -555,20 +555,21 @@ apo_progress_occupied_rows() {
 
 # tmux reflows a painted logical row when a client narrows. The cursor remains
 # on the first resulting physical row, so clearing only that row strands the
-# remaining fragments. Erase every row the prior payload can occupy at the new
-# width, then restore the cursor to the first row before ordinary output or the
-# replacement progress paint continues.
+# remaining fragments. Erase downward through every row the prior payload can
+# occupy and leave the cursor on the final fragment. Ordinary output or the
+# replacement paint then starts below every cleared fragment even when grouped
+# Byobu sessions have remapped the original row during a client resize.
 apo_progress_clear_reflowed_rows() {
     local columns=$1 occupied row
     (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
     occupied=$(apo_progress_occupied_rows "$APO_PROGRESS_LINE_WIDTH" "$columns")
     (( occupied > 1 )) || return 0
-    printf '\033[?7l\033[s' >&2
+    printf '\033[?7l' >&2
     for (( row=1; row<=occupied; row++ )); do
         printf '\033[1G\033[2K' >&2
         (( row == occupied )) || printf '\033[1B' >&2
     done
-    printf '\033[u\033[1G\033[?7h' >&2
+    printf '\033[1G\033[?7h' >&2
 }
 
 apo_progress_paint_line() {
@@ -711,11 +712,12 @@ apo_progress_clear_line() {
 
 apo_progress_begin_shutdown() {
     APO_PROGRESS_SHUTTING_DOWN=1
-    apo_progress_clear_line
+    apo_progress_clear_line || true
+    return 0
 }
 
-apo_progress_before_output() { apo_progress_clear_line; }
-apo_progress_after_output() { apo_progress_render; }
+apo_progress_before_output() { apo_progress_clear_line || true; return 0; }
+apo_progress_after_output() { apo_progress_render || true; return 0; }
 
 apo_progress_line_is_telemetry() {
     [[ $1 == *' temp='*' arm='*' v3d='*' expected='*' elapsed='* ]]
@@ -756,7 +758,8 @@ apo_progress_parse_telemetry_line() {
 
 apo_progress_handle_worker_line() {
     apo_progress_parse_telemetry_line "$1"
-    apo_progress_render "$APO_PROGRESS_STRESS_ELAPSED" "$APO_PROGRESS_STRESS_DURATION"
+    apo_progress_render "$APO_PROGRESS_STRESS_ELAPSED" "$APO_PROGRESS_STRESS_DURATION" || true
+    return 0
 }
 
 apo_progress_capture_worker_stream() {
