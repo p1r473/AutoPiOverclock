@@ -13,6 +13,7 @@ APO_PROGRESS_SESSION_EPOCH=0
 APO_PROGRESS_SESSION_BASE_S=0
 APO_PROGRESS_LINE_ACTIVE=0
 APO_PROGRESS_LINE_WIDTH=0
+APO_PROGRESS_LINE_COLUMNS=0
 APO_PROGRESS_SHUTTING_DOWN=0
 APO_PROGRESS_LAST_TEMP=''
 APO_PROGRESS_LAST_CPU=''
@@ -544,14 +545,42 @@ apo_progress_terminal_columns() {
     printf '%s' "$columns"
 }
 
+apo_progress_occupied_rows() {
+    local line_width=${1:-0} columns=${2:-0}
+    [[ $line_width =~ ^[0-9]+$ ]] || line_width=0
+    [[ $columns =~ ^[1-9][0-9]*$ ]] || columns=1
+    (( line_width > 0 )) || line_width=1
+    printf '%s' "$(((line_width + columns - 1) / columns))"
+}
+
+# tmux reflows a painted logical row when a client narrows. The cursor remains
+# on the first resulting physical row, so clearing only that row strands the
+# remaining fragments. Erase every row the prior payload can occupy at the new
+# width, then restore the cursor to the first row before ordinary output or the
+# replacement progress paint continues.
+apo_progress_clear_reflowed_rows() {
+    local columns=$1 occupied row
+    (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
+    occupied=$(apo_progress_occupied_rows "$APO_PROGRESS_LINE_WIDTH" "$columns")
+    (( occupied > 1 )) || return 0
+    printf '\033[?7l\033[s' >&2
+    for (( row=1; row<=occupied; row++ )); do
+        printf '\033[1G\033[2K' >&2
+        (( row == occupied )) || printf '\033[1B' >&2
+    done
+    printf '\033[u\033[1G\033[?7h' >&2
+}
+
 apo_progress_paint_line() {
     local line=$1 columns=$2 render_width
+    apo_progress_clear_reflowed_rows "$columns"
     render_width=$((columns - APO_PROGRESS_RIGHT_MARGIN))
     (( render_width > 0 )) || render_width=1
     (( ${#line} > render_width )) && line=${line:0:render_width}
     printf '\033[?7l\033[1G\033[2K%s\033[1G\033[?7h' "$line" >&2
     APO_PROGRESS_LINE_ACTIVE=1
     APO_PROGRESS_LINE_WIDTH=${#line}
+    APO_PROGRESS_LINE_COLUMNS=$columns
 }
 
 apo_progress_reconnect_begin() {
@@ -662,20 +691,22 @@ apo_progress_render() {
     else
         line=$narrow_line
     fi
-    # Repaint only the current logical row. A reserved blank row plus cursor-up
-    # and cursor-down controls is not stable when client geometry is reflowed
-    # from a narrow phone viewport to a wider client: the resting cursor can
-    # be remapped onto the display row and strand the previous paint. Disabling
-    # autowrap, keeping a right-edge margin, and parking at column one leaves one
-    # unwrapped logical row without emitting a newline or vertical movement.
+    # Repaint one logical row. If tmux has reflowed the previous wider payload,
+    # the paint helper first removes every resulting physical fragment. The new
+    # payload is then clipped inside the live width with autowrap disabled and
+    # the cursor parked at column one.
     apo_progress_paint_line "$line" "$columns"
 }
 
 apo_progress_clear_line() {
+    local columns
     (( APO_PROGRESS_LINE_ACTIVE == 1 )) || return 0
+    columns=$(apo_progress_terminal_columns)
+    apo_progress_clear_reflowed_rows "$columns"
     printf '\033[?7l\033[1G\033[2K\033[1G\033[?7h' >&2
     APO_PROGRESS_LINE_ACTIVE=0
     APO_PROGRESS_LINE_WIDTH=0
+    APO_PROGRESS_LINE_COLUMNS=0
 }
 
 apo_progress_begin_shutdown() {

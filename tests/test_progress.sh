@@ -213,6 +213,21 @@ compact_payload=${compact_payload%"$progress_restore"}
 [[ $compact_line != *$'\033[1A'* ]]
 [[ $compact_line != *$'\033[1B'* ]]
 
+# A line painted while wide can occupy several physical rows after tmux
+# narrows the pane. Clearing must erase every reflowed fragment and return to
+# the first row before normal output is written.
+APO_PROGRESS_LINE_ACTIVE=1
+APO_PROGRESS_LINE_WIDTH=130
+APO_PROGRESS_LINE_COLUMNS=210
+COLUMNS=60
+reflow_clear_file=$(mktemp)
+apo_progress_clear_line 2> "$reflow_clear_file"
+reflow_clear_output=$(< "$reflow_clear_file")
+[[ $(grep -oF $'\033[2K' <<< "$reflow_clear_output" | wc -l) == 4 ]]
+[[ $(grep -oF $'\033[1B' <<< "$reflow_clear_output" | wc -l) == 2 ]]
+[[ $reflow_clear_output == *$'\033[s'*$'\033[u'* ]]
+[[ $APO_PROGRESS_LINE_ACTIVE == 0 && $APO_PROGRESS_LINE_WIDTH == 0 && $APO_PROGRESS_LINE_COLUMNS == 0 ]]
+
 # A tmux pane can retain a wide logical PTY while a phone attaches with a much
 # narrower client viewport. The renderer must use the smallest attached client
 # width without changing tmux state or changing the non-tmux fallback.
@@ -255,7 +270,8 @@ edge_width_output=$(< "$progress_file")
 
 # Reproduce the reported Byobu failure shape: paint on a narrow phone viewport,
 # expand to a wide client, then narrow it again while the same row stays active.
-# All three updates must remain horizontal, newline-free current-row repaints.
+# The final update must erase every row occupied by the reflowed wide payload
+# before painting one new newline-free row.
 APO_PROGRESS_LINE_ACTIVE=0
 repaint_file=$(mktemp)
 {
@@ -268,14 +284,152 @@ repaint_file=$(mktemp)
 } 2> "$repaint_file"
 repaint_output=$(< "$repaint_file")
 [[ $repaint_output == *'CPU: 3100MHz | GPU: 1150MHz'* ]]
-[[ $(grep -oF $'\033[?7l' <<< "$repaint_output" | wc -l) == 3 ]]
-[[ $(grep -oF $'\033[?7h' <<< "$repaint_output" | wc -l) == 3 ]]
-[[ $(grep -oF $'\033[2K' <<< "$repaint_output" | wc -l) == 3 ]]
-[[ $(grep -oF $'\033[1G' <<< "$repaint_output" | wc -l) == 6 ]]
+[[ $(grep -oF $'\033[?7l' <<< "$repaint_output" | wc -l) == 4 ]]
+[[ $(grep -oF $'\033[?7h' <<< "$repaint_output" | wc -l) == 4 ]]
+(( $(grep -oF $'\033[2K' <<< "$repaint_output" | wc -l) > 3 ))
+[[ $repaint_output == *$'\033[s'*$'\033[1B'*$'\033[u'* ]]
 [[ $repaint_output != *$'\n'* ]]
 [[ $repaint_output != *$'\r'* ]]
 [[ $repaint_output != *$'\033[1A'* ]]
-[[ $repaint_output != *$'\033[1B'* ]]
+
+# Exercise the renderer inside an isolated real tmux server. This catches the
+# physical-row reflow behavior that byte-only escape-sequence assertions cannot
+# model. A wide progress row is narrowed before ordinary worker output, then
+# widened again while progress continues.
+if command -v tmux >/dev/null 2>&1; then
+    (
+        tmux_socket="apo-progress-${BASHPID}-${RANDOM}"
+        tmux_session=apo-progress-test
+        tmux_dir=$(mktemp -d)
+        tmux_helper="$tmux_dir/helper.sh"
+        tmux_marker="$tmux_dir/marker"
+        tmux_narrow_capture="$tmux_dir/narrow.txt"
+        tmux_wide_capture="$tmux_dir/wide.txt"
+        trap 'tmux -L "$tmux_socket" kill-server >/dev/null 2>&1 || true; rm -rf -- "$tmux_dir"' EXIT
+
+        cat > "$tmux_helper" <<'TMUX_HELPER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT=$1
+marker=$2
+APO_ROOT=$ROOT
+APO_COMMAND=resume
+source "$ROOT/lib/common.sh"
+source "$ROOT/lib/config.sh"
+source "$ROOT/lib/state.sh"
+source "$ROOT/lib/progress.sh"
+
+APO_STATE=()
+APO_CFG=(
+    [CANDIDATE_DURATION_S]=600
+    [CANDIDATE_BOOTS]=2
+    [FINAL_DURATION_S]=360000
+    [FINAL_BOOTS]=3
+)
+APO_RAW_TARGET=progress-tmux
+APO_PROGRESS_FORCE=1
+APO_PROGRESS_SESSION_BASE_S=64800
+APO_PROGRESS_SESSION_EPOCH=$(date +%s)
+APO_PROGRESS_LAST_TEMP=57.1
+APO_PROGRESS_LAST_CPU=2900
+APO_PROGRESS_LAST_GPU=1125
+APO_PROGRESS_LAST_THROTTLE=throttled=0x0
+APO_PROGRESS_STRESS_ELAPSED=64800
+APO_PROGRESS_STRESS_DURATION=360000
+APO_PROGRESS_LINE_ACTIVE=0
+APO_MANUAL_TEST=0
+APO_AUTO_GENERATED_CANDIDATES=0
+APO_AUTO_CANDIDATES_PENDING=0
+APO_NEED_GPU=0
+APO_REQUIRE_GPU_STRESS=1
+APO_EDGE_CPU_24H=0
+APO_SWEEP_DOMAIN=all
+APO_SELECTION_POLICY=refined-max-25
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_CPU_CANDIDATES=()
+APO_GPU_CANDIDATES=()
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set SUBPHASE final-stress
+apo_state_set PROGRESS_STRESS_LABEL final-stress
+apo_state_set QUALIFIED_CPU 2900
+apo_state_set QUALIFIED_GPU 1125
+
+apo_progress_render 64800 360000
+: > "${marker}.ready"
+while [[ ! -e ${marker}.go ]]; do sleep 0.05; done
+apo_progress_before_output
+printf 'ACTIVE_CPU=2400\n' >&2
+apo_progress_before_output
+printf 'ACTIVE_GPU=960\n' >&2
+apo_progress_before_output
+printf 'ACTIVE_VOLTAGE=0\n' >&2
+apo_progress_before_output
+printf 'throttled=0x0\n' >&2
+
+elapsed=64801
+: > "${marker}.done"
+while [[ ! -e ${marker}.stop ]]; do
+    apo_progress_render "$elapsed" 360000
+    elapsed=$((elapsed + 1))
+    sleep 0.2
+done
+apo_progress_begin_shutdown
+TMUX_HELPER
+        chmod +x "$tmux_helper"
+
+        tmux -L "$tmux_socket" new-session -d -s "$tmux_session" -x 210 -y 50 \
+            "bash '$tmux_helper' '$ROOT' '$tmux_marker'"
+        for _ in {1..100}; do
+            [[ -e ${tmux_marker}.ready ]] && break
+            sleep 0.05
+        done
+        if [[ ! -e ${tmux_marker}.ready ]]; then
+            echo 'real tmux progress fixture did not paint its wide row' >&2
+            exit 1
+        fi
+
+        tmux -L "$tmux_socket" resize-window -t "$tmux_session:0" -x 60 -y 50
+        : > "${tmux_marker}.go"
+        for _ in {1..100}; do
+            [[ -e ${tmux_marker}.done ]] && break
+            sleep 0.05
+        done
+        if [[ ! -e ${tmux_marker}.done ]]; then
+            echo 'real tmux progress fixture did not emit ordinary output' >&2
+            exit 1
+        fi
+        sleep 0.4
+        tmux -L "$tmux_socket" capture-pane -p -t "$tmux_session:0" > "$tmux_narrow_capture"
+        for expected in ACTIVE_CPU=2400 ACTIVE_GPU=960 ACTIVE_VOLTAGE=0 throttled=0x0; do
+            if ! grep -Fxq "$expected" "$tmux_narrow_capture"; then
+                echo "real tmux narrow capture corrupted: $expected" >&2
+                sed -n '1,20p' "$tmux_narrow_capture" >&2
+                exit 1
+            fi
+        done
+        if (( $(grep -c '^progress-tmux \[' "$tmux_narrow_capture" || true) != 1 )); then
+            echo 'real tmux narrow capture did not contain exactly one live progress row' >&2
+            sed -n '1,20p' "$tmux_narrow_capture" >&2
+            exit 1
+        fi
+
+        tmux -L "$tmux_socket" resize-window -t "$tmux_session:0" -x 210 -y 50
+        sleep 0.4
+        tmux -L "$tmux_socket" capture-pane -p -t "$tmux_session:0" > "$tmux_wide_capture"
+        if (( $(grep -c '^progress-tmux \[' "$tmux_wide_capture" || true) != 1 )); then
+            echo 'real tmux wide capture did not contain exactly one live progress row' >&2
+            sed -n '1,20p' "$tmux_wide_capture" >&2
+            exit 1
+        fi
+        if ! grep -Eq '^progress-tmux \[.*CPU: 2900(MHz)? \| GPU: 1125(MHz)?' "$tmux_wide_capture"; then
+            echo 'real tmux wide capture did not retain the current CPU and GPU clocks' >&2
+            sed -n '1,20p' "$tmux_wide_capture" >&2
+            exit 1
+        fi
+        : > "${tmux_marker}.stop"
+    )
+fi
 
 # Clearing for ordinary output advances the terminal only for that output's
 # real newline, then the progress renderer takes over the new current row.
@@ -317,7 +471,7 @@ fi
 shutdown_bytes=$(wc -c < "$SHUTDOWN_OUTPUT")
 progress_clear=$'\033[?7l\033[1G\033[2K\033[1G\033[?7h'
 (( shutdown_bytes == ${#progress_clear} ))
-rm -f "$SHUTDOWN_OUTPUT" "$progress_file" "$repaint_file" "$stream_file"
+rm -f "$SHUTDOWN_OUTPUT" "$progress_file" "$repaint_file" "$stream_file" "$reflow_clear_file"
 
 if apo_progress_line_is_telemetry 'ordinary worker output without elapsed'; then
     echo 'ordinary worker output was mistaken for progress telemetry' >&2

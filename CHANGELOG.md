@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.66 - 2026-09-13
+
+- Fixed interactive progress corruption after a Byobu or tmux pane narrows. The renderer now calculates how many physical rows the previous wide payload occupies after reflow and clears every fragment before ordinary output or the next progress repaint.
+- Added a regression for the exact wide-to-narrow failure shape that previously left the progress suffix attached to lines such as `ACTIVE_CPU=...`.
+
 ## 0.1.0-alpha.65 - 2026-09-13
 
 - Captured the detached launch start time before calling the state setter. The setter validates keys with a regular expression, which overwrote Bash's global `BASH_REMATCH`; the next indexed access then terminated the nounset controller with a bare code 1 immediately after a valid launcher acknowledgement.
