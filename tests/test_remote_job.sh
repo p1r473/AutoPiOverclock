@@ -305,7 +305,12 @@ fi
     APO_TRANSIENT_WORKER_ATTEMPTS=5
 
     apo_state_get() { printf '%s' "${TEST_STATE[$1]:-${2-}}"; }
-    apo_state_set() { TEST_STATE[$1]=$2; }
+    apo_state_set() {
+        # State-key validation uses BASH_REMATCH in production. Deliberately
+        # clobber it so callers must copy protocol captures before state writes.
+        [[ $1 =~ ^[A-Z][A-Z0-9_]*$ ]]
+        TEST_STATE[$1]=$2
+    }
     apo_state_save() { :; }
     apo_remote_boot_id_once() { printf '%s' "$TEST_BOOT"; }
     apo_recovery_wait_event() { :; }

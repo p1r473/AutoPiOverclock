@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.65 - 2026-09-13
+
+- Captured the detached launch start time before calling the state setter. The setter validates keys with a regular expression, which overwrote Bash's global `BASH_REMATCH`; the next indexed access then terminated the nounset controller with a bare code 1 immediately after a valid launcher acknowledgement.
+- Added a regression fixture that deliberately clobbers `BASH_REMATCH` during each state write and still requires the owned detached job to advance.
+
 ## 0.1.0-alpha.64 - 2026-09-13
 
 - Removed the two remaining sourced-profile error-mode toggles from Debian and Batocera network-watchdog proof. The static regression check now covers both controller libraries and profiles.

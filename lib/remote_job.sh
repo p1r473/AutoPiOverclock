@@ -707,7 +707,7 @@ apo_remote_job_fetch_complete() {
 apo_run_remote_stress_capture() {
     local phase=$1 worker_command=$2 output_file=$3
     shift 3
-    local duration=${2:-} segment_duration spec_hash job_id token source_boot start_output remote_rc current_boot
+    local duration=${2:-} segment_duration spec_hash job_id token source_boot start_output remote_rc current_boot remote_start_epoch
     local spec_rc=1 token_rc=1 start_rc=1 follow_stream_rc=1 start_shape=empty
     local credit_context credit_seconds credit_duration expected_credit_context
     local launch_attempt=0 launch_attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5} launch_reason
@@ -819,10 +819,11 @@ apo_run_remote_stress_capture() {
         fi
         apo_remote_job_stage_log "$phase" launcher-return "rc=$start_rc,shape=$start_shape"
         if [[ $start_output =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'([0-9]+)$ ]]; then
+            remote_start_epoch=${BASH_REMATCH[2]}
             if (( start_rc != 0 )); then apo_remote_job_child_status_log detached-start "$start_rc" 1 1; fi
             launch_attempt=0
-            apo_state_set REMOTE_STRESS_START_EPOCH "${BASH_REMATCH[2]}"
-            apo_remote_job_checkpoint_heartbeat "${BASH_REMATCH[2]}"
+            apo_state_set REMOTE_STRESS_START_EPOCH "$remote_start_epoch"
+            apo_remote_job_checkpoint_heartbeat "$remote_start_epoch"
         elif [[ $start_output =~ ^APO_JOB_ERROR$'\t'(.+)$ ]]; then
             launch_reason=${BASH_REMATCH[1]}
             apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE \
