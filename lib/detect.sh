@@ -196,11 +196,9 @@ apo_discovery_capture() {
         # path, so clear that row before the first APO_DATA line. A later
         # ordinary logged event repaints after the complete stream.
         if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
-        set +e
-        apo_worker_capture_function_progress "$output_file" apo_discovery_capture_command
+        if apo_worker_capture_function_progress "$output_file" apo_discovery_capture_command; then :; else :; fi
         remote_rc=$APO_WORKER_CAPTURE_TRANSPORT_RC
         stream_rc=$APO_WORKER_CAPTURE_STREAM_RC
-        set -e
         APO_LAST_WORKER_CAPTURE_KIND=discovery-coprocess
         APO_LAST_WORKER_PIPE_STATUS="producer=$remote_rc consumer=$stream_rc"
         apo_classify_output "$output_file" discovery

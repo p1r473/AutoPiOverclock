@@ -87,6 +87,8 @@ APO_POST_FLOOR_FINAL_DURATION_S=$APO_DEFAULT_FINAL_DURATION_S
 APO_WORKER_BOOT_ID=''
 APO_REBOOT_BOOT_ID=''
 APO_REBOOT_HANDSHAKE_STAGE=''
+APO_CONTROLLER_SHELL_PID=''
+APO_CONTROLLER_ERROR_LOGGED=0
 APO_MANUAL_TEST=0
 APO_MANUAL_CPU=''
 APO_MANUAL_GPU=''
@@ -1614,9 +1616,30 @@ apo_restore_saved_command_policy() {
     fi
 }
 
+apo_controller_error_trace() {
+    local command_rc=$1 source_line=$2 timestamp rendered frame_index frame_source frame_line frame_function stack=''
+    [[ ${APO_MUTATING_COMMAND:-0} == 1 && -n ${APO_STATE_FILE:-} && -f ${APO_STATE_FILE:-} ]] || return "$command_rc"
+    [[ -n ${APO_CONTROLLER_SHELL_PID:-} && $BASHPID == "$APO_CONTROLLER_SHELL_PID" ]] || return "$command_rc"
+    (( APO_CONTROLLER_ERROR_LOGGED == 0 )) || return "$command_rc"
+    APO_CONTROLLER_ERROR_LOGGED=1
+    for (( frame_index=1; frame_index<${#FUNCNAME[@]}; frame_index++ )); do
+        frame_source=${BASH_SOURCE[frame_index]##*/}
+        frame_line=${BASH_LINENO[frame_index-1]:-$source_line}
+        frame_function=${FUNCNAME[frame_index]:-main}
+        stack+="${stack:+,}${frame_source}:${frame_line}:${frame_function}"
+    done
+    printf -v timestamp '%(%Y-%m-%d %H:%M:%S)T' -1
+    printf -v stack '%q' "$stack"
+    rendered="$timestamp [WARN] controller-return-status: rc=$command_rc line=$source_line stack=$stack shell_pid=$BASHPID shell_flags=$-"
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output || true; fi
+    printf '%s\n' "$rendered" >&2
+    if [[ -n ${APO_LOG_FILE:-} ]]; then printf '%s\n' "$rendered" >> "$APO_LOG_FILE" 2>/dev/null || true; fi
+    return "$command_rc"
+}
+
 apo_cleanup_handler() {
     local exit_code=$? saved_failure_class='' original_failure_class='' original_failure_reason='' recovery_reason=''
-    trap - EXIT INT TERM HUP
+    trap - EXIT ERR INT TERM HUP
     # Stop only the controller-side SSH observer before any exit recovery.
     # The detached target job remains owned by its fixed deadline and state.
     if declare -F apo_remote_job_follow_transport_cleanup >/dev/null 2>&1; then
@@ -1728,7 +1751,7 @@ main() {
         APO_RESTART_FINAL_DURATION_S=$APO_FINAL_DURATION_S
         APO_RESTART_EDGE_DURATION_S=$APO_EDGE_DURATION_S
     fi
-    apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr sync chmod mkdir mv readlink rm
+    apo_require_local_commands ssh awk sed grep date mktemp sha256sum base64 diff cmp flock od tr stat sync chmod mkdir mv readlink rm
     case $APO_COMMAND in run|prepare|resume|recover|restore|reset|apply) apo_acquire_lock ;; esac
     apo_public_overclock_select_source
     apo_public_test_select_continuation
@@ -1738,7 +1761,9 @@ main() {
             ;;
     esac
     apo_progress_start_session
+    APO_CONTROLLER_SHELL_PID=$BASHPID
     trap apo_cleanup_handler EXIT
+    trap 'apo_controller_error_trace "$?" "$LINENO"' ERR
     trap 'APO_EXIT_SIGNAL=INT; exit 130' INT
     trap 'APO_EXIT_SIGNAL=TERM; exit 143' TERM
     trap 'APO_EXIT_SIGNAL=HUP; exit 129' HUP

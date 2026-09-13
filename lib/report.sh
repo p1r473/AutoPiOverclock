@@ -126,10 +126,11 @@ apo_status_capture_live() {
     output_file=$(mktemp /tmp/autopioverclock-status.XXXXXX) || return 1
     for (( attempt=1; attempt<=APO_STATUS_CAPTURE_ATTEMPTS; attempt++ )); do
         : > "$output_file"
-        set +e
-        command ssh "${APO_SSH_OPTIONS[@]}" -T "$APO_REMOTE_TARGET" "$wrapper" < "$worker" > "$output_file" 2>&1
-        remote_rc=$?
-        set -e
+        if command ssh "${APO_SSH_OPTIONS[@]}" -T "$APO_REMOTE_TARGET" "$wrapper" < "$worker" > "$output_file" 2>&1; then
+            remote_rc=0
+        else
+            remote_rc=$?
+        fi
         apo_classify_output "$output_file" live-status
         if (( remote_rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then
             apo_parse_data_file "$output_file" APO_STATUS_LIVE

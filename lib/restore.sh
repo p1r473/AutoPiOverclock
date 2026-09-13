@@ -245,10 +245,11 @@ apo_restore_validated_config() {
     [[ $(sha256sum "$current_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true) == "$current_hash" ]] ||
         apo_die 'The permanent config changed between discovery and restore planning.' "$APO_EXIT_APPLY"
 
-    set +e
-    diff -u --label current-config.txt --label validated-config.txt "$current_file" "$APO_RESTORE_SOURCE_ARTIFACT" > "$diff_file"
-    diff_rc=$?
-    set -e
+    if diff -u --label current-config.txt --label validated-config.txt "$current_file" "$APO_RESTORE_SOURCE_ARTIFACT" > "$diff_file"; then
+        diff_rc=0
+    else
+        diff_rc=$?
+    fi
     if (( diff_rc != 0 && diff_rc != 1 )); then
         apo_die 'Could not generate the validated-config restore diff.' "$APO_EXIT_APPLY"
     fi

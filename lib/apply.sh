@@ -364,10 +364,11 @@ apo_apply_recommendation() {
     [[ -s $proposed_file ]] || apo_die 'The proposed permanent config rendered empty.' "$APO_EXIT_APPLY"
     expected_hash=$(sha256sum "$proposed_file" | awk 'NR == 1 {print $1}')
     apo_apply_valid_hash "$expected_hash" || apo_die 'Could not calculate the proposed permanent-config hash.' "$APO_EXIT_APPLY"
-    set +e
-    diff -u --label current-config.txt --label proposed-config.txt "$current_file" "$proposed_file" > "$diff_file"
-    diff_rc=$?
-    set -e
+    if diff -u --label current-config.txt --label proposed-config.txt "$current_file" "$proposed_file" > "$diff_file"; then
+        diff_rc=0
+    else
+        diff_rc=$?
+    fi
     if (( diff_rc == 0 )); then
         apo_info 'Permanent config already matches the validated recommendation; proving a fresh normal boot before recording it as applied.'
         if ! apo_apply_force_normal_boot_and_health "$expected_hash" "$final_cpu" "$final_gpu" "$APO_TEST_VOLTAGE" apply-existing-config-health; then

@@ -208,25 +208,21 @@ apo_run_worker_capture_once() {
     # non-progress tee path already truncates; the live progress consumer
     # appends line-by-line and therefore needs this explicit reset.
     : > "$output_file"
-    set +e
     if [[ $worker_command == stress ]] && declare -F apo_run_remote_stress_capture >/dev/null 2>&1; then
-        apo_run_remote_stress_capture "$phase" "$worker_command" "$output_file" "$@"
-        remote_rc=$?
+        if apo_run_remote_stress_capture "$phase" "$worker_command" "$output_file" "$@"; then remote_rc=0; else remote_rc=$?; fi
         APO_LAST_WORKER_CAPTURE_KIND=detached-coprocess
         APO_LAST_WORKER_PIPE_STATUS=$remote_rc
     elif declare -F apo_progress_capture_worker_stream >/dev/null 2>&1; then
-        apo_worker_capture_progress "$output_file" "$APO_REMOTE_WORKER" "$worker_command" "$@"
+        if apo_worker_capture_progress "$output_file" "$APO_REMOTE_WORKER" "$worker_command" "$@"; then :; else :; fi
         remote_rc=$APO_WORKER_CAPTURE_TRANSPORT_RC
         APO_LAST_WORKER_CAPTURE_KIND=progress-coprocess
         APO_LAST_WORKER_PIPE_STATUS="producer=$remote_rc consumer=$APO_WORKER_CAPTURE_STREAM_RC"
     else
-        apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" > "$output_file" 2>&1
-        remote_rc=$?
+        if apo_remote_worker "$APO_REMOTE_WORKER" "$worker_command" "$@" > "$output_file" 2>&1; then remote_rc=0; else remote_rc=$?; fi
         tee -a "$APO_LOG_FILE" < "$output_file" || true
         APO_LAST_WORKER_CAPTURE_KIND=direct-file
         APO_LAST_WORKER_PIPE_STATUS="producer=$remote_rc consumer=not-used"
     fi
-    set -e
     apo_classify_output "$output_file" "$phase"
     if declare -F apo_progress_record_worker_result >/dev/null 2>&1; then
         apo_progress_record_worker_result "$output_file" "$APO_LAST_MAX_TEMP"

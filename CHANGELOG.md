@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.63 - 2026-09-13
+
+- Removed every library-level `set +e` and `set -e` toggle. Nested transport helpers can no longer change the caller's global Bash error mode and bypass the worker classifier with a bare controller exit code.
+- Added postcondition reconciliation for detached-job token generation, specification hashing, boot probing, launcher acknowledgement, result sizing, and result hashing. A valid complete output is retained when its child status disagrees, while missing or malformed output still fails closed.
+- Added failure-only child-status diagnostics plus a one-shot controller return trace containing the source line and function stack without command arguments or state values.
+- Hardened the target-side supervisor's startup handshake, timeout, clock, manifest, size, hash, and telemetry paths. Startup now checks owned evidence once per second for up to 15 seconds instead of falsely declaring a loaded target orphaned after one second. Contradictory child statuses can no longer orphan an otherwise valid target result, and any uncaught target-helper return is retained in the owned job directory.
+
 ## 0.1.0-alpha.62 - 2026-09-13
 
 - Replaced recurring controller checkpoint Base64, key sorting, timestamping, and temporary-file creation with Bash-only implementations. The state format remains canonical Base64, but a 100-hour detached stress run no longer launches hundreds of encoder processes per checkpoint or depends on an observed child status to create its private checkpoint file.

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+APO_ROOT=$ROOT
+source "$ROOT/lib/common.sh"
+source "$ROOT/lib/state.sh"
+# Controller fixtures provide their own checkpoint stubs. Keep the pure Bash
+# codec while preventing an unrelated real checkpoint attempt with no state file.
+unset -f apo_state_save_try
 
 if [[ ! -r /proc/sys/kernel/random/boot_id ]] || ! command -v setsid >/dev/null 2>&1 ||
    ! command -v timeout >/dev/null 2>&1 || ! timeout --help 2>&1 | grep -Eq '(^|[[:space:]])-k([,[:space:]]|$)'; then
@@ -9,6 +15,12 @@ if [[ ! -r /proc/sys/kernel/random/boot_id ]] || ! command -v setsid >/dev/null 
 fi
 
 TEMP_DIR=$(mktemp -d)
+test_failure_trace() {
+    local command_rc=$1 source_line=$2 failed_command=$3
+    trap - ERR
+    printf 'test_remote_job: FAIL rc=%s line=%s command=%q\n' "$command_rc" "$source_line" "$failed_command" >&2
+    return "$command_rc"
+}
 cleanup() {
     local pid
     for pid_file in "$TEMP_DIR"/run/jobs/*/supervisor.pid; do
@@ -19,6 +31,7 @@ cleanup() {
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
+trap 'test_failure_trace "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 WORKER=$TEMP_DIR/worker.sh
 cat >"$WORKER" <<'WORKER'
@@ -40,22 +53,94 @@ WORKER
 chmod 700 "$WORKER"
 
 HELPER=$ROOT/tools/remote-stress-job.sh
+if grep -Eq '^[[:space:]]*set[[:space:]]+[+-]e([[:space:]]|$)' "$HELPER"; then
+    echo 'target job helper still mutates its global error mode' >&2
+    exit 1
+fi
 BOOT_ID=$(< /proc/sys/kernel/random/boot_id)
 TOKEN=$(printf 'a%.0s' {1..64})
 SPEC=$(printf 'b%.0s' {1..64})
 JOB_ID=job-${TOKEN:0:32}
 RUN_ROOT=$TEMP_DIR/run
+APO_TEST_CAPTURE_RC=0
+capture_command_output() {
+    local output_name=$1 captured_output=''
+    shift
+    if captured_output=$("$@"); then APO_TEST_CAPTURE_RC=0; else APO_TEST_CAPTURE_RC=$?; fi
+    printf -v "$output_name" '%s' "$captured_output"
+    return 0
+}
 
-START_OUTPUT=$("$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1)
+capture_command_output START_OUTPUT "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
 [[ $START_OUTPUT =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
 grep -Eq '^START_MONOTONIC_SECONDS=[0-9]+$' "$RUN_ROOT/jobs/$JOB_ID/manifest"
-FOLLOW_OUTPUT=$("$HELPER" follow "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC")
+capture_command_output FOLLOW_OUTPUT "$HELPER" follow "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC"
 grep -q '^APO_JOB_COMPLETE' <<<"$FOLLOW_OUTPUT"
-FETCHED=$("$HELPER" fetch "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC")
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
+capture_command_output FETCHED "$HELPER" fetch "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC"
 grep -q '^APO_RESULT_CLASS=PASS$' <<<"$FETCHED"
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
 
-START_AGAIN=$("$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1)
+capture_command_output START_AGAIN "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
 grep -Eq $'^APO_JOB_STARTED\tCOMPLETE\t[0-9]+$' <<<"$START_AGAIN"
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
+
+# The target supervisor must retain valid size and hash output even if the
+# observed utility status is contradictory, then persist failure-only evidence.
+REAL_WC=$(command -v wc)
+REAL_SHA256SUM=$(command -v sha256sum)
+MOCK_BIN=$TEMP_DIR/mock-bin
+mkdir "$MOCK_BIN"
+cat >"$MOCK_BIN/wc" <<'MOCK_WC'
+#!/usr/bin/env bash
+"$APO_TEST_REAL_WC" "$@"
+exit 23
+MOCK_WC
+cat >"$MOCK_BIN/sha256sum" <<'MOCK_SHA'
+#!/usr/bin/env bash
+"$APO_TEST_REAL_SHA256SUM" "$@"
+exit 23
+MOCK_SHA
+chmod 700 "$MOCK_BIN/wc" "$MOCK_BIN/sha256sum"
+STATUS_TOKEN=$(printf '9%.0s' {1..64})
+STATUS_SPEC=$(printf '8%.0s' {1..64})
+STATUS_JOB=job-${STATUS_TOKEN:0:32}
+APO_TEST_REAL_WC=$REAL_WC APO_TEST_REAL_SHA256SUM=$REAL_SHA256SUM PATH="$MOCK_BIN:$PATH" \
+    capture_command_output STATUS_START "$HELPER" start "$RUN_ROOT" "$STATUS_JOB" "$STATUS_TOKEN" \
+        "$STATUS_SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
+[[ $STATUS_START =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
+capture_command_output STATUS_FOLLOW "$HELPER" follow "$RUN_ROOT" "$STATUS_JOB" "$STATUS_TOKEN" "$STATUS_SPEC"
+grep -q '^APO_JOB_COMPLETE' <<<"$STATUS_FOLLOW"
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
+grep -Fq 'target-job-child-status: operation=complete-size rc=23 output_valid=1 reconciled=1' \
+    "$RUN_ROOT/jobs/$STATUS_JOB/child-status.log"
+grep -Fq 'target-job-child-status: operation=complete-sha256 rc=23 output_valid=1 reconciled=1' \
+    "$RUN_ROOT/jobs/$STATUS_JOB/child-status.log"
+
+# A loaded target can take longer than one second to establish the detached
+# supervisor. The launcher must wait at low frequency for owned evidence.
+REAL_SETSID=$(command -v setsid)
+SLOW_BIN=$TEMP_DIR/slow-bin
+mkdir "$SLOW_BIN"
+cat >"$SLOW_BIN/setsid" <<'MOCK_SETSID'
+#!/usr/bin/env bash
+sleep 3
+exec "$APO_TEST_REAL_SETSID" "$@"
+MOCK_SETSID
+chmod 700 "$SLOW_BIN/setsid"
+SLOW_TOKEN=$(printf '7%.0s' {1..64})
+SLOW_SPEC=$(printf '6%.0s' {1..64})
+SLOW_JOB=job-${SLOW_TOKEN:0:32}
+APO_TEST_REAL_SETSID=$REAL_SETSID PATH="$SLOW_BIN:$PATH" \
+    capture_command_output SLOW_START "$HELPER" start "$RUN_ROOT" "$SLOW_JOB" "$SLOW_TOKEN" \
+        "$SLOW_SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
+[[ $SLOW_START =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
+capture_command_output SLOW_FOLLOW "$HELPER" follow "$RUN_ROOT" "$SLOW_JOB" "$SLOW_TOKEN" "$SLOW_SPEC"
+grep -q '^APO_JOB_COMPLETE' <<<"$SLOW_FOLLOW"
+[[ $APO_TEST_CAPTURE_RC == 0 ]]
 OTHER_WORKER=$TEMP_DIR/other-worker.sh
 cp -- "$WORKER" "$OTHER_WORKER"
 chmod 700 "$OTHER_WORKER"
@@ -75,9 +160,9 @@ DEADLINE_SPEC=$(printf 'e%.0s' {1..64})
 DEADLINE_JOB=job-${DEADLINE_TOKEN:0:32}
 APO_JOB_HARD_GRACE_SECONDS=1 "$HELPER" start "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" \
     "$DEADLINE_SPEC" "$BOOT_ID" 1 "$WORKER" deadline 10 >/dev/null
-DEADLINE_FOLLOW=$("$HELPER" follow "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" "$DEADLINE_SPEC")
+capture_command_output DEADLINE_FOLLOW "$HELPER" follow "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" "$DEADLINE_SPEC"
 grep -q $'^APO_JOB_COMPLETE\t124\t' <<<"$DEADLINE_FOLLOW"
-DEADLINE_RESULT=$("$HELPER" fetch "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" "$DEADLINE_SPEC")
+capture_command_output DEADLINE_RESULT "$HELPER" fetch "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" "$DEADLINE_SPEC"
 grep -q '^APO_RESULT_CLASS=HARNESS_FAILURE$' <<<"$DEADLINE_RESULT"
 grep -q '^APO_RESULT_REASON_B64=' <<<"$DEADLINE_RESULT"
 
@@ -97,7 +182,7 @@ DURATION=60
 WORKER=$WORKER
 EOF
 printf '%s\n' "$$" >"$STALE_DIR/supervisor.pid"
-STALE_INSPECT=$("$HELPER" inspect "$RUN_ROOT" "$STALE_JOB" "$STALE_TOKEN" "$STALE_SPEC")
+capture_command_output STALE_INSPECT "$HELPER" inspect "$RUN_ROOT" "$STALE_JOB" "$STALE_TOKEN" "$STALE_SPEC"
 [[ $STALE_INSPECT == APO_JOB_INSPECT$'\t'ORPHANED$'\t'* ]]
 
 grep -Fq 'coproc APO_REMOTE_JOB_FOLLOW_COPROC' "$ROOT/lib/remote_job.sh"
@@ -107,6 +192,27 @@ if grep -Eq 'apo_remote_job_(command|follow_command) follow .*\|[[:space:]]*apo_
     echo 'the detached-job parser still runs inside the long-lived producer pipeline' >&2
     exit 1
 fi
+
+# Valid child output is authoritative when the observed child status is
+# contradictory. Both operations still reject malformed output.
+(
+    source "$ROOT/lib/remote_job.sh"
+    APO_LOG_FILE=$TEMP_DIR/token-child-status.log
+    EXPECTED_TOKEN=$(printf 'a%.0s' {1..64})
+    od() { printf '%s\n' "$EXPECTED_TOKEN"; return 23; }
+    observed_token=$(apo_remote_job_token)
+    [[ $observed_token == "$EXPECTED_TOKEN" ]]
+    grep -Fq 'remote-job-child-status: operation=token-od rc=23 output_valid=1 reconciled=1' "$APO_LOG_FILE"
+)
+(
+    source "$ROOT/lib/remote_job.sh"
+    APO_LOG_FILE=$TEMP_DIR/hash-child-status.log
+    EXPECTED_HASH=$(printf 'b%.0s' {1..64})
+    sha256sum() { printf '%s  %s\n' "$EXPECTED_HASH" "${*: -1}"; return 23; }
+    observed_hash=$(apo_remote_job_spec_hash fixture-phase stress combined 60)
+    [[ $observed_hash == "$EXPECTED_HASH" ]]
+    grep -Fq 'remote-job-child-status: operation=spec-sha256 rc=23 output_valid=1 reconciled=1' "$APO_LOG_FILE"
+)
 
 # The follow transport runs for the complete target stress duration. It must
 # drop its inherited copy of the controller lock while the parent controller
@@ -174,6 +280,7 @@ fi
     declare -A TEST_STATE=()
     source "$ROOT/lib/remote_job.sh"
     CONTROLLER_OUTPUT=$TEMP_DIR/controller-output.log
+    APO_LOG_FILE=$TEMP_DIR/controller-child-status.log
     START_COUNT_FILE=$TEMP_DIR/controller-start-count
     FOLLOW_COUNT_FILE=$TEMP_DIR/controller-follow-count
     printf '0\n' >"$START_COUNT_FILE"
@@ -217,6 +324,7 @@ fi
                 return 255
             fi
             printf 'APO_JOB_STARTED\tRUNNING\t100\n'
+            if (( count == 3 )); then return 23; fi
             return 0
         fi
         count=$(<"$FOLLOW_COUNT_FILE")
@@ -241,6 +349,7 @@ fi
     [[ $(<"$START_COUNT_FILE") == 4 ]]
     [[ $(<"$FOLLOW_COUNT_FILE") == 2 ]]
     [[ ${TEST_STATE[REMOTE_STRESS_STATUS]} == IDLE ]]
+    grep -Fq 'remote-job-child-status: operation=detached-start rc=23 output_valid=1 reconciled=1' "$APO_LOG_FILE"
 )
 
 # Only a workload telemetry sample can populate confirmed elapsed time. A
