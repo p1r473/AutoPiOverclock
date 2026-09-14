@@ -6,6 +6,7 @@ APO_COMMAND=run
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/config.sh"
 source "$ROOT/lib/state.sh"
+# shellcheck source=../lib/progress.sh
 source "$ROOT/lib/progress.sh"
 
 # Width fixtures must not inherit the invoking developer's real Byobu/tmux
