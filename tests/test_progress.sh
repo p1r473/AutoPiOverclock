@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# This fixture intentionally replaces and restores sourced progress functions.
+# ShellCheck treats those later test stubs as their first definitions.
+# shellcheck disable=SC2218
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 APO_ROOT=$ROOT
@@ -6,7 +9,6 @@ APO_COMMAND=run
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/config.sh"
 source "$ROOT/lib/state.sh"
-# shellcheck source=../lib/progress.sh
 source "$ROOT/lib/progress.sh"
 
 # Width fixtures must not inherit the invoking developer's real Byobu/tmux
