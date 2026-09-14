@@ -71,6 +71,7 @@ capture_command_output() {
     return 0
 }
 
+START_OUTPUT=''
 capture_command_output START_OUTPUT "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
 [[ $START_OUTPUT =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
 [[ $APO_TEST_CAPTURE_RC == 0 ]]
@@ -197,6 +198,8 @@ fi
 # contradictory. Both operations still reject malformed output.
 (
     source "$ROOT/lib/remote_job.sh"
+    # Each child-status fixture intentionally owns a subshell-local log.
+    # shellcheck disable=SC2030
     APO_LOG_FILE=$TEMP_DIR/token-child-status.log
     EXPECTED_TOKEN=$(printf 'a%.0s' {1..64})
     od() { printf '%s\n' "$EXPECTED_TOKEN"; return 23; }
@@ -206,6 +209,8 @@ fi
 )
 (
     source "$ROOT/lib/remote_job.sh"
+    # Each child-status fixture intentionally owns a subshell-local log.
+    # shellcheck disable=SC2030
     APO_LOG_FILE=$TEMP_DIR/hash-child-status.log
     EXPECTED_HASH=$(printf 'b%.0s' {1..64})
     sha256sum() { printf '%s  %s\n' "$EXPECTED_HASH" "${*: -1}"; return 23; }
@@ -249,7 +254,7 @@ fi
     [[ $APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC == 23 ]]
     [[ -z $APO_REMOTE_JOB_FOLLOW_PID && -z $APO_REMOTE_JOB_FOLLOW_FD && -z $APO_REMOTE_JOB_FOLLOW_INPUT_FD ]]
     follow_fds_after=(/proc/$BASHPID/fd/*)
-    [[ ${#follow_fds_after[@]} == ${#follow_fds_before[@]} ]]
+    [[ ${#follow_fds_after[@]} == "${#follow_fds_before[@]}" ]]
     [[ $(shopt -p lastpipe || true) == "$lastpipe_before" ]]
     [[ -e /proc/$CONTROLLER_TEST_PID/fd/$TEST_LOCK_FD ]]
     if (
