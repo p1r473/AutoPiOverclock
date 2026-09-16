@@ -630,6 +630,9 @@ for name, source_name in (("batocera", sys.argv[1]), ("debian", sys.argv[2])):
 
     keeper = module.Keeper.__new__(module.Keeper)
     keeper.config_path = config_path
+    if name == "debian":
+        keeper.keeper_path = source
+        keeper.service_path = service_path
     keeper.target = "192.0.2.1"
     keeper.root = root
     keeper.log_path = root / "watchdog.log"
