@@ -417,7 +417,8 @@ done
 # classification, and retry notices must not look like additional failures.
 for PROFILE_NAME in debian batocera; do
     PROFILE_PATH="$ROOT/profiles/${PROFILE_NAME}.sh"
-    PROFILE="$PROFILE_PATH" PROFILE_NAME="$PROFILE_NAME" REPO_ROOT="$ROOT" TEST_ROOT="$TEMP_DIR/proof-$PROFILE_NAME" bash -c '
+    PROOF_TEST_ROOT="$TEMP_DIR/proof-$PROFILE_NAME"
+    PROFILE="$PROFILE_PATH" PROFILE_NAME="$PROFILE_NAME" REPO_ROOT="$ROOT" TEST_ROOT="$PROOF_TEST_ROOT" bash -c '
         set -Eeuo pipefail
         APO_ROOT=$REPO_ROOT
         APO_RUN_ID=fixture
