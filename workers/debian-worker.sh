@@ -838,7 +838,11 @@ cmd_discover() {
     local boot_watchdog kernel_watchdog runtime_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source display_baseline display_present audio_baseline permanent_hash
     local stress_ng_binary stress_ng_gpu_available stress_ng_gpu_strategy_value render_node tryboot_exists tryboot_type tryboot_hash
     local network_root=/var/lib/autopioverclock/network-watchdog network_config network_keeper network_service
+    local observer_config observer_keeper observer_service
     local network_kind='' network_target='' network_config_hash='' network_keeper_hash='' network_service_hash='' network_service_active=0
+    local network_install_run_id='' network_install_backup='' network_fields=''
+    local native_network_watchdog_present=0 native_network_watchdog_ready=0 native_network_watchdog_target=''
+    local native_watchdog_service_active=0 native_watchdog_config_inspected=0
     boot_config=$(find_boot_config) || { emit_result PREFLIGHT_FAILURE 'Raspberry Pi boot config was not found.'; return 1; }
     audit_permanent_tuning_config "$boot_config"
     tryboot_config="$(dirname "$boot_config")/tryboot.txt"
@@ -885,21 +889,47 @@ cmd_discover() {
     stress_ng_gpu_strategy_value=$([[ -n $stress_ng_binary && -n $render_node ]] && stress_ng_gpu_strategy "$render_node" || true)
     stress_ng_gpu_available=$([[ -n $stress_ng_gpu_strategy_value ]] && printf 1 || printf 0)
     fan_pwm_snapshot >/dev/null 2>&1 || true
+    observer_config=$network_root/observer.conf
+    observer_keeper=/usr/local/lib/autopioverclock/network-watchdog-observer.py
+    observer_service=/etc/systemd/system/autopioverclock-network-watchdog-observer.service
     network_config=$network_root/watchdog.conf
     network_keeper=/usr/local/lib/autopioverclock/network-watchdog-keeper.py
     network_service=/etc/systemd/system/autopioverclock-network-watchdog.service
-    if [[ -f $network_config && ! -L $network_config && -f $network_keeper && ! -L $network_keeper &&
-          -f $network_service && ! -L $network_service ]] &&
+    if [[ -f $observer_config && ! -L $observer_config ]] &&
+       grep -Fq 'AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER' "$observer_config"; then
+        network_kind=debian-watchdog-observer
+        network_fields=$(debian_network_watchdog_observer_config_fields "$observer_config" || true)
+        IFS=$'\t' read -r network_target network_install_run_id <<<"$network_fields"
+        network_config_hash=$(sha256sum "$observer_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        if [[ -f $observer_keeper && ! -L $observer_keeper ]]; then network_keeper_hash=$(sha256sum "$observer_keeper" 2>/dev/null | awk 'NR == 1 {print $1}' || true); fi
+        if [[ -f $observer_service && ! -L $observer_service ]]; then network_service_hash=$(sha256sum "$observer_service" 2>/dev/null | awk 'NR == 1 {print $1}' || true); fi
+        if [[ -n $network_target ]] && debian_network_watchdog_observer_service_ready "$observer_keeper" "$observer_service"; then
+            network_service_active=1
+        fi
+    elif [[ -f $network_config && ! -L $network_config ]] &&
        grep -Fq 'AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG' "$network_config"; then
         network_kind=debian-systemd-companion
-        network_target=$(debian_network_watchdog_config_target "$network_config" || true)
+        network_fields=$(debian_network_watchdog_config_fields "$network_config" || true)
+        IFS=$'\t' read -r network_target network_install_run_id <<<"$network_fields"
         network_config_hash=$(sha256sum "$network_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-        network_keeper_hash=$(sha256sum "$network_keeper" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-        network_service_hash=$(sha256sum "$network_service" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        if [[ -f $network_keeper && ! -L $network_keeper ]]; then network_keeper_hash=$(sha256sum "$network_keeper" 2>/dev/null | awk 'NR == 1 {print $1}' || true); fi
+        if [[ -f $network_service && ! -L $network_service ]]; then network_service_hash=$(sha256sum "$network_service" 2>/dev/null | awk 'NR == 1 {print $1}' || true); fi
         if [[ -n $network_target ]] && debian_network_watchdog_service_ready "$network_keeper" "$network_config" "$network_service"; then
             network_service_active=1
         fi
     fi
+    if [[ -n $network_install_run_id ]]; then
+        network_install_backup=$(debian_network_watchdog_backup_for_run "$network_kind" "$network_install_run_id" || true)
+    fi
+    if debian_native_watchdog_service_active; then
+        native_watchdog_service_active=1
+        if debian_native_network_watchdog_config_path >/dev/null; then
+            native_watchdog_config_inspected=1
+        fi
+        if debian_native_network_watchdog_blocks_fallback; then native_network_watchdog_present=1; fi
+    fi
+    native_network_watchdog_target=$(debian_native_network_watchdog_target || true)
+    [[ -n $native_network_watchdog_target ]] && native_network_watchdog_ready=1
 
     emit_data PROFILE debian
     emit_data MODEL "$model"
@@ -936,6 +966,13 @@ cmd_discover() {
     emit_data NETWORK_WATCHDOG_KEEPER_HASH "$network_keeper_hash"
     emit_data NETWORK_WATCHDOG_SERVICE_HASH "$network_service_hash"
     emit_data NETWORK_WATCHDOG_SERVICE_ACTIVE "$network_service_active"
+    emit_data NETWORK_WATCHDOG_INSTALL_RUN_ID "$network_install_run_id"
+    emit_data NETWORK_WATCHDOG_INSTALL_BACKUP "$network_install_backup"
+    emit_data NATIVE_NETWORK_WATCHDOG_PRESENT "$native_network_watchdog_present"
+    emit_data NATIVE_NETWORK_WATCHDOG_READY "$native_network_watchdog_ready"
+    emit_data NATIVE_NETWORK_WATCHDOG_TARGET "$native_network_watchdog_target"
+    emit_data NATIVE_WATCHDOG_SERVICE_ACTIVE "$native_watchdog_service_active"
+    emit_data NATIVE_WATCHDOG_CONFIG_INSPECTED "$native_watchdog_config_inspected"
     emit_data ROOT_SOURCE "$root_device"
     emit_data BOOT_SOURCE "$boot_source"
     emit_data DISPLAY_BASELINE "$display_baseline"
@@ -2272,14 +2309,109 @@ debian_network_watchdog_valid_ipv4() {
     ' <<<"${1-}"
 }
 
-debian_network_watchdog_config_target() {
+debian_watchdog_config_value() {
+    local source=$1 wanted=$2 optional=${3:-0}
+    awk -F= -v wanted="$wanted" -v optional="$optional" '
+        /^[[:space:]]*#/ {next}
+        {
+            key=$1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            if (key != wanted) next
+            value=substr($0, index($0, "=")+1)
+            sub(/[[:space:]]*#.*/, "", value)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (value == "") exit 2
+            count++
+            selected=value
+        }
+        END {
+            if (count == 1) print selected
+            else if (count == 0 && optional == 1) exit 0
+            else exit 1
+        }
+    ' "$source"
+}
+
+debian_native_watchdog_service_active() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet watchdog.service 2>/dev/null
+}
+
+debian_native_network_watchdog_config_path() {
+    local service=watchdog.service pid argument expect_config=0 configured_path='' config binary unit
+    command -v systemctl >/dev/null 2>&1 && command -v journalctl >/dev/null 2>&1 || return 1
+    debian_native_watchdog_service_active || return 1
+    pid=$(systemctl show --property=MainPID --value "$service" 2>/dev/null || true)
+    [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/cmdline ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    binary=$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)
+    [[ $binary == /* && -x $binary && ! -L $binary ]] || return 1
+    while IFS= read -r argument; do
+        if (( expect_config == 1 )); then
+            configured_path=$argument
+            expect_config=0
+            continue
+        fi
+        case $argument in
+            -c|--config-file) expect_config=1 ;;
+            -c*) configured_path=${argument#-c} ;;
+            --config-file=*) configured_path=${argument#*=} ;;
+        esac
+    done < <(tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null)
+    (( expect_config == 0 )) || return 1
+    config=${configured_path:-/etc/watchdog.conf}
+    [[ $config == /* && -f $config && ! -L $config ]] || return 1
+    unit=$(systemctl show --property=FragmentPath --value "$service" 2>/dev/null || true)
+    [[ $unit == /* && -f $unit ]] || return 1
+    printf '%s' "$config"
+}
+
+debian_native_network_watchdog_present() {
+    local config
+    config=$(debian_native_network_watchdog_config_path) || return 1
+    awk -F= '
+        /^[[:space:]]*#/ {next}
+        {
+            key=$1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            if (key != "ping") next
+            value=substr($0, index($0, "=")+1)
+            sub(/[[:space:]]*#.*/, "", value)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (value != "") found=1
+        }
+        END {exit !found}
+    ' "$config"
+}
+
+debian_native_network_watchdog_blocks_fallback() {
+    debian_native_watchdog_service_active || return 1
+    debian_native_network_watchdog_config_path >/dev/null || return 0
+    debian_native_network_watchdog_present
+}
+
+debian_native_network_watchdog_target() {
+    local config target value argument
+    config=$(debian_native_network_watchdog_config_path) || return 1
+    target=$(debian_watchdog_config_value "$config" ping) || return 1
+    debian_network_watchdog_valid_ipv4 "$target" || return 1
+    value=$(debian_watchdog_config_value "$config" repair-binary 1) || return 1
+    [[ -z $value || $value == /* ]] || return 1
+    for argument in repair-timeout retry-timeout watchdog-timeout; do
+        value=$(debian_watchdog_config_value "$config" "$argument" 1) || return 1
+        [[ -z $value || $value =~ ^[0-9]+$ ]] || return 1
+    done
+    printf '%s' "$target"
+}
+
+debian_network_watchdog_config_fields() {
     local config=$1
     awk -F= '
         BEGIN {
             allowed["TARGET"]=1; allowed["PING_TIMEOUT_SECONDS"]=1
             allowed["CHECK_INTERVAL_SECONDS"]=1; allowed["STARTUP_GRACE_SECONDS"]=1
             allowed["FAILURE_WINDOW_SECONDS"]=1; allowed["MAX_REBOOTS"]=1
-            allowed["REBOOT_WINDOW_SECONDS"]=1
+            allowed["REBOOT_WINDOW_SECONDS"]=1; allowed["RUN_ID"]=1
         }
         $0 == "# AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG" {
             if (marker) invalid=1
@@ -2296,14 +2428,83 @@ debian_network_watchdog_config_target() {
             count++
         }
         END {
-            if (invalid || marker != 1 || count != 7) exit 1
-            print values["TARGET"]
+            if (invalid || marker != 1 || count != 8) exit 1
+            print values["TARGET"] "\t" values["RUN_ID"]
         }
     ' "$config" | {
-        IFS= read -r target || return 1
+        IFS=$'\t' read -r target run_id || return 1
         debian_network_watchdog_valid_ipv4 "$target" || return 1
-        printf '%s' "$target"
+        [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+        printf '%s\t%s' "$target" "$run_id"
     }
+}
+
+debian_network_watchdog_config_target() {
+    local fields
+    fields=$(debian_network_watchdog_config_fields "$1") || return 1
+    printf '%s' "${fields%%$'\t'*}"
+}
+
+debian_network_watchdog_observer_config_fields() {
+    local config=$1
+    awk -F= '
+        BEGIN {
+            allowed["FORMAT"]=1; allowed["PROVIDER"]=1; allowed["INSTALL_RUN_ID"]=1
+            allowed["TARGET"]=1; allowed["NATIVE_SERVICE"]=1; allowed["NATIVE_CONFIG_PATH"]=1
+            allowed["NATIVE_BINARY_PATH"]=1; allowed["REPAIR_BINARY_PATH"]=1
+            allowed["REPAIR_TIMEOUT_SECONDS"]=1; allowed["RETRY_TIMEOUT_SECONDS"]=1
+            allowed["WATCHDOG_TIMEOUT_SECONDS"]=1; allowed["EVIDENCE_WINDOW_SECONDS"]=1
+            allowed["OBSERVER_SHA256"]=1; allowed["SERVICE_SHA256"]=1
+        }
+        $0 == "# AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER" {
+            if (marker) invalid=1
+            marker=1
+            next
+        }
+        /^[[:space:]]*$/ {next}
+        /^[[:space:]]*#/ {invalid=1; next}
+        {
+            key=$1
+            value=substr($0, index($0, "=")+1)
+            if (NF < 2 || !allowed[key] || seen[key]++ || value == "") {invalid=1; next}
+            values[key]=value
+            count++
+        }
+        END {
+            if (invalid || marker != 1 || count != 14 || values["FORMAT"] != 1 ||
+                values["PROVIDER"] != "debian-watchdog-observer") exit 1
+            print values["TARGET"] "\t" values["INSTALL_RUN_ID"]
+        }
+    ' "$config" | {
+        IFS=$'\t' read -r target run_id || return 1
+        debian_network_watchdog_valid_ipv4 "$target" || return 1
+        [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+        printf '%s\t%s' "$target" "$run_id"
+    }
+}
+
+debian_network_watchdog_observer_config_target() {
+    local fields
+    fields=$(debian_network_watchdog_observer_config_fields "$1") || return 1
+    printf '%s' "${fields%%$'\t'*}"
+}
+
+debian_network_watchdog_backup_for_run() {
+    local kind=$1 run_id=$2 candidate prefix
+    local -a matches=()
+    [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+    case $kind in
+        debian-systemd-companion) prefix=network-watchdog ;;
+        debian-watchdog-observer) prefix=network-watchdog-observer ;;
+        *) return 1 ;;
+    esac
+    shopt -s nullglob
+    for candidate in /var/lib/autopioverclock/backups/${prefix}-[0-9]*-${run_id}.*; do
+        [[ -d $candidate && ! -L $candidate ]] && matches+=("$candidate")
+    done
+    shopt -u nullglob
+    (( ${#matches[@]} == 1 )) || return 1
+    printf '%s' "${matches[0]}"
 }
 
 debian_network_watchdog_service_ready() {
@@ -2320,6 +2521,47 @@ debian_network_watchdog_service_ready() {
         [[ $argument == "$config" ]] && config_found=1
     done < <(tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null)
     (( keeper_found == 1 && config_found == 1 ))
+}
+
+debian_network_watchdog_observer_service_ready() {
+    local observer=$1 service=$2 pid argument observer_found=0
+    [[ -f $observer && ! -L $observer && -f $service && ! -L $service ]] || return 1
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl is-enabled --quiet autopioverclock-network-watchdog-observer.service 2>/dev/null || return 1
+    systemctl is-active --quiet autopioverclock-network-watchdog-observer.service 2>/dev/null || return 1
+    systemctl is-active --quiet watchdog.service 2>/dev/null || return 1
+    pid=$(systemctl show --property=MainPID --value autopioverclock-network-watchdog-observer.service 2>/dev/null || true)
+    [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/cmdline ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    while IFS= read -r argument; do
+        [[ $argument == "$observer" ]] && observer_found=1
+    done < <(tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null)
+    (( observer_found == 1 ))
+}
+
+debian_network_watchdog_asset_paths_ready() {
+    local installer=$1 payload=$2 service=$3 run_id=$4 marker=$5
+    local installer_directory payload_directory service_directory run_root
+    [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+    [[ -f $installer && ! -L $installer && -x $installer ]] || return 1
+    [[ -f $payload && ! -L $payload && -f $service && ! -L $service ]] || return 1
+    installer_directory=$(readlink -f -- "${installer%/*}" 2>/dev/null || true)
+    payload_directory=$(readlink -f -- "${payload%/*}" 2>/dev/null || true)
+    service_directory=$(readlink -f -- "${service%/*}" 2>/dev/null || true)
+    run_root="/tmp/autopioverclock-${run_id}"
+    [[ -n $installer_directory && $installer_directory == "$payload_directory" &&
+       $installer_directory == "$service_directory" && $installer_directory == "$run_root"/* ]] || return 1
+    grep -Fq "$marker" "$installer" && grep -Fq "$marker" "$payload" && grep -Fq "$marker" "$service"
+}
+
+debian_network_watchdog_installer_ready() {
+    local installer=$1 run_id=$2 marker=$3 installer_directory run_root
+    [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+    [[ -f $installer && ! -L $installer && -x $installer ]] || return 1
+    installer_directory=$(readlink -f -- "${installer%/*}" 2>/dev/null || true)
+    run_root="/tmp/autopioverclock-${run_id}"
+    [[ -n $installer_directory && ( $installer_directory == "$run_root" || $installer_directory == "$run_root"/* ) ]] || return 1
+    grep -Fq "$marker" "$installer"
 }
 
 debian_network_watchdog_event_fields() {
@@ -2358,38 +2600,89 @@ debian_network_watchdog_event_fields() {
 
 cmd_plan_network_watchdog() {
     local installer=${1:-} keeper=${2:-} service=${3:-} run_id=${4:-}
-    [[ -x $installer && ! -L $installer && -f $keeper && ! -L $keeper && -f $service && ! -L $service ]] || {
-        emit_result PREFLIGHT_FAILURE 'The uploaded Debian network-watchdog assets are missing or unsafe.'
+    debian_network_watchdog_asset_paths_ready "$installer" "$keeper" "$service" "$run_id" \
+        'AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG' || {
+        emit_result PREFLIGHT_FAILURE 'The uploaded Debian network-watchdog assets are missing, foreign, or unsafe.'
         return 1
     }
     "$installer" plan "$keeper" "$service" "$run_id"
 }
 
-cmd_install_network_watchdog() {
-    local installer=${1:-} keeper=${2:-} service=${3:-}
-    [[ -x $installer && ! -L $installer && -f $keeper && ! -L $keeper && -f $service && ! -L $service ]] || {
-        emit_result PREFLIGHT_FAILURE 'The uploaded Debian network-watchdog assets are missing or unsafe.'
+cmd_plan_network_watchdog_observer() {
+    local installer=${1:-} observer=${2:-} service=${3:-} run_id=${4:-}
+    debian_network_watchdog_asset_paths_ready "$installer" "$observer" "$service" "$run_id" \
+        'AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER' || {
+        emit_result PREFLIGHT_FAILURE 'The uploaded Debian watchdog-observer assets are missing, foreign, or unsafe.'
         return 1
     }
-    "$installer" apply "$@"
+    "$installer" plan "$observer" "$service" "$run_id"
+}
+
+cmd_install_network_watchdog() {
+    local installer=${1:-} keeper=${2:-} service=${3:-} run_id=${4:-}
+    debian_network_watchdog_asset_paths_ready "$installer" "$keeper" "$service" "$run_id" \
+        'AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG' || {
+        emit_result PREFLIGHT_FAILURE 'The uploaded Debian network-watchdog assets are missing, foreign, or unsafe.'
+        return 1
+    }
+    "$installer" apply "$keeper" "$service" "${@:4}"
+}
+
+cmd_install_network_watchdog_observer() {
+    local installer=${1:-} observer=${2:-} service=${3:-} run_id=${4:-}
+    debian_network_watchdog_asset_paths_ready "$installer" "$observer" "$service" "$run_id" \
+        'AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER' || {
+        emit_result PREFLIGHT_FAILURE 'The uploaded Debian watchdog-observer assets are missing, foreign, or unsafe.'
+        return 1
+    }
+    "$installer" apply "$observer" "$service" "${@:4}"
+}
+
+cmd_cleanup_network_watchdog() {
+    local installer=${1:-} run_id=${2:-} marker
+    if [[ $installer == *observer* ]]; then
+        marker='AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER'
+    else
+        marker='AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG'
+    fi
+    debian_network_watchdog_installer_ready "$installer" "$run_id" "$marker" || {
+        emit_result RECOVERY_FAILURE 'The uploaded Debian watchdog cleanup installer is missing or unsafe.'
+        return 1
+    }
+    "$installer" cleanup "${@:2}"
 }
 
 cmd_prove_network_watchdog_reboot() {
     local expected_old_boot=${1:-} expected_new_boot=${2:-} expected_target=${3:-}
     local expected_config_hash=${4:-} expected_keeper_hash=${5:-} expected_service_hash=${6:-}
-    local previous_event=${7:-}
+    local expected_kind=${7:-} previous_event=${8:-}
     local root=/var/lib/autopioverclock/network-watchdog
-    local config=$root/watchdog.conf keeper=/usr/local/lib/autopioverclock/network-watchdog-keeper.py
+    local config keeper service proof_method
     local event=$root/last-network-reboot pending=$root/pending-network-reboot log=$root/watchdog.log
-    local service=/etc/systemd/system/autopioverclock-network-watchdog.service
     local fields format event_id source_boot target failure_epoch request_epoch marker_config_hash marker_keeper_hash marker_service_hash reason
-    local current_boot config_target config_hash keeper_hash service_hash now uptime boot_epoch
+    local current_boot config_target config_hash keeper_hash service_hash native_target now uptime boot_epoch
     [[ $expected_old_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
        $expected_new_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
-       $expected_old_boot != "$expected_new_boot" && ( -z $previous_event || $previous_event =~ ^[0-9a-f]{32}$ ) ]] || {
+       $expected_old_boot != "$expected_new_boot" &&
+       ( $expected_kind == debian-systemd-companion || $expected_kind == debian-watchdog-observer ) &&
+       ( -z $previous_event || $previous_event =~ ^[0-9a-f]{32}$ ) ]] || {
         emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed boot identity.'
         return 1
     }
+    case $expected_kind in
+        debian-systemd-companion)
+            config=$root/watchdog.conf
+            keeper=/usr/local/lib/autopioverclock/network-watchdog-keeper.py
+            service=/etc/systemd/system/autopioverclock-network-watchdog.service
+            proof_method=systemctl-reboot
+            ;;
+        debian-watchdog-observer)
+            config=$root/observer.conf
+            keeper=/usr/local/lib/autopioverclock/network-watchdog-observer.py
+            service=/etc/systemd/system/autopioverclock-network-watchdog-observer.service
+            proof_method=debian-watchdog-journal
+            ;;
+    esac
     debian_network_watchdog_valid_ipv4 "$expected_target" && valid_sha256 "$expected_config_hash" &&
         valid_sha256 "$expected_keeper_hash" && valid_sha256 "$expected_service_hash" || {
         emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed saved discovery hashes.'
@@ -2422,7 +2715,16 @@ cmd_prove_network_watchdog_reboot() {
         emit_result HARNESS_FAILURE 'The project-owned network-watchdog marker does not identify this reboot uniquely.'
         return 1
     }
-    config_target=$(debian_network_watchdog_config_target "$config" || true)
+    if [[ $expected_kind == debian-watchdog-observer ]]; then
+        config_target=$(debian_network_watchdog_observer_config_target "$config" || true)
+        native_target=$(debian_native_network_watchdog_target || true)
+        [[ -n $native_target && $native_target == "$expected_target" ]] || {
+            emit_result HARNESS_FAILURE 'The native Debian watchdog no longer has the observed liveness target.'
+            return 1
+        }
+    else
+        config_target=$(debian_network_watchdog_config_target "$config" || true)
+    fi
     [[ -n $config_target && $target == "$config_target" && $target == "$expected_target" ]] || {
         emit_result HARNESS_FAILURE 'The network-watchdog marker target does not match the active managed configuration.'
         return 1
@@ -2451,15 +2753,19 @@ cmd_prove_network_watchdog_reboot() {
         emit_result HARNESS_FAILURE 'The durable watchdog log does not corroborate the accepted reboot request.'
         return 1
     }
-    grep -Eq "network_reboot_prepared event_id=$event_id source_boot_id=$source_boot target=$target prepared_epoch=[1-9][0-9]*$" "$log" || {
+    grep -Eq "network_reboot_prepared event_id=$event_id source_boot_id=$source_boot target=$target prepared_epoch=[1-9][0-9]*( method=debian-watchdog-journal)?$" "$log" || {
         emit_result HARNESS_FAILURE 'The durable watchdog log does not corroborate preparation of the reboot request.'
         return 1
     }
-    grep -Fq "network_reboot_committed event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch method=systemctl-reboot" "$log" || {
+    grep -Eq "network_reboot_committed event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch method=$proof_method( outcome=[A-Za-z0-9-]+)?$" "$log" || {
         emit_result HARNESS_FAILURE 'The durable watchdog log does not prove that systemd accepted this reboot request.'
         return 1
     }
-    debian_network_watchdog_service_ready "$keeper" "$config" "$service" || {
+    if [[ $expected_kind == debian-watchdog-observer ]]; then
+        debian_network_watchdog_observer_service_ready "$keeper" "$service"
+    else
+        debian_network_watchdog_service_ready "$keeper" "$config" "$service"
+    fi || {
         emit_result HARNESS_FAILURE 'The project-owned network-watchdog service is not active with the verified assets.'
         return 1
     }
@@ -2505,6 +2811,9 @@ main() {
         repair-watchdogs) run_with_mutation_lock "watchdog-${5:-}" PREFLIGHT_FAILURE cmd_repair_watchdogs "$@" ;;
         plan-network-watchdog) cmd_plan_network_watchdog "$@" ;;
         install-network-watchdog) run_with_mutation_lock "network-watchdog-${4:-}" PREFLIGHT_FAILURE cmd_install_network_watchdog "$@" ;;
+        plan-network-watchdog-observer) cmd_plan_network_watchdog_observer "$@" ;;
+        install-network-watchdog-observer) run_with_mutation_lock "network-watchdog-observer-${4:-}" PREFLIGHT_FAILURE cmd_install_network_watchdog_observer "$@" ;;
+        cleanup-network-watchdog) run_with_mutation_lock "network-watchdog-cleanup-${2:-}" RECOVERY_FAILURE cmd_cleanup_network_watchdog "$@" ;;
         prove-network-watchdog-reboot) cmd_prove_network_watchdog_reboot "$@" ;;
         classify-kernel-log) cmd_classify_kernel_log "$@" ;;
         *) emit_result HARNESS_FAILURE "Unknown worker command: $command_name"; return 2 ;;

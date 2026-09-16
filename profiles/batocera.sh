@@ -143,7 +143,8 @@ apo_profile_watchdogs_ready() {
 }
 
 apo_profile_network_watchdog_ready() {
-    [[ ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-} == batocera-hardware-keeper &&
+    [[ ( ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-} == batocera-hardware-keeper ||
+         ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-} == batocera-network-companion ) &&
        ${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]:-0} == 1 &&
        ${APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]:-} =~ ^[0-9]+([.][0-9]+){3}$ &&
        ${APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]:-} =~ ^[0-9a-f]{64}$ &&
@@ -158,9 +159,149 @@ apo_profile_watchdog_description() {
         "${APO_DISCOVERY[WATCHDOG_OWNER]:-missing}"
 }
 
+apo_profile_install_network_watchdog_companion() {
+    local local_asset_dir=${APO_ROOT}/assets/batocera remote_asset_dir=${APO_REMOTE_WORK_DIR}/network-watchdog-assets
+    local local_installer=$local_asset_dir/install_network_watchdog.sh
+    local local_keeper=${APO_ROOT}/assets/debian/network_watchdog_keeper.py
+    local local_service=$local_asset_dir/AutoPiOverclockNetworkWatchdog
+    local remote_installer=$remote_asset_dir/install_network_watchdog.sh
+    local remote_keeper=$remote_asset_dir/network_watchdog_keeper.py
+    local remote_service=$remote_asset_dir/AutoPiOverclockNetworkWatchdog
+    local target keeper_hash service_hash config_hash platform_old_hash platform_new_hash
+    local reported_target reported_config_hash backup_path local_keeper_hash local_service_hash
+    [[ -r $local_installer && -r $local_keeper && -r $local_service ]] || {
+        APO_LAST_CLASS=PREFLIGHT_FAILURE
+        APO_LAST_REASON='The packaged Batocera network-watchdog companion assets are missing.'
+        return 1
+    }
+    apo_remote_upload_root "$local_installer" "$remote_installer" || return 1
+    apo_remote_upload_root "$local_keeper" "$remote_keeper" || return 1
+    apo_remote_upload_root "$local_service" "$remote_service" || return 1
+    apo_run_worker_capture network-watchdog-plan plan-network-watchdog-companion \
+        "$remote_installer" "$remote_keeper" "$remote_service" "$APO_RUN_ID" || return 1
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    target=${APO_WORKER_DATA[NETWORK_WATCHDOG_TARGET]:-}
+    keeper_hash=${APO_WORKER_DATA[NETWORK_WATCHDOG_KEEPER_HASH]:-}
+    service_hash=${APO_WORKER_DATA[NETWORK_WATCHDOG_SERVICE_HASH]:-}
+    config_hash=${APO_WORKER_DATA[NETWORK_WATCHDOG_CONFIG_HASH]:-}
+    platform_old_hash=${APO_WORKER_DATA[NETWORK_WATCHDOG_BATOCERA_OLD_HASH]:-}
+    platform_new_hash=${APO_WORKER_DATA[NETWORK_WATCHDOG_BATOCERA_NEW_HASH]:-}
+    local_keeper_hash=$(sha256sum "$local_keeper" | awk 'NR == 1 {print $1}')
+    local_service_hash=$(sha256sum "$local_service" | awk 'NR == 1 {print $1}')
+    if [[ ! $target =~ ^[0-9]+([.][0-9]+){3}$ || $keeper_hash != "$local_keeper_hash" ||
+          $service_hash != "$local_service_hash" || ! $config_hash =~ ^[0-9a-f]{64}$ ||
+          ! $platform_old_hash =~ ^[0-9a-f]{64}$ || ! $platform_new_hash =~ ^[0-9a-f]{64}$ ||
+          ${APO_WORKER_DATA[NETWORK_WATCHDOG_OLD_KEEPER_HASH]:-} != absent ||
+          ${APO_WORKER_DATA[NETWORK_WATCHDOG_OLD_SERVICE_HASH]:-} != absent ||
+          ${APO_WORKER_DATA[NETWORK_WATCHDOG_OLD_CONFIG_HASH]:-} != absent ]]; then
+        APO_LAST_CLASS=PREFLIGHT_FAILURE
+        APO_LAST_REASON='The Batocera network-watchdog installation plan could not be verified.'
+        return 1
+    fi
+    apo_state_set NETWORK_WATCHDOG_INSTALL_KIND batocera-network-companion
+    apo_state_set NETWORK_WATCHDOG_INSTALL_TARGET "$target"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_CONFIG_HASH "$config_hash"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_KEEPER_HASH "$keeper_hash"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_SERVICE_HASH "$service_hash"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_KEEPER_HASH absent
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_HASH absent
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_CONFIG_HASH absent
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ENABLED 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ACTIVE 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH "$platform_old_hash"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH "$platform_new_hash"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS PLANNED
+    apo_state_save
+    apo_state_set MUTATIONS_STARTED 1
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS MUTATING
+    apo_state_save
+    apo_run_worker_capture network-watchdog-install install-network-watchdog-companion \
+        "$remote_installer" "$remote_keeper" "$remote_service" "$APO_RUN_ID" "$target" \
+        "$keeper_hash" "$service_hash" "$config_hash" "$platform_old_hash" "$platform_new_hash" || return 1
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    reported_target=${APO_WORKER_DATA[NETWORK_WATCHDOG_TARGET]:-}
+    reported_config_hash=${APO_WORKER_DATA[NETWORK_WATCHDOG_CONFIG_HASH]:-}
+    backup_path=${APO_WORKER_DATA[NETWORK_WATCHDOG_BACKUP]:-}
+    [[ $reported_target == "$target" && $reported_config_hash == "$config_hash" && -n $backup_path ]] || {
+        APO_LAST_CLASS=PREFLIGHT_FAILURE
+        APO_LAST_REASON='The installed Batocera network-watchdog result could not be matched to its plan.'
+        apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS RESULT_UNVERIFIED
+        apo_state_save
+        return 1
+    }
+    apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 1
+    apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP "$backup_path"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS INSTALLED
+    apo_state_save
+}
+
+apo_profile_reconcile_network_watchdog_install() {
+    local local_asset_dir=${APO_ROOT}/assets/batocera remote_asset_dir=${APO_REMOTE_WORK_DIR}/network-watchdog-reconcile-assets
+    local local_installer=$local_asset_dir/install_network_watchdog.sh
+    local local_keeper=${APO_ROOT}/assets/debian/network_watchdog_keeper.py
+    local local_service=$local_asset_dir/AutoPiOverclockNetworkWatchdog
+    local remote_installer=$remote_asset_dir/install_network_watchdog.sh
+    local remote_keeper=$remote_asset_dir/network_watchdog_keeper.py
+    local remote_service=$remote_asset_dir/AutoPiOverclockNetworkWatchdog
+    local target keeper_hash service_hash config_hash platform_old_hash platform_new_hash live_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+    local reported_target reported_config_hash backup_path local_keeper_hash local_service_hash
+    [[ $(apo_state_get NETWORK_WATCHDOG_INSTALL_KIND '') == batocera-network-companion ]] || return 1
+    [[ -z $live_run || $live_run == "$APO_RUN_ID" ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='A foreign Batocera network-watchdog installation occupies the protected project paths.'
+        return 1
+    }
+    target=$(apo_state_get NETWORK_WATCHDOG_INSTALL_TARGET '')
+    keeper_hash=$(apo_state_get NETWORK_WATCHDOG_INSTALL_KEEPER_HASH '')
+    service_hash=$(apo_state_get NETWORK_WATCHDOG_INSTALL_SERVICE_HASH '')
+    config_hash=$(apo_state_get NETWORK_WATCHDOG_INSTALL_CONFIG_HASH '')
+    platform_old_hash=$(apo_state_get NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH '')
+    platform_new_hash=$(apo_state_get NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH '')
+    [[ -r $local_installer && -r $local_keeper && -r $local_service &&
+       $target =~ ^[0-9]+([.][0-9]+){3}$ && $keeper_hash =~ ^[0-9a-f]{64}$ &&
+       $service_hash =~ ^[0-9a-f]{64}$ && $config_hash =~ ^[0-9a-f]{64}$ &&
+       $platform_old_hash =~ ^[0-9a-f]{64}$ && $platform_new_hash =~ ^[0-9a-f]{64}$ ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The interrupted Batocera network-watchdog checkpoint is incomplete.'
+        return 1
+    }
+    local_keeper_hash=$(sha256sum "$local_keeper" | awk 'NR == 1 {print $1}')
+    local_service_hash=$(sha256sum "$local_service" | awk 'NR == 1 {print $1}')
+    [[ $keeper_hash == "$local_keeper_hash" && $service_hash == "$local_service_hash" ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The packaged Batocera network-watchdog assets changed after the interrupted installation checkpoint.'
+        return 1
+    }
+    apo_remote_upload_root "$local_installer" "$remote_installer" || return 1
+    apo_remote_upload_root "$local_keeper" "$remote_keeper" || return 1
+    apo_remote_upload_root "$local_service" "$remote_service" || return 1
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS RECONCILING
+    apo_state_save
+    apo_run_worker_capture network-watchdog-reconcile install-network-watchdog-companion \
+        "$remote_installer" "$remote_keeper" "$remote_service" "$APO_RUN_ID" "$target" \
+        "$keeper_hash" "$service_hash" "$config_hash" "$platform_old_hash" "$platform_new_hash" || return 1
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    reported_target=${APO_WORKER_DATA[NETWORK_WATCHDOG_TARGET]:-}
+    reported_config_hash=${APO_WORKER_DATA[NETWORK_WATCHDOG_CONFIG_HASH]:-}
+    backup_path=${APO_WORKER_DATA[NETWORK_WATCHDOG_BACKUP]:-}
+    [[ $reported_target == "$target" && $reported_config_hash == "$config_hash" && -n $backup_path ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The reconciled Batocera network-watchdog result could not be matched to its checkpoint.'
+        apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS RESULT_UNVERIFIED
+        apo_state_save
+        return 1
+    }
+    apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 1
+    apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP "$backup_path"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS INSTALLED
+    apo_state_save
+    apo_event network-watchdog-reconcile PASS '' 'Reconciled the interrupted run-owned Batocera network-watchdog installation from hash-bound target evidence.'
+}
+
 apo_profile_prove_network_watchdog_reboot() {
     local context=$1 old_boot=$2 new_boot=$3 output_file='' rc attempt attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5}
-    local expected_target expected_config_hash expected_keeper_hash expected_service_hash previous_event
+    local expected_kind expected_target expected_config_hash expected_keeper_hash expected_service_hash previous_event
+    expected_kind=$(apo_state_get DISC_NETWORK_WATCHDOG_KIND '')
     expected_target=$(apo_state_get DISC_NETWORK_WATCHDOG_TARGET '')
     expected_config_hash=$(apo_state_get DISC_NETWORK_WATCHDOG_CONFIG_HASH '')
     expected_keeper_hash=$(apo_state_get DISC_NETWORK_WATCHDOG_KEEPER_HASH '')
@@ -176,7 +317,7 @@ apo_profile_prove_network_watchdog_reboot() {
         # 30-attempt loop, neither of which is valid for a structured proof miss.
         if apo_run_worker_capture_once "${context}-network-watchdog-proof" prove-network-watchdog-reboot \
             "$old_boot" "$new_boot" "$expected_target" "$expected_config_hash" \
-            "$expected_keeper_hash" "$expected_service_hash" "$previous_event"; then
+            "$expected_keeper_hash" "$expected_service_hash" "$expected_kind" "$previous_event"; then
             rc=0
         else
             rc=$?
@@ -201,6 +342,32 @@ apo_profile_prove_network_watchdog_reboot() {
        $APO_NETWORK_WATCHDOG_REQUESTED_EPOCH =~ ^[1-9][0-9]*$ &&
        ${APO_WORKER_DATA[NETWORK_WATCHDOG_SOURCE_BOOT_ID]:-} == "$old_boot" ]] || return 1
     APO_NETWORK_WATCHDOG_PROOF_REASON="Project-owned Batocera watchdog evidence proves that liveness target $APO_NETWORK_WATCHDOG_TARGET caused the reboot from boot $old_boot."
+}
+
+apo_profile_cleanup_run_watchdog() {
+    local installer=${APO_ROOT}/assets/batocera/install_network_watchdog.sh
+    local remote_installer=${APO_REMOTE_WORK_DIR}/network-watchdog-cleanup.sh
+    [[ $(apo_state_get NETWORK_WATCHDOG_INSTALLED_BY_RUN 0) == 1 ]] || return 0
+    [[ $(apo_state_get NETWORK_WATCHDOG_INSTALL_KIND '') == batocera-network-companion ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The run-owned Batocera watchdog provider is malformed.'
+        return 1
+    }
+    apo_remote_upload_root "$installer" "$remote_installer" || return 1
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS CLEANING
+    apo_state_save
+    apo_run_worker_capture network-watchdog-cleanup cleanup-network-watchdog-companion \
+        "$remote_installer" "$APO_RUN_ID" \
+        "$(apo_state_get NETWORK_WATCHDOG_INSTALL_BACKUP '')" \
+        "$(apo_state_get NETWORK_WATCHDOG_INSTALL_CONFIG_HASH '')" \
+        "$(apo_state_get NETWORK_WATCHDOG_INSTALL_KEEPER_HASH '')" \
+        "$(apo_state_get NETWORK_WATCHDOG_INSTALL_SERVICE_HASH '')" \
+        "$(apo_state_get NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH '')" \
+        "$(apo_state_get NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH '')" || return 1
+    apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS REMOVED
+    apo_state_save
+    apo_event network-watchdog-cleanup PASS '' 'Removed only the run-owned Batocera network-watchdog companion and retained native watchdogs and durable evidence.'
 }
 
 apo_profile_repair_watchdogs() {

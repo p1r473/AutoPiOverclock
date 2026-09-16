@@ -27,12 +27,18 @@ INSTALLED_DEBIAN_ASSETS="$TEMP_DIR/usr/local/lib/autopioverclock/assets/debian"
 [[ -x $TEMP_DIR/usr/local/lib/autopioverclock/workers/debian-worker.sh ]]
 [[ -x $TEMP_DIR/usr/local/lib/autopioverclock/tools/build-batocera-bundle.sh ]]
 [[ -x $INSTALLED_ASSETS/AutoPiOverclockWatchdog ]]
+[[ -x $INSTALLED_ASSETS/AutoPiOverclockNetworkWatchdog ]]
+[[ -x $INSTALLED_ASSETS/install_network_watchdog.sh ]]
 [[ -x $INSTALLED_ASSETS/install_watchdog.sh ]]
 [[ -x $INSTALLED_ASSETS/watchdog_keeper.py ]]
 [[ ! -e $INSTALLED_ASSETS/__pycache__ ]]
 [[ -x $INSTALLED_DEBIAN_ASSETS/install_network_watchdog.sh ]]
+[[ -x $INSTALLED_DEBIAN_ASSETS/install_network_watchdog_observer.sh ]]
 [[ -x $INSTALLED_DEBIAN_ASSETS/network_watchdog_keeper.py ]]
+[[ -x $INSTALLED_DEBIAN_ASSETS/network_watchdog_observer.py ]]
 [[ -r $INSTALLED_DEBIAN_ASSETS/autopioverclock-network-watchdog.service ]]
 [[ ! -x $INSTALLED_DEBIAN_ASSETS/autopioverclock-network-watchdog.service ]]
+[[ -r $INSTALLED_DEBIAN_ASSETS/autopioverclock-network-watchdog-observer.service ]]
+[[ ! -x $INSTALLED_DEBIAN_ASSETS/autopioverclock-network-watchdog-observer.service ]]
 
 printf 'test_install: PASS\n'

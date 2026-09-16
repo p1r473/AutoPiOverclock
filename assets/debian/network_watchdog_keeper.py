@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""AutoPiOverclock Debian network-liveness companion.
+"""AutoPiOverclock network-liveness companion.
 
-This process never opens or feeds a hardware watchdog. systemd remains the
-hardware-watchdog owner. The companion only requests a normal reboot after a
+This process never opens or feeds a hardware watchdog. The platform's existing
+hardware-watchdog owner remains unchanged. The companion requests a reboot after a
 bounded, persistent network-loss decision and writes strict attribution proof.
 """
 
@@ -12,6 +12,7 @@ import hashlib
 import ipaddress
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import signal
@@ -21,11 +22,15 @@ import tempfile
 import time
 import uuid
 
-MANAGED_MARKER = "AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG"
 EVENT_MARKER = "AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1"
-KEEPER_PATH = Path("/usr/local/lib/autopioverclock/network-watchdog-keeper.py")
-SERVICE_PATH = Path("/etc/systemd/system/autopioverclock-network-watchdog.service")
+DEBIAN_CONFIG_PATH = Path("/var/lib/autopioverclock/network-watchdog/watchdog.conf")
+DEBIAN_KEEPER_PATH = Path("/usr/local/lib/autopioverclock/network-watchdog-keeper.py")
+DEBIAN_SERVICE_PATH = Path("/etc/systemd/system/autopioverclock-network-watchdog.service")
+BATOCERA_CONFIG_PATH = Path("/userdata/system/autopioverclock/network-watchdog/watchdog.conf")
+BATOCERA_KEEPER_PATH = Path("/userdata/system/autopioverclock/network-watchdog/network_watchdog_keeper.py")
+BATOCERA_SERVICE_PATH = Path("/userdata/system/services/AutoPiOverclockNetworkWatchdog")
 ALLOWED_KEYS = {
+    "RUN_ID",
     "TARGET",
     "PING_TIMEOUT_SECONDS",
     "CHECK_INTERVAL_SECONDS",
@@ -36,14 +41,14 @@ ALLOWED_KEYS = {
 }
 
 
-def read_config(path: Path) -> dict[str, str]:
+def read_config(path: Path, managed_marker: str) -> dict[str, str]:
     values: dict[str, str] = {}
     marker_count = 0
     for raw_line in path.read_text(encoding="ascii").splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if line == f"# {MANAGED_MARKER}":
+        if line == f"# {managed_marker}":
             marker_count += 1
             continue
         if line.startswith("#") or "=" not in line:
@@ -54,6 +59,8 @@ def read_config(path: Path) -> dict[str, str]:
         values[key] = value
     if marker_count != 1 or set(values) != ALLOWED_KEYS:
         raise ValueError("configuration ownership or required keys are invalid")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", values["RUN_ID"]):
+        raise ValueError("configuration run ID is malformed")
     ipaddress.IPv4Address(values["TARGET"])
     limits = {
         "PING_TIMEOUT_SECONDS": (1, 30),
@@ -72,7 +79,19 @@ def read_config(path: Path) -> dict[str, str]:
 
 class Keeper:
     def __init__(self, config_path: Path) -> None:
-        config = read_config(config_path)
+        if config_path == DEBIAN_CONFIG_PATH:
+            managed_marker = "AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG"
+            self.keeper_path = DEBIAN_KEEPER_PATH
+            self.service_path = DEBIAN_SERVICE_PATH
+            self.reboot_method = "systemctl-reboot"
+        elif config_path == BATOCERA_CONFIG_PATH:
+            managed_marker = "AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG"
+            self.keeper_path = BATOCERA_KEEPER_PATH
+            self.service_path = BATOCERA_SERVICE_PATH
+            self.reboot_method = "batocera-reboot"
+        else:
+            raise ValueError("configuration path is not an allowed platform path")
+        config = read_config(config_path, managed_marker)
         self.config_path = config_path
         self.target = config["TARGET"]
         self.ping_timeout = int(config["PING_TIMEOUT_SECONDS"])
@@ -89,9 +108,9 @@ class Keeper:
         self.stop_requested = False
         self.reboot_committed = False
         self.ping_binary = shutil.which("ping")
-        self.systemctl_binary = shutil.which("systemctl")
-        if not self.ping_binary or not self.systemctl_binary:
-            raise RuntimeError("ping or systemctl is unavailable")
+        self.reboot_binary = shutil.which("systemctl") if self.reboot_method == "systemctl-reboot" else shutil.which("reboot")
+        if not self.ping_binary or not self.reboot_binary:
+            raise RuntimeError("ping or the platform reboot command is unavailable")
 
     @staticmethod
     def file_sha256(path: Path) -> str:
@@ -194,8 +213,8 @@ class Keeper:
             f"FAILURE_STARTED_EPOCH={failure_epoch}\n"
             f"REBOOT_REQUESTED_EPOCH={request_epoch}\n"
             f"CONFIG_SHA256={self.file_sha256(self.config_path)}\n"
-            f"KEEPER_SHA256={self.file_sha256(KEEPER_PATH)}\n"
-            f"SERVICE_SHA256={self.file_sha256(SERVICE_PATH)}\n"
+            f"KEEPER_SHA256={self.file_sha256(self.keeper_path)}\n"
+            f"SERVICE_SHA256={self.file_sha256(self.service_path)}\n"
             "REASON=TARGET_UNREACHABLE\n"
         )
 
@@ -246,9 +265,9 @@ class Keeper:
                     raise ValueError("event asset hash is malformed")
             if values["CONFIG_SHA256"] != self.file_sha256(self.config_path):
                 raise ValueError("event config hash no longer matches")
-            if values["KEEPER_SHA256"] != self.file_sha256(KEEPER_PATH):
+            if values["KEEPER_SHA256"] != self.file_sha256(self.keeper_path):
                 raise ValueError("event keeper hash no longer matches")
-            if values["SERVICE_SHA256"] != self.file_sha256(SERVICE_PATH):
+            if values["SERVICE_SHA256"] != self.file_sha256(self.service_path):
                 raise ValueError("event service hash no longer matches")
             if values["REASON"] != "TARGET_UNREACHABLE":
                 raise ValueError("event reason is malformed")
@@ -341,8 +360,9 @@ class Keeper:
             f"event_id={event_id} source_boot_id={source_boot_id} "
             f"target={self.target} prepared_epoch={prepared_epoch}"
         )
+        reboot_command = [self.reboot_binary, "--no-block", "reboot"] if self.reboot_method == "systemctl-reboot" else [self.reboot_binary]
         result = subprocess.run(
-            [self.systemctl_binary, "--no-block", "reboot"],
+            reboot_command,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, timeout=30, check=False,
         )
@@ -361,7 +381,7 @@ class Keeper:
         self.log(
             "network_reboot_committed "
             f"event_id={event_id} source_boot_id={source_boot_id} "
-            f"target={self.target} requested_epoch={accepted_epoch} method=systemctl-reboot"
+            f"target={self.target} requested_epoch={accepted_epoch} method={self.reboot_method}"
         )
         self.reboot_committed = True
         return True
@@ -373,7 +393,7 @@ class Keeper:
         next_check = started + self.startup_grace
         failure_started: float | None = None
         suppression_logged = False
-        self.log(f"started target={self.target} hardware_watchdog_owner=systemd")
+        self.log(f"started target={self.target} hardware_watchdog_owner=unchanged")
         while not self.stop_requested:
             now_mono = time.monotonic()
             if now_mono >= next_check:
@@ -404,7 +424,11 @@ def main() -> int:
     if len(sys.argv) != 2:
         print("usage: network_watchdog_keeper.py CONFIG", file=sys.stderr)
         return 2
-    keeper = Keeper(Path(sys.argv[1]))
+    try:
+        keeper = Keeper(Path(sys.argv[1]))
+    except Exception as error:
+        print(f"network-watchdog startup failed: {error}", file=sys.stderr)
+        return 1
     signal.signal(signal.SIGTERM, keeper.request_stop)
     signal.signal(signal.SIGINT, keeper.request_stop)
     signal.signal(signal.SIGHUP, keeper.request_stop)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.73 - 2026-09-16
+
+- Added run-scoped network-watchdog proof integration without changing an existing hardware watchdog, native Debian watchdog configuration, repair binary, or timeouts. Supported Debian watchdog daemons receive a passive proof observer; systems without a recognized network watcher receive an isolated temporary gateway watcher; recognized permanent Batocera keepers remain untouched.
+- Added crash-safe, hash-bound installation, reconciliation, ownership checks, and successful-run cleanup for temporary observers and companions. Interruptions and failures retain the run-owned component for resume, while cleanup preserves native watchdogs, backups, logs, harnesses, and evidence.
+- Tightened native Debian attribution to require the exact ping-failure, retry-timeout, and network-shutdown sequence for the configured target. A successful native repair clears pending attribution, unsupported or uninspectable active native watchers fail closed, and another run's temporary provider cannot be adopted.
+- Prevented network-watchdog setup during resume from refreshing the saved normal clock context from an active tryboot candidate.
+
 ## 0.1.0-alpha.72 - 2026-09-16
 
 - Recovered conservative network-watchdog credit from alpha.68 jobs whose single retained workload heartbeat arrived after the proved reboot request. The controller subtracts the entire post-request interval and caps the result at the request-to-start duration; missing, malformed, future-start, or history-bearing evidence still follows the strict existing paths.

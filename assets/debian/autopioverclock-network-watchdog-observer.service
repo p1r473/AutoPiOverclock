@@ -1,0 +1,19 @@
+# AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER
+[Unit]
+Description=AutoPiOverclock passive Debian watchdog proof companion
+After=systemd-journald.service local-fs.target
+Before=watchdog.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/autopioverclock/network-watchdog-observer.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/autopioverclock/network-watchdog
+
+[Install]
+WantedBy=multi-user.target

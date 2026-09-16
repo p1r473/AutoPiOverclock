@@ -73,6 +73,7 @@ done
 NETWORK_CONFIG="$TEMP_DIR/debian-network-watchdog.conf"
 cat >"$NETWORK_CONFIG" <<'APO_NETWORK_CONFIG'
 # AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG
+RUN_ID=fixture
 TARGET=192.0.2.1
 PING_TIMEOUT_SECONDS=2
 CHECK_INTERVAL_SECONDS=10
@@ -106,6 +107,16 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" EVENT_FILE="
     source "$WORKER"
     [[ $(network_watchdog_event_fields "$EVENT_FILE") == $'"'"'1\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t11111111-2222-3333-4444-555555555555\t192.0.2.1\t1000\t1200\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\tdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\tTARGET_UNREACHABLE'"'"' ]]
 '
+
+BATOCERA_NETWORK_CONFIG="$TEMP_DIR/batocera-network-watchdog.conf"
+sed \
+    -e 's/MANAGED DEBIAN NETWORK WATCHDOG/MANAGED BATOCERA NETWORK WATCHDOG/' \
+    "$NETWORK_CONFIG" >"$BATOCERA_NETWORK_CONFIG"
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" BATOCERA_NETWORK_CONFIG="$BATOCERA_NETWORK_CONFIG" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    [[ $(batocera_network_companion_config_fields "$BATOCERA_NETWORK_CONFIG") == $'"'"'192.0.2.1\tfixture'"'"' ]]
+'
 printf 'TARGET=192.0.2.2\n' >>"$NETWORK_CONFIG"
 if APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" NETWORK_CONFIG="$NETWORK_CONFIG" bash -c '
     set -Eeuo pipefail
@@ -115,6 +126,38 @@ if APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" NETWORK_CON
     echo 'duplicate Debian network-watchdog target was accepted' >&2
     exit 1
 fi
+
+NATIVE_NETWORK_CONFIG="$TEMP_DIR/native-watchdog.conf"
+cat >"$NATIVE_NETWORK_CONFIG" <<'APO_NATIVE_NETWORK_CONFIG'
+watchdog-device = /dev/watchdog0
+ping = gateway.example.invalid
+retry-timeout = 60
+APO_NATIVE_NETWORK_CONFIG
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" NATIVE_NETWORK_CONFIG="$NATIVE_NETWORK_CONFIG" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    debian_native_network_watchdog_config_path() { printf "%s" "$NATIVE_NETWORK_CONFIG"; }
+    debian_native_network_watchdog_present
+    ! debian_native_network_watchdog_target >/dev/null
+'
+sed -i '/^[[:space:]]*ping[[:space:]]*=/d' "$NATIVE_NETWORK_CONFIG"
+if APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" NATIVE_NETWORK_CONFIG="$NATIVE_NETWORK_CONFIG" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    debian_native_network_watchdog_config_path() { printf "%s" "$NATIVE_NETWORK_CONFIG"; }
+    debian_native_network_watchdog_present
+'; then
+    printf 'hardware-only native watchdog was misclassified as a network watcher\n' >&2
+    exit 1
+fi
+
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    debian_native_watchdog_service_active() { return 0; }
+    debian_native_network_watchdog_config_path() { return 1; }
+    debian_native_network_watchdog_blocks_fallback
+'
 
 APO_WORKER_LIBRARY_ONLY=1 TEST_ROOT="$TEMP_DIR" WORKER="$ROOT/workers/batocera-worker.sh" bash -c '
     set -Eeuo pipefail
@@ -356,7 +399,7 @@ done
 # classification, and retry notices must not look like additional failures.
 for PROFILE_NAME in debian batocera; do
     PROFILE_PATH="$ROOT/profiles/${PROFILE_NAME}.sh"
-    PROFILE="$PROFILE_PATH" REPO_ROOT="$ROOT" TEST_ROOT="$TEMP_DIR/proof-$PROFILE_NAME" bash -c '
+    PROFILE="$PROFILE_PATH" PROFILE_NAME="$PROFILE_NAME" REPO_ROOT="$ROOT" TEST_ROOT="$TEMP_DIR/proof-$PROFILE_NAME" bash -c '
         set -Eeuo pipefail
         APO_ROOT=$REPO_ROOT
         APO_RUN_ID=fixture
@@ -378,6 +421,9 @@ for PROFILE_NAME in debian batocera; do
 
         apo_state_get() {
             case $1 in
+                DISC_NETWORK_WATCHDOG_KIND)
+                    if [[ $PROFILE_NAME == debian ]]; then printf debian-systemd-companion; else printf batocera-hardware-keeper; fi
+                    ;;
                 DISC_NETWORK_WATCHDOG_TARGET) printf 192.0.2.1 ;;
                 DISC_NETWORK_WATCHDOG_CONFIG_HASH) printf "%064d" 0 ;;
                 DISC_NETWORK_WATCHDOG_KEEPER_HASH) printf "%064d" 1 ;;
@@ -424,11 +470,11 @@ for PROFILE_NAME in debian batocera; do
     '
 done
 
-python3 - "$ROOT/assets/batocera/watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_keeper.py" <<'APO_KEEPER_COMPILE'
+python3 - "$ROOT/assets/batocera/watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_observer.py" <<'APO_KEEPER_COMPILE'
 from pathlib import Path
 import sys
 
-for source in sys.argv[1:]:
+for source in sys.argv[1:3]:
     text = Path(source).read_text(encoding="utf-8")
     compile(text, source, "exec")
     assert "AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1" in text
@@ -443,7 +489,93 @@ for source in sys.argv[1:]:
     assert "network_reboot_prepared" in text
     assert "network_reboot_committed" in text
     assert "network_reboot_accepted" in text
+
+observer_text = Path(sys.argv[3]).read_text(encoding="utf-8")
+compile(observer_text, sys.argv[3], "exec")
+assert "debian-watchdog-journal" in observer_text
+assert "INSTALL_RUN_ID" in observer_text
+assert "network_reboot_prepared" in observer_text
+assert "network_reboot_committed" in observer_text
+assert "network_reboot_accepted" in observer_text
 APO_KEEPER_COMPILE
+
+python3 - "$ROOT/assets/debian/network_watchdog_observer.py" "$TEMP_DIR" <<'APO_OBSERVER_STATE_MACHINE'
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+import sys
+import types
+
+source = Path(sys.argv[1])
+root = Path(sys.argv[2]) / "observer-state-machine"
+root.mkdir()
+spec = spec_from_file_location("apo_watchdog_observer", source)
+assert spec is not None and spec.loader is not None
+module = module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def fixture():
+    observer = object.__new__(module.Observer)
+    observer.target = "192.0.2.1"
+    observer.root = root
+    observer.pending_path = root / "pending-network-reboot"
+    observer.event_path = root / "last-network-reboot"
+    observer.failure_started_epoch = None
+    observer.retry_timed_out_epoch = None
+    observer.current_event_id = None
+    observer.config = {
+        "EVIDENCE_WINDOW_SECONDS": "900",
+        "REPAIR_TIMEOUT_SECONDS": "60",
+    }
+    actions = []
+    logs = []
+
+    def prepare(self, epoch):
+        actions.append(("prepare", epoch))
+
+    def commit(self, epoch, outcome):
+        actions.append(("commit", epoch, outcome))
+
+    observer.prepare_event = types.MethodType(prepare, observer)
+    observer.commit_event = types.MethodType(commit, observer)
+    observer.log = logs.append
+    return observer, actions, logs
+
+
+observer, actions, logs = fixture()
+observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 100)
+assert not actions
+observer.handle_message("no response from ping (target: 192.0.2.99)", 101)
+assert observer.failure_started_epoch is None
+observer.handle_message("no response from ping (target: 192.0.2.1)", 102)
+observer.handle_message("repair binary /fixture returned 0 = 'Success'", 103)
+assert observer.failure_started_epoch is None
+assert observer.retry_timed_out_epoch is None
+observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 160)
+observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 161)
+assert not actions
+observer.handle_message("no response from ping (target: 192.0.2.1)", 170)
+observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 230)
+observer.handle_message("shutting down the system because of error 253 = 'load average too high'", 231)
+assert not actions
+observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 232)
+assert actions == [("prepare", 232), ("commit", 232, "native-shutdown-101")]
+
+observer, actions, logs = fixture()
+observer.handle_message("no response from ping (target: 192.0.2.1)", 200)
+observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 260)
+observer.handle_message("got answer from target 192.0.2.1", 261)
+observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 262)
+assert observer.failure_started_epoch is None
+assert observer.retry_timed_out_epoch is None
+assert not actions
+
+observer, actions, logs = fixture()
+observer.handle_message("no response from ping (target: 192.0.2.1)", 300)
+observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 360)
+observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 500)
+assert not actions
+APO_OBSERVER_STATE_MACHINE
 
 python3 - "$ROOT/assets/batocera/watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_keeper.py" "$TEMP_DIR" <<'APO_KEEPER_RECONCILE'
 from importlib.util import module_from_spec, spec_from_file_location
@@ -609,8 +741,54 @@ WATCHDOG_CONTROLLER_OUTPUT=$(APO_ROOT="$ROOT" bash -c '
 WATCHDOG_CONTROLLER_RC=$?
 set -e
 [[ $WATCHDOG_CONTROLLER_RC -eq 20 ]]
-[[ $WATCHDOG_CONTROLLER_OUTPUT == *'AutoPiOverclock never installs or configures watchdogs'* ]]
+[[ $WATCHDOG_CONTROLLER_OUTPUT == *'run-owned network watcher only after the platform hardware watchdog is safe'* ]]
 [[ $WATCHDOG_CONTROLLER_OUTPUT != *'unexpected-watchdog-mutation'* ]]
+
+APO_ROOT="$ROOT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/lib/common.sh"
+    source "$APO_ROOT/lib/detect.sh"
+
+    APO_PROFILE=debian
+    APO_RUN_ID=current-run
+    APO_PERMANENT_CONFIG_HASH=$(printf "%064d" 1)
+    declare -A APO_DISCOVERY=()
+    apo_discovery_capture() {
+        APO_DISCOVERY[PROFILE]=debian
+        APO_DISCOVERY[PERMANENT_HASH]=$APO_PERMANENT_CONFIG_HASH
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]=foreign-run
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]=/fixture
+    }
+    apo_state_get() { printf "%s" "${2-}"; }
+    if apo_network_watchdog_ensure_for_run; then
+        printf "foreign run-owned network watchdog was accepted\n" >&2
+        exit 1
+    fi
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+    [[ $APO_LAST_REASON == *"belongs to another resumable run"* ]]
+'
+
+APO_CLI_LIBRARY_ONLY=1 APO_ROOT="$ROOT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/autopioverclock"
+
+    APO_AUTO_APPLY=0
+    CLEANUP_CALLS=0
+    apo_state_get() {
+        case $1 in
+            STATUS) printf PASS ;;
+            PHASE) printf COMPLETE ;;
+            NETWORK_WATCHDOG_INSTALLED_BY_RUN) printf 1 ;;
+            APPLY_STATUS) printf NOT_APPLIED ;;
+            OVERCLOCK_COMPLETE_RECORDED) printf 0 ;;
+            *) printf "%s" "${2-}" ;;
+        esac
+    }
+    apo_profile_cleanup_run_watchdog() { CLEANUP_CALLS=$((CLEANUP_CALLS + 1)); }
+    apo_apply_recommendation() { printf "unexpected apply\n" >&2; return 1; }
+    apo_finish_public_overclock
+    [[ $CLEANUP_CALLS == 1 ]]
+'
 
 grep -q 'WATCHDOG_RUNTIME_TIMEOUT' "$ROOT/lib/detect.sh"
 grep -q 'NETWORK_WATCHDOG_SERVICE_ACTIVE' "$ROOT/lib/detect.sh"

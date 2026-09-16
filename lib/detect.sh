@@ -342,7 +342,7 @@ apo_store_discovery_state() {
     apo_state_set AUDIO_BASELINE "$APO_AUDIO_BASELINE"
     apo_state_set STORAGE_LAYOUT "$APO_STORAGE_LAYOUT"
     apo_state_set REQUIRE_GPU_STRESS "$APO_REQUIRE_GPU_STRESS"
-    for key in MODEL COMPATIBLE ARCH OS_ID OS_VERSION NORMAL_VOLTAGE_SOURCE PERMANENT_TUNING_PROVENANCE PERMANENT_TUNING_EVIDENCE TRYBOOT_EXISTS TRYBOOT_TYPE TRYBOOT_HASH BOOT_WATCHDOG_TIMEOUT KERNEL_WATCHDOG_TIMEOUT RUNTIME_WATCHDOG WATCHDOG_DEVICE WATCHDOG_RUNTIME_TIMEOUT WATCHDOG_OWNER NETWORK_WATCHDOG_KIND NETWORK_WATCHDOG_TARGET NETWORK_WATCHDOG_CONFIG_HASH NETWORK_WATCHDOG_KEEPER_HASH NETWORK_WATCHDOG_SERVICE_HASH NETWORK_WATCHDOG_SERVICE_ACTIVE ROOT_SOURCE BOOT_SOURCE DISPLAY_PRESENT AUDIO_BASELINE CPU_STRESS_AVAILABLE GPU_STRESS_AVAILABLE STRESS_NG_BINARY STRESS_NG_GPU_AVAILABLE STRESS_NG_GPU_STRATEGY DRM_RENDER_NODE OPENSSL_BINARY GLMARK_BINARY GLMARK_WAYLAND_BINARY GLMARK_DRM_BINARY GLMARK_DATA RECENT_THROTTLED THROTTLE_RECENT_SUPPORTED; do
+    for key in MODEL COMPATIBLE ARCH OS_ID OS_VERSION NORMAL_VOLTAGE_SOURCE PERMANENT_TUNING_PROVENANCE PERMANENT_TUNING_EVIDENCE TRYBOOT_EXISTS TRYBOOT_TYPE TRYBOOT_HASH BOOT_WATCHDOG_TIMEOUT KERNEL_WATCHDOG_TIMEOUT RUNTIME_WATCHDOG WATCHDOG_DEVICE WATCHDOG_RUNTIME_TIMEOUT WATCHDOG_OWNER NETWORK_WATCHDOG_KIND NETWORK_WATCHDOG_TARGET NETWORK_WATCHDOG_CONFIG_HASH NETWORK_WATCHDOG_KEEPER_HASH NETWORK_WATCHDOG_SERVICE_HASH NETWORK_WATCHDOG_SERVICE_ACTIVE NETWORK_WATCHDOG_INSTALL_RUN_ID NETWORK_WATCHDOG_INSTALL_BACKUP NATIVE_NETWORK_WATCHDOG_PRESENT NATIVE_NETWORK_WATCHDOG_READY NATIVE_NETWORK_WATCHDOG_TARGET NATIVE_WATCHDOG_SERVICE_ACTIVE NATIVE_WATCHDOG_CONFIG_INSPECTED ROOT_SOURCE BOOT_SOURCE DISPLAY_PRESENT AUDIO_BASELINE CPU_STRESS_AVAILABLE GPU_STRESS_AVAILABLE STRESS_NG_BINARY STRESS_NG_GPU_AVAILABLE STRESS_NG_GPU_STRATEGY DRM_RENDER_NODE OPENSSL_BINARY GLMARK_BINARY GLMARK_WAYLAND_BINARY GLMARK_DRM_BINARY GLMARK_DATA RECENT_THROTTLED THROTTLE_RECENT_SUPPORTED; do
         apo_state_set "DISC_${key}" "${APO_DISCOVERY[$key]:-}"
     done
     apo_state_save
@@ -690,8 +690,101 @@ apo_network_watchdog_observation_summary() {
     elif [[ -n $kind || -n $target || $active == 1 ]]; then
         apo_summary_line "Network watchdog: OBSERVED but not eligible for strict reboot attribution (kind=${kind:-unknown} target=${target:-unknown} active=$active)"
     else
-        apo_summary_line 'Network watchdog: NOT DETECTED (optional; AutoPiOverclock observes existing services but never installs or configures them)'
+        apo_summary_line 'Network watchdog: NOT DETECTED (a run-owned gateway watcher will be installed when tuning starts)'
     fi
+}
+
+apo_network_watchdog_ensure_for_run() {
+    local protected_hash=${APO_PERMANENT_CONFIG_HASH:-$(apo_state_get PERMANENT_HASH '')}
+    local live_install_run live_install_backup install_status reconcile_required=0
+    apo_discovery_capture || return 1
+    [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" &&
+       ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The target profile or protected permanent config changed before network-watchdog reconciliation.'
+        return 1
+    }
+    live_install_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+    live_install_backup=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-}
+    install_status=$(apo_state_get NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED)
+    if [[ -n $live_install_run && $live_install_run != "$APO_RUN_ID" ]]; then
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="A run-owned network-watchdog provider belongs to another resumable run ($live_install_run). Resume or recover that run before starting this one."
+        return 1
+    fi
+    if ! apo_profile_network_watchdog_ready; then
+        if [[ $live_install_run == "$APO_RUN_ID" ]]; then
+            reconcile_required=1
+        else
+            case $install_status in
+                PLANNED|MUTATING|RECONCILING|RESULT_UNVERIFIED|INSTALLED) reconcile_required=1 ;;
+            esac
+        fi
+    fi
+    if (( reconcile_required == 1 )); then
+        if ! declare -F apo_profile_reconcile_network_watchdog_install >/dev/null 2>&1 ||
+           ! apo_profile_reconcile_network_watchdog_install; then
+            APO_LAST_CLASS=${APO_LAST_CLASS:-RECOVERY_FAILURE}
+            APO_LAST_REASON=${APO_LAST_REASON:-The interrupted run-owned network-watchdog installation could not be reconciled.}
+            return 1
+        fi
+        apo_discovery_capture || return 1
+        [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" &&
+           ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" ]] || {
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON='The target profile or protected permanent config changed during network-watchdog reconciliation.'
+            return 1
+        }
+        live_install_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+        live_install_backup=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-}
+    fi
+    if apo_profile_network_watchdog_ready; then
+        if [[ $live_install_run == "$APO_RUN_ID" ]]; then
+            [[ -n $live_install_backup &&
+               ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-} == "$(apo_state_get NETWORK_WATCHDOG_INSTALL_KIND '')" &&
+               ${APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]:-} == "$(apo_state_get NETWORK_WATCHDOG_INSTALL_CONFIG_HASH '')" &&
+               ${APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]:-} == "$(apo_state_get NETWORK_WATCHDOG_INSTALL_KEEPER_HASH '')" &&
+               ${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]:-} == "$(apo_state_get NETWORK_WATCHDOG_INSTALL_SERVICE_HASH '')" ]] || {
+                APO_LAST_CLASS=RECOVERY_FAILURE
+                APO_LAST_REASON='The live run-owned network watchdog no longer matches its checkpointed ownership hashes.'
+                return 1
+            }
+            apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 1
+            apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP "$live_install_backup"
+            apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS INSTALLED
+        elif [[ $(apo_state_get NETWORK_WATCHDOG_INSTALLED_BY_RUN 0) == 1 ]]; then
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON='The checkpointed run-owned network watchdog is no longer the active provider.'
+            return 1
+        else
+            apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
+            apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS PREEXISTING
+        fi
+        apo_store_discovery_state
+        return 0
+    fi
+    case $APO_PROFILE in
+        debian) apo_profile_install_best_network_watchdog || return 1 ;;
+        batocera) apo_profile_install_network_watchdog_companion || return 1 ;;
+        *)
+            APO_LAST_CLASS=PREFLIGHT_FAILURE
+            APO_LAST_REASON="No run-owned network-watchdog installer exists for profile $APO_PROFILE."
+            return 1
+            ;;
+    esac
+    apo_discovery_capture || return 1
+    [[ ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The protected permanent config changed while installing the run-owned network watchdog.'
+        return 1
+    }
+    apo_store_discovery_state
+    apo_profile_network_watchdog_ready || {
+        APO_LAST_CLASS=PREFLIGHT_FAILURE
+        APO_LAST_REASON='The installed network watchdog did not become proof-ready.'
+        return 1
+    }
+    apo_summary_line "Network watchdog: PROOF-READY after run-owned installation (kind=${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]} target=${APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]})"
 }
 
 apo_watchdog_preflight() {
@@ -703,7 +796,7 @@ apo_watchdog_preflight() {
     apo_summary_line "Hardware watchdog recovery: NOT READY ($(apo_profile_watchdog_description))"
     apo_network_watchdog_observation_summary
     if (( APO_DRY_RUN == 1 )); then return 0; fi
-    apo_die 'The existing hardware watchdog recovery chain is not ready. AutoPiOverclock never installs or configures watchdogs; configure the target recovery chain separately, then run prepare again.' "$APO_EXIT_PREFLIGHT"
+    apo_die 'The hardware watchdog recovery chain is not ready. AutoPiOverclock can install its run-owned network watcher only after the platform hardware watchdog is safe.' "$APO_EXIT_PREFLIGHT"
 }
 
 apo_finalize_discovered_config() {

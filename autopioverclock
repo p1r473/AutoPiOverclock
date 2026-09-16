@@ -1416,10 +1416,24 @@ apo_start_post_floor_final() {
     apo_resume_post_floor_final
 }
 
-apo_finish_public_overclock() {
-    (( APO_AUTO_APPLY == 1 )) || return 0
+apo_cleanup_completed_run_watchdog() {
     [[ $(apo_state_get STATUS '') == PASS && $(apo_state_get PHASE '') == COMPLETE ]] || return 0
-    apo_apply_recommendation
+    if [[ $(apo_state_get NETWORK_WATCHDOG_INSTALLED_BY_RUN 0) == 1 ]]; then
+        if ! declare -F apo_profile_cleanup_run_watchdog >/dev/null 2>&1 || ! apo_profile_cleanup_run_watchdog; then
+            apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS CLEANUP_FAILED
+            apo_state_save
+            apo_die "The overclock completed, but the run-owned watchdog companion could not be removed safely: ${APO_LAST_REASON:-unknown cleanup failure}. Resume this run to retry cleanup." "$APO_EXIT_RECOVERY"
+        fi
+    fi
+}
+
+apo_finish_public_overclock() {
+    [[ $(apo_state_get STATUS '') == PASS && $(apo_state_get PHASE '') == COMPLETE ]] || return 0
+    if (( APO_AUTO_APPLY == 1 )); then
+        apo_apply_recommendation
+        [[ $(apo_state_get APPLY_STATUS '') == APPLIED ]] || return 0
+    fi
+    apo_cleanup_completed_run_watchdog
     if [[ $(apo_state_get APPLY_STATUS '') == APPLIED && $(apo_state_get OVERCLOCK_COMPLETE_RECORDED 0) != 1 ]]; then
         apo_summary_line 'OVERCLOCK COMPLETE: the validated clocks were applied and verified after reboot.'
         apo_event overclock PASS '' 'Automatic tuning, final validation, permanent application, and post-reboot verification completed.'
@@ -1507,6 +1521,10 @@ apo_start_new_run() {
     apo_info "Live plan ready: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU}MHz voltage=${APO_NORMAL_VOLTAGE}uV test-voltage=${APO_TEST_VOLTAGE}uV CPU-candidates=${APO_CFG[CPU_CANDIDATES]:-none} GPU-candidates=${APO_CFG[GPU_CANDIDATES]:-none} permanent-hash=$APO_PERMANENT_CONFIG_HASH"
     apo_info "Review the full preflight summary before confirmation: $APO_SUMMARY_FILE"
     apo_confirm_ordinary "Begin the recoverable tuning run against $APO_REMOTE_TARGET?" || { apo_state_phase PREPARED AWAITING_CONFIRMATION INTERRUPTED; apo_warn 'Run was not confirmed.'; return 0; }
+    apo_network_watchdog_ensure_for_run || {
+        apo_state_fail "${APO_LAST_CLASS:-PREFLIGHT_FAILURE}" "${APO_LAST_REASON:-The run-owned network watchdog could not be made proof-ready.}"
+        return 1
+    }
     apo_reset_throttle_history run-baseline || { apo_state_fail "$APO_LAST_CLASS" "$APO_LAST_REASON"; return 1; }
     if ! apo_health_check "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" normal-preflight; then apo_state_fail PREFLIGHT_FAILURE "$APO_LAST_REASON"; return 1; fi
     apo_state_phase TRYBOOT_PROOF READY RUNNING
@@ -1864,7 +1882,8 @@ main() {
                 fi
                 apo_prepare_remote_for_saved_run
                 if ! apo_reconcile_interrupted_apply; then return "$APO_EXIT_APPLY"; fi
-                if (( APO_AUTO_APPLY == 1 )) && [[ $(apo_state_get APPLY_STATUS '') != APPLIED ]]; then
+                if [[ $(apo_state_get NETWORK_WATCHDOG_INSTALLED_BY_RUN 0) == 1 ]] ||
+                   { (( APO_AUTO_APPLY == 1 )) && [[ $(apo_state_get APPLY_STATUS '') != APPLIED ]]; }; then
                     apo_finish_public_overclock
                 fi
                 apo_print_status
@@ -1887,7 +1906,7 @@ main() {
                 fi
             fi
             if [[ $status == PASS && $(apo_state_get PHASE) == COMPLETE ]]; then
-                if (( APO_AUTO_APPLY == 1 )); then
+                if (( APO_AUTO_APPLY == 1 )) || [[ $(apo_state_get NETWORK_WATCHDOG_INSTALLED_BY_RUN 0) == 1 ]]; then
                     apo_prepare_remote_for_saved_run
                     apo_finish_public_overclock
                 fi
@@ -1909,6 +1928,10 @@ main() {
                 saved_failure_reason=$(apo_state_get FAILURE_REASON '')
             fi
             apo_prepare_remote_for_saved_run
+            apo_network_watchdog_ensure_for_run || {
+                apo_state_fail "${APO_LAST_CLASS:-PREFLIGHT_FAILURE}" "${APO_LAST_REASON:-The run-owned network watchdog could not be made proof-ready during resume.}"
+                return "$(apo_class_exit_code "${APO_LAST_CLASS:-PREFLIGHT_FAILURE}")"
+            }
             if apo_remote_job_pending; then
                 apo_event resume-detached-stress INFO '' 'A bound target-side stress job is pending. Resume will reattach before requesting any normal recovery reboot.'
             else
@@ -1970,6 +1993,9 @@ main() {
             fi
             apo_prepare_remote_for_saved_run
             apo_apply_recommendation
+            if [[ $(apo_state_get APPLY_STATUS '') == APPLIED ]]; then
+                apo_cleanup_completed_run_watchdog
+            fi
             ;;
     esac
     return 0

@@ -1068,7 +1068,9 @@ cmd_discover() {
     local model compatible version boot_watchdog kernel_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source baseline display_present audio_baseline permanent_hash glmark_binary glmark_wayland_binary glmark_drm_binary glmark_data
     local openssl_binary tryboot_exists tryboot_type tryboot_hash
     local network_root=/userdata/system/autopioverclock/watchdog network_config network_keeper network_service
-    local network_target='' network_config_hash='' network_keeper_hash='' network_service_hash='' network_service_active=0
+    local companion_root=/userdata/system/autopioverclock/network-watchdog companion_config companion_keeper companion_service network_fields=''
+    local network_kind='' network_target='' network_config_hash='' network_keeper_hash='' network_service_hash='' network_service_active=0
+    local network_install_run_id='' network_install_backup=''
     [[ -f $boot_config ]] || { emit_result PREFLIGHT_FAILURE 'Batocera boot config /boot/config.txt was not found.'; return 1; }
     audit_permanent_tuning_config "$boot_config"
     inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
@@ -1116,9 +1118,25 @@ cmd_discover() {
     network_config=$network_root/watchdog.conf
     network_keeper=$network_root/watchdog_keeper.py
     network_service=/userdata/system/services/AutoPiOverclockWatchdog
-    if [[ -f $network_config && ! -L $network_config && -f $network_keeper && ! -L $network_keeper &&
+    companion_config=$companion_root/watchdog.conf
+    companion_keeper=$companion_root/network_watchdog_keeper.py
+    companion_service=/userdata/system/services/AutoPiOverclockNetworkWatchdog
+    if [[ -f $companion_config && ! -L $companion_config ]] &&
+       grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$companion_config"; then
+        network_kind=batocera-network-companion
+        network_fields=$(batocera_network_companion_config_fields "$companion_config" || true)
+        IFS=$'\t' read -r network_target network_install_run_id <<<"$network_fields"
+        network_config_hash=$(sha256sum "$companion_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        if [[ -f $companion_keeper && ! -L $companion_keeper ]]; then network_keeper_hash=$(sha256sum "$companion_keeper" 2>/dev/null | awk 'NR == 1 {print $1}' || true); fi
+        if [[ -f $companion_service && ! -L $companion_service ]]; then network_service_hash=$(sha256sum "$companion_service" 2>/dev/null | awk 'NR == 1 {print $1}' || true); fi
+        if [[ -n $network_target ]] && batocera_network_companion_service_ready "$companion_keeper" "$companion_config" "$companion_service"; then
+            network_service_active=1
+        fi
+        network_install_backup=$(batocera_network_companion_backup_for_run "$network_install_run_id" || true)
+    elif [[ -f $network_config && ! -L $network_config && -f $network_keeper && ! -L $network_keeper &&
           -f $network_service && ! -L $network_service ]] &&
        grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG' "$network_config"; then
+        network_kind=batocera-hardware-keeper
         network_target=$(awk -F= '/^TARGET=/ {value=$2; count++} END {if (count == 1) print value}' "$network_config")
         network_watchdog_valid_ipv4 "$network_target" || network_target=''
         network_config_hash=$(sha256sum "$network_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
@@ -1158,12 +1176,14 @@ cmd_discover() {
     emit_data WATCHDOG_DEVICE "$watchdog_device"
     emit_data WATCHDOG_RUNTIME_TIMEOUT "$watchdog_runtime_timeout_value"
     emit_data WATCHDOG_OWNER "$watchdog_owner"
-    emit_data NETWORK_WATCHDOG_KIND batocera-hardware-keeper
+    emit_data NETWORK_WATCHDOG_KIND "$network_kind"
     emit_data NETWORK_WATCHDOG_TARGET "$network_target"
     emit_data NETWORK_WATCHDOG_CONFIG_HASH "$network_config_hash"
     emit_data NETWORK_WATCHDOG_KEEPER_HASH "$network_keeper_hash"
     emit_data NETWORK_WATCHDOG_SERVICE_HASH "$network_service_hash"
     emit_data NETWORK_WATCHDOG_SERVICE_ACTIVE "$network_service_active"
+    emit_data NETWORK_WATCHDOG_INSTALL_RUN_ID "$network_install_run_id"
+    emit_data NETWORK_WATCHDOG_INSTALL_BACKUP "$network_install_backup"
     emit_data ROOT_SOURCE "$root_device"
     emit_data BOOT_SOURCE "$boot_source"
     emit_data DISPLAY_BASELINE "$baseline"
@@ -2728,6 +2748,59 @@ network_watchdog_valid_ipv4() {
     ' <<< "${1-}"
 }
 
+batocera_network_companion_config_fields() {
+    local config=$1 fields target run_id
+    fields=$(awk -F= '
+        BEGIN {
+            allowed["RUN_ID"]=1; allowed["TARGET"]=1
+            allowed["PING_TIMEOUT_SECONDS"]=1; allowed["CHECK_INTERVAL_SECONDS"]=1
+            allowed["STARTUP_GRACE_SECONDS"]=1; allowed["FAILURE_WINDOW_SECONDS"]=1
+            allowed["MAX_REBOOTS"]=1; allowed["REBOOT_WINDOW_SECONDS"]=1
+        }
+        $0 == "# AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG" {
+            if (marker) invalid=1
+            marker=1
+            next
+        }
+        /^[[:space:]]*$/ {next}
+        /^[[:space:]]*#/ {invalid=1; next}
+        {
+            key=$1
+            value=substr($0, index($0, "=")+1)
+            if (NF < 2 || !allowed[key] || seen[key]++ || value == "") {invalid=1; next}
+            values[key]=value
+            count++
+        }
+        END {
+            if (invalid || marker != 1 || count != 8) exit 1
+            if (values["PING_TIMEOUT_SECONDS"] !~ /^[0-9]+$/ || values["PING_TIMEOUT_SECONDS"] < 1 || values["PING_TIMEOUT_SECONDS"] > 30) exit 1
+            if (values["CHECK_INTERVAL_SECONDS"] !~ /^[0-9]+$/ || values["CHECK_INTERVAL_SECONDS"] < 1 || values["CHECK_INTERVAL_SECONDS"] > 300) exit 1
+            if (values["STARTUP_GRACE_SECONDS"] !~ /^[0-9]+$/ || values["STARTUP_GRACE_SECONDS"] < 30 || values["STARTUP_GRACE_SECONDS"] > 3600) exit 1
+            if (values["FAILURE_WINDOW_SECONDS"] !~ /^[0-9]+$/ || values["FAILURE_WINDOW_SECONDS"] < 30 || values["FAILURE_WINDOW_SECONDS"] > 3600) exit 1
+            if (values["MAX_REBOOTS"] !~ /^[0-9]+$/ || values["MAX_REBOOTS"] < 1 || values["MAX_REBOOTS"] > 10) exit 1
+            if (values["REBOOT_WINDOW_SECONDS"] !~ /^[0-9]+$/ || values["REBOOT_WINDOW_SECONDS"] < 300 || values["REBOOT_WINDOW_SECONDS"] > 86400) exit 1
+            printf "%s\t%s\n", values["TARGET"], values["RUN_ID"]
+        }
+    ' "$config") || return 1
+    IFS=$'\t' read -r target run_id <<<"$fields"
+    network_watchdog_valid_ipv4 "$target" || return 1
+    [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+    printf '%s\t%s\n' "$target" "$run_id"
+}
+
+batocera_network_companion_backup_for_run() {
+    local run_id=${1:-} candidate
+    local -a matches=()
+    [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+    shopt -s nullglob
+    for candidate in /userdata/system/autopioverclock/backups/network-watchdog-[0-9]*-"$run_id".*; do
+        [[ -d $candidate && ! -L $candidate ]] && matches+=("$candidate")
+    done
+    shopt -u nullglob
+    (( ${#matches[@]} == 1 )) || return 1
+    printf '%s' "${matches[0]}"
+}
+
 network_watchdog_event_fields() {
     local event_file=$1
     awk -F= '
@@ -2783,22 +2856,112 @@ batocera_network_watchdog_service_ready() {
     [[ -x $service ]]
 }
 
+batocera_network_companion_service_ready() {
+    local keeper=$1 config=$2 service=$3 pid services argument found=0
+    [[ -f $keeper && ! -L $keeper && -f $config && ! -L $config && -x $service && ! -L $service ]] || return 1
+    services=$(awk -F= '
+        /^[[:space:]]*#/ {next}
+        /^[[:space:]]*system[.]services[[:space:]]*=/ {
+            value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); count++
+        }
+        END {if (count > 1) exit 1; print value}
+    ' /userdata/system/batocera.conf 2>/dev/null) || return 1
+    for argument in $services; do
+        if [[ $argument == AutoPiOverclockNetworkWatchdog ]]; then found=1; break; fi
+    done
+    (( found == 1 )) || return 1
+    pid=$(sed -n '1p' /run/autopioverclock-network-watchdog.pid 2>/dev/null || true)
+    [[ $pid =~ ^[1-9][0-9]*$ && -r /proc/$pid/cmdline ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null | grep -Fqx -- "$keeper" || return 1
+    tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null | grep -Fqx -- "$config"
+}
+
+batocera_network_companion_asset_paths_ready() {
+    local installer=$1 keeper=$2 service=$3 installer_directory keeper_directory service_directory
+    [[ -f $installer && ! -L $installer && -x $installer ]] || return 1
+    [[ -f $keeper && ! -L $keeper && -f $service && ! -L $service ]] || return 1
+    installer_directory=$(readlink -f -- "$(dirname "$installer")" 2>/dev/null || true)
+    keeper_directory=$(readlink -f -- "$(dirname "$keeper")" 2>/dev/null || true)
+    service_directory=$(readlink -f -- "$(dirname "$service")" 2>/dev/null || true)
+    [[ -n $installer_directory && $installer_directory == "$keeper_directory" && $installer_directory == "$service_directory" ]] || return 1
+    [[ $installer_directory == "$PERSISTENT_ROOT"/runs/* ]] || return 1
+    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$installer" &&
+        grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$keeper" &&
+        grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG SERVICE' "$service"
+}
+
+batocera_network_companion_installer_ready() {
+    local installer=$1 installer_directory
+    [[ -f $installer && ! -L $installer && -x $installer ]] || return 1
+    installer_directory=$(readlink -f -- "$(dirname "$installer")" 2>/dev/null || true)
+    [[ -n $installer_directory && $installer_directory == "$PERSISTENT_ROOT"/runs/* ]] || return 1
+    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$installer"
+}
+
+cmd_plan_network_watchdog_companion() {
+    local installer=${1:-} keeper=${2:-} service=${3:-} run_id=${4:-}
+    batocera_network_companion_asset_paths_ready "$installer" "$keeper" "$service" || {
+        emit_result PREFLIGHT_FAILURE 'Batocera network-watchdog plan received missing, foreign, or unsafe project assets.'
+        return 1
+    }
+    "$installer" plan "$keeper" "$service" "$run_id"
+}
+
+cmd_install_network_watchdog_companion() {
+    local installer=${1:-} keeper=${2:-} service=${3:-}
+    batocera_network_companion_asset_paths_ready "$installer" "$keeper" "$service" || {
+        emit_result PREFLIGHT_FAILURE 'Batocera network-watchdog installation received missing, foreign, or unsafe project assets.'
+        return 1
+    }
+    "$installer" apply "$keeper" "$service" "${@:4}"
+}
+
+cmd_cleanup_network_watchdog_companion() {
+    local installer=${1:-}
+    batocera_network_companion_installer_ready "$installer" || {
+        emit_result RECOVERY_FAILURE 'The uploaded Batocera network-watchdog cleanup installer is missing or unsafe.'
+        return 1
+    }
+    "$installer" cleanup "${@:2}"
+}
+
 cmd_prove_network_watchdog_reboot() {
     local expected_old_boot=${1:-} expected_new_boot=${2:-} expected_target=${3:-}
     local expected_config_hash=${4:-} expected_keeper_hash=${5:-} expected_service_hash=${6:-}
-    local previous_event=${7:-}
-    local root=/userdata/system/autopioverclock/watchdog
-    local config=$root/watchdog.conf keeper=$root/watchdog_keeper.py event=$root/last-network-reboot
-    local pending=$root/pending-network-reboot
-    local log=$root/watchdog.log service=/userdata/system/services/AutoPiOverclockWatchdog
+    local expected_kind=${7:-} previous_event=${8:-}
+    local root config keeper event pending log service proof_method ownership_marker
     local fields format event_id source_boot target failure_epoch request_epoch marker_config_hash marker_keeper_hash marker_service_hash reason
     local current_boot config_target config_hash keeper_hash service_hash now uptime boot_epoch
     [[ $expected_old_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
        $expected_new_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
-       $expected_old_boot != "$expected_new_boot" && ( -z $previous_event || $previous_event =~ ^[0-9a-f]{32}$ ) ]] || {
+       $expected_old_boot != "$expected_new_boot" &&
+       ( $expected_kind == batocera-hardware-keeper || $expected_kind == batocera-network-companion ) &&
+       ( -z $previous_event || $previous_event =~ ^[0-9a-f]{32}$ ) ]] || {
         emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed boot identity.'
         return 1
     }
+    case $expected_kind in
+        batocera-hardware-keeper)
+            root=/userdata/system/autopioverclock/watchdog
+            config=$root/watchdog.conf
+            keeper=$root/watchdog_keeper.py
+            service=/userdata/system/services/AutoPiOverclockWatchdog
+            proof_method=hardware-watchdog-starvation
+            ownership_marker='AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG'
+            ;;
+        batocera-network-companion)
+            root=/userdata/system/autopioverclock/network-watchdog
+            config=$root/watchdog.conf
+            keeper=$root/network_watchdog_keeper.py
+            service=/userdata/system/services/AutoPiOverclockNetworkWatchdog
+            proof_method=batocera-reboot
+            ownership_marker='AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG'
+            ;;
+    esac
+    event=$root/last-network-reboot
+    pending=$root/pending-network-reboot
+    log=$root/watchdog.log
     network_watchdog_valid_ipv4 "$expected_target" && valid_sha256 "$expected_config_hash" &&
         valid_sha256 "$expected_keeper_hash" && valid_sha256 "$expected_service_hash" || {
         emit_result HARNESS_FAILURE 'Strict network-watchdog proof received malformed saved discovery hashes.'
@@ -2836,7 +2999,7 @@ cmd_prove_network_watchdog_reboot() {
         emit_result HARNESS_FAILURE 'The network-watchdog marker target does not match the active managed configuration.'
         return 1
     }
-    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG' "$config" || {
+    grep -Fq "$ownership_marker" "$config" || {
         emit_result HARNESS_FAILURE 'The active network-watchdog configuration lacks project ownership.'
         return 1
     }
@@ -2861,19 +3024,34 @@ cmd_prove_network_watchdog_reboot() {
         emit_result HARNESS_FAILURE 'The network-watchdog marker timestamp does not bound the current boot.'
         return 1
     }
-    grep -Fq "network_reboot_prepared event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch" "$log" || {
-        emit_result HARNESS_FAILURE 'The durable watchdog log does not corroborate preparation of the reboot marker.'
-        return 1
-    }
-    grep -Fq "network_reboot_committed event_id=$event_id target=$target method=hardware-watchdog-starvation" "$log" || {
-        emit_result HARNESS_FAILURE 'The durable watchdog log does not prove entry into hardware-watchdog starvation.'
-        return 1
-    }
+    if [[ $expected_kind == batocera-network-companion ]]; then
+        grep -Eq "network_reboot_prepared event_id=$event_id source_boot_id=$source_boot target=$target prepared_epoch=[1-9][0-9]*$" "$log" || {
+            emit_result HARNESS_FAILURE 'The durable watchdog log does not corroborate preparation of the reboot marker.'
+            return 1
+        }
+        grep -Fq "network_reboot_committed event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch method=$proof_method" "$log" || {
+            emit_result HARNESS_FAILURE 'The durable watchdog log does not prove acceptance of the Batocera reboot request.'
+            return 1
+        }
+    else
+        grep -Fq "network_reboot_prepared event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch" "$log" || {
+            emit_result HARNESS_FAILURE 'The durable watchdog log does not corroborate preparation of the reboot marker.'
+            return 1
+        }
+        grep -Fq "network_reboot_committed event_id=$event_id target=$target method=$proof_method" "$log" || {
+            emit_result HARNESS_FAILURE 'The durable watchdog log does not prove entry into hardware-watchdog starvation.'
+            return 1
+        }
+    fi
     grep -Fq "network_reboot_accepted event_id=$event_id source_boot_id=$source_boot target=$target requested_epoch=$request_epoch current_boot_id=$current_boot" "$log" || {
         emit_result HARNESS_FAILURE 'The durable watchdog log does not prove acceptance of the marker on this boot.'
         return 1
     }
-    batocera_network_watchdog_service_ready "$keeper" "$config" "$service" || {
+    if [[ $expected_kind == batocera-network-companion ]]; then
+        batocera_network_companion_service_ready "$keeper" "$config" "$service"
+    else
+        batocera_network_watchdog_service_ready "$keeper" "$config" "$service"
+    fi || {
         emit_result HARNESS_FAILURE 'The project-owned network-watchdog service is not active with the verified assets.'
         return 1
     }
@@ -2918,6 +3096,9 @@ main() {
         restore-backup) run_with_mutation_lock "restore-${2:-}" APPLY_FAILURE cmd_restore_backup "$@" ;;
         plan-watchdog-repair) cmd_plan_watchdog_repair "$@" ;;
         repair-watchdogs) run_with_mutation_lock "watchdog-${4:-}" PREFLIGHT_FAILURE cmd_repair_watchdogs "$@" ;;
+        plan-network-watchdog-companion) cmd_plan_network_watchdog_companion "$@" ;;
+        install-network-watchdog-companion) run_with_mutation_lock "network-watchdog-companion-${4:-}" PREFLIGHT_FAILURE cmd_install_network_watchdog_companion "$@" ;;
+        cleanup-network-watchdog-companion) run_with_mutation_lock "network-watchdog-companion-cleanup-${2:-}" RECOVERY_FAILURE cmd_cleanup_network_watchdog_companion "$@" ;;
         prove-network-watchdog-reboot) cmd_prove_network_watchdog_reboot "$@" ;;
         classify-kernel-log) cmd_classify_kernel_log "$@" ;;
         *) emit_result HARNESS_FAILURE "Unknown worker command: $command_name"; return 2 ;;
