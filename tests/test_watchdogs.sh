@@ -4,6 +4,14 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 TEMP_DIR=$(mktemp -d)
 trap 'test_rc=$?; rm -rf "$TEMP_DIR"; exit "$test_rc"' EXIT
 
+watchdog_test_error() {
+    local test_rc=$? failing_line=${BASH_LINENO[0]:-$LINENO}
+    trap - ERR
+    printf 'test_watchdogs.sh failed at line %s with rc=%s: %s\n' "$failing_line" "$test_rc" "$BASH_COMMAND" >&2
+    return "$test_rc"
+}
+trap watchdog_test_error ERR
+
 for WORKER_NAME in debian batocera; do
     WORKER_FILE="$ROOT/workers/${WORKER_NAME}-worker.sh"
     WORKER="$WORKER_FILE" TEST_ROOT="$TEMP_DIR/$WORKER_NAME" bash -c '
