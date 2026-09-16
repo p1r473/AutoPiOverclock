@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.76 - 2026-09-16
+
+- Fixed passive Debian watchdog proof for real cable-loss messages. The observer now recognizes target-bound immediate route failures, the daemon's actual successful-ping format, and a configured repair binary's matching failure and shutdown codes after the target's retry timeout.
+- Added bounded diagnostics for relevant native watchdog journal messages and hash-verified refresh of a run-owned Debian observer or fallback companion when resume uses corrected packaged assets. Native watchdog configuration, repair commands, and timeouts remain untouched.
+
 ## 0.1.0-alpha.75 - 2026-09-16
 
 - Added hash-bound live migration between the temporary Debian gateway companion and the passive native-watchdog observer. Resume now follows a supported native watchdog being started or stopped without leaving two rebooting network watchers active, changing the native configuration, or discarding the active run.

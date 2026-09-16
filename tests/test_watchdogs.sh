@@ -528,6 +528,31 @@ PROFILE="$ROOT/profiles/debian.sh" DETECT="$ROOT/lib/detect.sh" REPO_ROOT="$ROOT
     [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]} == debian-systemd-companion ]]
     [[ ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]} == debian-systemd-companion ]]
 
+    # A package update refreshes an unchanged provider only after the live
+    # installation still matches every checkpointed ownership hash.
+    reset_fixture debian-watchdog-observer
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]=1
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]=1
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_TARGET]=192.0.2.1
+    APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]=1
+    apo_network_watchdog_ensure_for_run
+    [[ $CALLS == " discover cleanup discover observer discover store" ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]} == debian-watchdog-observer ]]
+
+    reset_fixture debian-watchdog-observer
+    PACKAGED_KEEPER_HASH=$(sha256sum "$REPO_ROOT/assets/debian/network_watchdog_observer.py" | awk "NR == 1 {print \$1}")
+    PACKAGED_SERVICE_HASH=$(sha256sum "$REPO_ROOT/assets/debian/autopioverclock-network-watchdog-observer.service" | awk "NR == 1 {print \$1}")
+    TEST_STATE[NETWORK_WATCHDOG_INSTALL_KEEPER_HASH]=$PACKAGED_KEEPER_HASH
+    TEST_STATE[NETWORK_WATCHDOG_INSTALL_SERVICE_HASH]=$PACKAGED_SERVICE_HASH
+    APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]=$PACKAGED_KEEPER_HASH
+    APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]=$PACKAGED_SERVICE_HASH
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]=1
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]=1
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_TARGET]=192.0.2.1
+    APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]=1
+    apo_network_watchdog_ensure_for_run
+    [[ $CALLS == " discover store" ]]
+
     reset_fixture debian-systemd-companion
     APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]=1
     APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]=0
@@ -670,10 +695,13 @@ def fixture():
     observer.event_path = root / "last-network-reboot"
     observer.failure_started_epoch = None
     observer.retry_timed_out_epoch = None
+    observer.repair_failed_epoch = None
+    observer.repair_failed_code = None
     observer.current_event_id = None
     observer.config = {
         "EVIDENCE_WINDOW_SECONDS": "900",
         "REPAIR_TIMEOUT_SECONDS": "60",
+        "REPAIR_BINARY_PATH": "/fixture/repair",
     }
     actions = []
     logs = []
@@ -696,7 +724,7 @@ assert not actions
 observer.handle_message("no response from ping (target: 192.0.2.99)", 101)
 assert observer.failure_started_epoch is None
 observer.handle_message("no response from ping (target: 192.0.2.1)", 102)
-observer.handle_message("repair binary /fixture returned 0 = 'Success'", 103)
+observer.handle_message("got answer on ping=1 from target 192.0.2.1     time=0.123ms", 103)
 assert observer.failure_started_epoch is None
 assert observer.retry_timed_out_epoch is None
 observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 160)
@@ -710,10 +738,19 @@ observer.handle_message("shutting down the system because of error 101 = 'Networ
 assert actions == [("prepare", 232), ("commit", 232, "native-shutdown-101")]
 
 observer, actions, logs = fixture()
-observer.handle_message("no response from ping (target: 192.0.2.1)", 200)
+observer.handle_message("network is unreachable (target: 192.0.2.1)", 200)
+observer.handle_message("Retry timed-out at 76 seconds for 192.0.2.1", 276)
+observer.handle_message("repair binary /fixture/repair returned 62 = 'Timer expired'", 338)
+observer.handle_message("shutting down the system because of error 62 = 'Timer expired'", 339)
+assert actions == [("prepare", 339), ("commit", 339, "native-shutdown-62")]
+
+observer, actions, logs = fixture()
+observer.handle_message("sendto gave error for target 192.0.2.1 = 113 = 'No route to host'", 200)
 observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 260)
-observer.handle_message("got answer from target 192.0.2.1", 261)
-observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 262)
+observer.handle_message("repair binary /wrong/repair returned 62 = 'Timer expired'", 261)
+observer.handle_message("shutting down the system because of error 62 = 'Timer expired'", 262)
+assert not actions
+observer.handle_message("got answer on ping=1 from target 192.0.2.1     time=0.456ms", 263)
 assert observer.failure_started_epoch is None
 assert observer.retry_timed_out_epoch is None
 assert not actions

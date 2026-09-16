@@ -113,6 +113,8 @@ class Observer:
         self.stop_requested = False
         self.failure_started_epoch: int | None = None
         self.retry_timed_out_epoch: int | None = None
+        self.repair_failed_epoch: int | None = None
+        self.repair_failed_code: int | None = None
         self.current_event_id: str | None = None
         self.journalctl = shutil.which("journalctl")
         if not self.journalctl:
@@ -304,6 +306,8 @@ class Observer:
                     self.current_event_id = None
                     self.failure_started_epoch = None
                     self.retry_timed_out_epoch = None
+                    self.repair_failed_epoch = None
+                    self.repair_failed_code = None
                 return
             uptime_seconds = int(float(Path("/proc/uptime").read_text(encoding="ascii").split()[0]))
             boot_epoch = now_epoch - uptime_seconds
@@ -338,6 +342,8 @@ class Observer:
             return True
         self.failure_started_epoch = None
         self.retry_timed_out_epoch = None
+        self.repair_failed_epoch = None
+        self.repair_failed_code = None
         self.current_event_id = None
         if self.pending_path.exists():
             try:
@@ -352,6 +358,8 @@ class Observer:
     def clear_failure_context(self) -> None:
         self.failure_started_epoch = None
         self.retry_timed_out_epoch = None
+        self.repair_failed_epoch = None
+        self.repair_failed_code = None
         self.current_event_id = None
         if not self.pending_path.exists():
             return
@@ -364,14 +372,42 @@ class Observer:
             self.log(f"recovered network evidence could not be cleared: {error}")
 
     def handle_message(self, message: str, epoch: int) -> None:
-        ping_match = re.fullmatch(r"no response from ping \(target: ([0-9.]+)\)", message)
-        if ping_match:
-            if ping_match.group(1) == self.target:
+        diagnostic_prefixes = (
+            "network is unreachable (target: ",
+            "sendto gave error for target ",
+            "no response from ping (target: ",
+            "got answer on ping=",
+            "Retry timed-out at ",
+            "repair binary ",
+            "Repair count exceeded ",
+            "shutting down the system because of error ",
+        )
+        if message.startswith(diagnostic_prefixes):
+            self.log(
+                "native_journal "
+                f"epoch={epoch} message={json.dumps(message, ensure_ascii=True)}"
+            )
+
+        failure_match = re.fullmatch(
+            r"(?:no response from ping|network is unreachable) \(target: ([0-9.]+)\)",
+            message,
+        )
+        if failure_match is None:
+            failure_match = re.fullmatch(
+                r"sendto gave error for target ([0-9.]+) = [0-9]+ = '[^']+'",
+                message,
+            )
+        if failure_match:
+            if failure_match.group(1) == self.target:
                 if self.failure_started_epoch is None:
                     self.failure_started_epoch = epoch
-                self.log(f"native_ping_failure target={self.target} epoch={epoch}")
+                self.log(f"native_network_failure target={self.target} epoch={epoch}")
             return
-        recovery_match = re.fullmatch(r"got answer from target ([0-9.]+)", message)
+        recovery_match = re.fullmatch(
+            r"got answer on ping=[1-9][0-9]* from target\s+([0-9.]+)\s+"
+            r"time=[0-9]+(?:\.[0-9]+)?ms",
+            message,
+        )
         if recovery_match and recovery_match.group(1) == self.target:
             self.clear_failure_context()
             return
@@ -383,20 +419,30 @@ class Observer:
         if retry_match:
             if retry_match.group(2) == self.target:
                 self.retry_timed_out_epoch = epoch
+                self.repair_failed_epoch = None
+                self.repair_failed_code = None
                 self.log(
                     f"native_retry_timeout target={self.target} "
                     f"seconds={retry_match.group(1)} epoch={epoch}"
                 )
             return
-        repair_return = re.fullmatch(r"repair binary .+ returned ([0-9]+) = .+", message)
+        repair_return = re.fullmatch(
+            r"repair binary (.+) returned ([0-9]+) = '([^']+)'",
+            message,
+        )
         if repair_return:
-            result = int(repair_return.group(1), 10)
-            self.log(f"native_repair_return result={result} epoch={epoch}")
-            if result == 0:
-                self.failure_started_epoch = None
-                self.retry_timed_out_epoch = None
-                self.current_event_id = None
-                self.log("native repair succeeded; reboot attribution context cleared")
+            repair_path = repair_return.group(1)
+            result = int(repair_return.group(2), 10)
+            if (
+                self.retry_timed_out_epoch is not None
+                and repair_path == self.config["REPAIR_BINARY_PATH"]
+                and result > 0
+            ):
+                self.repair_failed_epoch = epoch
+                self.repair_failed_code = result
+                self.log(
+                    f"native_repair_failure path={repair_path} result={result} epoch={epoch}"
+                )
             return
         if message.startswith("Repair count exceeded "):
             self.log(f"native_repair_count_exceeded epoch={epoch}")
@@ -407,6 +453,7 @@ class Observer:
         )
         if shutdown_match and self.retry_timed_out_epoch is not None:
             action_window = max(30, int(self.config["REPAIR_TIMEOUT_SECONDS"], 10) + 30)
+            shutdown_code = int(shutdown_match.group(1), 10)
             reason = shutdown_match.group(2).lower()
             network_reason = (
                 "network is unreachable" in reason
@@ -414,7 +461,15 @@ class Observer:
                 or "host is unreachable" in reason
                 or "connection timed out" in reason
             )
-            if not network_reason or epoch - self.retry_timed_out_epoch > action_window:
+            matching_repair_failure = (
+                self.repair_failed_epoch is not None
+                and self.repair_failed_code == shutdown_code
+                and 0 <= epoch - self.repair_failed_epoch <= 30
+            )
+            if (
+                epoch - self.retry_timed_out_epoch > action_window
+                or not (network_reason or matching_repair_failure)
+            ):
                 self.log(
                     "ignored native watchdog shutdown without a recent, matching "
                     f"network decision: error={shutdown_match.group(1)} reason={reason!r}"
