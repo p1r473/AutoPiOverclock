@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.77 - 2026-09-16
+
+- Fixed passive Debian watchdog proof when several journal records arrive in one pipe read. The observer now drains an unbuffered byte stream instead of waiting on a text wrapper that may already hold unread records internally.
+- Checkpointed target-bound retry-timeout evidence before invoking an arbitrary configured repair program. Same-boot recovery withdraws the pending evidence, while only a new boot can promote it to an accepted network-watchdog event.
+
 ## 0.1.0-alpha.76 - 2026-09-16
 
 - Fixed passive Debian watchdog proof for real cable-loss messages. The observer now recognizes target-bound immediate route failures, the daemon's actual successful-ping format, and a configured repair binary's matching failure and shutdown codes after the target's retry timeout.

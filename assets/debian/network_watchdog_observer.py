@@ -27,6 +27,7 @@ OBSERVER_PATH = Path("/usr/local/lib/autopioverclock/network-watchdog-observer.p
 SERVICE_PATH = Path("/etc/systemd/system/autopioverclock-network-watchdog-observer.service")
 CONFIG_MARKER = "AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER"
 EVENT_MARKER = "AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1"
+MAX_JOURNAL_RECORD_BYTES = 1_048_576
 ALLOWED_KEYS = {
     "FORMAT",
     "PROVIDER",
@@ -425,6 +426,12 @@ class Observer:
                     f"native_retry_timeout target={self.target} "
                     f"seconds={retry_match.group(1)} epoch={epoch}"
                 )
+                # The configured repair program may reboot directly or the
+                # daemon may be stopped before its final messages reach the
+                # journal follower. Persist the exact target-bound retry
+                # decision now. Same-boot recovery withdraws this evidence,
+                # and only a later boot can promote it to an accepted event.
+                self.prepare_event(epoch)
             return
         repair_return = re.fullmatch(
             r"repair binary (.+) returned ([0-9]+) = '([^']+)'",
@@ -478,6 +485,36 @@ class Observer:
             self.prepare_event(epoch)
             self.commit_event(epoch, f"native-shutdown-{shutdown_match.group(1)}")
 
+    def process_journal_record(self, encoded_record: bytes) -> None:
+        try:
+            record = json.loads(encoded_record.decode("utf-8", errors="replace"))
+            if not isinstance(record, dict):
+                raise ValueError("journal record is not an object")
+            message = record.get("MESSAGE")
+            realtime = record.get("__REALTIME_TIMESTAMP")
+            boot_id = str(record.get("_BOOT_ID", "")).lower()
+            if not isinstance(message, str) or not str(realtime).isdigit():
+                return
+            if boot_id and boot_id != self.boot_id().replace("-", ""):
+                return
+            self.handle_message(message, int(str(realtime), 10) // 1_000_000)
+        except (OSError, UnicodeError, ValueError) as error:
+            self.log(f"ignored malformed watchdog journal record: {error}")
+
+    def consume_journal_bytes(self, buffered: bytes, chunk: bytes) -> bytes:
+        buffered += chunk
+        while b"\n" in buffered:
+            encoded_record, buffered = buffered.split(b"\n", 1)
+            if not encoded_record:
+                continue
+            if len(encoded_record) > MAX_JOURNAL_RECORD_BYTES:
+                self.log("ignored oversized watchdog journal record")
+                continue
+            self.process_journal_record(encoded_record)
+        if len(buffered) > MAX_JOURNAL_RECORD_BYTES:
+            raise RuntimeError("watchdog journal record exceeds its safety bound")
+        return buffered
+
     def run(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self.reconcile_pending_event()
@@ -497,37 +534,26 @@ class Observer:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            bufsize=0,
         )
         try:
             assert process.stdout is not None
+            journal_fd = process.stdout.fileno()
+            buffered = b""
             while not self.stop_requested:
-                ready, _, _ = select.select([process.stdout], [], [], 1.0)
+                ready, _, _ = select.select([journal_fd], [], [], 1.0)
                 if not ready:
                     if process.poll() is not None:
                         raise RuntimeError(f"journal follower exited with rc={process.returncode}")
                     self.failure_context_active(int(time.time()))
                     self.reconcile_pending_event()
                     continue
-                line = process.stdout.readline()
-                if not line:
-                    if process.poll() is not None:
-                        raise RuntimeError(f"journal follower exited with rc={process.returncode}")
-                    continue
-                try:
-                    record = json.loads(line)
-                    message = record.get("MESSAGE")
-                    realtime = record.get("__REALTIME_TIMESTAMP")
-                    boot_id = str(record.get("_BOOT_ID", "")).lower()
-                    if not isinstance(message, str) or not str(realtime).isdigit():
-                        continue
-                    if boot_id and boot_id != self.boot_id().replace("-", ""):
-                        continue
-                    self.handle_message(message, int(str(realtime), 10) // 1_000_000)
-                except (OSError, ValueError) as error:
-                    self.log(f"ignored malformed watchdog journal record: {error}")
+                chunk = os.read(journal_fd, 65_536)
+                if not chunk:
+                    if buffered:
+                        self.log("ignored incomplete watchdog journal record at follower exit")
+                    raise RuntimeError(f"journal follower exited with rc={process.poll()}")
+                buffered = self.consume_journal_bytes(buffered, chunk)
                 self.reconcile_pending_event()
         finally:
             process.terminate()

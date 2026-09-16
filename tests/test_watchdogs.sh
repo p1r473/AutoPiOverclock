@@ -674,6 +674,7 @@ APO_KEEPER_COMPILE
 
 python3 - "$ROOT/assets/debian/network_watchdog_observer.py" "$TEMP_DIR" <<'APO_OBSERVER_STATE_MACHINE'
 from importlib.util import module_from_spec, spec_from_file_location
+import json
 from pathlib import Path
 import sys
 import types
@@ -707,7 +708,9 @@ def fixture():
     logs = []
 
     def prepare(self, epoch):
-        actions.append(("prepare", epoch))
+        if self.current_event_id is None:
+            self.current_event_id = "f" * 32
+            actions.append(("prepare", epoch))
 
     def commit(self, epoch, outcome):
         actions.append(("commit", epoch, outcome))
@@ -733,33 +736,77 @@ assert not actions
 observer.handle_message("no response from ping (target: 192.0.2.1)", 170)
 observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 230)
 observer.handle_message("shutting down the system because of error 253 = 'load average too high'", 231)
-assert not actions
+assert actions == [("prepare", 230)]
 observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 232)
-assert actions == [("prepare", 232), ("commit", 232, "native-shutdown-101")]
+assert actions == [("prepare", 230), ("commit", 232, "native-shutdown-101")]
 
 observer, actions, logs = fixture()
 observer.handle_message("network is unreachable (target: 192.0.2.1)", 200)
 observer.handle_message("Retry timed-out at 76 seconds for 192.0.2.1", 276)
 observer.handle_message("repair binary /fixture/repair returned 62 = 'Timer expired'", 338)
 observer.handle_message("shutting down the system because of error 62 = 'Timer expired'", 339)
-assert actions == [("prepare", 339), ("commit", 339, "native-shutdown-62")]
+assert actions == [("prepare", 276), ("commit", 339, "native-shutdown-62")]
 
 observer, actions, logs = fixture()
 observer.handle_message("sendto gave error for target 192.0.2.1 = 113 = 'No route to host'", 200)
 observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 260)
 observer.handle_message("repair binary /wrong/repair returned 62 = 'Timer expired'", 261)
 observer.handle_message("shutting down the system because of error 62 = 'Timer expired'", 262)
-assert not actions
+assert actions == [("prepare", 260)]
 observer.handle_message("got answer on ping=1 from target 192.0.2.1     time=0.456ms", 263)
 assert observer.failure_started_epoch is None
 assert observer.retry_timed_out_epoch is None
-assert not actions
+assert actions == [("prepare", 260)]
 
 observer, actions, logs = fixture()
 observer.handle_message("no response from ping (target: 192.0.2.1)", 300)
 observer.handle_message("Retry timed-out at 61 seconds for 192.0.2.1", 360)
 observer.handle_message("shutting down the system because of error 101 = 'Network is unreachable'", 500)
+assert actions == [("prepare", 360)]
+
+observer, actions, logs = fixture()
+observer.boot_id = types.MethodType(
+    lambda self: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", observer,
+)
+records = (
+    json.dumps({
+        "MESSAGE": "network is unreachable (target: 192.0.2.1)",
+        "__REALTIME_TIMESTAMP": "400000000",
+        "_BOOT_ID": "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa",
+    })
+    + "\n"
+    + json.dumps({
+        "MESSAGE": "Retry timed-out at 80 seconds for 192.0.2.1",
+        "__REALTIME_TIMESTAMP": "480000000",
+        "_BOOT_ID": "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa",
+    })
+    + "\n"
+).encode("utf-8")
+assert observer.consume_journal_bytes(b"", records) == b""
+assert actions == [("prepare", 480)]
+
+observer, actions, logs = fixture()
+observer.boot_id = types.MethodType(
+    lambda self: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", observer,
+)
+failure_record = json.dumps({
+    "MESSAGE": "network is unreachable (target: 192.0.2.1)",
+    "__REALTIME_TIMESTAMP": "500000000",
+    "_BOOT_ID": "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa",
+}).encode("utf-8")
+retry_record = json.dumps({
+    "MESSAGE": "Retry timed-out at 80 seconds for 192.0.2.1",
+    "__REALTIME_TIMESTAMP": "580000000",
+    "_BOOT_ID": "aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa",
+}).encode("utf-8")
+split_at = len(retry_record) // 2
+buffered = observer.consume_journal_bytes(
+    b"", failure_record + b"\n" + retry_record[:split_at],
+)
+assert buffered == retry_record[:split_at]
 assert not actions
+assert observer.consume_journal_bytes(buffered, retry_record[split_at:] + b"\n") == b""
+assert actions == [("prepare", 580)]
 APO_OBSERVER_STATE_MACHINE
 
 python3 - "$ROOT/assets/batocera/watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_keeper.py" "$TEMP_DIR" <<'APO_KEEPER_RECONCILE'
