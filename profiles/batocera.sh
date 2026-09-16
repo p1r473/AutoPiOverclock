@@ -159,9 +159,8 @@ apo_profile_watchdog_description() {
 }
 
 apo_profile_prove_network_watchdog_reboot() {
-    local context=$1 old_boot=$2 new_boot=$3 output_file rc attempt attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5}
+    local context=$1 old_boot=$2 new_boot=$3 output_file='' rc attempt attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5}
     local expected_target expected_config_hash expected_keeper_hash expected_service_hash previous_event
-    output_file=$(apo_candidate_log_file "${context}-network-watchdog-proof")
     expected_target=$(apo_state_get DISC_NETWORK_WATCHDOG_TARGET '')
     expected_config_hash=$(apo_state_get DISC_NETWORK_WATCHDOG_CONFIG_HASH '')
     expected_keeper_hash=$(apo_state_get DISC_NETWORK_WATCHDOG_KEEPER_HASH '')
@@ -172,19 +171,25 @@ apo_profile_prove_network_watchdog_reboot() {
     APO_NETWORK_WATCHDOG_REQUESTED_EPOCH=''
     [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=5
     for (( attempt=1; attempt<=attempts; attempt++ )); do
-        if apo_remote_worker_read_file "$output_file" "$APO_REMOTE_WORKER" prove-network-watchdog-reboot \
+        # Keep the worker status separate from its complete output. The exact-file
+        # SSH reader discards output on any nonzero status and performs its own
+        # 30-attempt loop, neither of which is valid for a structured proof miss.
+        if apo_run_worker_capture_once "${context}-network-watchdog-proof" prove-network-watchdog-reboot \
             "$old_boot" "$new_boot" "$expected_target" "$expected_config_hash" \
             "$expected_keeper_hash" "$expected_service_hash" "$previous_event"; then
             rc=0
         else
             rc=$?
         fi
-        [[ -z ${APO_LOG_FILE:-} || ! -f ${APO_LOG_FILE:-} ]] || cat "$output_file" >>"$APO_LOG_FILE"
-        apo_classify_output "$output_file" "${context}-network-watchdog-proof"
+        output_file=$APO_LAST_WORKER_LOG
         if (( rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then break; fi
-        (( attempt < attempts )) || return 1
-        apo_event "${context}-network-watchdog-proof-retry" WARN HARNESS_FAILURE \
-            "Strict network-watchdog evidence is not complete yet; retrying the read-only proof (attempt $((attempt + 1))/$attempts)."
+        if (( attempt >= attempts )); then
+            apo_event "${context}-network-watchdog-proof-failed" WARN '' \
+                "Strict network-watchdog evidence remained incomplete after $attempts read-only captures; class=${APO_LAST_CLASS:-missing} capture=${APO_LAST_WORKER_CAPTURE_KIND:-unknown} status=${APO_LAST_WORKER_PIPE_STATUS:-unknown}: ${APO_LAST_REASON:-no structured reason}."
+            return 1
+        fi
+        apo_event "${context}-network-watchdog-proof-retry" WARN '' \
+            "Strict network-watchdog evidence is not complete yet; class=${APO_LAST_CLASS:-missing} capture=${APO_LAST_WORKER_CAPTURE_KIND:-unknown} status=${APO_LAST_WORKER_PIPE_STATUS:-unknown}: ${APO_LAST_REASON:-no structured reason}. Retrying one read-only capture (attempt $((attempt + 1))/$attempts)."
         if declare -F apo_transient_read_delay >/dev/null 2>&1; then apo_transient_read_delay; else sleep 10; fi
     done
     apo_parse_data_file "$output_file" APO_WORKER_DATA

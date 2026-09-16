@@ -744,6 +744,7 @@ apo_state_initialize() {
     apo_state_set REMOTE_STRESS_START_EPOCH ''
     apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
     apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
+    apo_state_set REMOTE_STRESS_CONFIRMED_SAMPLES ''
     apo_state_set REMOTE_STRESS_CREDIT_CONTEXT ''
     apo_state_set REMOTE_STRESS_CREDIT_SECONDS 0
     apo_state_set REMOTE_STRESS_CREDIT_DURATION_S ''

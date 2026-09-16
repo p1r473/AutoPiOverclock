@@ -151,7 +151,13 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
 (
     reset_recovery_fixture
     REWIND_CALLS=0
+    NETWORK_EVENT_PHASE=''
+    NETWORK_EVENT_CLASS='unset'
     network_rewind_fixture() { REWIND_CALLS=$((REWIND_CALLS + 1)); }
+    apo_event() {
+        NETWORK_EVENT_PHASE=$1
+        NETWORK_EVENT_CLASS=$3
+    }
     apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 1
     apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     apo_state_set NETWORK_WATCHDOG_LAST_TARGET 192.0.2.1
@@ -162,6 +168,8 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
     done
     [[ $REWIND_CALLS == 7 ]]
     [[ $(apo_state_get TRANSIENT_RETRY_COUNT 0) == 0 ]]
+    [[ $NETWORK_EVENT_PHASE == automatic-network-watchdog-resume ]]
+    [[ -z $NETWORK_EVENT_CLASS ]]
     apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID ''
     if apo_transient_phase_retry_schedule final-ENDURANCE-stress HARNESS_FAILURE \
         '[PROVED_NETWORK_WATCHDOG] unbound fixture claim' 1 network_rewind_fixture; then

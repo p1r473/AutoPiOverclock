@@ -112,7 +112,7 @@ apo_transient_phase_retry_schedule() {
             "$state_rewind" "${@:6}" || return 1
         fi
         apo_state_save
-        apo_event automatic-network-watchdog-resume WARN HARNESS_FAILURE "Strict project evidence attributes reboot $network_count to network-watchdog target $network_target. Preserving only target-reported completed stress and resuming the remaining duration at identical clocks without consuming a harness retry: $original_reason"
+        apo_event automatic-network-watchdog-resume WARN '' "Strict project evidence attributes reboot $network_count to network-watchdog target $network_target. Preserving only target-reported completed stress and resuming the remaining duration at identical clocks without consuming a harness retry: $original_reason"
         return 0
     fi
     # A harness failure without complete network-watchdog proof never retains

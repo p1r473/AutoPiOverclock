@@ -22,6 +22,7 @@ APO_REMOTE_STRESS_CREDIT_ADDED=0
 APO_REMOTE_STRESS_CREDIT_TOTAL=0
 APO_REMOTE_STRESS_CREDIT_REMAINING=0
 APO_REMOTE_JOB_TEMP_SEQUENCE=0
+readonly APO_REMOTE_JOB_CONFIRMED_SAMPLE_LIMIT=512
 
 apo_remote_job_pending() {
     [[ $(apo_state_get REMOTE_STRESS_STATUS IDLE) == RUNNING ]] || return 1
@@ -35,6 +36,51 @@ apo_remote_job_pending() {
 apo_remote_job_valid_id() { [[ ${1-} =~ ^job-[0-9a-f]{32}$ ]]; }
 apo_remote_job_valid_hash() { [[ ${1-} =~ ^[0-9a-f]{64}$ ]]; }
 apo_remote_job_valid_boot_id() { [[ ${1-} =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; }
+
+# Keep enough distinct target telemetry samples to select the newest sample at
+# or before a later proved watchdog request. Strict Batocera proof requires the
+# request to bound the new boot within 120 seconds and Debian permits up to 300
+# seconds for its committed reboot to begin. Retaining 512 distinct one-second
+# samples covers either proof window while keeping controller state bounded.
+apo_remote_job_record_confirmed_sample() {
+    local now=$1 elapsed=$2 duration=$3 history current entry sample_epoch sample_elapsed
+    local previous_epoch=0 previous_elapsed=-1 index start_index joined=''
+    local -a samples=()
+    [[ $now =~ ^[1-9][0-9]*$ && $elapsed =~ ^[0-9]+$ &&
+       $duration =~ ^[1-9][0-9]*$ && $elapsed -le $duration ]] || return 1
+    history=$(apo_state_get REMOTE_STRESS_CONFIRMED_SAMPLES '')
+    current=$(apo_state_get REMOTE_STRESS_CONFIRMED_ELAPSED_S '')
+    if [[ -n $history ]]; then
+        IFS=',' read -r -a samples <<<"$history"
+        for entry in "${samples[@]}"; do
+            [[ $entry =~ ^([1-9][0-9]*):([0-9]+)$ ]] || return 1
+            sample_epoch=${BASH_REMATCH[1]}
+            sample_elapsed=${BASH_REMATCH[2]}
+            (( sample_epoch > previous_epoch && sample_elapsed > previous_elapsed &&
+               sample_elapsed <= duration )) || return 1
+            previous_epoch=$sample_epoch
+            previous_elapsed=$sample_elapsed
+        done
+        [[ $current =~ ^[0-9]+$ && $current == "$previous_elapsed" ]] || return 1
+    elif [[ -n $current && ! $current =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+
+    # Repeated heartbeats commonly carry the same last telemetry line. Retain
+    # the timestamp at which that workload value was first observed instead of
+    # moving it past a watchdog request that becomes known only after reboot.
+    if [[ -n $current ]] && (( elapsed <= current )); then return 0; fi
+    if (( previous_epoch > 0 && now <= previous_epoch )); then return 0; fi
+    samples+=("$now:$elapsed")
+    start_index=$((${#samples[@]} - APO_REMOTE_JOB_CONFIRMED_SAMPLE_LIMIT))
+    if (( start_index < 0 )); then start_index=0; fi
+    for (( index=start_index; index<${#samples[@]}; index++ )); do
+        [[ -z $joined ]] || joined+=','
+        joined+=${samples[$index]}
+    done
+    apo_state_set REMOTE_STRESS_CONFIRMED_SAMPLES "$joined"
+    apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S "$elapsed"
+}
 
 # A controller checkpoint failure may leave a valid target-owned stress job
 # running. Preserve it only when the last committed state contains the exact
@@ -259,6 +305,7 @@ apo_remote_job_clear_state() {
     apo_state_set REMOTE_STRESS_START_EPOCH ''
     apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
     apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
+    apo_state_set REMOTE_STRESS_CONFIRMED_SAMPLES ''
 }
 
 apo_remote_stress_credit_clear() {
@@ -347,7 +394,10 @@ apo_remote_job_follow_stream() {
                                 confirmed_elapsed=${BASH_REMATCH[1]}
                                 confirmed_duration=${BASH_REMATCH[2]}
                                 if [[ $confirmed_duration == "$duration" && $confirmed_elapsed -le $duration ]]; then
-                                    apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S "$confirmed_elapsed"
+                                    if ! apo_remote_job_record_confirmed_sample "$now" "$confirmed_elapsed" "$duration"; then
+                                        APO_REMOTE_JOB_FOLLOW_ERROR='Saved detached-stress telemetry history is malformed.'
+                                        return 1
+                                    fi
                                 fi
                             fi
                             apo_remote_job_progress_tick "$now" "$start" "$duration"
@@ -393,8 +443,10 @@ apo_remote_job_follow_stream() {
 
 apo_validate_remote_job_state() {
     local status job_id token spec_hash source_boot phase duration segment_duration start_epoch last_seen confirmed_elapsed
+    local confirmed_samples entry sample_epoch sample_elapsed previous_epoch=0 previous_elapsed=-1 sample_count=0
     local unknown_context unknown_count network_count network_event network_target
     local credit_context credit_seconds credit_duration credit_event expected_credit_context
+    local -a confirmed_sample_entries=()
     status=$(apo_state_get REMOTE_STRESS_STATUS IDLE)
     job_id=$(apo_state_get REMOTE_STRESS_JOB_ID '')
     token=$(apo_state_get REMOTE_STRESS_TOKEN '')
@@ -406,10 +458,12 @@ apo_validate_remote_job_state() {
     start_epoch=$(apo_state_get REMOTE_STRESS_START_EPOCH '')
     last_seen=$(apo_state_get REMOTE_STRESS_LAST_SEEN_EPOCH '')
     confirmed_elapsed=$(apo_state_get REMOTE_STRESS_CONFIRMED_ELAPSED_S '')
+    confirmed_samples=$(apo_state_get REMOTE_STRESS_CONFIRMED_SAMPLES '')
     case $status in
         IDLE)
             if [[ -n $job_id || -n $token || -n $spec_hash || -n $source_boot || -n $phase ||
-                  -n $duration || -n $segment_duration || -n $start_epoch || -n $last_seen || -n $confirmed_elapsed ]]; then
+                  -n $duration || -n $segment_duration || -n $start_epoch || -n $last_seen ||
+                  -n $confirmed_elapsed || -n $confirmed_samples ]]; then
                 APO_AUTO_VALIDATION_REASON='Saved detached-stress state retains ownership fields while idle.'
                 return 1
             fi
@@ -445,6 +499,38 @@ apo_validate_remote_job_state() {
                 APO_AUTO_VALIDATION_REASON='Saved detached-stress confirmed elapsed time exceeds its segment duration.'
                 return 1
             }
+            if [[ -n $confirmed_samples ]]; then
+                [[ -n $start_epoch && -n $last_seen && -n $confirmed_elapsed && -n $segment_duration ]] || {
+                    APO_AUTO_VALIDATION_REASON='Saved detached-stress telemetry history lacks its timing context.'
+                    return 1
+                }
+                IFS=',' read -r -a confirmed_sample_entries <<<"$confirmed_samples"
+                for entry in "${confirmed_sample_entries[@]}"; do
+                    [[ $entry =~ ^([1-9][0-9]*):([0-9]+)$ ]] || {
+                        APO_AUTO_VALIDATION_REASON='Saved detached-stress telemetry history is malformed.'
+                        return 1
+                    }
+                    sample_epoch=${BASH_REMATCH[1]}
+                    sample_elapsed=${BASH_REMATCH[2]}
+                    (( sample_epoch >= start_epoch && sample_epoch <= last_seen &&
+                       sample_epoch > previous_epoch && sample_elapsed > previous_elapsed &&
+                       sample_elapsed <= segment_duration )) || {
+                        APO_AUTO_VALIDATION_REASON='Saved detached-stress telemetry history is inconsistent.'
+                        return 1
+                    }
+                    previous_epoch=$sample_epoch
+                    previous_elapsed=$sample_elapsed
+                    sample_count=$((sample_count + 1))
+                done
+                (( sample_count <= APO_REMOTE_JOB_CONFIRMED_SAMPLE_LIMIT )) || {
+                    APO_AUTO_VALIDATION_REASON='Saved detached-stress telemetry history exceeds its bound.'
+                    return 1
+                }
+                [[ $confirmed_elapsed == "$previous_elapsed" ]] || {
+                    APO_AUTO_VALIDATION_REASON='Saved detached-stress telemetry history does not match its latest elapsed value.'
+                    return 1
+                }
+            fi
             ;;
         *)
             APO_AUTO_VALIDATION_REASON="Saved detached-stress status is malformed: ${status:-missing}"
@@ -573,14 +659,18 @@ apo_remote_job_wait_for_boot() {
 
 apo_remote_job_record_network_credit() {
     local phase=$1 event_id=$2 requested_epoch=$3
-    local spec_hash duration segment_duration start_epoch last_seen confirmed_elapsed context
+    local spec_hash duration segment_duration start_epoch last_seen confirmed_elapsed confirmed_samples context
     local prior_context prior_credit prior_duration observed_seconds total_credit maximum_credit
+    local entry sample_epoch sample_elapsed selected_epoch='' sample_count=0 decision='no-safe-sample'
+    local previous_epoch=0 previous_elapsed=-1 history_valid=1
+    local -a confirmed_sample_entries=()
     spec_hash=$(apo_state_get REMOTE_STRESS_SPEC_HASH '')
     duration=$(apo_state_get REMOTE_STRESS_DURATION_S '')
     segment_duration=$(apo_state_get REMOTE_STRESS_SEGMENT_DURATION_S "$duration")
     start_epoch=$(apo_state_get REMOTE_STRESS_START_EPOCH '')
     last_seen=$(apo_state_get REMOTE_STRESS_LAST_SEEN_EPOCH '')
     confirmed_elapsed=$(apo_state_get REMOTE_STRESS_CONFIRMED_ELAPSED_S '')
+    confirmed_samples=$(apo_state_get REMOTE_STRESS_CONFIRMED_SAMPLES '')
     context="${phase}:${spec_hash}"
     prior_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
     prior_credit=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
@@ -591,6 +681,7 @@ apo_remote_job_record_network_credit() {
     [[ $spec_hash =~ ^[0-9a-f]{64}$ && $event_id =~ ^[0-9a-f]{32}$ &&
        $requested_epoch =~ ^[1-9][0-9]*$ && $duration =~ ^[1-9][0-9]*$ &&
        $segment_duration =~ ^[1-9][0-9]*$ && $segment_duration -le $duration ]] || {
+        apo_remote_job_stage_log "$phase" network-credit 'decision=reject-invalid-metadata'
         apo_remote_stress_credit_clear
         return 0
     }
@@ -598,14 +689,58 @@ apo_remote_job_record_network_credit() {
         prior_credit=0
     fi
     observed_seconds=0
-    if [[ $start_epoch =~ ^[1-9][0-9]*$ && $last_seen =~ ^[1-9][0-9]*$ &&
-          $last_seen -ge $start_epoch && $last_seen -le $requested_epoch &&
-          $confirmed_elapsed =~ ^[0-9]+$ && $confirmed_elapsed -le $segment_duration ]]; then
+    if [[ -n $confirmed_samples ]]; then
+        if [[ ! $start_epoch =~ ^[1-9][0-9]*$ || ! $last_seen =~ ^[1-9][0-9]*$ ||
+              ! $confirmed_elapsed =~ ^[0-9]+$ ]]; then
+            history_valid=0
+        else
+            IFS=',' read -r -a confirmed_sample_entries <<<"$confirmed_samples"
+            for entry in "${confirmed_sample_entries[@]}"; do
+                if [[ ! $entry =~ ^([1-9][0-9]*):([0-9]+)$ ]]; then
+                    history_valid=0
+                    break
+                fi
+                sample_epoch=${BASH_REMATCH[1]}
+                sample_elapsed=${BASH_REMATCH[2]}
+                sample_count=$((sample_count + 1))
+                if (( sample_epoch < start_epoch || sample_epoch > last_seen ||
+                      sample_epoch <= previous_epoch || sample_elapsed <= previous_elapsed ||
+                      sample_elapsed > segment_duration )); then
+                    history_valid=0
+                    break
+                fi
+                previous_epoch=$sample_epoch
+                previous_elapsed=$sample_elapsed
+                if (( sample_epoch <= requested_epoch )); then
+                    selected_epoch=$sample_epoch
+                    observed_seconds=$sample_elapsed
+                    decision='history-sample'
+                fi
+            done
+            if (( sample_count == 0 || sample_count > APO_REMOTE_JOB_CONFIRMED_SAMPLE_LIMIT )) ||
+               [[ $confirmed_elapsed != "$previous_elapsed" ]]; then
+                history_valid=0
+            fi
+        fi
+        if (( history_valid == 0 )); then
+            observed_seconds=0
+            selected_epoch=''
+            decision='reject-invalid-history'
+        fi
+    elif [[ $start_epoch =~ ^[1-9][0-9]*$ && $last_seen =~ ^[1-9][0-9]*$ &&
+            $last_seen -ge $start_epoch && $last_seen -le $requested_epoch &&
+            $confirmed_elapsed =~ ^[0-9]+$ && $confirmed_elapsed -le $segment_duration ]]; then
+        # Backward compatibility for a running alpha.68 job that has not yet
+        # emitted a heartbeat under the telemetry-history implementation.
         observed_seconds=$confirmed_elapsed
+        selected_epoch=$last_seen
+        decision='legacy-sample'
     fi
+    apo_remote_job_stage_log "$phase" network-credit \
+        "decision=$decision,request_epoch=$requested_epoch,selected_epoch=${selected_epoch:-none},last_seen=${last_seen:-none},samples=$sample_count,observed_seconds=$observed_seconds"
     total_credit=$((prior_credit + observed_seconds))
     maximum_credit=$((duration - 1))
-    (( total_credit > maximum_credit )) && total_credit=$maximum_credit
+    if (( total_credit > maximum_credit )); then total_credit=$maximum_credit; fi
     if (( total_credit > 0 )); then
         apo_state_set REMOTE_STRESS_CREDIT_CONTEXT "$context"
         apo_state_set REMOTE_STRESS_CREDIT_SECONDS "$total_credit"
@@ -778,6 +913,7 @@ apo_run_remote_stress_capture() {
         apo_state_set REMOTE_STRESS_START_EPOCH ''
         apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
         apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
+        apo_state_set REMOTE_STRESS_CONFIRMED_SAMPLES ''
         apo_state_save
         apo_remote_job_stage_log "$phase" ownership-checkpointed "duration_valid=1"
         APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=0

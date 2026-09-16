@@ -389,7 +389,37 @@ fi
     TELEMETRY=$(printf 'fixture temp=40C arm=2500MHz v3d=960MHz expected=2500/960 throttled=0x0 elapsed=35/100s' | base64 | tr -d '\n')
     apo_remote_job_follow_stream <<<"$(printf 'APO_JOB_HEARTBEAT\tRUNNING\t1035\t1000\t100\t%s\t0\t%s' "$TEST_BOOT" "$TELEMETRY")"
     [[ ${TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]} == 35 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]} == 1035:35 ]]
     [[ ${TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]} == 1035 ]]
+
+    # A repeated heartbeat keeps the first observation time for the unchanged
+    # elapsed value while still advancing the independent liveness timestamp.
+    apo_remote_job_follow_stream <<<"$(printf 'APO_JOB_HEARTBEAT\tRUNNING\t1036\t1000\t100\t%s\t0\t%s' "$TEST_BOOT" "$TELEMETRY")"
+    [[ ${TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]} == 1035:35 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]} == 1036 ]]
+)
+
+# Telemetry history retains enough one-second observations for both supported
+# watchdog proof windows, then drops only the oldest entries at its hard bound.
+(
+    declare -A TEST_STATE=()
+    source "$ROOT/lib/remote_job.sh"
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=''
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=''
+    apo_state_get() { printf '%s' "${TEST_STATE[$1]:-${2-}}"; }
+    apo_state_set() { TEST_STATE[$1]=$2; }
+    HISTORY_FIXTURE=''
+    for (( sample=1; sample<=APO_REMOTE_JOB_CONFIRMED_SAMPLE_LIMIT; sample++ )); do
+        [[ -z $HISTORY_FIXTURE ]] || HISTORY_FIXTURE+=','
+        HISTORY_FIXTURE+="$((1000 + sample)):$sample"
+    done
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=$APO_REMOTE_JOB_CONFIRMED_SAMPLE_LIMIT
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=$HISTORY_FIXTURE
+    apo_remote_job_record_confirmed_sample 1513 513 1000
+    IFS=',' read -r -a RETAINED_SAMPLES <<<"${TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]}"
+    [[ ${#RETAINED_SAMPLES[@]} == "$APO_REMOTE_JOB_CONFIRMED_SAMPLE_LIMIT" ]]
+    [[ ${RETAINED_SAMPLES[0]} == 1002:2 ]]
+    [[ ${RETAINED_SAMPLES[-1]} == 1513:513 ]]
 )
 
 # A strictly proved network-watchdog reboot may retain only stress time already
@@ -412,6 +442,7 @@ fi
     TEST_STATE[REMOTE_STRESS_START_EPOCH]=1000
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1060
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=1060:60
     TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]=''
     TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]=0
     TEST_STATE[REMOTE_STRESS_CREDIT_DURATION_S]=''
@@ -434,6 +465,7 @@ fi
     TEST_STATE[REMOTE_STRESS_START_EPOCH]=2000
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=2020
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=20
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=2020:20
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT_2" 2030
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 80 ]]
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_EVENT_ID]} == "$TEST_EVENT_2" ]]
@@ -444,6 +476,7 @@ fi
     TEST_STATE[REMOTE_STRESS_START_EPOCH]=1000
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1060
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=1060:60
     apo_remote_stress_credit_clear
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
 
@@ -522,6 +555,35 @@ fi
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+
+    # A telemetry sample observed only after the request is also rejected.
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=1090:60
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+
+    # The last heartbeat may arrive after the watchdog request while carrying
+    # an unchanged telemetry sample first observed before that request. Credit
+    # the sample timestamp, not the later liveness heartbeat timestamp.
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=1060:60
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 60 ]]
+
+    # If stress telemetry advances during watchdog starvation, retain the
+    # newest sample at or before the request and reject only later samples.
+    apo_remote_stress_credit_clear
+    TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1090
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=90
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=1060:60,1075:75,1090:90
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 75 ]]
+
+    # Corrupt or non-monotonic saved history fails closed instead of granting
+    # credit from a value whose observation time cannot be proved.
+    apo_remote_stress_credit_clear
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=1060:60,1075:55
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+    [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
 )
 
 # Periodic progress checkpoints are advisory once exact target-job ownership

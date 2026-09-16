@@ -135,6 +135,25 @@ apo_run_worker_capture retryable-health health
 [[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 5 ]]
 [[ $APO_LAST_CLASS == PASS ]]
 
+# A complete structured failure is still useful evidence when its worker exits
+# nonzero. A single capture must preserve and classify that output without the
+# exact-file reader deleting it or starting an independent retry loop.
+: > "$WORKER_ATTEMPT_FILE"
+apo_remote_worker() {
+    printf x >> "$WORKER_ATTEMPT_FILE"
+    printf 'APO_RESULT_CLASS=HARNESS_FAILURE\nAPO_RESULT_REASON_B64=%s\n' \
+        "$(printf '%s' 'strict proof is not available yet' | base64 | tr -d '\n')"
+    return 20
+}
+if apo_run_worker_capture_once structured-nonzero-proof prove-network-watchdog-reboot fixture-arguments; then
+    echo 'structured nonzero network-watchdog proof was accepted as PASS' >&2
+    exit 1
+fi
+[[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 1 ]]
+[[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+[[ $APO_LAST_REASON == 'strict proof is not available yet' ]]
+grep -Fq 'APO_RESULT_CLASS=HARNESS_FAILURE' "$APO_LAST_WORKER_LOG"
+
 # A complete PASS paired with a disagreeing transport rc authorizes exactly
 # one same-boot replay of the idempotent clear-tryboot postcondition check.
 : > "$WORKER_ATTEMPT_FILE"

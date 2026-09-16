@@ -351,6 +351,79 @@ for PROFILE_NAME in debian batocera; do
     '
 done
 
+# Reboot proof owns one bounded retry loop. Each attempt must use the ordinary
+# worker capture path so a structured nonzero result remains available for
+# classification, and retry notices must not look like additional failures.
+for PROFILE_NAME in debian batocera; do
+    PROFILE_PATH="$ROOT/profiles/${PROFILE_NAME}.sh"
+    PROFILE="$PROFILE_PATH" REPO_ROOT="$ROOT" TEST_ROOT="$TEMP_DIR/proof-$PROFILE_NAME" bash -c '
+        set -Eeuo pipefail
+        APO_ROOT=$REPO_ROOT
+        APO_RUN_ID=fixture
+        source "$PROFILE"
+
+        mkdir -p "$TEST_ROOT"
+        APO_TRANSIENT_WORKER_ATTEMPTS=3
+        APO_REMOTE_WORKER=/tmp/fixture-worker
+        APO_LAST_CLASS=
+        APO_LAST_REASON=
+        APO_LAST_WORKER_LOG=
+        APO_LAST_WORKER_CAPTURE_KIND=
+        APO_LAST_WORKER_PIPE_STATUS=
+        PROOF_ATTEMPTS=0
+        PROOF_DELAYS=0
+        PROOF_EVENTS="$TEST_ROOT/events"
+        UNEXPECTED_READER="$TEST_ROOT/unexpected-exact-file-reader"
+        : > "$PROOF_EVENTS"
+
+        apo_state_get() {
+            case $1 in
+                DISC_NETWORK_WATCHDOG_TARGET) printf 192.0.2.1 ;;
+                DISC_NETWORK_WATCHDOG_CONFIG_HASH) printf "%064d" 0 ;;
+                DISC_NETWORK_WATCHDOG_KEEPER_HASH) printf "%064d" 1 ;;
+                DISC_NETWORK_WATCHDOG_SERVICE_HASH) printf "%064d" 2 ;;
+                NETWORK_WATCHDOG_LAST_EVENT_ID) printf "%s" "${2-}" ;;
+                *) printf "%s" "${2-}" ;;
+            esac
+        }
+        apo_remote_worker_read_file() {
+            : > "$UNEXPECTED_READER"
+            return 1
+        }
+        apo_run_worker_capture_once() {
+            [[ $1 == final-endurance-network-watchdog-proof ]]
+            [[ $2 == prove-network-watchdog-reboot ]]
+            PROOF_ATTEMPTS=$((PROOF_ATTEMPTS + 1))
+            APO_LAST_WORKER_LOG="$TEST_ROOT/capture-$PROOF_ATTEMPTS.log"
+            printf "APO_RESULT_CLASS=HARNESS_FAILURE\nAPO_RESULT_REASON_B64=Zml4dHVyZSBwcm9vZiBtaXNz\n" > "$APO_LAST_WORKER_LOG"
+            APO_LAST_CLASS=HARNESS_FAILURE
+            APO_LAST_REASON="fixture proof miss"
+            APO_LAST_WORKER_CAPTURE_KIND=progress-coprocess
+            APO_LAST_WORKER_PIPE_STATUS="producer=20 consumer=0"
+            return 20
+        }
+        apo_event() {
+            printf "%s|%s|%s|%s\n" "$1" "$2" "$3" "$4" >> "$PROOF_EVENTS"
+        }
+        apo_transient_read_delay() { PROOF_DELAYS=$((PROOF_DELAYS + 1)); }
+
+        if apo_profile_prove_network_watchdog_reboot final-endurance \
+            11111111-2222-3333-4444-555555555555 \
+            66666666-7777-8888-9999-aaaaaaaaaaaa 2> "$TEST_ROOT/stderr"; then
+            echo "incomplete watchdog proof was accepted" >&2
+            exit 1
+        fi
+        [[ $PROOF_ATTEMPTS == 3 ]]
+        [[ $PROOF_DELAYS == 2 ]]
+        [[ ! -e $UNEXPECTED_READER ]]
+        [[ ! -s $TEST_ROOT/stderr ]]
+        [[ $(wc -l < "$PROOF_EVENTS") == 3 ]]
+        [[ $(grep -c "network-watchdog-proof-retry|WARN||" "$PROOF_EVENTS") == 2 ]]
+        [[ $(grep -c "network-watchdog-proof-failed|WARN||" "$PROOF_EVENTS") == 1 ]]
+        grep -Fq "class=HARNESS_FAILURE capture=progress-coprocess status=producer=20 consumer=0: fixture proof miss" "$PROOF_EVENTS"
+    '
+done
+
 python3 - "$ROOT/assets/batocera/watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_keeper.py" <<'APO_KEEPER_COMPILE'
 from pathlib import Path
 import sys

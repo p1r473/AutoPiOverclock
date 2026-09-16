@@ -30,6 +30,8 @@ Every candidate attempt also receives a fresh 256-bit ownership token. The contr
 
 ## State phases
 
+Detached-job state includes a bounded monotonic history of when each distinct target-reported elapsed value was first observed. Strict network-watchdog continuation selects the newest sample timestamp at or before the proved reboot request. This separates completed workload evidence from later controller heartbeats during hardware-watchdog reset latency. Invalid history fails closed, and alpha.68 active-job state remains readable through its legacy single-sample rule until alpha.69 records a new sample.
+
 ```text
 PREPARE → TRYBOOT_PROOF (displayed as baseline safety proof) → GPU_SMOKE → CPU_SWEEP(forward or reverse)/refinement
         → CPU_QUALIFICATION(saved duration, stock GPU) → GPU_SWEEP(forward or reverse)/refinement

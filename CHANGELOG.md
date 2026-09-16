@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.69 - 2026-09-16
+
+- Fixed strict network-watchdog continuation when the target kept sending heartbeats after the watchdog requested a reboot but before the hardware reset occurred. The controller now credits the newest timestamped target workload sample observed at or before the proved request instead of discarding all completed work because a later heartbeat was seen.
+- Added a bounded, monotonic telemetry history to detached-job state. Its 512 distinct samples cover both the 120-second Batocera and 300-second Debian committed-reboot proof windows at one-second telemetry. Late-only, malformed, inconsistent, or unprovable history fails closed, while an active alpha.68 job remains compatible until it emits a new sample under alpha.69.
+- Added decision logging and regression coverage for unchanged telemetry, advancing telemetry during watchdog starvation, late-only samples, malformed history, exact remaining-duration execution, and detached-state cleanup.
+- Changed the automatic network-watchdog continuation notice to an unclassified warning. One proved reboot now produces one `HARNESS_FAILURE` classification instead of a second label that could look like another reboot.
+- Fixed strict reboot-proof capture when the proof worker returns a structured nonzero result. Each outer proof retry now performs one worker capture, preserves and classifies its complete output, and records bounded capture diagnostics instead of deleting the result, reading a missing file, and nesting 30 exact-file attempts inside each of five proof attempts.
+
 ## 0.1.0-alpha.68 - 2026-09-13
 
 - Fixed coprocess descriptor cleanup that permanently redirected the controller's standard error stream to `/dev/null`. Health output now clears the live progress row, later diagnostics remain visible, and detached-job progress continues rendering after the first worker call.
