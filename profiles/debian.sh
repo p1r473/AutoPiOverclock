@@ -394,6 +394,95 @@ apo_profile_install_best_network_watchdog() {
     apo_profile_install_network_watchdog
 }
 
+apo_profile_reconcile_network_watchdog_provider() {
+    local protected_hash=${1:-} current_kind desired_kind live_run live_backup state_kind
+    APO_NETWORK_WATCHDOG_PROVIDER_CHANGED=0
+    current_kind=${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-}
+    case $current_kind in
+        debian-systemd-companion)
+            if [[ ${APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]:-0} == 1 ]]; then
+                desired_kind=debian-watchdog-observer
+            elif [[ ${APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]:-0} == 1 ||
+                    ${APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]:-0} == 1 ]]; then
+                APO_LAST_CLASS=PREFLIGHT_FAILURE
+                APO_LAST_REASON='The native Debian watchdog became active but is not safe for passive proof. The run will not keep a second rebooting watcher or change the native configuration.'
+                return 1
+            else
+                return 0
+            fi
+            ;;
+        debian-watchdog-observer)
+            if [[ ${APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]:-0} == 1 ]]; then
+                return 0
+            fi
+            if [[ ${APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]:-0} == 1 ||
+                  ${APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]:-0} == 1 ]]; then
+                APO_LAST_CLASS=PREFLIGHT_FAILURE
+                APO_LAST_REASON='The active native Debian watchdog is no longer safe for passive proof. The run will not replace it or add a second rebooting watcher.'
+                return 1
+            fi
+            desired_kind=debian-systemd-companion
+            ;;
+        *) return 0 ;;
+    esac
+
+    live_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+    live_backup=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-}
+    state_kind=$(apo_state_get NETWORK_WATCHDOG_INSTALL_KIND '')
+    [[ $(apo_state_get NETWORK_WATCHDOG_INSTALLED_BY_RUN 0) == 1 &&
+       $live_run == "$APO_RUN_ID" && -n $live_backup && $current_kind == "$state_kind" &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]:-} == "$(apo_state_get NETWORK_WATCHDOG_INSTALL_CONFIG_HASH '')" &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]:-} == "$(apo_state_get NETWORK_WATCHDOG_INSTALL_KEEPER_HASH '')" &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]:-} == "$(apo_state_get NETWORK_WATCHDOG_INSTALL_SERVICE_HASH '')" ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The run-owned Debian watchdog provider cannot be migrated because its live ownership hashes no longer match the checkpoint.'
+        return 1
+    }
+    [[ $protected_hash =~ ^[0-9a-f]{64}$ ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The protected permanent config hash is unavailable for the Debian watchdog-provider migration.'
+        return 1
+    }
+
+    apo_event network-watchdog-provider-migration INFO '' \
+        "Migrating the run-owned Debian watchdog proof provider from $current_kind to $desired_kind without changing the native watchdog configuration or repair command."
+    apo_profile_cleanup_run_watchdog || return 1
+    apo_discovery_capture || return 1
+    [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" &&
+       ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='The target profile or protected permanent config changed while migrating the Debian watchdog proof provider.'
+        return 1
+    }
+    case $desired_kind in
+        debian-watchdog-observer)
+            [[ ${APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]:-0} == 1 ]] || {
+                APO_LAST_CLASS=PREFLIGHT_FAILURE
+                APO_LAST_REASON='The native Debian watchdog stopped or changed before passive observer installation.'
+                return 1
+            }
+            apo_profile_install_network_watchdog_observer || return 1
+            ;;
+        debian-systemd-companion)
+            [[ ${APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]:-0} == 0 &&
+               ${APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]:-0} == 0 ]] || {
+                APO_LAST_CLASS=PREFLIGHT_FAILURE
+                APO_LAST_REASON='The native Debian watchdog became active before fallback-companion installation.'
+                return 1
+            }
+            apo_profile_install_network_watchdog || return 1
+            ;;
+        *)
+            APO_LAST_CLASS=PREFLIGHT_FAILURE
+            APO_LAST_REASON='The Debian watchdog-provider migration selected an unsupported destination.'
+            return 1
+            ;;
+    esac
+    APO_NETWORK_WATCHDOG_PROVIDER_CHANGED=1
+    apo_event network-watchdog-provider-migration PASS '' \
+        "Migrated the run-owned Debian watchdog proof provider from $current_kind to $desired_kind; the native watchdog configuration and repair command were not changed."
+}
+
 apo_profile_prove_network_watchdog_reboot() {
     local context=$1 old_boot=$2 new_boot=$3 output_file='' rc attempt attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5}
     local expected_kind expected_target expected_config_hash expected_keeper_hash expected_service_hash previous_event
@@ -497,7 +586,7 @@ apo_profile_cleanup_run_watchdog() {
     apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
     apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS REMOVED
     apo_state_save
-    apo_event network-watchdog-cleanup PASS '' 'Removed only the run-owned Debian watchdog companion and retained native watchdogs and durable evidence.'
+    apo_event network-watchdog-cleanup PASS '' 'Removed only the run-owned Debian watchdog proof component and retained native watchdogs and durable evidence.'
 }
 
 apo_profile_cleanup_worker() { apo_remote_root "rm -rf $(apo_sh_quote "$APO_REMOTE_WORK_DIR")" >/dev/null 2>&1 || true; }

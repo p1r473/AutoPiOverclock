@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.75 - 2026-09-16
+
+- Added hash-bound live migration between the temporary Debian gateway companion and the passive native-watchdog observer. Resume now follows a supported native watchdog being started or stopped without leaving two rebooting network watchers active, changing the native configuration, or discarding the active run.
+
 ## 0.1.0-alpha.74 - 2026-09-16
 
 - Fixed final-endurance progress during a proved network-watchdog recovery boot. The ETA now retains validated saved stress credit before the replacement segment starts, then uses cumulative live progress without double-counting that credit.

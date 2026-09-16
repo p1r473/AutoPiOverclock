@@ -712,6 +712,22 @@ apo_network_watchdog_ensure_for_run() {
         APO_LAST_REASON="A run-owned network-watchdog provider belongs to another resumable run ($live_install_run). Resume or recover that run before starting this one."
         return 1
     fi
+    APO_NETWORK_WATCHDOG_PROVIDER_CHANGED=0
+    if declare -F apo_profile_reconcile_network_watchdog_provider >/dev/null 2>&1; then
+        apo_profile_reconcile_network_watchdog_provider "$protected_hash" || return 1
+    fi
+    if (( APO_NETWORK_WATCHDOG_PROVIDER_CHANGED == 1 )); then
+        apo_discovery_capture || return 1
+        [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" &&
+           ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" ]] || {
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON='The target profile or protected permanent config changed after network-watchdog provider migration.'
+            return 1
+        }
+        live_install_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+        live_install_backup=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-}
+        install_status=$(apo_state_get NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED)
+    fi
     if ! apo_profile_network_watchdog_ready; then
         if [[ $live_install_run == "$APO_RUN_ID" ]]; then
             reconcile_required=1

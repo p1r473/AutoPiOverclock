@@ -412,6 +412,135 @@ for PROFILE_NAME in debian batocera; do
     '
 done
 
+# Resume must atomically follow a supported native Debian watcher's live state.
+# Starting the native watcher replaces the run-owned rebooting companion with a
+# passive observer; stopping it performs the inverse transition. The live
+# provider and every checkpointed ownership hash must agree before cleanup.
+PROFILE="$ROOT/profiles/debian.sh" DETECT="$ROOT/lib/detect.sh" REPO_ROOT="$ROOT" bash -c '
+    set -Eeuo pipefail
+    APO_ROOT=$REPO_ROOT
+    APO_RUN_ID=fixture
+    HASH_A=$(printf "%064d" 1)
+    HASH_B=$(printf "%064d" 2)
+    HASH_C=$(printf "%064d" 3)
+    HASH_D=$(printf "%064d" 4)
+    declare -A TEST_STATE=()
+    declare -A APO_DISCOVERY=()
+    source "$DETECT"
+    source "$PROFILE"
+
+    apo_state_get() {
+        local key=$1 default=${2-}
+        printf "%s" "${TEST_STATE[$key]-$default}"
+    }
+    apo_state_set() { TEST_STATE[$1]=${2-}; }
+    apo_state_save() { :; }
+    apo_event() { :; }
+    apo_summary_line() { :; }
+    apo_store_discovery_state() { CALLS+=" store"; }
+    apo_discovery_capture() { CALLS+=" discover"; }
+    apo_profile_cleanup_run_watchdog() {
+        CALLS+=" cleanup"
+        TEST_STATE[NETWORK_WATCHDOG_INSTALLED_BY_RUN]=0
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_STATUS]=REMOVED
+        APO_DISCOVERY[NETWORK_WATCHDOG_KIND]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]=0
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]=
+    }
+    install_fixture_provider() {
+        local kind=$1 config_hash=$2 keeper_hash=$3 service_hash=$4 backup=$5
+        TEST_STATE[NETWORK_WATCHDOG_INSTALLED_BY_RUN]=1
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]=$kind
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_TARGET]=192.0.2.1
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_CONFIG_HASH]=$config_hash
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_KEEPER_HASH]=$keeper_hash
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_SERVICE_HASH]=$service_hash
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_BACKUP]=$backup
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_STATUS]=INSTALLED
+        APO_DISCOVERY[NETWORK_WATCHDOG_KIND]=$kind
+        APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]=192.0.2.1
+        APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]=$config_hash
+        APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]=$keeper_hash
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]=$service_hash
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]=1
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]=$APO_RUN_ID
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]=$backup
+    }
+    apo_profile_install_network_watchdog_observer() {
+        CALLS+=" observer"
+        install_fixture_provider debian-watchdog-observer "$HASH_B" "$HASH_C" "$HASH_D" /fixture/observer-backup
+    }
+    apo_profile_install_network_watchdog() {
+        CALLS+=" companion"
+        install_fixture_provider debian-systemd-companion "$HASH_B" "$HASH_C" "$HASH_D" /fixture/companion-backup
+    }
+    reset_fixture() {
+        local kind=$1
+        CALLS=
+        APO_LAST_CLASS=
+        APO_LAST_REASON=
+        APO_PERMANENT_CONFIG_HASH=$HASH_A
+        TEST_STATE=()
+        APO_DISCOVERY=()
+        TEST_STATE[PERMANENT_HASH]=$HASH_A
+        TEST_STATE[NETWORK_WATCHDOG_INSTALLED_BY_RUN]=1
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]=$kind
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_TARGET]=192.0.2.1
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_CONFIG_HASH]=$HASH_A
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_KEEPER_HASH]=$HASH_B
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_SERVICE_HASH]=$HASH_C
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_BACKUP]=/fixture/original-backup
+        TEST_STATE[NETWORK_WATCHDOG_INSTALL_STATUS]=INSTALLED
+        APO_DISCOVERY[PROFILE]=debian
+        APO_DISCOVERY[PERMANENT_HASH]=$HASH_A
+        APO_DISCOVERY[NETWORK_WATCHDOG_KIND]=$kind
+        APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]=192.0.2.1
+        APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]=$HASH_A
+        APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]=$HASH_B
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]=$HASH_C
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]=1
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]=$APO_RUN_ID
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]=/fixture/original-backup
+    }
+
+    reset_fixture debian-systemd-companion
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]=1
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]=1
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_TARGET]=192.0.2.1
+    APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]=1
+    apo_network_watchdog_ensure_for_run
+    [[ $CALLS == " discover cleanup discover observer discover store" ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]} == debian-watchdog-observer ]]
+    [[ ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]} == debian-watchdog-observer ]]
+
+    reset_fixture debian-watchdog-observer
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]=0
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]=0
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_TARGET]=
+    APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]=0
+    apo_network_watchdog_ensure_for_run
+    [[ $CALLS == " discover cleanup discover companion discover store" ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]} == debian-systemd-companion ]]
+    [[ ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]} == debian-systemd-companion ]]
+
+    reset_fixture debian-systemd-companion
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]=1
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]=0
+    APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_TARGET]=
+    APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]=1
+    if apo_network_watchdog_ensure_for_run; then
+        printf "unsafe native watchdog was accepted beside the fallback companion\n" >&2
+        exit 1
+    fi
+    [[ $CALLS == " discover" ]]
+    [[ $APO_LAST_CLASS == PREFLIGHT_FAILURE ]]
+'
+
 # Reboot proof owns one bounded retry loop. Each attempt must use the ordinary
 # worker capture path so a structured nonzero result remains available for
 # classification, and retry notices must not look like additional failures.
