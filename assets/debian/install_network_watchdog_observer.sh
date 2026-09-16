@@ -247,6 +247,55 @@ backup_path_valid() {
     fi
 }
 
+cleanup_marker_valid_for_run() {
+    local marker=$1 run_id=$2 component_key=$3
+    local run_line config_line component_line service_line extra
+    regular_file "$marker" || return 1
+    {
+        IFS= read -r run_line &&
+            IFS= read -r config_line &&
+            IFS= read -r component_line &&
+            IFS= read -r service_line &&
+            ! IFS= read -r extra
+    } <"$marker" || return 1
+    [[ $run_line == "RUN_ID=$run_id" &&
+       $config_line =~ ^CONFIG_SHA256=[0-9a-f]{64}$ &&
+       $component_line =~ ^${component_key}=[0-9a-f]{64}$ &&
+       $service_line =~ ^SERVICE_SHA256=[0-9a-f]{64}$ ]]
+}
+
+archive_stale_cleanup_marker() {
+    local marker=$1 run_id=$2 component_key=$3 marker_hash archive
+    cleanup_marker_valid_for_run "$marker" "$run_id" "$component_key" || return 1
+    marker_hash=$(file_hash "$marker")
+    valid_hash "$marker_hash" || return 1
+    archive=${marker}.previous-${marker_hash}
+    if [[ -e $archive || -L $archive ]]; then
+        regular_file "$archive" && [[ $(file_hash "$archive") == "$marker_hash" ]] || return 1
+        rm -f -- "$marker" || return 1
+    else
+        mv -- "$marker" "$archive" || return 1
+    fi
+    sync "$archive" && sync "${marker%/*}"
+}
+
+write_cleanup_marker() {
+    local marker=$1 expected=$2 temporary
+    temporary=$(mktemp "${marker}.new.XXXXXX") || return 1
+    printf '%s\n' "$expected" >"$temporary" && chmod 600 "$temporary" && sync "$temporary" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+    if [[ -e $marker || -L $marker ]]; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+    mv -- "$temporary" "$marker" && sync "$marker" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+}
+
 backup_for_run() {
     local run_id=$1 candidate
     local -a matches=()
@@ -382,7 +431,7 @@ cmd_cleanup() {
     local run_id=${1:-} backup_dir=${2:-} config_hash=${3:-} observer_hash=${4:-} service_hash=${5:-}
     local old_observer_hash=${6:-} old_service_hash=${7:-} old_config_hash=${8:-}
     local old_enabled=${9:-} old_active=${10:-} failure_reason='' cleanup_marker
-    local current_config_hash current_observer_hash current_service_hash expected_marker actual_marker
+    local current_config_hash current_observer_hash current_service_hash expected_marker actual_marker live_owned=0
     safe_run_id "$run_id" && [[ $backup_dir == "$BACKUP_ROOT"/network-watchdog-observer-[0-9]*-${run_id}.* ]] &&
         [[ -d $backup_dir && ! -L $backup_dir ]] && valid_hash "$config_hash" && valid_hash "$observer_hash" &&
         valid_hash "$service_hash" && valid_old_hash "$old_observer_hash" && valid_old_hash "$old_service_hash" &&
@@ -399,16 +448,19 @@ cmd_cleanup() {
     expected_marker=$(printf 'RUN_ID=%s\nCONFIG_SHA256=%s\nOBSERVER_SHA256=%s\nSERVICE_SHA256=%s\n' \
         "$run_id" "$config_hash" "$observer_hash" "$service_hash")
     cleanup_marker=$backup_dir/cleanup.plan
+    current_config_hash=$(path_hash "$LIVE_CONFIG")
+    current_observer_hash=$(path_hash "$LIVE_OBSERVER")
+    current_service_hash=$(path_hash "$LIVE_SERVICE")
+    if [[ $current_config_hash == "$config_hash" && $current_observer_hash == "$observer_hash" &&
+          $current_service_hash == "$service_hash" ]] && grep -Fqx "INSTALL_RUN_ID=$run_id" "$LIVE_CONFIG"; then
+        live_owned=1
+    fi
     if [[ ! -e $cleanup_marker && ! -L $cleanup_marker ]]; then
-        [[ $(path_hash "$LIVE_CONFIG") == "$config_hash" && $(path_hash "$LIVE_OBSERVER") == "$observer_hash" &&
-           $(path_hash "$LIVE_SERVICE") == "$service_hash" ]] && grep -Fqx "INSTALL_RUN_ID=$run_id" "$LIVE_CONFIG" || {
+        (( live_owned == 1 )) || {
             emit_result RECOVERY_FAILURE 'Debian watchdog observer cleanup could not prove the installing run.'
             return 1
         }
-        printf '%s\n' "$expected_marker" >"${cleanup_marker}.new" && chmod 600 "${cleanup_marker}.new" &&
-            [[ ! -e $cleanup_marker && ! -L $cleanup_marker ]] && mv -- "${cleanup_marker}.new" "$cleanup_marker" &&
-            sync "$cleanup_marker" || {
-                rm -f -- "${cleanup_marker}.new"
+        write_cleanup_marker "$cleanup_marker" "$expected_marker" || {
                 emit_result RECOVERY_FAILURE 'Could not checkpoint Debian watchdog observer cleanup.'
                 return 1
             }
@@ -418,13 +470,19 @@ cmd_cleanup() {
         return 1
     }
     actual_marker=$(<"$cleanup_marker")
+    if [[ $actual_marker != "$expected_marker" ]]; then
+        (( live_owned == 1 )) &&
+            archive_stale_cleanup_marker "$cleanup_marker" "$run_id" OBSERVER_SHA256 &&
+            write_cleanup_marker "$cleanup_marker" "$expected_marker" || {
+                emit_result RECOVERY_FAILURE 'Debian watchdog observer cleanup checkpoint does not match this run.'
+                return 1
+            }
+        actual_marker=$(<"$cleanup_marker")
+    fi
     [[ $actual_marker == "$expected_marker" ]] || {
         emit_result RECOVERY_FAILURE 'Debian watchdog observer cleanup checkpoint does not match this run.'
         return 1
     }
-    current_config_hash=$(path_hash "$LIVE_CONFIG")
-    current_observer_hash=$(path_hash "$LIVE_OBSERVER")
-    current_service_hash=$(path_hash "$LIVE_SERVICE")
     [[ ( $current_config_hash == "$config_hash" || $current_config_hash == "$old_config_hash" ) &&
        ( $current_observer_hash == "$observer_hash" || $current_observer_hash == "$old_observer_hash" ) &&
        ( $current_service_hash == "$service_hash" || $current_service_hash == "$old_service_hash" ) ]] || {
@@ -458,4 +516,4 @@ main() {
     esac
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

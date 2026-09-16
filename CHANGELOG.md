@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.78 - 2026-09-16
+
+- Fixed run-owned Debian watchdog refresh cleanup after packaged observer or companion assets change. A stale same-run cleanup checkpoint is now accepted only when the live files and embedded run identity exactly match the saved current installation, then preserved under a content-addressed history name before the current checkpoint is written.
+
 ## 0.1.0-alpha.77 - 2026-09-16
 
 - Fixed passive Debian watchdog proof when several journal records arrive in one pipe read. The observer now drains an unbuffered byte stream instead of waiting on a text wrapper that may already hold unread records internally.

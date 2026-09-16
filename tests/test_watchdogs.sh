@@ -1025,6 +1025,50 @@ APO_CLI_LIBRARY_ONLY=1 APO_ROOT="$ROOT" bash -c '
     [[ $CLEANUP_CALLS == 1 ]]
 '
 
+for INSTALLER_SPEC in \
+    'install_network_watchdog_observer.sh OBSERVER_SHA256' \
+    'install_network_watchdog.sh KEEPER_SHA256'; do
+    read -r INSTALLER_NAME COMPONENT_KEY <<<"$INSTALLER_SPEC"
+    INSTALLER="$ROOT/assets/debian/$INSTALLER_NAME" COMPONENT_KEY="$COMPONENT_KEY" \
+        MARKER_ROOT="$TEMP_DIR/marker-$INSTALLER_NAME" bash -c '
+        set -Eeuo pipefail
+        source "$INSTALLER"
+        mkdir -p "$MARKER_ROOT"
+        marker=$MARKER_ROOT/cleanup.plan
+        run_id=fixture-run
+        config_hash=$(printf "a%.0s" {1..64})
+        old_component_hash=$(printf "b%.0s" {1..64})
+        new_component_hash=$(printf "c%.0s" {1..64})
+        service_hash=$(printf "d%.0s" {1..64})
+        stale=$(printf "RUN_ID=%s\nCONFIG_SHA256=%s\n%s=%s\nSERVICE_SHA256=%s\n" \
+            "$run_id" "$config_hash" "$COMPONENT_KEY" "$old_component_hash" "$service_hash")
+        expected=$(printf "RUN_ID=%s\nCONFIG_SHA256=%s\n%s=%s\nSERVICE_SHA256=%s\n" \
+            "$run_id" "$config_hash" "$COMPONENT_KEY" "$new_component_hash" "$service_hash")
+        printf "%s\n" "$stale" >"$marker"
+        chmod 600 "$marker"
+        stale_hash=$(sha256sum "$marker" | awk "NR == 1 {print \$1}")
+        cleanup_marker_valid_for_run "$marker" "$run_id" "$COMPONENT_KEY"
+        archive_stale_cleanup_marker "$marker" "$run_id" "$COMPONENT_KEY"
+        archive=${marker}.previous-${stale_hash}
+        [[ ! -e $marker && -f $archive && ! -L $archive ]]
+        [[ $(<"$archive") == "$stale" ]]
+        write_cleanup_marker "$marker" "$expected"
+        [[ $(<"$marker") == "$expected" ]]
+        rm -f -- "$marker"
+        cp -- "$archive" "$marker"
+        archive_stale_cleanup_marker "$marker" "$run_id" "$COMPONENT_KEY"
+        [[ ! -e $marker && $(<"$archive") == "$stale" ]]
+        printf "RUN_ID=foreign-run\nCONFIG_SHA256=%s\n%s=%s\nSERVICE_SHA256=%s\n" \
+            "$config_hash" "$COMPONENT_KEY" "$old_component_hash" "$service_hash" >"$marker"
+        chmod 600 "$marker"
+        if archive_stale_cleanup_marker "$marker" "$run_id" "$COMPONENT_KEY"; then
+            printf "foreign cleanup marker was archived by %s\n" "$INSTALLER_NAME" >&2
+            exit 1
+        fi
+        [[ -f $marker ]]
+    '
+done
+
 grep -q 'WATCHDOG_RUNTIME_TIMEOUT' "$ROOT/lib/detect.sh"
 grep -q 'NETWORK_WATCHDOG_SERVICE_ACTIVE' "$ROOT/lib/detect.sh"
 grep -q 'atomic_replace_verified.*watchdog-config-install' "$ROOT/workers/debian-worker.sh"
