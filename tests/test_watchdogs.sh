@@ -125,6 +125,16 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" BATOCERA_NET
     source "$WORKER"
     [[ $(batocera_network_companion_config_fields "$BATOCERA_NETWORK_CONFIG") == $'"'"'192.0.2.1\tfixture'"'"' ]]
 '
+BATOCERA_INVALID_CONFIG="$TEMP_DIR/batocera-network-watchdog-invalid.conf"
+sed 's/^MAX_REBOOTS=3$/MAX_REBOOTS=11/' "$BATOCERA_NETWORK_CONFIG" >"$BATOCERA_INVALID_CONFIG"
+if APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" BATOCERA_INVALID_CONFIG="$BATOCERA_INVALID_CONFIG" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    batocera_network_companion_config_fields "$BATOCERA_INVALID_CONFIG"
+' >/dev/null 2>&1; then
+    printf 'out-of-range Batocera network-watchdog value was accepted\n' >&2
+    exit 1
+fi
 printf 'TARGET=192.0.2.2\n' >>"$NETWORK_CONFIG"
 if APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" NETWORK_CONFIG="$NETWORK_CONFIG" bash -c '
     set -Eeuo pipefail

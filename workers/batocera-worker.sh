@@ -2773,12 +2773,12 @@ batocera_network_companion_config_fields() {
         }
         END {
             if (invalid || marker != 1 || count != 8) exit 1
-            if (values["PING_TIMEOUT_SECONDS"] !~ /^[0-9]+$/ || values["PING_TIMEOUT_SECONDS"] < 1 || values["PING_TIMEOUT_SECONDS"] > 30) exit 1
-            if (values["CHECK_INTERVAL_SECONDS"] !~ /^[0-9]+$/ || values["CHECK_INTERVAL_SECONDS"] < 1 || values["CHECK_INTERVAL_SECONDS"] > 300) exit 1
-            if (values["STARTUP_GRACE_SECONDS"] !~ /^[0-9]+$/ || values["STARTUP_GRACE_SECONDS"] < 30 || values["STARTUP_GRACE_SECONDS"] > 3600) exit 1
-            if (values["FAILURE_WINDOW_SECONDS"] !~ /^[0-9]+$/ || values["FAILURE_WINDOW_SECONDS"] < 30 || values["FAILURE_WINDOW_SECONDS"] > 3600) exit 1
-            if (values["MAX_REBOOTS"] !~ /^[0-9]+$/ || values["MAX_REBOOTS"] < 1 || values["MAX_REBOOTS"] > 10) exit 1
-            if (values["REBOOT_WINDOW_SECONDS"] !~ /^[0-9]+$/ || values["REBOOT_WINDOW_SECONDS"] < 300 || values["REBOOT_WINDOW_SECONDS"] > 86400) exit 1
+            if (values["PING_TIMEOUT_SECONDS"] !~ /^[0-9]+$/ || values["PING_TIMEOUT_SECONDS"] + 0 < 1 || values["PING_TIMEOUT_SECONDS"] + 0 > 30) exit 1
+            if (values["CHECK_INTERVAL_SECONDS"] !~ /^[0-9]+$/ || values["CHECK_INTERVAL_SECONDS"] + 0 < 1 || values["CHECK_INTERVAL_SECONDS"] + 0 > 300) exit 1
+            if (values["STARTUP_GRACE_SECONDS"] !~ /^[0-9]+$/ || values["STARTUP_GRACE_SECONDS"] + 0 < 30 || values["STARTUP_GRACE_SECONDS"] + 0 > 3600) exit 1
+            if (values["FAILURE_WINDOW_SECONDS"] !~ /^[0-9]+$/ || values["FAILURE_WINDOW_SECONDS"] + 0 < 30 || values["FAILURE_WINDOW_SECONDS"] + 0 > 3600) exit 1
+            if (values["MAX_REBOOTS"] !~ /^[0-9]+$/ || values["MAX_REBOOTS"] + 0 < 1 || values["MAX_REBOOTS"] + 0 > 10) exit 1
+            if (values["REBOOT_WINDOW_SECONDS"] !~ /^[0-9]+$/ || values["REBOOT_WINDOW_SECONDS"] + 0 < 300 || values["REBOOT_WINDOW_SECONDS"] + 0 > 86400) exit 1
             printf "%s\t%s\n", values["TARGET"], values["RUN_ID"]
         }
     ' "$config") || return 1
