@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.72 - 2026-09-16
+
+- Recovered conservative network-watchdog credit from alpha.68 jobs whose single retained workload heartbeat arrived after the proved reboot request. The controller subtracts the entire post-request interval and caps the result at the request-to-start duration; missing, malformed, future-start, or history-bearing evidence still follows the strict existing paths.
+
 ## 0.1.0-alpha.71 - 2026-09-16
 
 - Extended the narrow watchdog retry-state migration to recover the exact validator failure saved by an earlier rejected resume. The migration restores that checkpoint to an unclassified interrupted state only when the saved failure text and complete watcher identity match this known compatibility defect.

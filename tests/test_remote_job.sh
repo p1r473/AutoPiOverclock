@@ -549,14 +549,18 @@ fi
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
     [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
 
-    # Even reported workload time is rejected when its controller heartbeat
-    # was observed after the target says its watchdog reboot was requested.
+    # Alpha.68 retained only the latest workload sample. If its heartbeat was
+    # observed after the watchdog request, subtract the entire later interval
+    # and retain only the conservative pre-request lower bound.
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1090
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
-    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 50 ]]
+    [[ $APO_REMOTE_STRESS_CREDIT_REMAINING == 50 ]]
 
-    # A telemetry sample observed only after the request is also rejected.
+    # Explicit history does not interpolate a sample observed only after the
+    # request because its exact timestamp is already known.
+    apo_remote_stress_credit_clear
     TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=1090:60
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
@@ -584,6 +588,15 @@ fi
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
     [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
+
+    # A request timestamp before the saved job start cannot earn legacy
+    # credit, even when the later heartbeat contains elapsed telemetry.
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=''
+    TEST_STATE[REMOTE_STRESS_START_EPOCH]=1085
+    TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1090
+    TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
+    apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
 )
 
 # Periodic progress checkpoints are advisory once exact target-job ownership
