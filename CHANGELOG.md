@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.74 - 2026-09-16
+
+- Fixed final-endurance progress during a proved network-watchdog recovery boot. The ETA now retains validated saved stress credit before the replacement segment starts, then uses cumulative live progress without double-counting that credit.
+
 ## 0.1.0-alpha.73 - 2026-09-16
 
 - Added run-scoped network-watchdog proof integration without changing an existing hardware watchdog, native Debian watchdog configuration, repair binary, or timeouts. Supported Debian watchdog daemons receive a passive proof observer; systems without a recognized network watcher receive an isolated temporary gateway watcher; recognized permanent Batocera keepers remain untouched.

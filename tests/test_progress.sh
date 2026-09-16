@@ -84,6 +84,30 @@ APO_EDGE_CPU_24H=0
 APO_EDGE_ORDER='floor-first'
 APO_CFG[FINAL_DURATION_S]=28800
 
+# A proved network-watchdog continuation retains its credited endurance while
+# the candidate reboot is in progress and no replacement stress telemetry is
+# available yet. Live elapsed later supersedes, rather than adds to, that
+# already cumulative credit.
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set EDGE_CPU_STATUS NOT_REQUESTED
+apo_state_set REMOTE_STRESS_CREDIT_CONTEXT "final-endurance:$(printf 'a%.0s' {1..64})"
+APO_CFG[FINAL_DURATION_S]=360000
+apo_state_set REMOTE_STRESS_CREDIT_SECONDS 252928
+apo_state_set REMOTE_STRESS_CREDIT_DURATION_S 360000
+apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID "$(printf 'b%.0s' {1..32})"
+[[ $(apo_progress_final_remaining 0) == 107492 ]]
+[[ $(apo_progress_estimate_remaining_seconds 0 0) == 107492 ]]
+[[ $(apo_progress_final_remaining 500) == 107492 ]]
+[[ $(apo_progress_final_remaining 260000) == 100420 ]]
+apo_state_set REMOTE_STRESS_CREDIT_DURATION_S 28800
+[[ $(apo_progress_final_remaining 0) == 360420 ]]
+apo_state_set REMOTE_STRESS_CREDIT_CONTEXT ''
+apo_state_set REMOTE_STRESS_CREDIT_SECONDS 0
+apo_state_set REMOTE_STRESS_CREDIT_DURATION_S ''
+apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
+apo_state_set FINAL_STAGE ''
+APO_CFG[FINAL_DURATION_S]=28800
+
 # Adaptive reverse-search progress reserves the remaining coarse descent until
 # the first pass, then counts only the persisted fine-resolution suffix.
 (

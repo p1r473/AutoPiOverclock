@@ -212,8 +212,26 @@ apo_progress_initial_final_sequence_cost() {
     printf '%s' "$final_cost"
 }
 
+apo_progress_matching_remote_credit() {
+    local phase=$1 duration=$2 credit context credit_duration event context_phase context_hash
+    credit=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+    context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+    credit_duration=$(apo_state_get REMOTE_STRESS_CREDIT_DURATION_S '')
+    event=$(apo_state_get REMOTE_STRESS_CREDIT_EVENT_ID '')
+    context_phase=${context%%:*}
+    context_hash=${context#*:}
+    if [[ $duration =~ ^[1-9][0-9]*$ && $credit =~ ^[1-9][0-9]*$ &&
+          $credit -lt $duration && $credit_duration == "$duration" &&
+          $context_phase == "$phase" && $context != "$context_hash" &&
+          $context_hash =~ ^[0-9a-f]{64}$ && $event =~ ^[0-9a-f]{32}$ ]]; then
+        printf '%s' "$credit"
+    else
+        printf 0
+    fi
+}
+
 apo_progress_final_remaining() {
-    local elapsed=${1:-0} stage edge_status endurance final_boots remaining=0 boot_number normal_number edge_order
+    local elapsed=${1:-0} stage edge_status endurance final_boots remaining=0 boot_number normal_number edge_order saved_credit
     final_boots=${APO_CFG[FINAL_BOOTS]:-3}
     stage=$(apo_state_get FINAL_STAGE PRE_STRESS_BOOT)
     edge_status=$(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED)
@@ -228,6 +246,12 @@ apo_progress_final_remaining() {
             remaining=$(apo_progress_final_full_cost "$endurance")
             ;;
         ENDURANCE)
+            # A proved network-watchdog reboot leaves the completed credit in
+            # durable state while the replacement candidate boot has no live
+            # stress telemetry yet. Preserve that credit in the ETA, then use
+            # live elapsed once it advances beyond the saved boundary.
+            saved_credit=$(apo_progress_matching_remote_credit final-endurance "$endurance")
+            (( elapsed < saved_credit )) && elapsed=$saved_credit
             remaining=$((endurance - elapsed + (final_boots * 2 + 1) * APO_PROGRESS_BOOT_ESTIMATE_S))
             ;;
         RETURN_NORMAL)
