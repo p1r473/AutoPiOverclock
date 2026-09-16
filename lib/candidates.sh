@@ -1503,15 +1503,25 @@ apo_validate_recovery_wait_state() {
 }
 
 apo_normalize_network_watchdog_retry_residue() {
-    local retry_context retry_count status network_count network_event network_target
+    local retry_context retry_count status failure_class failure_reason
+    local network_count network_event network_target
     retry_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
     retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
     status=$(apo_state_get STATUS '')
+    failure_class=$(apo_state_get FAILURE_CLASS '')
+    failure_reason=$(apo_state_get FAILURE_REASON '')
     network_count=$(apo_state_get NETWORK_WATCHDOG_REPLAY_COUNT 0)
     network_event=$(apo_state_get NETWORK_WATCHDOG_LAST_EVENT_ID '')
     network_target=$(apo_state_get NETWORK_WATCHDOG_LAST_TARGET '')
+    case $status in
+        RUNNING|INTERRUPTED) ;;
+        FAILED)
+            [[ $failure_class == HARNESS_FAILURE &&
+               $failure_reason == 'Idle automatic transport-retry state retains a context' ]] || return 0
+            ;;
+        *) return 0 ;;
+    esac
     [[ $retry_count == 0 && -n $retry_context && $retry_context =~ ^[A-Za-z0-9._:-]+$ &&
-       ( $status == RUNNING || $status == INTERRUPTED ) &&
        $network_count =~ ^[1-9][0-9]*$ && $network_event =~ ^[0-9a-f]{32}$ &&
        $network_target =~ ^[0-9]+([.][0-9]+){3}$ ]] || return 0
     # Alpha.58 through alpha.69 recorded the current gate context while a
@@ -1519,6 +1529,14 @@ apo_normalize_network_watchdog_retry_residue() {
     # The context has no operative meaning without a count. Canonicalize only
     # when strict saved watcher identity proves this exact historical writer.
     apo_state_set TRANSIENT_RETRY_CONTEXT ''
+    if [[ $status == FAILED ]]; then
+        # The old strict validator could save this exact compatibility defect
+        # as a harness failure before restart handling began. Restore the
+        # interrupted source state that the rejected resume was trying to use.
+        apo_state_set STATUS INTERRUPTED
+        apo_state_set FAILURE_CLASS ''
+        apo_state_set FAILURE_REASON ''
+    fi
 }
 
 apo_validate_transient_retry_state() {

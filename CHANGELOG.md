@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.71 - 2026-09-16
+
+- Extended the narrow watchdog retry-state migration to recover the exact validator failure saved by an earlier rejected resume. The migration restores that checkpoint to an unclassified interrupted state only when the saved failure text and complete watcher identity match this known compatibility defect.
+
 ## 0.1.0-alpha.70 - 2026-09-16
 
 - Fixed the proved network-watchdog continuation writer so a zero ordinary retry count also stores an empty retry context.
