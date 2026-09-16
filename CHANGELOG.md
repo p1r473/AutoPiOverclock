@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.70 - 2026-09-16
+
+- Fixed the proved network-watchdog continuation writer so a zero ordinary retry count also stores an empty retry context.
+- Added narrow compatibility normalization for alpha.58 through alpha.69 checkpoints that retain this inert context. Normalization requires a running or interrupted state plus a positive replay count, valid saved watcher event ID, valid saved liveness target, and a syntactically valid gate context; unrelated inconsistent state still fails closed.
+
 ## 0.1.0-alpha.69 - 2026-09-16
 
 - Fixed strict network-watchdog continuation when the target kept sending heartbeats after the watchdog requested a reboot but before the hardware reset occurred. The controller now credits the newest timestamped target workload sample observed at or before the proved request instead of discarding all completed work because a later heartbeat was seen.

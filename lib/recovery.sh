@@ -102,7 +102,13 @@ apo_transient_phase_retry_schedule() {
         network_target=$(apo_state_get NETWORK_WATCHDOG_LAST_TARGET '')
         [[ $network_count =~ ^[1-9][0-9]*$ && $network_event =~ ^[0-9a-f]{32}$ &&
            $network_target =~ ^[0-9]+([.][0-9]+){3}$ ]] || return 1
-        apo_state_set TRANSIENT_RETRY_CONTEXT "$retry_context"
+        if (( retry_count > 0 )); then
+            apo_state_set TRANSIENT_RETRY_CONTEXT "$retry_context"
+        else
+            # A proved network-watchdog continuation does not consume the
+            # ordinary harness budget, so zero retries must remain canonical.
+            apo_state_set TRANSIENT_RETRY_CONTEXT ''
+        fi
         apo_state_set TRANSIENT_RETRY_COUNT "$retry_count"
         apo_state_set STATUS RUNNING
         apo_state_set FAILURE_CLASS ''
