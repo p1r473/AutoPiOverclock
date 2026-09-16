@@ -2490,7 +2490,7 @@ debian_network_watchdog_observer_config_target() {
 }
 
 debian_network_watchdog_backup_for_run() {
-    local kind=$1 run_id=$2 candidate prefix
+    local kind=$1 run_id=$2 candidate prefix backup_root=/var/lib/autopioverclock/backups
     local -a matches=()
     [[ $run_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
     case $kind in
@@ -2499,7 +2499,7 @@ debian_network_watchdog_backup_for_run() {
         *) return 1 ;;
     esac
     shopt -s nullglob
-    for candidate in /var/lib/autopioverclock/backups/${prefix}-[0-9]*-${run_id}.*; do
+    for candidate in "$backup_root"/"${prefix}"-[0-9]*-"${run_id}".*; do
         [[ -d $candidate && ! -L $candidate ]] && matches+=("$candidate")
     done
     shopt -u nullglob
