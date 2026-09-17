@@ -91,6 +91,7 @@ apo_reboot_observation_scope_is_active() {
 apo_transient_phase_retry_schedule() {
     local retry_context=$1 original_class=$2 original_reason=$3 eligible=${4:-0}
     local state_rewind=${5:-} saved_context retry_count network_count network_event network_target
+    local retain_proved_credit=0 retry_scope='complete affected gate'
     [[ $eligible == 1 && $original_class == HARNESS_FAILURE && -n $original_reason ]] || return 1
     saved_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
     retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
@@ -121,9 +122,14 @@ apo_transient_phase_retry_schedule() {
         apo_event automatic-network-watchdog-resume WARN '' "Strict project evidence attributes reboot $network_count to network-watchdog target $network_target. Preserving only target-reported completed stress and resuming the remaining duration at identical clocks without consuming a harness retry: $original_reason"
         return 0
     fi
-    # A harness failure without complete network-watchdog proof never retains
-    # partial stress time. Its conservative same-clock replay starts at zero.
-    if declare -F apo_remote_stress_credit_clear >/dev/null 2>&1; then
+    # An unattributed reboot cannot credit its interrupted segment, but it also
+    # cannot revoke an earlier checkpoint already bound to strict watchdog proof.
+    # Every other harness retry still restarts its complete affected gate.
+    if [[ $original_reason == \[UNATTRIBUTED_REBOOT_REPLAY\]* ]]; then
+        retain_proved_credit=1
+        retry_scope='uncredited remainder of the affected gate'
+    fi
+    if (( retain_proved_credit == 0 )) && declare -F apo_remote_stress_credit_clear >/dev/null 2>&1; then
         apo_remote_stress_credit_clear
     fi
     (( retry_count < APO_TRANSIENT_PHASE_RETRY_MAX )) || return 1
@@ -138,7 +144,7 @@ apo_transient_phase_retry_schedule() {
         "$state_rewind" "${@:6}" || return 1
     fi
     apo_state_save
-    apo_event automatic-harness-retry WARN HARNESS_FAILURE "Recovered a retryable harness failure in $retry_context; repeating the complete affected gate automatically (retry $retry_count/$APO_TRANSIENT_PHASE_RETRY_MAX): $original_reason"
+    apo_event automatic-harness-retry WARN HARNESS_FAILURE "Recovered a retryable harness failure in $retry_context; repeating the $retry_scope automatically (retry $retry_count/$APO_TRANSIENT_PHASE_RETRY_MAX): $original_reason"
 }
 
 apo_transient_phase_retry_clear() {

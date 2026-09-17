@@ -555,6 +555,59 @@ fi
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
 )
 
+# A reboot without complete watchdog proof earns no new segment time, but it
+# cannot revoke a prior proof-bound checkpoint for the identical stress gate.
+(
+    declare -A TEST_STATE=()
+    source "$ROOT/lib/remote_job.sh"
+    TEST_PHASE=unattributed-credit-retention
+    TEST_SPEC=$(apo_remote_job_spec_hash "$TEST_PHASE" stress combined 100)
+    TEST_EVENT=$(printf '9%.0s' {1..32})
+    TEST_OUTPUT=$TEMP_DIR/unattributed-credit-retention-output
+    TEST_STATE[REMOTE_STRESS_SPEC_HASH]=$TEST_SPEC
+    TEST_STATE[REMOTE_STRESS_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]="$TEST_PHASE:$TEST_SPEC"
+    TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]=60
+    TEST_STATE[REMOTE_STRESS_CREDIT_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_CREDIT_EVENT_ID]=$TEST_EVENT
+    TEST_STATE[UNATTRIBUTED_REBOOT_REPLAY_CONTEXT]=''
+    TEST_STATE[UNATTRIBUTED_REBOOT_REPLAY_COUNT]=0
+
+    apo_state_get() { printf '%s' "${TEST_STATE[$1]:-${2-}}"; }
+    apo_state_set() { TEST_STATE[$1]=$2; }
+    apo_state_save() { :; }
+    apo_redeploy_worker_for_boot() { return 0; }
+    apo_profile_prove_network_watchdog_reboot() { return 1; }
+
+    if apo_remote_job_classify_reboot "$TEST_PHASE" "$TEST_OUTPUT" old-boot new-boot; then
+        echo 'unattributed reboot unexpectedly classified as success' >&2
+        exit 1
+    fi
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 60 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} == "$TEST_PHASE:$TEST_SPEC" ]]
+    [[ ${TEST_STATE[UNATTRIBUTED_REBOOT_REPLAY_COUNT]} == 1 ]]
+    RETAINED_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); print; exit}' "$TEST_OUTPUT")
+    apo_state_decode "$RETAINED_REASON_B64" RETAINED_REASON
+    [[ $RETAINED_REASON == '[UNATTRIBUTED_REBOOT_REPLAY] '* ]]
+    [[ $RETAINED_REASON == *'earlier 60s proof-bound checkpoint remains valid'* ]]
+    [[ $RETAINED_REASON == *'40s remains at the same clocks'* ]]
+
+    # Mismatched saved credit is not carried into another gate.
+    TEST_STATE[UNATTRIBUTED_REBOOT_REPLAY_CONTEXT]=''
+    TEST_STATE[UNATTRIBUTED_REBOOT_REPLAY_COUNT]=0
+    TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]='different-gate:different-spec'
+    TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]=60
+    TEST_STATE[REMOTE_STRESS_CREDIT_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_CREDIT_EVENT_ID]=$TEST_EVENT
+    TEST_OUTPUT_INVALID=$TEMP_DIR/unattributed-credit-invalid-output
+    if apo_remote_job_classify_reboot "$TEST_PHASE" "$TEST_OUTPUT_INVALID" old-boot new-boot; then
+        echo 'unattributed reboot with invalid credit unexpectedly classified as success' >&2
+        exit 1
+    fi
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+    [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
+)
+
 # Wall-clock heartbeat time alone is never stress credit. The target must have
 # emitted a matching workload elapsed sample before the proved reboot request.
 (

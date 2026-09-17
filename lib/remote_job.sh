@@ -322,6 +322,28 @@ apo_remote_stress_credit_clear() {
     apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
 }
 
+apo_remote_stress_credit_retain_for_context() {
+    local expected_context=$1 expected_duration=$2
+    local credit_context credit_seconds credit_duration credit_event
+    APO_REMOTE_STRESS_RETAINED_CREDIT=0
+    credit_context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+    credit_seconds=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+    credit_duration=$(apo_state_get REMOTE_STRESS_CREDIT_DURATION_S '')
+    credit_event=$(apo_state_get REMOTE_STRESS_CREDIT_EVENT_ID '')
+    if [[ $credit_seconds == 0 && -z $credit_context && -z $credit_duration && -z $credit_event ]]; then
+        return 0
+    fi
+    if [[ $expected_duration =~ ^[1-9][0-9]*$ &&
+          $credit_seconds =~ ^[1-9][0-9]*$ && $credit_seconds -lt $expected_duration &&
+          $credit_context == "$expected_context" && $credit_duration == "$expected_duration" &&
+          $credit_event =~ ^[0-9a-f]{32}$ ]]; then
+        APO_REMOTE_STRESS_RETAINED_CREDIT=$credit_seconds
+        return 0
+    fi
+    apo_remote_stress_credit_clear
+    return 1
+}
+
 apo_remote_job_emit_structured_failure() {
     local output_file=$1 failure_class=$2 failure_reason=$3 encoded_reason=''
     apo_state_encode "$failure_reason" encoded_reason || encoded_reason='VGhlIGNvbnRyb2xsZXIgY291bGQgbm90IGVuY29kZSB0aGUgZmFpbHVyZSByZWFzb24u'
@@ -779,6 +801,7 @@ apo_remote_job_record_network_credit() {
 
 apo_remote_job_classify_reboot() {
     local phase=$1 output_file=$2 old_boot=$3 new_boot=$4 proof_reason replay_context replay_count credit_reason
+    local duration retained_credit remaining
     if ! apo_redeploy_worker_for_boot "$new_boot" "${phase}-reboot-proof"; then
         apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE \
             "The target rebooted during stress, but the worker needed for strict reboot proof could not be restored: $APO_LAST_REASON"
@@ -801,11 +824,14 @@ apo_remote_job_classify_reboot() {
         apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE "[PROVED_NETWORK_WATCHDOG] $proof_reason $credit_reason"
         return 1
     fi
-    # Any reboot without complete network-watchdog proof invalidates every
-    # partial-duration credit. The ordinary same-clock replay and, if needed,
-    # stability isolation must start this gate from zero.
-    apo_remote_stress_credit_clear
     replay_context="${phase}:$(apo_state_get REMOTE_STRESS_SPEC_HASH '')"
+    duration=$(apo_state_get REMOTE_STRESS_DURATION_S '')
+    apo_remote_stress_credit_retain_for_context "$replay_context" "$duration" || :
+    retained_credit=${APO_REMOTE_STRESS_RETAINED_CREDIT:-0}
+    remaining=$duration
+    if [[ $duration =~ ^[1-9][0-9]*$ && $retained_credit =~ ^[0-9]+$ && $retained_credit -lt $duration ]]; then
+        remaining=$((duration - retained_credit))
+    fi
     replay_count=$(apo_state_get UNATTRIBUTED_REBOOT_REPLAY_COUNT 0)
     [[ $replay_count =~ ^[0-9]+$ ]] || replay_count=0
     if [[ $(apo_state_get UNATTRIBUTED_REBOOT_REPLAY_CONTEXT '') != "$replay_context" ]]; then replay_count=0; fi
@@ -813,8 +839,13 @@ apo_remote_job_classify_reboot() {
         apo_state_set UNATTRIBUTED_REBOOT_REPLAY_CONTEXT "$replay_context"
         apo_state_set UNATTRIBUTED_REBOOT_REPLAY_COUNT 1
         apo_state_save
+        if (( retained_credit > 0 )); then
+            credit_reason="No time from the unproved interrupted segment is credited. The earlier ${retained_credit}s proof-bound checkpoint remains valid, so ${remaining}s remains at the same clocks."
+        else
+            credit_reason='No time from the unproved interrupted segment is credited, so the complete duration remains at the same clocks.'
+        fi
         apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE \
-            'The target rebooted during stress, but strict network-watchdog proof was absent or incomplete. One conservative full-duration replay at the same clocks is required before this pair can be treated as unstable.'
+            "[UNATTRIBUTED_REBOOT_REPLAY] The target rebooted during stress, but strict network-watchdog proof was absent or incomplete. $credit_reason One conservative replay of the uncredited remainder is required before this pair can be treated as unstable."
         return 1
     fi
     # A second unattributed reboot of the identical gate is intentionally left

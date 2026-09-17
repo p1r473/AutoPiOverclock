@@ -146,8 +146,8 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
 )
 
 # Strict, project-owned network-watchdog proof does not consume the bounded
-# harness retry budget. Every event still rewinds and repeats the complete gate
-# at identical clocks for its full requested duration.
+# harness retry budget. Every event still rewinds and repeats only the exact
+# uncredited remainder at identical clocks.
 (
     reset_recovery_fixture
     REWIND_CALLS=0
@@ -177,6 +177,38 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
         echo 'unbound network-watchdog claim bypassed the retry limit' >&2
         exit 1
     fi
+)
+
+# The first unattributed reboot consumes one ordinary harness retry and earns no
+# new segment time, while an earlier proof-bound checkpoint remains available
+# for the identical gate. Unrelated harness failures still clear that credit.
+(
+    reset_recovery_fixture
+    REWIND_CALLS=0
+    CREDIT_CLEAR_CALLS=0
+    apo_state_set REMOTE_STRESS_CREDIT_CONTEXT final-endurance:fixture-spec
+    apo_state_set REMOTE_STRESS_CREDIT_SECONDS 60
+    apo_state_set REMOTE_STRESS_CREDIT_DURATION_S 100
+    apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    apo_remote_stress_credit_clear() {
+        CREDIT_CLEAR_CALLS=$((CREDIT_CLEAR_CALLS + 1))
+        apo_state_set REMOTE_STRESS_CREDIT_CONTEXT ''
+        apo_state_set REMOTE_STRESS_CREDIT_SECONDS 0
+        apo_state_set REMOTE_STRESS_CREDIT_DURATION_S ''
+        apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
+    }
+    unattributed_rewind_fixture() { REWIND_CALLS=$((REWIND_CALLS + 1)); }
+    apo_transient_phase_retry_schedule final-ENDURANCE-stress HARNESS_FAILURE \
+        '[UNATTRIBUTED_REBOOT_REPLAY] fixture retained credit' 1 unattributed_rewind_fixture
+    [[ $REWIND_CALLS == 1 && $CREDIT_CLEAR_CALLS == 0 ]]
+    [[ $(apo_state_get REMOTE_STRESS_CREDIT_SECONDS) == 60 ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
+
+    apo_transient_phase_retry_schedule final-ENDURANCE-stress HARNESS_FAILURE \
+        'ordinary retryable harness failure' 1 unattributed_rewind_fixture
+    [[ $REWIND_CALLS == 2 && $CREDIT_CLEAR_CALLS == 1 ]]
+    [[ $(apo_state_get REMOTE_STRESS_CREDIT_SECONDS) == 0 ]]
+    [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 2 ]]
 )
 
 # Alpha.58 through alpha.69 could retain a gate context with a zero retry count

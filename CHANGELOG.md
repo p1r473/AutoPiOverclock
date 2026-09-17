@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.84 - 2026-09-17
+
+- Fixed conservative replay after an unattributed target reboot so it grants no time from the interrupted segment but retains any earlier proof-bound credit for the identical stress gate. Only the uncredited remainder is replayed; mismatched or malformed credit still clears, and unrelated harness retries still restart their complete gate.
+
 ## 0.1.0-alpha.83 - 2026-09-16
 
 - Fixed the packaged Batocera companion service ownership marker so the real uploaded bundle passes the worker and installer safety checks. Asset rejection now reports the exact failed path or marker check, and the shipped bundle is covered by a worker-side regression.
