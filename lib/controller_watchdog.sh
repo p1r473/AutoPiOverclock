@@ -38,6 +38,9 @@ apo_controller_watchdog_manager_capture() {
             APO_LAST_REASON='The controller watchdog requires root or passwordless sudo on the controller.'
             return 1
         }
+        # The caller intentionally owns this capture file. Only the manager
+        # needs elevation; redirecting through sudo would change file ownership.
+        # shellcheck disable=SC2024
         if sudo -n /bin/bash "$manager" "$action" "$keeper" "$service" "$lease_id" >"$output_file" 2>&1; then
             command_rc=0
         else
