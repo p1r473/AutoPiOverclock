@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import signal
@@ -21,25 +22,16 @@ import uuid
 
 
 WDIOC_SETTIMEOUT = 0xC0045706
-MANAGED_MARKER = "AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG"
+PERMANENT_MARKER = "AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG"
+COMPANION_MARKER = "AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG"
 EVENT_MARKER = "AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1"
-SERVICE_PATH = Path("/userdata/system/services/AutoPiOverclockWatchdog")
+PERMANENT_SERVICE_PATH = Path("/userdata/system/services/AutoPiOverclockWatchdog")
 COMPANION_CONFIG_PATH = Path("/userdata/system/autopioverclock/network-watchdog/watchdog.conf")
 COMPANION_KEEPER_PATH = Path("/userdata/system/autopioverclock/network-watchdog/network_watchdog_keeper.py")
 COMPANION_SERVICE_PATH = Path("/userdata/system/services/AutoPiOverclockNetworkWatchdog")
 COMPANION_PID_PATH = Path("/run/autopioverclock-network-watchdog.pid")
-COMPANION_MARKER = "AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG"
 COMPANION_KEYS = {
     "RUN_ID",
-    "TARGET",
-    "PING_TIMEOUT_SECONDS",
-    "CHECK_INTERVAL_SECONDS",
-    "STARTUP_GRACE_SECONDS",
-    "FAILURE_WINDOW_SECONDS",
-    "MAX_REBOOTS",
-    "REBOOT_WINDOW_SECONDS",
-}
-ALLOWED_KEYS = {
     "TARGET",
     "DEVICE_TIMEOUT_SECONDS",
     "FEED_INTERVAL_SECONDS",
@@ -50,25 +42,54 @@ ALLOWED_KEYS = {
     "MAX_REBOOTS",
     "REBOOT_WINDOW_SECONDS",
 }
+PERMANENT_KEYS = {
+    "TARGET",
+    "DEVICE_TIMEOUT_SECONDS",
+    "FEED_INTERVAL_SECONDS",
+    "PING_TIMEOUT_SECONDS",
+    "CHECK_INTERVAL_SECONDS",
+    "STARTUP_GRACE_SECONDS",
+    "FAILURE_WINDOW_SECONDS",
+    "MAX_REBOOTS",
+    "REBOOT_WINDOW_SECONDS",
+}
 
 
-def read_config(path: Path) -> dict[str, str]:
+def read_config(path: Path) -> tuple[dict[str, str], bool]:
     values: dict[str, str] = {}
     text = path.read_text(encoding="ascii")
-    if MANAGED_MARKER not in text:
-        raise ValueError("watchdog config lacks the project ownership marker")
+    permanent_markers = 0
+    companion_markers = 0
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        if line == f"# {PERMANENT_MARKER}":
+            permanent_markers += 1
+            continue
+        if line == f"# {COMPANION_MARKER}":
+            companion_markers += 1
+            continue
         if not line or line.startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if not separator or key not in ALLOWED_KEYS or key in values:
+        if not separator or key in values:
             raise ValueError(f"invalid watchdog config line: {raw_line!r}")
         values[key] = value
-    if set(values) != ALLOWED_KEYS:
+    if (permanent_markers, companion_markers) == (1, 0):
+        companion_mode = False
+        allowed_keys = PERMANENT_KEYS
+    elif (permanent_markers, companion_markers) == (0, 1):
+        companion_mode = True
+        allowed_keys = COMPANION_KEYS
+    else:
+        raise ValueError("watchdog config ownership marker is missing or ambiguous")
+    if set(values) != allowed_keys:
         raise ValueError("watchdog config is incomplete")
+    if companion_mode and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", values["RUN_ID"]
+    ):
+        raise ValueError("watchdog config run ID is malformed")
     ipaddress.IPv4Address(values["TARGET"])
-    for key in ALLOWED_KEYS - {"TARGET"}:
+    for key in PERMANENT_KEYS - {"TARGET"}:
         number = int(values[key], 10)
         if key == "MAX_REBOOTS":
             if number < 0 or number > 86400:
@@ -77,13 +98,14 @@ def read_config(path: Path) -> dict[str, str]:
             raise ValueError(f"invalid positive watchdog value for {key}")
     if int(values["FEED_INTERVAL_SECONDS"]) >= int(values["DEVICE_TIMEOUT_SECONDS"]):
         raise ValueError("feed interval must be shorter than device timeout")
-    return values
+    return values, companion_mode
 
 
 class Keeper:
     def __init__(self, config_path: Path) -> None:
-        config = read_config(config_path)
+        config, self.companion_mode = read_config(config_path)
         self.config_path = config_path
+        self.service_path = COMPANION_SERVICE_PATH if self.companion_mode else PERMANENT_SERVICE_PATH
         self.target = config["TARGET"]
         self.device_timeout = int(config["DEVICE_TIMEOUT_SECONDS"])
         self.feed_interval = int(config["FEED_INTERVAL_SECONDS"])
@@ -167,6 +189,8 @@ class Keeper:
 
     def network_companion_active(self) -> bool:
         """Yield network decisions only to one verified project companion."""
+        if self.companion_mode:
+            return False
         managed_paths = (
             COMPANION_CONFIG_PATH,
             COMPANION_KEEPER_PATH,
@@ -295,7 +319,7 @@ class Keeper:
             f"REBOOT_REQUESTED_EPOCH={request_epoch}\n"
             f"CONFIG_SHA256={self.file_sha256(self.config_path)}\n"
             f"KEEPER_SHA256={self.file_sha256(Path(__file__))}\n"
-            f"SERVICE_SHA256={self.file_sha256(SERVICE_PATH)}\n"
+            f"SERVICE_SHA256={self.file_sha256(self.service_path)}\n"
             "REASON=TARGET_UNREACHABLE\n"
         )
 
@@ -389,7 +413,7 @@ class Keeper:
             hashes = {
                 "CONFIG_SHA256": self.file_sha256(self.config_path),
                 "KEEPER_SHA256": self.file_sha256(Path(__file__)),
-                "SERVICE_SHA256": self.file_sha256(SERVICE_PATH),
+                "SERVICE_SHA256": self.file_sha256(self.service_path),
             }
             for key, actual_hash in hashes.items():
                 value = values[key]

@@ -198,6 +198,8 @@ with tempfile.TemporaryDirectory() as directory:
         "# AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG\n"
         "RUN_ID=fixture\n"
         "TARGET=10.42.0.1\n"
+        "DEVICE_TIMEOUT_SECONDS=15\n"
+        "FEED_INTERVAL_SECONDS=5\n"
         "PING_TIMEOUT_SECONDS=2\n"
         "CHECK_INTERVAL_SECONDS=10\n"
         "STARTUP_GRACE_SECONDS=180\n"

@@ -554,6 +554,7 @@ apo_state_reset_target_network_watchdog() {
     apo_state_set NETWORK_WATCHDOG_INSTALL_CONFIG_HASH ''
     apo_state_set NETWORK_WATCHDOG_INSTALL_KEEPER_HASH ''
     apo_state_set NETWORK_WATCHDOG_INSTALL_SERVICE_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_HARDWARE_MODE ''
     apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_KEEPER_HASH ''
     apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_HASH ''
     apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_CONFIG_HASH ''

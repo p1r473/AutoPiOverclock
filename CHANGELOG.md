@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.81 - 2026-09-16
+
+- Added a hash-bound Batocera self-companion mode for a registered project watchdog that is intentionally stopped. The run-owned companion temporarily becomes the sole hardware and network watchdog, preserves the permanent files and timing configuration byte-for-byte, and restores the unchanged permanent provider after successful cleanup.
+- Kept the existing network-only Batocera companion for systems whose hardware watchdog remains owned by an unrelated process. Planning rejects two project network decision makers, and live verification binds the selected hardware-ownership mode to the run.
+- Hardened interrupted apply and cleanup so service registration is made reboot-safe before a provider handoff, the old provider is proved active before companion assets are archived, and an ordinary rollback failure retains or restarts the companion instead of deleting the only working provider.
+
 ## 0.1.0-alpha.80 - 2026-09-16
 
 - Fixed controller shutdown cleanup for a detached-stress follow operation. The follow coprocess now becomes the SSH transport itself, so its saved PID identifies the real child and `TERM` or `HUP` cannot leave an orphaned SSH observer behind while the target job remains resumable.

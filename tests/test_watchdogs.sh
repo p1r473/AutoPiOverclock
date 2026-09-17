@@ -124,6 +124,15 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" BATOCERA_NET
     set -Eeuo pipefail
     source "$WORKER"
     [[ $(batocera_network_companion_config_fields "$BATOCERA_NETWORK_CONFIG") == $'"'"'192.0.2.1\tfixture'"'"' ]]
+    [[ $(batocera_network_companion_hardware_mode "$BATOCERA_NETWORK_CONFIG") == external ]]
+'
+BATOCERA_SELF_CONFIG="$TEMP_DIR/batocera-self-watchdog.conf"
+sed '/^TARGET=/a DEVICE_TIMEOUT_SECONDS=15\nFEED_INTERVAL_SECONDS=5' "$BATOCERA_NETWORK_CONFIG" >"$BATOCERA_SELF_CONFIG"
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" BATOCERA_SELF_CONFIG="$BATOCERA_SELF_CONFIG" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    [[ $(batocera_network_companion_config_fields "$BATOCERA_SELF_CONFIG") == $'"'"'192.0.2.1\tfixture'"'"' ]]
+    [[ $(batocera_network_companion_hardware_mode "$BATOCERA_SELF_CONFIG") == self ]]
 '
 BATOCERA_INVALID_CONFIG="$TEMP_DIR/batocera-network-watchdog-invalid.conf"
 sed 's/^MAX_REBOOTS=0$/MAX_REBOOTS=11/' "$BATOCERA_NETWORK_CONFIG" >"$BATOCERA_INVALID_CONFIG"
@@ -838,12 +847,12 @@ for name, source_name in (("batocera", sys.argv[1]), ("debian", sys.argv[2])):
     config_path.write_text("fixture\n", encoding="ascii")
     service_path = root / "watchdog.service"
     service_path.write_text("fixture service\n", encoding="ascii")
-    module.SERVICE_PATH = service_path
     if name == "debian":
         module.KEEPER_PATH = source
 
     keeper = module.Keeper.__new__(module.Keeper)
     keeper.config_path = config_path
+    keeper.service_path = service_path
     if name == "debian":
         keeper.keeper_path = source
         keeper.service_path = service_path
