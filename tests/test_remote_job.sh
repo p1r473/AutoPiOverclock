@@ -81,6 +81,9 @@ capture_command_output() {
     source "$ROOT/lib/remote_job.sh"
     TEST_SLEEP=$(type -P sleep)
     TEST_SLEEP_REAL=$(readlink -f -- "$TEST_SLEEP")
+    # This helper override is deliberately scoped to the transport-isolation
+    # subshell and must not escape into the later detached-job fixtures.
+    # shellcheck disable=SC2030
     APO_REMOTE_JOB_HELPER=/tmp/autopioverclock-test-remote-job
     apo_remote_root() { "$TEST_SLEEP" 300; }
     apo_remote_root_exec() { exec "$TEST_SLEEP" 300; }

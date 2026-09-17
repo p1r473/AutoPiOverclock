@@ -56,6 +56,12 @@ cmd_ensure "$KEEPER_SOURCE" "$SERVICE_SOURCE" run-a >"$RESULT"
 grep -Fqx 'APO_RESULT_CLASS=PASS' "$RESULT"
 grep -Fqx 'MAX_REBOOTS=0' "$LIVE_CONFIG"
 [[ -f $LIVE_KEEPER && -f $LIVE_SERVICE && -f $LEASE_ROOT/run-a.lease ]]
+# Exercise create_lease without a dynamically scoped caller variable. Its path
+# must be derived from its own positional argument, not an outer run_id value.
+unset run_id 2>/dev/null || true
+create_lease run-direct
+[[ -f $LEASE_ROOT/run-direct.lease ]]
+rm -- "$LEASE_ROOT/run-direct.lease"
 cmd_ensure "$KEEPER_SOURCE" "$SERVICE_SOURCE" run-b >"$RESULT"
 [[ $(active_lease_count) == 2 ]]
 cmd_release "$KEEPER_SOURCE" "$SERVICE_SOURCE" run-a >"$RESULT"

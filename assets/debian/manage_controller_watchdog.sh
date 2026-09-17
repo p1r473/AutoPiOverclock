@@ -203,7 +203,9 @@ release_receipt_valid() {
 }
 
 create_lease() {
-    local run_id=$1 lease=${LEASE_ROOT}/${run_id}.lease releasing=${LEASE_ROOT}/${run_id}.releasing
+    local run_id=$1 lease releasing
+    lease=${LEASE_ROOT}/${run_id}.lease
+    releasing=${LEASE_ROOT}/${run_id}.releasing
     [[ ! -e $releasing && ! -L $releasing ]] || return 1
     if [[ -e $lease || -L $lease ]]; then lease_valid "$lease" "$run_id"; return; fi
     atomic_write "$lease" 600 "$(lease_content "$run_id")"

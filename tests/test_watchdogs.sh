@@ -1102,6 +1102,9 @@ cat >"$DEBIAN_CHAIN_LOG" <<'APO_DEBIAN_CHAIN_LOG'
 2026-09-16T22:07:25Z network_reboot_accepted event_id=b71d01cfb3d1574bd21bea2eb47af99b source_boot_id=9cefb87f-7629-4003-bc18-ba19bc343ba2 target=198.51.100.1 requested_epoch=1789596323 current_boot_id=b519f75f-1bf0-4d97-854b-8637ef1ea672
 APO_DEBIAN_CHAIN_LOG
 
+# Each worker is sourced inside an isolated fixture subshell. Its library-only
+# flag and chain-result globals are intentionally local to that same subshell.
+# shellcheck disable=SC2030,SC2031
 (
     export APO_WORKER_LIBRARY_ONLY=1
     source "$ROOT/workers/debian-worker.sh"
@@ -1132,6 +1135,7 @@ cat >"$BATOCERA_CHAIN_LOG" <<'APO_BATOCERA_CHAIN_LOG'
 2026-09-16T22:05:50Z network_reboot_accepted event_id=22222222222222222222222222222222 source_boot_id=22222222-2222-4222-8222-222222222222 target=203.0.113.1 requested_epoch=2201 current_boot_id=33333333-3333-4333-8333-333333333333
 APO_BATOCERA_CHAIN_LOG
 
+# shellcheck disable=SC2030,SC2031
 (
     export APO_WORKER_LIBRARY_ONLY=1
     source "$ROOT/workers/batocera-worker.sh"
@@ -1153,6 +1157,7 @@ cat >"$DEBIAN_COMPANION_CHAIN_LOG" <<'APO_DEBIAN_COMPANION_CHAIN_LOG'
 2026-09-16T22:04:49Z network_reboot_committed event_id=44444444444444444444444444444444 source_boot_id=55555555-5555-4555-8555-555555555555 target=192.0.2.1 requested_epoch=3201 method=systemctl-reboot
 2026-09-16T22:05:50Z network_reboot_accepted event_id=44444444444444444444444444444444 source_boot_id=55555555-5555-4555-8555-555555555555 target=192.0.2.1 requested_epoch=3201 current_boot_id=66666666-6666-4666-8666-666666666666
 APO_DEBIAN_COMPANION_CHAIN_LOG
+# shellcheck disable=SC2030,SC2031
 (
     export APO_WORKER_LIBRARY_ONLY=1
     source "$ROOT/workers/debian-worker.sh"
@@ -1173,6 +1178,7 @@ cat >"$BATOCERA_HARDWARE_CHAIN_LOG" <<'APO_BATOCERA_HARDWARE_CHAIN_LOG'
 2026-09-16T22:04:49Z network_reboot_committed event_id=66666666666666666666666666666666 target=203.0.113.1 method=hardware-watchdog-starvation
 2026-09-16T22:05:50Z network_reboot_accepted event_id=66666666666666666666666666666666 source_boot_id=88888888-8888-4888-8888-888888888888 target=203.0.113.1 requested_epoch=4201 current_boot_id=99999999-9999-4999-8999-999999999999
 APO_BATOCERA_HARDWARE_CHAIN_LOG
+# shellcheck disable=SC2030,SC2031
 (
     export APO_WORKER_LIBRARY_ONLY=1
     source "$ROOT/workers/batocera-worker.sh"
@@ -1212,6 +1218,7 @@ CURRENT_BOOT_ID=$chain_destination
 PROOF_METHOD=$PROVIDER_METHOD
 APO_TWO_REBOOT_EVENT
     done
+    # shellcheck disable=SC2030,SC2031
     (
         export APO_WORKER_LIBRARY_ONLY=1
         source "$WORKER"
@@ -1251,6 +1258,7 @@ CURRENT_BOOT_ID=$chain_destination
 PROOF_METHOD=systemctl-reboot
 APO_ARCHIVED_CHAIN_EVENT
     done
+    # shellcheck disable=SC2030,SC2031
     (
         export APO_WORKER_LIBRARY_ONLY=1
         source "$WORKER"
