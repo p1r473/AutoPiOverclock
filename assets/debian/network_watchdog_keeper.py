@@ -26,6 +26,9 @@ EVENT_MARKER = "AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1"
 DEBIAN_CONFIG_PATH = Path("/var/lib/autopioverclock/network-watchdog/watchdog.conf")
 DEBIAN_KEEPER_PATH = Path("/usr/local/lib/autopioverclock/network-watchdog-keeper.py")
 DEBIAN_SERVICE_PATH = Path("/etc/systemd/system/autopioverclock-network-watchdog.service")
+CONTROLLER_CONFIG_PATH = Path("/var/lib/autopioverclock/controller-network-watchdog/watchdog.conf")
+CONTROLLER_KEEPER_PATH = Path("/usr/local/lib/autopioverclock/controller-network-watchdog-keeper.py")
+CONTROLLER_SERVICE_PATH = Path("/etc/systemd/system/autopioverclock-controller-network-watchdog.service")
 BATOCERA_CONFIG_PATH = Path("/userdata/system/autopioverclock/network-watchdog/watchdog.conf")
 BATOCERA_KEEPER_PATH = Path("/userdata/system/autopioverclock/network-watchdog/network_watchdog_keeper.py")
 BATOCERA_SERVICE_PATH = Path("/userdata/system/services/AutoPiOverclockNetworkWatchdog")
@@ -67,7 +70,7 @@ def read_config(path: Path, managed_marker: str) -> dict[str, str]:
         "CHECK_INTERVAL_SECONDS": (1, 300),
         "STARTUP_GRACE_SECONDS": (30, 3600),
         "FAILURE_WINDOW_SECONDS": (30, 3600),
-        "MAX_REBOOTS": (1, 10),
+        "MAX_REBOOTS": (0, 10),
         "REBOOT_WINDOW_SECONDS": (300, 86400),
     }
     for key, (minimum, maximum) in limits.items():
@@ -84,11 +87,19 @@ class Keeper:
             self.keeper_path = DEBIAN_KEEPER_PATH
             self.service_path = DEBIAN_SERVICE_PATH
             self.reboot_method = "systemctl-reboot"
+            self.controller_provider = False
+        elif config_path == CONTROLLER_CONFIG_PATH:
+            managed_marker = "AUTOPIOVERCLOCK MANAGED CONTROLLER NETWORK WATCHDOG"
+            self.keeper_path = CONTROLLER_KEEPER_PATH
+            self.service_path = CONTROLLER_SERVICE_PATH
+            self.reboot_method = "systemctl-reboot"
+            self.controller_provider = True
         elif config_path == BATOCERA_CONFIG_PATH:
             managed_marker = "AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG"
             self.keeper_path = BATOCERA_KEEPER_PATH
             self.service_path = BATOCERA_SERVICE_PATH
             self.reboot_method = "batocera-reboot"
+            self.controller_provider = False
         else:
             raise ValueError("configuration path is not an allowed platform path")
         config = read_config(config_path, managed_marker)
@@ -111,6 +122,19 @@ class Keeper:
         self.reboot_binary = shutil.which("systemctl") if self.reboot_method == "systemctl-reboot" else shutil.which("reboot")
         if not self.ping_binary or not self.reboot_binary:
             raise RuntimeError("ping or the platform reboot command is unavailable")
+
+    def native_controller_watchdog_active(self) -> bool:
+        if not self.controller_provider:
+            return False
+        try:
+            result = subprocess.run(
+                [self.reboot_binary, "is-active", "--quiet", "watchdog.service"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=10, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0
 
     @staticmethod
     def file_sha256(path: Path) -> str:
@@ -191,7 +215,7 @@ class Keeper:
 
     def reboot_allowed(self, now: int) -> bool:
         history = self.recent_reboots(now)
-        if len(history) >= self.max_reboots:
+        if self.max_reboots > 0 and len(history) >= self.max_reboots:
             return False
         history.append(now)
         try:
@@ -217,6 +241,36 @@ class Keeper:
             f"SERVICE_SHA256={self.file_sha256(self.service_path)}\n"
             "REASON=TARGET_UNREACHABLE\n"
         )
+
+    def accepted_event_content(self, values: dict[str, str], current_boot_id: str) -> str:
+        return (
+            self.event_content(
+                values["EVENT_ID"],
+                values["SOURCE_BOOT_ID"],
+                int(values["FAILURE_STARTED_EPOCH"], 10),
+                int(values["REBOOT_REQUESTED_EPOCH"], 10),
+            )
+            + f"CURRENT_BOOT_ID={current_boot_id}\n"
+            + f"PROOF_METHOD={self.reboot_method}\n"
+        )
+
+    def archive_accepted_event(self, values: dict[str, str], current_boot_id: str) -> None:
+        archive_path = self.root / f"accepted-network-reboot-{values['EVENT_ID']}"
+        content = self.accepted_event_content(values, current_boot_id)
+        committed = (
+            f"network_reboot_committed event_id={values['EVENT_ID']} "
+            f"source_boot_id={values['SOURCE_BOOT_ID']} target={values['TARGET']} "
+            f"requested_epoch={values['REBOOT_REQUESTED_EPOCH']} method={self.reboot_method}"
+        )
+        if committed not in self.log_path.read_text(encoding="utf-8"):
+            raise ValueError("durable log lacks the committed reboot request")
+        if archive_path.exists() or archive_path.is_symlink():
+            if archive_path.is_symlink() or not archive_path.is_file():
+                raise ValueError("accepted reboot archive is not a regular file")
+            if archive_path.read_text(encoding="ascii") != content:
+                raise ValueError("accepted reboot archive conflicts with pending evidence")
+            return
+        self.atomic_write(archive_path, content)
 
     def reconcile_pending_event(self) -> None:
         if not self.pending_path.exists():
@@ -286,6 +340,7 @@ class Keeper:
                 self.pending_path.unlink()
                 self.log("discarded stale pending network reboot evidence; attribution disabled")
                 return
+            self.archive_accepted_event(values, current_boot_id)
             os.replace(self.pending_path, self.event_path)
             directory_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
             try:
@@ -389,6 +444,9 @@ class Keeper:
     def run(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self.reconcile_pending_event()
+        if self.native_controller_watchdog_active():
+            self.log("native watchdog.service is active; controller companion exiting")
+            return
         started = time.monotonic()
         next_check = started + self.startup_grace
         failure_started: float | None = None
@@ -397,6 +455,9 @@ class Keeper:
         while not self.stop_requested:
             now_mono = time.monotonic()
             if now_mono >= next_check:
+                if self.native_controller_watchdog_active():
+                    self.log("native watchdog.service became active; controller companion exiting")
+                    return
                 if self.ping():
                     if failure_started is not None or suppression_logged:
                         self.log(f"network target {self.target} is reachable; failure window cleared")
@@ -410,7 +471,7 @@ class Keeper:
                         now_epoch = int(time.time())
                         if not self.reboot_allowed(now_epoch):
                             if not suppression_logged:
-                                self.log("network remains unavailable after the bounded reboot limit; reboot suppressed")
+                                self.log("network remains unavailable after the configured reboot limit; reboot suppressed")
                                 suppression_logged = True
                         elif self.request_reboot(failure_started):
                             if self.wait_for_committed_reboot():

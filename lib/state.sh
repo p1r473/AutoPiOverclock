@@ -533,6 +533,37 @@ apo_state_load() {
     APO_STATE_FILE=$source_file
 }
 
+apo_state_reset_controller_watchdog() {
+    local lease_id=${1:-$APO_RUN_ID}
+    apo_state_set CONTROLLER_WATCHDOG_LEASE_ID "$lease_id"
+    apo_state_set CONTROLLER_WATCHDOG_LEASED 0
+    apo_state_set CONTROLLER_WATCHDOG_PROVIDER ''
+    apo_state_set CONTROLLER_WATCHDOG_TARGET ''
+    apo_state_set CONTROLLER_WATCHDOG_LEASE_COUNT 0
+    apo_state_set CONTROLLER_WATCHDOG_STATUS NOT_STARTED
+}
+
+apo_state_reset_target_network_watchdog() {
+    apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 0
+    apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID ''
+    apo_state_set NETWORK_WATCHDOG_LAST_TARGET ''
+    apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_KIND ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_TARGET ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_CONFIG_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_KEEPER_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_SERVICE_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_KEEPER_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_CONFIG_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ENABLED 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ACTIVE 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED
+}
+
 apo_state_initialize() {
     APO_STATE=()
     APO_STATE_ENCODED_CACHE=()
@@ -751,24 +782,8 @@ apo_state_initialize() {
     apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
     apo_state_set UNATTRIBUTED_REBOOT_REPLAY_CONTEXT ''
     apo_state_set UNATTRIBUTED_REBOOT_REPLAY_COUNT 0
-    apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 0
-    apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID ''
-    apo_state_set NETWORK_WATCHDOG_LAST_TARGET ''
-    apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
-    apo_state_set NETWORK_WATCHDOG_INSTALL_KIND ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_TARGET ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_CONFIG_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_KEEPER_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_SERVICE_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_KEEPER_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_CONFIG_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ENABLED 0
-    apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ACTIVE 0
-    apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH ''
-    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED
+    apo_state_reset_target_network_watchdog
+    apo_state_reset_controller_watchdog "$APO_RUN_ID"
     apo_state_save
 }
 

@@ -540,6 +540,7 @@ apo_profile_prove_network_watchdog_reboot() {
     APO_NETWORK_WATCHDOG_EVENT_ID=''
     APO_NETWORK_WATCHDOG_TARGET=''
     APO_NETWORK_WATCHDOG_REQUESTED_EPOCH=''
+    APO_NETWORK_WATCHDOG_REBOOT_COUNT=''
     [[ $attempts =~ ^[1-9][0-9]*$ ]] || attempts=5
     for (( attempt=1; attempt<=attempts; attempt++ )); do
         # Keep the worker status separate from its complete output. The exact-file
@@ -567,11 +568,17 @@ apo_profile_prove_network_watchdog_reboot() {
     APO_NETWORK_WATCHDOG_EVENT_ID=${APO_WORKER_DATA[NETWORK_WATCHDOG_EVENT_ID]:-}
     APO_NETWORK_WATCHDOG_TARGET=${APO_WORKER_DATA[NETWORK_WATCHDOG_TARGET]:-}
     APO_NETWORK_WATCHDOG_REQUESTED_EPOCH=${APO_WORKER_DATA[NETWORK_WATCHDOG_REQUESTED_EPOCH]:-}
+    APO_NETWORK_WATCHDOG_REBOOT_COUNT=${APO_WORKER_DATA[NETWORK_WATCHDOG_REBOOT_COUNT]:-}
     [[ $APO_NETWORK_WATCHDOG_EVENT_ID =~ ^[0-9a-f]{32}$ &&
        $APO_NETWORK_WATCHDOG_TARGET == "$expected_target" &&
        $APO_NETWORK_WATCHDOG_REQUESTED_EPOCH =~ ^[1-9][0-9]*$ &&
+       $APO_NETWORK_WATCHDOG_REBOOT_COUNT =~ ^[1-9][0-9]*$ &&
        ${APO_WORKER_DATA[NETWORK_WATCHDOG_SOURCE_BOOT_ID]:-} == "$old_boot" ]] || return 1
-    APO_NETWORK_WATCHDOG_PROOF_REASON="Project-owned Debian watchdog evidence proves that liveness target $APO_NETWORK_WATCHDOG_TARGET caused the reboot from boot $old_boot."
+    if (( APO_NETWORK_WATCHDOG_REBOOT_COUNT == 1 )); then
+        APO_NETWORK_WATCHDOG_PROOF_REASON="Project-owned Debian watchdog evidence proves one liveness-target reboot from boot $old_boot to boot $new_boot."
+    else
+        APO_NETWORK_WATCHDOG_PROOF_REASON="Project-owned Debian watchdog evidence proves $APO_NETWORK_WATCHDOG_REBOOT_COUNT consecutive liveness-target reboots from boot $old_boot to boot $new_boot."
+    fi
 }
 
 apo_profile_repair_watchdogs() {

@@ -194,6 +194,38 @@ class Observer:
             "REASON=TARGET_UNREACHABLE\n"
         )
 
+    def accepted_event_content(self, values: dict[str, str], current_boot_id: str) -> str:
+        return (
+            self.event_content(
+                values["EVENT_ID"],
+                values["SOURCE_BOOT_ID"],
+                int(values["FAILURE_STARTED_EPOCH"], 10),
+                int(values["REBOOT_REQUESTED_EPOCH"], 10),
+            )
+            + f"CURRENT_BOOT_ID={current_boot_id}\n"
+            + "PROOF_METHOD=debian-watchdog-journal\n"
+        )
+
+    def archive_accepted_event(self, values: dict[str, str], current_boot_id: str) -> None:
+        archive_path = self.root / f"accepted-network-reboot-{values['EVENT_ID']}"
+        content = self.accepted_event_content(values, current_boot_id)
+        committed_pattern = re.compile(
+            rf"network_reboot_committed event_id={re.escape(values['EVENT_ID'])} "
+            rf"source_boot_id={re.escape(values['SOURCE_BOOT_ID'])} "
+            rf"target={re.escape(values['TARGET'])} "
+            rf"requested_epoch={re.escape(values['REBOOT_REQUESTED_EPOCH'])} "
+            r"method=debian-watchdog-journal outcome=[A-Za-z0-9-]+"
+        )
+        if not committed_pattern.search(self.log_path.read_text(encoding="utf-8")):
+            raise ValueError("durable log lacks the committed native-watchdog action")
+        if archive_path.exists() or archive_path.is_symlink():
+            if archive_path.is_symlink() or not archive_path.is_file():
+                raise ValueError("accepted reboot archive is not a regular file")
+            if archive_path.read_text(encoding="ascii") != content:
+                raise ValueError("accepted reboot archive conflicts with pending evidence")
+            return
+        self.atomic_write(archive_path, content)
+
     @staticmethod
     def boot_id() -> str:
         value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip().lower()
@@ -316,6 +348,7 @@ class Observer:
                 self.pending_path.unlink()
                 self.log("discarded stale pending native-watchdog evidence; attribution disabled")
                 return
+            self.archive_accepted_event(values, current_boot_id)
             os.replace(self.pending_path, self.event_path)
             directory_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
             try:

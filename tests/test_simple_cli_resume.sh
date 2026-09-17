@@ -725,6 +725,8 @@ ln -sfn "$(basename "$FINAL_EXTENSION_STATE")" "$FINAL_EXTENSION_OUTPUT/monkeebu
     apo_state_set APPLY_STATUS NOT_APPLIED
     apo_validate_auto_resume_state() { ACTIONS+=(validate); }
     apo_final_saved_failure_is_retryable() { return 0; }
+    apo_controller_watchdog_ensure_for_run() { :; }
+    apo_network_watchdog_ensure_for_run() { :; }
     apo_prepare_remote_for_saved_run() { ACTIONS+=(prepare); }
     apo_recover_normal() { ACTIONS+=("recover:$1"); }
     apo_post_floor_final_schedule_stress_backoff() {

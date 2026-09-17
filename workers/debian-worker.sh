@@ -2598,6 +2598,177 @@ debian_network_watchdog_event_fields() {
     ' "$event_file"
 }
 
+network_watchdog_accepted_event_fields() {
+    local event_file=$1
+    awk -F= '
+        BEGIN {
+            allowed["FORMAT"]=1; allowed["EVENT_ID"]=1; allowed["SOURCE_BOOT_ID"]=1
+            allowed["CURRENT_BOOT_ID"]=1; allowed["TARGET"]=1
+            allowed["FAILURE_STARTED_EPOCH"]=1; allowed["REBOOT_REQUESTED_EPOCH"]=1
+            allowed["CONFIG_SHA256"]=1; allowed["KEEPER_SHA256"]=1
+            allowed["SERVICE_SHA256"]=1; allowed["REASON"]=1; allowed["PROOF_METHOD"]=1
+        }
+        $0 == "# AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1" {
+            if (marker) invalid=1
+            marker=1
+            next
+        }
+        /^[[:space:]]*$/ {next}
+        /^[[:space:]]*#/ {invalid=1; next}
+        {
+            key=$1
+            value=substr($0, index($0, "=")+1)
+            if (NF < 2 || !allowed[key] || seen[key]++ || value == "") {invalid=1; next}
+            values[key]=value
+            count++
+        }
+        END {
+            if (invalid || marker != 1 || count != 12) exit 1
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+                values["FORMAT"], values["EVENT_ID"], values["SOURCE_BOOT_ID"],
+                values["CURRENT_BOOT_ID"], values["TARGET"],
+                values["FAILURE_STARTED_EPOCH"], values["REBOOT_REQUESTED_EPOCH"],
+                values["CONFIG_SHA256"], values["KEEPER_SHA256"],
+                values["SERVICE_SHA256"], values["REASON"], values["PROOF_METHOD"]
+        }
+    ' "$event_file"
+}
+
+network_watchdog_archive_chain() {
+    local root=$1 expected_old=$2 expected_new=$3 expected_target=$4
+    local expected_config_hash=$5 expected_keeper_hash=$6 expected_service_hash=$7
+    local expected_method=$8 previous_event=$9
+    local archive archive_name fields format event_id source_boot destination_boot target
+    local failure_epoch request_epoch config_hash keeper_hash service_hash reason proof_method
+    local cursor=$expected_old last_request=0 final_event='' final_source='' final_request='' count=0 found=0 record existing_record
+    local -A destination_by_source=() event_by_source=() target_by_source=()
+    local -A failure_by_source=() request_by_source=() config_by_source=()
+    local -A keeper_by_source=() service_by_source=() method_by_source=() seen_source=()
+    for archive in "$root"/accepted-network-reboot-*; do
+        [[ -e $archive || -L $archive ]] || continue
+        found=1
+        [[ -f $archive && ! -L $archive ]] || return 1
+        fields=$(network_watchdog_accepted_event_fields "$archive" 2>/dev/null) || return 1
+        IFS=$'\t' read -r format event_id source_boot destination_boot target failure_epoch request_epoch \
+            config_hash keeper_hash service_hash reason proof_method <<<"$fields"
+        archive_name=${archive##*/}
+        [[ $format == 1 && $archive_name == "accepted-network-reboot-$event_id" &&
+           $event_id =~ ^[0-9a-f]{32}$ &&
+           $source_boot =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ &&
+           $destination_boot =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ &&
+           $source_boot != "$destination_boot" && $failure_epoch =~ ^[1-9][0-9]*$ &&
+           $request_epoch =~ ^[1-9][0-9]*$ && $failure_epoch -le $request_epoch &&
+           $config_hash =~ ^[0-9a-f]{64}$ && $keeper_hash =~ ^[0-9a-f]{64}$ &&
+           $service_hash =~ ^[0-9a-f]{64}$ && $reason == TARGET_UNREACHABLE ]] || return 1
+        record="$event_id|$destination_boot|$target|$failure_epoch|$request_epoch|$config_hash|$keeper_hash|$service_hash|$proof_method"
+        if [[ -n ${destination_by_source[$source_boot]+present} ]]; then
+            existing_record="${event_by_source[$source_boot]}|${destination_by_source[$source_boot]}|${target_by_source[$source_boot]}|${failure_by_source[$source_boot]}|${request_by_source[$source_boot]}|${config_by_source[$source_boot]}|${keeper_by_source[$source_boot]}|${service_by_source[$source_boot]}|${method_by_source[$source_boot]}"
+            [[ $existing_record == "$record" ]] || return 1
+            continue
+        fi
+        event_by_source[$source_boot]=$event_id
+        destination_by_source[$source_boot]=$destination_boot
+        target_by_source[$source_boot]=$target
+        failure_by_source[$source_boot]=$failure_epoch
+        request_by_source[$source_boot]=$request_epoch
+        config_by_source[$source_boot]=$config_hash
+        keeper_by_source[$source_boot]=$keeper_hash
+        service_by_source[$source_boot]=$service_hash
+        method_by_source[$source_boot]=$proof_method
+    done
+    (( found == 1 )) || return 1
+    while [[ $cursor != "$expected_new" ]]; do
+        [[ -n ${destination_by_source[$cursor]+present} && -z ${seen_source[$cursor]+present} ]] || return 1
+        seen_source[$cursor]=1
+        event_id=${event_by_source[$cursor]}
+        destination_boot=${destination_by_source[$cursor]}
+        request_epoch=${request_by_source[$cursor]}
+        [[ $event_id != "$previous_event" && ${target_by_source[$cursor]} == "$expected_target" &&
+           ${config_by_source[$cursor]} == "$expected_config_hash" &&
+           ${keeper_by_source[$cursor]} == "$expected_keeper_hash" &&
+           ${service_by_source[$cursor]} == "$expected_service_hash" &&
+           ${method_by_source[$cursor]} == "$expected_method" && request_epoch -gt last_request ]] || return 1
+        final_event=$event_id
+        final_source=$cursor
+        final_request=$request_epoch
+        last_request=$request_epoch
+        cursor=$destination_boot
+        count=$((count + 1))
+    done
+    (( count > 0 )) || return 1
+    APO_WATCHDOG_CHAIN_EVENT_ID=$final_event
+    APO_WATCHDOG_CHAIN_FINAL_SOURCE=$final_source
+    APO_WATCHDOG_CHAIN_REQUEST_EPOCH=$final_request
+    APO_WATCHDOG_CHAIN_COUNT=$count
+}
+
+network_watchdog_log_chain() {
+    local log=$1 expected_old=$2 expected_new=$3 expected_target=$4 expected_method=$5 previous_event=$6
+    local chain_output event_id source_boot destination_boot target target_regex request_epoch
+    local final_event='' final_source='' final_request='' last_request=0 count=0
+    local -a log_files=()
+    if [[ -e $log.1 || -L $log.1 ]]; then
+        [[ -f $log.1 && ! -L $log.1 ]] || return 1
+        log_files+=("$log.1")
+    fi
+    [[ -f $log && ! -L $log ]] || return 1
+    log_files+=("$log")
+    chain_output=$(awk -v begin="$expected_old" -v finish="$expected_new" '
+        function event_ok(value) {return length(value) == 32 && value !~ /[^0-9a-f]/}
+        function boot_ok(value) {
+            return length(value) == 36 && value !~ /[^0-9a-f-]/ &&
+                substr(value,9,1) == "-" && substr(value,14,1) == "-" &&
+                substr(value,19,1) == "-" && substr(value,24,1) == "-"
+        }
+        $2 == "network_reboot_accepted" {
+            if (NF != 7 || split($3,a,"=") != 2 || a[1] != "event_id" ||
+                split($4,b,"=") != 2 || b[1] != "source_boot_id" ||
+                split($5,c,"=") != 2 || c[1] != "target" ||
+                split($6,d,"=") != 2 || d[1] != "requested_epoch" ||
+                split($7,e,"=") != 2 || e[1] != "current_boot_id" ||
+                !event_ok(a[2]) || !boot_ok(b[2]) || !boot_ok(e[2]) ||
+                b[2] == e[2] || d[2] !~ /^[1-9][0-9]*$/) {bad=1; next}
+            record=a[2] "\t" e[2] "\t" c[2] "\t" d[2]
+            if ((b[2] in record_by_source) && record_by_source[b[2]] != record) {bad=1; next}
+            record_by_source[b[2]]=record
+            event_by_source[b[2]]=a[2]
+            destination_by_source[b[2]]=e[2]
+            target_by_source[b[2]]=c[2]
+            request_by_source[b[2]]=d[2]
+        }
+        END {
+            if (bad) exit 1
+            cursor=begin
+            while (cursor != finish) {
+                if (!(cursor in destination_by_source) || seen[cursor]++) exit 1
+                printf "%s\t%s\t%s\t%s\t%s\n", event_by_source[cursor], cursor,
+                    destination_by_source[cursor], target_by_source[cursor], request_by_source[cursor]
+                cursor=destination_by_source[cursor]
+            }
+        }
+    ' "${log_files[@]}") || return 1
+    [[ -n $chain_output ]] || return 1
+    while IFS=$'\t' read -r event_id source_boot destination_boot target request_epoch; do
+        [[ $event_id =~ ^[0-9a-f]{32}$ && $event_id != "$previous_event" &&
+           $source_boot =~ ^[0-9a-f-]{36}$ && $destination_boot =~ ^[0-9a-f-]{36}$ &&
+           $target == "$expected_target" && $request_epoch =~ ^[1-9][0-9]*$ &&
+           request_epoch -gt last_request ]] || return 1
+        target_regex=${target//./\\.}
+        grep -Eq "network_reboot_prepared event_id=$event_id source_boot_id=$source_boot target=$target_regex prepared_epoch=[1-9][0-9]*( method=debian-watchdog-journal)?$" "${log_files[@]}" || return 1
+        grep -Eq "network_reboot_committed event_id=$event_id source_boot_id=$source_boot target=$target_regex requested_epoch=$request_epoch method=$expected_method( outcome=[A-Za-z0-9-]+)?$" "${log_files[@]}" || return 1
+        final_event=$event_id
+        final_source=$source_boot
+        final_request=$request_epoch
+        last_request=$request_epoch
+        count=$((count + 1))
+    done <<<"$chain_output"
+    (( count > 0 )) || return 1
+    APO_WATCHDOG_CHAIN_EVENT_ID=$final_event
+    APO_WATCHDOG_CHAIN_FINAL_SOURCE=$final_source
+    APO_WATCHDOG_CHAIN_REQUEST_EPOCH=$final_request
+    APO_WATCHDOG_CHAIN_COUNT=$count
+}
+
 cmd_plan_network_watchdog() {
     local installer=${1:-} keeper=${2:-} service=${3:-} run_id=${4:-}
     debian_network_watchdog_asset_paths_ready "$installer" "$keeper" "$service" "$run_id" \
@@ -2661,6 +2832,7 @@ cmd_prove_network_watchdog_reboot() {
     local event=$root/last-network-reboot pending=$root/pending-network-reboot log=$root/watchdog.log
     local fields format event_id source_boot target failure_epoch request_epoch marker_config_hash marker_keeper_hash marker_service_hash reason
     local current_boot config_target config_hash keeper_hash service_hash native_target now uptime boot_epoch
+    local chain_count=1 chain_reason
     [[ $expected_old_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
        $expected_new_boot =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ &&
        $expected_old_boot != "$expected_new_boot" &&
@@ -2709,12 +2881,35 @@ cmd_prove_network_watchdog_reboot() {
     }
     IFS=$'\t' read -r format event_id source_boot target failure_epoch request_epoch marker_config_hash marker_keeper_hash marker_service_hash reason <<<"$fields"
     [[ $format == 1 && $event_id =~ ^[0-9a-f]{32}$ && $event_id != "$previous_event" &&
-       $source_boot == "$expected_old_boot" && $reason == TARGET_UNREACHABLE &&
+       $reason == TARGET_UNREACHABLE &&
        $failure_epoch =~ ^[1-9][0-9]*$ && $request_epoch =~ ^[1-9][0-9]*$ &&
        $failure_epoch -le $request_epoch ]] || {
         emit_result HARNESS_FAILURE 'The project-owned network-watchdog marker does not identify this reboot uniquely.'
         return 1
     }
+    if [[ $source_boot != "$expected_old_boot" ]]; then
+        APO_WATCHDOG_CHAIN_EVENT_ID=''
+        APO_WATCHDOG_CHAIN_FINAL_SOURCE=''
+        APO_WATCHDOG_CHAIN_REQUEST_EPOCH=''
+        APO_WATCHDOG_CHAIN_COUNT=0
+        if network_watchdog_archive_chain "$root" "$expected_old_boot" "$expected_new_boot" \
+            "$expected_target" "$expected_config_hash" "$expected_keeper_hash" \
+            "$expected_service_hash" "$proof_method" "$previous_event" ||
+           network_watchdog_log_chain "$log" "$expected_old_boot" "$expected_new_boot" \
+            "$expected_target" "$proof_method" "$previous_event"; then
+            [[ $APO_WATCHDOG_CHAIN_EVENT_ID == "$event_id" &&
+               $APO_WATCHDOG_CHAIN_FINAL_SOURCE == "$source_boot" &&
+               $APO_WATCHDOG_CHAIN_REQUEST_EPOCH == "$request_epoch" &&
+               $APO_WATCHDOG_CHAIN_COUNT =~ ^[1-9][0-9]*$ ]] || {
+                emit_result HARNESS_FAILURE 'The accepted watchdog chain does not terminate at the current reboot marker.'
+                return 1
+            }
+            chain_count=$APO_WATCHDOG_CHAIN_COUNT
+        else
+            emit_result HARNESS_FAILURE 'The project-owned watchdog evidence does not form a complete reboot chain to the current boot.'
+            return 1
+        fi
+    fi
     if [[ $expected_kind == debian-watchdog-observer ]]; then
         config_target=$(debian_network_watchdog_observer_config_target "$config" || true)
         native_target=$(debian_native_network_watchdog_target || true)
@@ -2771,9 +2966,16 @@ cmd_prove_network_watchdog_reboot() {
     }
     emit_data NETWORK_WATCHDOG_EVENT_ID "$event_id"
     emit_data NETWORK_WATCHDOG_TARGET "$target"
-    emit_data NETWORK_WATCHDOG_SOURCE_BOOT_ID "$source_boot"
+    emit_data NETWORK_WATCHDOG_SOURCE_BOOT_ID "$expected_old_boot"
+    emit_data NETWORK_WATCHDOG_FINAL_SOURCE_BOOT_ID "$source_boot"
     emit_data NETWORK_WATCHDOG_REQUESTED_EPOCH "$request_epoch"
-    emit_result PASS "Project-owned network watchdog strictly proved that target $target caused the reboot from boot $source_boot."
+    emit_data NETWORK_WATCHDOG_REBOOT_COUNT "$chain_count"
+    if (( chain_count == 1 )); then
+        chain_reason="Project-owned network watchdog strictly proved that target $target caused the reboot from boot $expected_old_boot."
+    else
+        chain_reason="Project-owned network watchdog strictly proved $chain_count consecutive target-$target watchdog reboots from boot $expected_old_boot to boot $expected_new_boot."
+    fi
+    emit_result PASS "$chain_reason"
 }
 
 cmd_classify_kernel_log() {

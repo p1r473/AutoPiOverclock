@@ -439,6 +439,8 @@ Endurance proof: $(apo_report_state_value VALIDATION_DURATION_S pending)s
 Apply status:   $(apo_report_state_value APPLY_STATUS NOT_APPLIED)
 Watchdog repair: $(apo_report_state_value WATCHDOG_REPAIR_STATUS NOT_STARTED)
 Watchdog hashes: old=$(apo_report_state_value WATCHDOG_REPAIR_OLD_HASH none) expected=$(apo_report_state_value WATCHDOG_REPAIR_EXPECTED_HASH none) new=$(apo_report_state_value WATCHDOG_REPAIR_NEW_HASH none)
+Target watchdog: $(apo_report_state_value NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED) kind=$(apo_report_state_value NETWORK_WATCHDOG_INSTALL_KIND preexisting) installed-by-run=$(apo_report_state_value NETWORK_WATCHDOG_INSTALLED_BY_RUN 0)
+Controller watchdog: $(apo_report_state_value CONTROLLER_WATCHDOG_STATUS NOT_STARTED) provider=$(apo_report_state_value CONTROLLER_WATCHDOG_PROVIDER none) leased=$(apo_report_state_value CONTROLLER_WATCHDOG_LEASED 0) active-leases=$(apo_report_state_value CONTROLLER_WATCHDOG_LEASE_COUNT 0)
 SSH recovery:   $(apo_report_state_value RECOVERY_WAIT_STATUS IDLE) context=$(apo_report_state_value RECOVERY_WAIT_CONTEXT none) extended-waits=$(apo_report_state_value RECOVERY_WAIT_TIMEOUTS 0)
 Gate retries:   $(apo_report_state_value TRANSIENT_RETRY_COUNT 0)/$APO_TRANSIENT_PHASE_RETRY_MAX context=$(apo_report_state_value TRANSIENT_RETRY_CONTEXT none)
 Failure class:  $(apo_report_state_value FAILURE_CLASS none)
@@ -520,6 +522,7 @@ Test lengths:   qualification=$qualification_duration per domain; final=$final_d
 Final recovery: retries=$(apo_report_state_value FINAL_BACKOFF_COUNT 0), trial=$(apo_report_state_value FINAL_BACKOFF_TRIAL none), history=$(apo_report_state_value FINAL_BACKOFF_HISTORY none)
 Final proof:    validated=$(apo_report_state_value VALIDATED 0), duration=$(apo_report_duration "$(apo_state_get VALIDATION_DURATION_S '')"), clocks=CPU $(apo_report_state_value FINAL_CPU pending) / GPU $(apo_report_state_value FINAL_GPU pending) MHz
 Application:    $(apo_report_state_value APPLY_STATUS NOT_APPLIED)
+Watchdogs:      target=$(apo_report_state_value NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED), controller=$(apo_report_state_value CONTROLLER_WATCHDOG_STATUS NOT_STARTED), controller-provider=$(apo_report_state_value CONTROLLER_WATCHDOG_PROVIDER none)
 Maximum temp:   $(apo_report_state_value RUN_MAX_TEMP pending)C
 SSH recovery:   $(apo_report_state_value RECOVERY_WAIT_STATUS IDLE), extended waits=$(apo_report_state_value RECOVERY_WAIT_TIMEOUTS 0)
 Gate retries:   $(apo_report_state_value TRANSIENT_RETRY_COUNT 0)/$APO_TRANSIENT_PHASE_RETRY_MAX, context=$(apo_report_state_value TRANSIENT_RETRY_CONTEXT none)
@@ -663,6 +666,15 @@ apo_generate_report() {
         printf 'Watchdog repair: %s\n' "$(apo_report_state_value WATCHDOG_REPAIR_STATUS NOT_STARTED)"
         printf 'Watchdog repair hashes: old=%s, expected=%s, new=%s\n' \
             "$(apo_report_state_value WATCHDOG_REPAIR_OLD_HASH none)" "$(apo_report_state_value WATCHDOG_REPAIR_EXPECTED_HASH none)" "$(apo_report_state_value WATCHDOG_REPAIR_NEW_HASH none)"
+        printf 'Target watchdog proof component: status=%s, kind=%s, installed-by-run=%s\n' \
+            "$(apo_report_state_value NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED)" \
+            "$(apo_report_state_value NETWORK_WATCHDOG_INSTALL_KIND preexisting)" \
+            "$(apo_report_state_value NETWORK_WATCHDOG_INSTALLED_BY_RUN 0)"
+        printf 'Controller watchdog: status=%s, provider=%s, leased=%s, active-leases=%s\n' \
+            "$(apo_report_state_value CONTROLLER_WATCHDOG_STATUS NOT_STARTED)" \
+            "$(apo_report_state_value CONTROLLER_WATCHDOG_PROVIDER none)" \
+            "$(apo_report_state_value CONTROLLER_WATCHDOG_LEASED 0)" \
+            "$(apo_report_state_value CONTROLLER_WATCHDOG_LEASE_COUNT 0)"
         printf 'Extended SSH recovery: status=%s, context=%s, waits=%s\n' \
             "$(apo_report_state_value RECOVERY_WAIT_STATUS IDLE)" "$(apo_report_state_value RECOVERY_WAIT_CONTEXT none)" "$(apo_report_state_value RECOVERY_WAIT_TIMEOUTS 0)"
         printf 'Automatic gate retries: %s/%s, context=%s\n' \

@@ -87,7 +87,7 @@ PING_TIMEOUT_SECONDS=2
 CHECK_INTERVAL_SECONDS=10
 STARTUP_GRACE_SECONDS=180
 FAILURE_WINDOW_SECONDS=180
-MAX_REBOOTS=3
+MAX_REBOOTS=0
 REBOOT_WINDOW_SECONDS=1800
 APO_NETWORK_CONFIG
 EVENT_FILE="$TEMP_DIR/network-watchdog-event"
@@ -126,7 +126,7 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" BATOCERA_NET
     [[ $(batocera_network_companion_config_fields "$BATOCERA_NETWORK_CONFIG") == $'"'"'192.0.2.1\tfixture'"'"' ]]
 '
 BATOCERA_INVALID_CONFIG="$TEMP_DIR/batocera-network-watchdog-invalid.conf"
-sed 's/^MAX_REBOOTS=3$/MAX_REBOOTS=11/' "$BATOCERA_NETWORK_CONFIG" >"$BATOCERA_INVALID_CONFIG"
+sed 's/^MAX_REBOOTS=0$/MAX_REBOOTS=11/' "$BATOCERA_NETWORK_CONFIG" >"$BATOCERA_INVALID_CONFIG"
 if APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" BATOCERA_INVALID_CONFIG="$BATOCERA_INVALID_CONFIG" bash -c '
     set -Eeuo pipefail
     source "$WORKER"
@@ -809,7 +809,7 @@ assert observer.consume_journal_bytes(buffered, retry_record[split_at:] + b"\n")
 assert actions == [("prepare", 580)]
 APO_OBSERVER_STATE_MACHINE
 
-python3 - "$ROOT/assets/batocera/watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_keeper.py" "$TEMP_DIR" <<'APO_KEEPER_RECONCILE'
+python3 - "$ROOT/assets/batocera/watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_keeper.py" "$ROOT/assets/debian/network_watchdog_observer.py" "$TEMP_DIR" <<'APO_KEEPER_RECONCILE'
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
@@ -832,7 +832,7 @@ boot_epoch = int(time.time() - float(Path("/proc/uptime").read_text(encoding="as
 for name, source_name in (("batocera", sys.argv[1]), ("debian", sys.argv[2])):
     source = Path(source_name)
     module = load_module(f"apo_watchdog_{name}", source)
-    root = Path(sys.argv[3]) / f"{name}-reconcile"
+    root = Path(sys.argv[4]) / f"{name}-reconcile"
     root.mkdir()
     config_path = root / "watchdog.conf"
     config_path.write_text("fixture\n", encoding="ascii")
@@ -847,22 +847,51 @@ for name, source_name in (("batocera", sys.argv[1]), ("debian", sys.argv[2])):
     if name == "debian":
         keeper.keeper_path = source
         keeper.service_path = service_path
+        keeper.reboot_method = "systemctl-reboot"
     keeper.target = "192.0.2.1"
     keeper.root = root
     keeper.log_path = root / "watchdog.log"
     keeper.pending_path = root / "pending-network-reboot"
     keeper.event_path = root / "last-network-reboot"
+    keeper.history_path = root / "reboot-history"
+    keeper.max_reboots = 0
+    keeper.reboot_window = 1800
+    if name == "debian":
+        assert keeper.reboot_allowed(boot_epoch)
+        assert keeper.reboot_allowed(boot_epoch + 1)
+    else:
+        assert keeper.recovery_reboot_allowed(boot_epoch)
+        assert keeper.recovery_reboot_allowed(boot_epoch + 1)
 
     event_id = "a" * 32
     keeper.pending_path.write_text(
         keeper.event_content(event_id, source_boot_id, boot_epoch - 180, boot_epoch),
         encoding="ascii",
     )
+    if name == "debian":
+        keeper.log_path.write_text(
+            "2026-01-01T00:00:00Z network_reboot_committed "
+            f"event_id={event_id} source_boot_id={source_boot_id} "
+            f"target=192.0.2.1 requested_epoch={boot_epoch} method=systemctl-reboot\n",
+            encoding="utf-8",
+        )
+    else:
+        keeper.log_path.write_text(
+            "2026-01-01T00:00:00Z network_reboot_committed "
+            f"event_id={event_id} target=192.0.2.1 method=hardware-watchdog-starvation\n",
+            encoding="utf-8",
+        )
     keeper.reconcile_pending_event()
     assert not keeper.pending_path.exists()
     assert keeper.event_path.is_file()
     event_text = keeper.event_path.read_text(encoding="ascii")
     assert f"EVENT_ID={event_id}\n" in event_text
+    accepted_path = root / f"accepted-network-reboot-{event_id}"
+    assert accepted_path.is_file()
+    accepted_text = accepted_path.read_text(encoding="ascii")
+    assert f"CURRENT_BOOT_ID={current_boot_id}\n" in accepted_text
+    expected_method = "systemctl-reboot" if name == "debian" else "hardware-watchdog-starvation"
+    assert f"PROOF_METHOD={expected_method}\n" in accepted_text
     log_text = keeper.log_path.read_text(encoding="utf-8")
     assert (
         f"network_reboot_accepted event_id={event_id} source_boot_id={source_boot_id} "
@@ -917,7 +946,226 @@ for name, source_name in (("batocera", sys.argv[1]), ("debian", sys.argv[2])):
     finally:
         module.time.monotonic = original_monotonic
         module.time.sleep = original_sleep
+
+observer_source = Path(sys.argv[3])
+observer_module = load_module("apo_watchdog_observer_reconcile", observer_source)
+observer_root = Path(sys.argv[4]) / "observer-reconcile"
+observer_root.mkdir()
+observer_config = observer_root / "observer.conf"
+observer_config.write_text("fixture observer config\n", encoding="ascii")
+observer_service = observer_root / "observer.service"
+observer_service.write_text("fixture observer service\n", encoding="ascii")
+observer_module.OBSERVER_PATH = observer_source
+observer_module.SERVICE_PATH = observer_service
+observer = observer_module.Observer.__new__(observer_module.Observer)
+observer.config_path = observer_config
+observer.config = {"EVIDENCE_WINDOW_SECONDS": "300"}
+observer.target = "192.0.2.1"
+observer.root = observer_root
+observer.log_path = observer_root / "watchdog.log"
+observer.pending_path = observer_root / "pending-network-reboot"
+observer.event_path = observer_root / "last-network-reboot"
+observer.current_event_id = None
+observer.failure_started_epoch = None
+observer.retry_timed_out_epoch = None
+observer.repair_failed_epoch = None
+observer.repair_failed_code = None
+observer.boot_id = lambda: current_boot_id
+observer_event = "e" * 32
+observer.pending_path.write_text(
+    observer.event_content(observer_event, source_boot_id, boot_epoch - 180, boot_epoch),
+    encoding="ascii",
+)
+observer.log_path.write_text(
+    "2026-01-01T00:00:00Z network_reboot_committed "
+    f"event_id={observer_event} source_boot_id={source_boot_id} "
+    f"target=192.0.2.1 requested_epoch={boot_epoch} "
+    "method=debian-watchdog-journal outcome=native-shutdown-247\n",
+    encoding="utf-8",
+)
+observer.reconcile_pending_event()
+observer_archive = observer_root / f"accepted-network-reboot-{observer_event}"
+assert observer_archive.is_file()
+observer_archive_text = observer_archive.read_text(encoding="ascii")
+assert f"CURRENT_BOOT_ID={current_boot_id}\n" in observer_archive_text
+assert "PROOF_METHOD=debian-watchdog-journal\n" in observer_archive_text
 APO_KEEPER_RECONCILE
+
+DEBIAN_CHAIN_LOG="$TEMP_DIR/debian-watchdog-chain.log"
+cat >"$DEBIAN_CHAIN_LOG" <<'APO_DEBIAN_CHAIN_LOG'
+2026-09-16T22:01:48Z network_reboot_prepared event_id=788240263c11a1942465aeca4ba8d590 source_boot_id=ffa98f70-e743-4d96-8d9e-9f1105956e49 target=198.51.100.1 prepared_epoch=1789596107 method=debian-watchdog-journal
+2026-09-16T22:02:50Z network_reboot_committed event_id=788240263c11a1942465aeca4ba8d590 source_boot_id=ffa98f70-e743-4d96-8d9e-9f1105956e49 target=198.51.100.1 requested_epoch=1789596107 method=debian-watchdog-journal outcome=native-shutdown-247
+2026-09-16T22:03:51Z network_reboot_accepted event_id=788240263c11a1942465aeca4ba8d590 source_boot_id=ffa98f70-e743-4d96-8d9e-9f1105956e49 target=198.51.100.1 requested_epoch=1789596107 current_boot_id=9cefb87f-7629-4003-bc18-ba19bc343ba2
+2026-09-16T22:05:24Z network_reboot_prepared event_id=b71d01cfb3d1574bd21bea2eb47af99b source_boot_id=9cefb87f-7629-4003-bc18-ba19bc343ba2 target=198.51.100.1 prepared_epoch=1789596323 method=debian-watchdog-journal
+2026-09-16T22:06:26Z network_reboot_committed event_id=b71d01cfb3d1574bd21bea2eb47af99b source_boot_id=9cefb87f-7629-4003-bc18-ba19bc343ba2 target=198.51.100.1 requested_epoch=1789596323 method=debian-watchdog-journal outcome=native-shutdown-247
+2026-09-16T22:07:25Z network_reboot_accepted event_id=b71d01cfb3d1574bd21bea2eb47af99b source_boot_id=9cefb87f-7629-4003-bc18-ba19bc343ba2 target=198.51.100.1 requested_epoch=1789596323 current_boot_id=b519f75f-1bf0-4d97-854b-8637ef1ea672
+APO_DEBIAN_CHAIN_LOG
+
+(
+    export APO_WORKER_LIBRARY_ONLY=1
+    source "$ROOT/workers/debian-worker.sh"
+    network_watchdog_log_chain "$DEBIAN_CHAIN_LOG" \
+        ffa98f70-e743-4d96-8d9e-9f1105956e49 \
+        b519f75f-1bf0-4d97-854b-8637ef1ea672 \
+        198.51.100.1 debian-watchdog-journal c2051c7ef672c02552e123b1ff9444d2
+    [[ $APO_WATCHDOG_CHAIN_COUNT == 2 ]]
+    [[ $APO_WATCHDOG_CHAIN_EVENT_ID == b71d01cfb3d1574bd21bea2eb47af99b ]]
+    [[ $APO_WATCHDOG_CHAIN_FINAL_SOURCE == 9cefb87f-7629-4003-bc18-ba19bc343ba2 ]]
+    [[ $APO_WATCHDOG_CHAIN_REQUEST_EPOCH == 1789596323 ]]
+    if network_watchdog_log_chain "$DEBIAN_CHAIN_LOG" \
+        ffa98f70-e743-4d96-8d9e-9f1105956e49 \
+        b519f75f-1bf0-4d97-854b-8637ef1ea672 \
+        198.51.100.1 debian-watchdog-journal 788240263c11a1942465aeca4ba8d590; then
+        echo 'Debian reboot chain reused the previously credited event' >&2
+        exit 1
+    fi
+)
+
+BATOCERA_CHAIN_LOG="$TEMP_DIR/batocera-watchdog-chain.log"
+cat >"$BATOCERA_CHAIN_LOG" <<'APO_BATOCERA_CHAIN_LOG'
+2026-09-16T22:01:48Z network_reboot_prepared event_id=11111111111111111111111111111111 source_boot_id=11111111-1111-4111-8111-111111111111 target=203.0.113.1 prepared_epoch=2000
+2026-09-16T22:01:49Z network_reboot_committed event_id=11111111111111111111111111111111 source_boot_id=11111111-1111-4111-8111-111111111111 target=203.0.113.1 requested_epoch=2001 method=batocera-reboot
+2026-09-16T22:02:50Z network_reboot_accepted event_id=11111111111111111111111111111111 source_boot_id=11111111-1111-4111-8111-111111111111 target=203.0.113.1 requested_epoch=2001 current_boot_id=22222222-2222-4222-8222-222222222222
+2026-09-16T22:04:48Z network_reboot_prepared event_id=22222222222222222222222222222222 source_boot_id=22222222-2222-4222-8222-222222222222 target=203.0.113.1 prepared_epoch=2200
+2026-09-16T22:04:49Z network_reboot_committed event_id=22222222222222222222222222222222 source_boot_id=22222222-2222-4222-8222-222222222222 target=203.0.113.1 requested_epoch=2201 method=batocera-reboot
+2026-09-16T22:05:50Z network_reboot_accepted event_id=22222222222222222222222222222222 source_boot_id=22222222-2222-4222-8222-222222222222 target=203.0.113.1 requested_epoch=2201 current_boot_id=33333333-3333-4333-8333-333333333333
+APO_BATOCERA_CHAIN_LOG
+
+(
+    export APO_WORKER_LIBRARY_ONLY=1
+    source "$ROOT/workers/batocera-worker.sh"
+    network_watchdog_log_chain "$BATOCERA_CHAIN_LOG" \
+        11111111-1111-4111-8111-111111111111 \
+        33333333-3333-4333-8333-333333333333 \
+        203.0.113.1 batocera-reboot companion ffffffffffffffffffffffffffffffff
+    [[ $APO_WATCHDOG_CHAIN_COUNT == 2 ]]
+    [[ $APO_WATCHDOG_CHAIN_EVENT_ID == 22222222222222222222222222222222 ]]
+    [[ $APO_WATCHDOG_CHAIN_REQUEST_EPOCH == 2201 ]]
+)
+
+DEBIAN_COMPANION_CHAIN_LOG="$TEMP_DIR/debian-companion-chain.log"
+cat >"$DEBIAN_COMPANION_CHAIN_LOG" <<'APO_DEBIAN_COMPANION_CHAIN_LOG'
+2026-09-16T22:01:48Z network_reboot_prepared event_id=33333333333333333333333333333333 source_boot_id=44444444-4444-4444-8444-444444444444 target=192.0.2.1 prepared_epoch=3000
+2026-09-16T22:01:49Z network_reboot_committed event_id=33333333333333333333333333333333 source_boot_id=44444444-4444-4444-8444-444444444444 target=192.0.2.1 requested_epoch=3001 method=systemctl-reboot
+2026-09-16T22:02:50Z network_reboot_accepted event_id=33333333333333333333333333333333 source_boot_id=44444444-4444-4444-8444-444444444444 target=192.0.2.1 requested_epoch=3001 current_boot_id=55555555-5555-4555-8555-555555555555
+2026-09-16T22:04:48Z network_reboot_prepared event_id=44444444444444444444444444444444 source_boot_id=55555555-5555-4555-8555-555555555555 target=192.0.2.1 prepared_epoch=3200
+2026-09-16T22:04:49Z network_reboot_committed event_id=44444444444444444444444444444444 source_boot_id=55555555-5555-4555-8555-555555555555 target=192.0.2.1 requested_epoch=3201 method=systemctl-reboot
+2026-09-16T22:05:50Z network_reboot_accepted event_id=44444444444444444444444444444444 source_boot_id=55555555-5555-4555-8555-555555555555 target=192.0.2.1 requested_epoch=3201 current_boot_id=66666666-6666-4666-8666-666666666666
+APO_DEBIAN_COMPANION_CHAIN_LOG
+(
+    export APO_WORKER_LIBRARY_ONLY=1
+    source "$ROOT/workers/debian-worker.sh"
+    network_watchdog_log_chain "$DEBIAN_COMPANION_CHAIN_LOG" \
+        44444444-4444-4444-8444-444444444444 \
+        66666666-6666-4666-8666-666666666666 \
+        192.0.2.1 systemctl-reboot ffffffffffffffffffffffffffffffff
+    [[ $APO_WATCHDOG_CHAIN_COUNT == 2 ]]
+    [[ $APO_WATCHDOG_CHAIN_EVENT_ID == 44444444444444444444444444444444 ]]
+)
+
+BATOCERA_HARDWARE_CHAIN_LOG="$TEMP_DIR/batocera-hardware-chain.log"
+cat >"$BATOCERA_HARDWARE_CHAIN_LOG" <<'APO_BATOCERA_HARDWARE_CHAIN_LOG'
+2026-09-16T22:01:48Z network_reboot_prepared event_id=55555555555555555555555555555555 source_boot_id=77777777-7777-4777-8777-777777777777 target=203.0.113.1 requested_epoch=4001
+2026-09-16T22:01:49Z network_reboot_committed event_id=55555555555555555555555555555555 target=203.0.113.1 method=hardware-watchdog-starvation
+2026-09-16T22:02:50Z network_reboot_accepted event_id=55555555555555555555555555555555 source_boot_id=77777777-7777-4777-8777-777777777777 target=203.0.113.1 requested_epoch=4001 current_boot_id=88888888-8888-4888-8888-888888888888
+2026-09-16T22:04:48Z network_reboot_prepared event_id=66666666666666666666666666666666 source_boot_id=88888888-8888-4888-8888-888888888888 target=203.0.113.1 requested_epoch=4201
+2026-09-16T22:04:49Z network_reboot_committed event_id=66666666666666666666666666666666 target=203.0.113.1 method=hardware-watchdog-starvation
+2026-09-16T22:05:50Z network_reboot_accepted event_id=66666666666666666666666666666666 source_boot_id=88888888-8888-4888-8888-888888888888 target=203.0.113.1 requested_epoch=4201 current_boot_id=99999999-9999-4999-8999-999999999999
+APO_BATOCERA_HARDWARE_CHAIN_LOG
+(
+    export APO_WORKER_LIBRARY_ONLY=1
+    source "$ROOT/workers/batocera-worker.sh"
+    network_watchdog_log_chain "$BATOCERA_HARDWARE_CHAIN_LOG" \
+        77777777-7777-4777-8777-777777777777 \
+        99999999-9999-4999-8999-999999999999 \
+        203.0.113.1 hardware-watchdog-starvation hardware ffffffffffffffffffffffffffffffff
+    [[ $APO_WATCHDOG_CHAIN_COUNT == 2 ]]
+    [[ $APO_WATCHDOG_CHAIN_EVENT_ID == 66666666666666666666666666666666 ]]
+)
+
+for PROVIDER_SPEC in \
+    "$ROOT/workers/debian-worker.sh systemctl-reboot debian-companion" \
+    "$ROOT/workers/debian-worker.sh debian-watchdog-journal debian-native" \
+    "$ROOT/workers/batocera-worker.sh batocera-reboot batocera-companion" \
+    "$ROOT/workers/batocera-worker.sh hardware-watchdog-starvation batocera-hardware"; do
+    read -r WORKER PROVIDER_METHOD PROVIDER_NAME <<<"$PROVIDER_SPEC"
+    CHAIN_ROOT="$TEMP_DIR/two-reboot-$PROVIDER_NAME"
+    mkdir "$CHAIN_ROOT"
+    for (( chain_index=0; chain_index<2; chain_index++ )); do
+        printf -v chain_source 'aaaaaaaa-0000-4000-8000-%012x' "$chain_index"
+        printf -v chain_destination 'aaaaaaaa-0000-4000-8000-%012x' "$((chain_index + 1))"
+        printf -v chain_event '%032x' "$((chain_index + 101))"
+        cat >"$CHAIN_ROOT/accepted-network-reboot-$chain_event" <<APO_TWO_REBOOT_EVENT
+# AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1
+FORMAT=1
+EVENT_ID=$chain_event
+SOURCE_BOOT_ID=$chain_source
+TARGET=192.0.2.1
+FAILURE_STARTED_EPOCH=$((5000 + chain_index * 100))
+REBOOT_REQUESTED_EPOCH=$((5050 + chain_index * 100))
+CONFIG_SHA256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+KEEPER_SHA256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+SERVICE_SHA256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+REASON=TARGET_UNREACHABLE
+CURRENT_BOOT_ID=$chain_destination
+PROOF_METHOD=$PROVIDER_METHOD
+APO_TWO_REBOOT_EVENT
+    done
+    (
+        export APO_WORKER_LIBRARY_ONLY=1
+        source "$WORKER"
+        network_watchdog_archive_chain "$CHAIN_ROOT" \
+            aaaaaaaa-0000-4000-8000-000000000000 \
+            aaaaaaaa-0000-4000-8000-000000000002 \
+            192.0.2.1 \
+            bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+            dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+            "$PROVIDER_METHOD" ffffffffffffffffffffffffffffffff
+        [[ $APO_WATCHDOG_CHAIN_COUNT == 2 ]]
+        [[ $APO_WATCHDOG_CHAIN_EVENT_ID == 00000000000000000000000000000066 ]]
+    )
+done
+
+for WORKER in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do
+    CHAIN_ROOT="$TEMP_DIR/archive-chain-$(basename "$WORKER")"
+    mkdir "$CHAIN_ROOT"
+    for (( chain_index=0; chain_index<12; chain_index++ )); do
+        printf -v chain_source '00000000-0000-4000-8000-%012x' "$chain_index"
+        printf -v chain_destination '00000000-0000-4000-8000-%012x' "$((chain_index + 1))"
+        printf -v chain_event '%032x' "$((chain_index + 1))"
+        cat >"$CHAIN_ROOT/accepted-network-reboot-$chain_event" <<APO_ARCHIVED_CHAIN_EVENT
+# AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1
+FORMAT=1
+EVENT_ID=$chain_event
+SOURCE_BOOT_ID=$chain_source
+TARGET=192.0.2.1
+FAILURE_STARTED_EPOCH=$((1000 + chain_index * 100))
+REBOOT_REQUESTED_EPOCH=$((1050 + chain_index * 100))
+CONFIG_SHA256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+KEEPER_SHA256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+SERVICE_SHA256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+REASON=TARGET_UNREACHABLE
+CURRENT_BOOT_ID=$chain_destination
+PROOF_METHOD=systemctl-reboot
+APO_ARCHIVED_CHAIN_EVENT
+    done
+    (
+        export APO_WORKER_LIBRARY_ONLY=1
+        source "$WORKER"
+        network_watchdog_archive_chain "$CHAIN_ROOT" \
+            00000000-0000-4000-8000-000000000000 \
+            00000000-0000-4000-8000-00000000000c \
+            192.0.2.1 \
+            bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+            dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+            systemctl-reboot ffffffffffffffffffffffffffffffff
+        [[ $APO_WATCHDOG_CHAIN_COUNT == 12 ]]
+        [[ $APO_WATCHDOG_CHAIN_EVENT_ID == 0000000000000000000000000000000c ]]
+        [[ $APO_WATCHDOG_CHAIN_REQUEST_EPOCH == 2150 ]]
+    )
+done
 
 FAKE_BIN="$TEMP_DIR/bin"
 mkdir -p "$FAKE_BIN"

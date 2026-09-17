@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.79 - 2026-09-16
+
+- Fixed strict network-watchdog attribution when a disconnected target reboots more than once before the controller reconnects. Every accepted boot edge is archived, the complete ordered chain is verified without a numeric cap, and the unchanged-clock run retains only the target-reported stress credit that was complete before the final proved request.
+- Made `MAX_REBOOTS=0` mean unlimited continued network-loss recovery for the project Batocera keeper and temporary Debian, Batocera, and controller companions. New project-owned installations use that value, while recognized native watchdog configuration remains untouched.
+- Added run-scoped controller watchdog leases. A supported active Debian `watchdog.service` is reused without changing its target, repair binary, or timeouts; otherwise a shared temporary gateway companion is installed and removed only after the last successful run releases it.
+- Made the permanent Batocera hardware keeper yield only its network decisions to an active, strictly recognized project companion while continuing hardware-watchdog feeds. If the companion stops or changes, built-in network supervision resumes automatically.
+
 ## 0.1.0-alpha.78 - 2026-09-16
 
 - Fixed run-owned Debian watchdog refresh cleanup after packaged observer or companion assets change. A stale same-run cleanup checkpoint is now accepted only when the live files and embedded run identity exactly match the saved current installation, then preserved under a content-addressed history name before the current checkpoint is written.

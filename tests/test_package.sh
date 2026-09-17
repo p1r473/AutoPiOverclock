@@ -25,10 +25,13 @@ for required in \
     source/assets/batocera/AutoPiOverclockNetworkWatchdog \
     source/assets/batocera/install_network_watchdog.sh \
     source/assets/debian/autopioverclock-network-watchdog-observer.service \
+    source/assets/debian/autopioverclock-controller-network-watchdog.service \
     source/assets/debian/install_network_watchdog.sh \
     source/assets/debian/install_network_watchdog_observer.sh \
+    source/assets/debian/manage_controller_watchdog.sh \
     source/assets/debian/network_watchdog_keeper.py \
     source/assets/debian/network_watchdog_observer.py \
+    source/lib/controller_watchdog.sh \
     source/lib/remote_job.sh \
     source/tools/remote-stress-job.sh \
     source/tests/fixtures/debian-pass.log \

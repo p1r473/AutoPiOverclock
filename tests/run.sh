@@ -17,6 +17,7 @@ TESTS=(
     test_workers.sh
     test_tryboot_lifecycle.sh
     test_watchdogs.sh
+    test_controller_watchdog.sh
     test_selection.sh
     test_history.sh
     test_history_scheduler.sh

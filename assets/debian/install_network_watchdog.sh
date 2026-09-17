@@ -14,7 +14,7 @@ readonly PING_TIMEOUT=2
 readonly CHECK_INTERVAL=10
 readonly STARTUP_GRACE=180
 readonly FAILURE_WINDOW=180
-readonly MAX_REBOOTS=3
+readonly MAX_REBOOTS=0
 readonly REBOOT_WINDOW=1800
 
 b64() { printf '%s' "${1-}" | base64 | tr -d '\n'; }

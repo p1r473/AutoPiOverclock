@@ -25,7 +25,7 @@ readonly CHECK_INTERVAL=10
 readonly PING_TIMEOUT=2
 readonly STARTUP_GRACE=180
 readonly FAILURE_WINDOW=180
-readonly MAX_REBOOTS=3
+readonly MAX_REBOOTS=0
 readonly REBOOT_WINDOW=1800
 
 APO_WATCHDOG_APPLY_PLAN_DIR=''
@@ -424,7 +424,7 @@ plan() {
     fi
     emit_plan
     rm -rf -- "$plan_dir"
-    emit_result PASS "Batocera watchdog installation is ready for target $PLAN_TARGET with bounded network-loss reboot protection."
+    emit_result PASS "Batocera watchdog installation is ready for target $PLAN_TARGET with persistent network-loss reboot protection."
 }
 
 backup_file() {

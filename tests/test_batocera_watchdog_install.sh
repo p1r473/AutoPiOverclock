@@ -84,7 +84,7 @@ fi
 render_keeper_config "$TEMP_DIR/watchdog.conf" 10.42.0.1
 grep -Fqx 'TARGET=10.42.0.1' "$TEMP_DIR/watchdog.conf"
 grep -Fqx 'STARTUP_GRACE_SECONDS=180' "$TEMP_DIR/watchdog.conf"
-grep -Fqx 'MAX_REBOOTS=3' "$TEMP_DIR/watchdog.conf"
+grep -Fqx 'MAX_REBOOTS=0' "$TEMP_DIR/watchdog.conf"
 grep -Fqx 'REBOOT_WINDOW_SECONDS=1800' "$TEMP_DIR/watchdog.conf"
 
 cat > "$TEMP_DIR/eeprom-positive.conf" <<'EOF'
@@ -176,7 +176,7 @@ with tempfile.TemporaryDirectory() as directory:
         "PING_TIMEOUT_SECONDS=2\n"
         "STARTUP_GRACE_SECONDS=180\n"
         "FAILURE_WINDOW_SECONDS=180\n"
-        "MAX_REBOOTS=3\n"
+        "MAX_REBOOTS=0\n"
         "REBOOT_WINDOW_SECONDS=1800\n",
         encoding="ascii",
     )
@@ -186,7 +186,51 @@ with tempfile.TemporaryDirectory() as directory:
     assert keeper.recent_reboots(1000) == [2000]
     assert keeper.recovery_reboot_allowed(1000)
     assert keeper.recovery_reboot_allowed(1000)
-    assert not keeper.recovery_reboot_allowed(1000)
+    assert keeper.recovery_reboot_allowed(1000)
+
+    companion_root = root / "network-watchdog"
+    companion_root.mkdir()
+    companion_config = companion_root / "watchdog.conf"
+    companion_keeper = companion_root / "network_watchdog_keeper.py"
+    companion_service = root / "AutoPiOverclockNetworkWatchdog"
+    companion_pid = root / "companion.pid"
+    companion_config.write_text(
+        "# AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG\n"
+        "RUN_ID=fixture\n"
+        "TARGET=10.42.0.1\n"
+        "PING_TIMEOUT_SECONDS=2\n"
+        "CHECK_INTERVAL_SECONDS=10\n"
+        "STARTUP_GRACE_SECONDS=180\n"
+        "FAILURE_WINDOW_SECONDS=180\n"
+        "MAX_REBOOTS=0\n"
+        "REBOOT_WINDOW_SECONDS=1800\n",
+        encoding="ascii",
+    )
+    companion_keeper.write_text(
+        "# AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG\n",
+        encoding="utf-8",
+    )
+    companion_service.write_text(
+        "# AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG\n"
+        f"{companion_keeper} {companion_config}\n",
+        encoding="ascii",
+    )
+    companion_pid.write_text("4242\n", encoding="ascii")
+    module.COMPANION_CONFIG_PATH = companion_config
+    module.COMPANION_KEEPER_PATH = companion_keeper
+    module.COMPANION_SERVICE_PATH = companion_service
+    module.COMPANION_PID_PATH = companion_pid
+    original_read_bytes = Path.read_bytes
+
+    def fixture_read_bytes(path):
+        if str(path) == "/proc/4242/cmdline":
+            return b"/usr/bin/python3\0" + str(companion_keeper).encode() + b"\0" + str(companion_config).encode() + b"\0"
+        return original_read_bytes(path)
+
+    with mock.patch.object(Path, "read_bytes", fixture_read_bytes), mock.patch.object(module.os, "kill"):
+        assert keeper.network_companion_active()
+        companion_config.write_text(companion_config.read_text(encoding="ascii").replace("10.42.0.1", "10.42.0.2"), encoding="ascii")
+        assert not keeper.network_companion_active()
 PY
 sh -n "$ROOT/assets/batocera/AutoPiOverclockWatchdog"
 

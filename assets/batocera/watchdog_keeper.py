@@ -24,6 +24,21 @@ WDIOC_SETTIMEOUT = 0xC0045706
 MANAGED_MARKER = "AUTOPIOVERCLOCK MANAGED BATOCERA WATCHDOG"
 EVENT_MARKER = "AUTOPIOVERCLOCK NETWORK WATCHDOG EVENT V1"
 SERVICE_PATH = Path("/userdata/system/services/AutoPiOverclockWatchdog")
+COMPANION_CONFIG_PATH = Path("/userdata/system/autopioverclock/network-watchdog/watchdog.conf")
+COMPANION_KEEPER_PATH = Path("/userdata/system/autopioverclock/network-watchdog/network_watchdog_keeper.py")
+COMPANION_SERVICE_PATH = Path("/userdata/system/services/AutoPiOverclockNetworkWatchdog")
+COMPANION_PID_PATH = Path("/run/autopioverclock-network-watchdog.pid")
+COMPANION_MARKER = "AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG"
+COMPANION_KEYS = {
+    "RUN_ID",
+    "TARGET",
+    "PING_TIMEOUT_SECONDS",
+    "CHECK_INTERVAL_SECONDS",
+    "STARTUP_GRACE_SECONDS",
+    "FAILURE_WINDOW_SECONDS",
+    "MAX_REBOOTS",
+    "REBOOT_WINDOW_SECONDS",
+}
 ALLOWED_KEYS = {
     "TARGET",
     "DEVICE_TIMEOUT_SECONDS",
@@ -55,7 +70,10 @@ def read_config(path: Path) -> dict[str, str]:
     ipaddress.IPv4Address(values["TARGET"])
     for key in ALLOWED_KEYS - {"TARGET"}:
         number = int(values[key], 10)
-        if number <= 0 or number > 86400:
+        if key == "MAX_REBOOTS":
+            if number < 0 or number > 86400:
+                raise ValueError(f"invalid watchdog value for {key}")
+        elif number <= 0 or number > 86400:
             raise ValueError(f"invalid positive watchdog value for {key}")
     if int(values["FEED_INTERVAL_SECONDS"]) >= int(values["DEVICE_TIMEOUT_SECONDS"]):
         raise ValueError("feed interval must be shorter than device timeout")
@@ -140,6 +158,78 @@ class Keeper:
             return False
         return result.returncode == 0
 
+    @staticmethod
+    def regular_file(path: Path) -> bool:
+        try:
+            return stat.S_ISREG(path.lstat().st_mode) and not path.is_symlink()
+        except OSError:
+            return False
+
+    def network_companion_active(self) -> bool:
+        """Yield network decisions only to one verified project companion."""
+        managed_paths = (
+            COMPANION_CONFIG_PATH,
+            COMPANION_KEEPER_PATH,
+            COMPANION_SERVICE_PATH,
+            COMPANION_PID_PATH,
+        )
+        if not all(self.regular_file(path) for path in managed_paths):
+            return False
+        try:
+            config_text = COMPANION_CONFIG_PATH.read_text(encoding="ascii")
+            keeper_text = COMPANION_KEEPER_PATH.read_text(encoding="utf-8")
+            service_text = COMPANION_SERVICE_PATH.read_text(encoding="ascii")
+            values: dict[str, str] = {}
+            marker_count = 0
+            for raw_line in config_text.splitlines():
+                line = raw_line.strip()
+                if line == f"# {COMPANION_MARKER}":
+                    marker_count += 1
+                    continue
+                if not line or line.startswith("#"):
+                    continue
+                key, separator, value = line.partition("=")
+                if not separator or key not in COMPANION_KEYS or key in values or not value:
+                    return False
+                values[key] = value
+            if marker_count != 1 or set(values) != COMPANION_KEYS:
+                return False
+            run_id = values["RUN_ID"]
+            if (
+                not 1 <= len(run_id) <= 128
+                or not run_id[0].isalnum()
+                or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for character in run_id)
+                or values["TARGET"] != self.target
+            ):
+                return False
+            limits = {
+                "PING_TIMEOUT_SECONDS": (1, 30),
+                "CHECK_INTERVAL_SECONDS": (1, 300),
+                "STARTUP_GRACE_SECONDS": (30, 3600),
+                "FAILURE_WINDOW_SECONDS": (30, 3600),
+                "MAX_REBOOTS": (0, 10),
+                "REBOOT_WINDOW_SECONDS": (300, 86400),
+            }
+            for key, (minimum, maximum) in limits.items():
+                if not values[key].isdigit() or not minimum <= int(values[key], 10) <= maximum:
+                    return False
+            if COMPANION_MARKER not in keeper_text or COMPANION_MARKER not in service_text:
+                return False
+            if str(COMPANION_KEEPER_PATH) not in service_text or str(COMPANION_CONFIG_PATH) not in service_text:
+                return False
+            pid_lines = COMPANION_PID_PATH.read_text(encoding="ascii").splitlines()
+            if len(pid_lines) != 1 or not pid_lines[0].isdigit() or int(pid_lines[0], 10) <= 0:
+                return False
+            pid = int(pid_lines[0], 10)
+            arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            expected = {str(COMPANION_KEEPER_PATH).encode(), str(COMPANION_CONFIG_PATH).encode()}
+            if not expected.issubset(set(arguments)):
+                return False
+            os.kill(pid, 0)
+        except (OSError, UnicodeError, ValueError):
+            return False
+        return True
+
     def recent_reboots(self, now: int) -> list[int]:
         values: list[int] = []
         try:
@@ -208,6 +298,35 @@ class Keeper:
             f"SERVICE_SHA256={self.file_sha256(SERVICE_PATH)}\n"
             "REASON=TARGET_UNREACHABLE\n"
         )
+
+    def accepted_event_content(self, values: dict[str, str], current_boot_id: str) -> str:
+        return (
+            self.event_content(
+                values["EVENT_ID"],
+                values["SOURCE_BOOT_ID"],
+                int(values["FAILURE_STARTED_EPOCH"], 10),
+                int(values["REBOOT_REQUESTED_EPOCH"], 10),
+            )
+            + f"CURRENT_BOOT_ID={current_boot_id}\n"
+            + "PROOF_METHOD=hardware-watchdog-starvation\n"
+        )
+
+    def archive_accepted_event(self, values: dict[str, str], current_boot_id: str) -> None:
+        archive_path = self.root / f"accepted-network-reboot-{values['EVENT_ID']}"
+        content = self.accepted_event_content(values, current_boot_id)
+        committed = (
+            f"network_reboot_committed event_id={values['EVENT_ID']} "
+            f"target={values['TARGET']} method=hardware-watchdog-starvation"
+        )
+        if committed not in self.log_path.read_text(encoding="utf-8"):
+            raise ValueError("durable log lacks hardware-watchdog starvation evidence")
+        if archive_path.exists() or archive_path.is_symlink():
+            if archive_path.is_symlink() or not archive_path.is_file():
+                raise ValueError("accepted reboot archive is not a regular file")
+            if archive_path.read_text(encoding="ascii") != content:
+                raise ValueError("accepted reboot archive conflicts with pending evidence")
+            return
+        self.atomic_write(archive_path, content)
 
     def write_network_reboot_event(self, now_epoch: int, failure_started: float) -> str:
         source_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
@@ -292,6 +411,7 @@ class Keeper:
                 self.pending_path.unlink()
                 self.log("discarded stale pending network reboot evidence; attribution disabled")
                 return
+            self.archive_accepted_event(values, current_boot_id)
             os.replace(self.pending_path, self.event_path)
             directory_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
             try:
@@ -353,7 +473,7 @@ class Keeper:
 
     def recovery_reboot_allowed(self, now: int) -> bool:
         history = self.recent_reboots(now)
-        if len(history) >= self.max_reboots:
+        if self.max_reboots > 0 and len(history) >= self.max_reboots:
             return False
         history.append(now)
         try:
@@ -376,9 +496,28 @@ class Keeper:
         next_check = started + self.startup_grace
         failure_started: float | None = None
         suppression_logged = False
+        companion_delegated = False
         while not self.stop_requested:
             now_mono = time.monotonic()
             if now_mono >= next_check:
+                if self.network_companion_active():
+                    if not companion_delegated:
+                        self.log(
+                            "network supervision delegated to the active project companion; "
+                            "hardware watchdog feeds remain active"
+                        )
+                    failure_started = None
+                    suppression_logged = False
+                    companion_delegated = True
+                else:
+                    if companion_delegated:
+                        self.log("project companion is no longer active; built-in network supervision resumed")
+                    companion_delegated = False
+                if companion_delegated:
+                    next_check = now_mono + self.check_interval
+                    self.feed()
+                    time.sleep(self.feed_interval)
+                    continue
                 if self.ping():
                     if failure_started is not None or suppression_logged:
                         self.log(f"network target {self.target} is reachable; failure window cleared")
@@ -392,7 +531,7 @@ class Keeper:
                         now_epoch = int(time.time())
                         if not self.recovery_reboot_allowed(now_epoch):
                             if not suppression_logged:
-                                self.log("network remains unavailable after the bounded reboot limit; continuing feeds to prevent a reboot loop")
+                                self.log("network remains unavailable after the configured reboot limit; continuing feeds to prevent a reboot loop")
                                 suppression_logged = True
                         else:
                             event_id = self.write_network_reboot_event(now_epoch, failure_started)

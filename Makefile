@@ -10,6 +10,7 @@ BATOCERA_ASSETS := \
 DEBIAN_EXECUTABLE_ASSETS := \
 	assets/debian/install_network_watchdog_observer.sh \
 	assets/debian/install_network_watchdog.sh \
+	assets/debian/manage_controller_watchdog.sh \
 	assets/debian/network_watchdog_observer.py \
 	assets/debian/network_watchdog_keeper.py
 
@@ -50,4 +51,5 @@ install:
 	install -m 755 $(DEBIAN_EXECUTABLE_ASSETS) "$(INSTALL_ROOT)/assets/debian/"
 	install -m 644 assets/debian/autopioverclock-network-watchdog.service "$(INSTALL_ROOT)/assets/debian/"
 	install -m 644 assets/debian/autopioverclock-network-watchdog-observer.service "$(INSTALL_ROOT)/assets/debian/"
+	install -m 644 assets/debian/autopioverclock-controller-network-watchdog.service "$(INSTALL_ROOT)/assets/debian/"
 	ln -sfn ../lib/autopioverclock/autopioverclock "$(INSTALL_BIN)/autopioverclock"
