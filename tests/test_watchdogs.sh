@@ -421,6 +421,75 @@ for PROFILE_NAME in debian batocera; do
     '
 done
 
+# A resumed detached stress job keeps the exact worker it started with. Newer
+# watchdog reconciliation must use a current sidecar worker without replacing
+# that job-owned path, and the canonical path must be restored on return.
+DETECT="$ROOT/lib/detect.sh" CURRENT_WORKER="$ROOT/workers/batocera-worker.sh" bash -c '
+    set -Eeuo pipefail
+    source "$DETECT"
+    APO_PROFILE=batocera
+    APO_RUN_ID=fixture
+    APO_REMOTE_WORK_DIR=/userdata/system/autopioverclock/runs/fixture
+    APO_REMOTE_WORKER="${APO_REMOTE_WORK_DIR}/worker.sh"
+    APO_LOCAL_WORKER=$CURRENT_WORKER
+    APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    CANONICAL_WORKER=$APO_REMOTE_WORKER
+    CONTROL_WORKER="${APO_REMOTE_WORK_DIR}/network-watchdog-control-worker.sh"
+    UPLOADS=0
+    DISCOVERIES=0
+
+    apo_state_get() { printf "%s" "${2-}"; }
+    apo_state_set() { :; }
+    apo_store_discovery_state() { :; }
+    apo_profile_network_watchdog_ready() { return 0; }
+    apo_remote_job_pending() { return 0; }
+    apo_remote_upload_root() {
+        [[ $1 == "$CURRENT_WORKER" && $2 == "$CONTROL_WORKER" ]]
+        UPLOADS=$((UPLOADS + 1))
+    }
+    apo_discovery_capture() {
+        [[ $APO_REMOTE_WORKER == "$CONTROL_WORKER" ]]
+        DISCOVERIES=$((DISCOVERIES + 1))
+        APO_DISCOVERY=(
+            [PROFILE]=batocera
+            [PERMANENT_HASH]=$APO_PERMANENT_CONFIG_HASH
+            [NETWORK_WATCHDOG_KIND]=batocera-hardware-keeper
+            [NETWORK_WATCHDOG_TARGET]=192.0.2.1
+            [NETWORK_WATCHDOG_SERVICE_ACTIVE]=1
+        )
+    }
+
+    apo_network_watchdog_ensure_for_run
+    [[ $UPLOADS == 1 && $DISCOVERIES == 1 ]]
+    [[ $APO_REMOTE_WORKER == "$CANONICAL_WORKER" ]]
+
+    apo_remote_job_pending() { return 1; }
+    apo_discovery_capture() {
+        [[ $APO_REMOTE_WORKER == "$CANONICAL_WORKER" ]]
+        DISCOVERIES=$((DISCOVERIES + 1))
+        APO_DISCOVERY=(
+            [PROFILE]=batocera
+            [PERMANENT_HASH]=$APO_PERMANENT_CONFIG_HASH
+            [NETWORK_WATCHDOG_KIND]=batocera-hardware-keeper
+            [NETWORK_WATCHDOG_TARGET]=192.0.2.1
+            [NETWORK_WATCHDOG_SERVICE_ACTIVE]=1
+        )
+    }
+    apo_network_watchdog_ensure_for_run
+    [[ $UPLOADS == 1 && $DISCOVERIES == 2 ]]
+    [[ $APO_REMOTE_WORKER == "$CANONICAL_WORKER" ]]
+
+    apo_remote_job_pending() { return 0; }
+    apo_remote_upload_root() { return 1; }
+    if apo_network_watchdog_ensure_for_run; then
+        echo "watchdog control worker upload failure unexpectedly passed" >&2
+        exit 1
+    fi
+    [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+    [[ $APO_LAST_REASON == *"without replacing the worker owned by the pending stress job"* ]]
+    [[ $APO_REMOTE_WORKER == "$CANONICAL_WORKER" ]]
+'
+
 # Resume must atomically follow a supported native Debian watcher's live state.
 # Starting the native watcher replaces the run-owned rebooting companion with a
 # passive observer; stopping it performs the inverse transition. The live

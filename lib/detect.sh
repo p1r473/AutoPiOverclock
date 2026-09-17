@@ -697,6 +697,23 @@ apo_network_watchdog_observation_summary() {
 apo_network_watchdog_ensure_for_run() {
     local protected_hash=${APO_PERMANENT_CONFIG_HASH:-$(apo_state_get PERMANENT_HASH '')}
     local live_install_run live_install_backup install_status reconcile_required=0
+    local canonical_remote_worker=$APO_REMOTE_WORKER
+    local APO_REMOTE_WORKER=$canonical_remote_worker
+    local watchdog_control_worker
+    if declare -F apo_remote_job_pending >/dev/null 2>&1 && apo_remote_job_pending; then
+        [[ -n $APO_REMOTE_WORK_DIR && $APO_REMOTE_WORK_DIR != / ]] || {
+            APO_LAST_CLASS=HARNESS_FAILURE
+            APO_LAST_REASON='A pending stress job requires an isolated watchdog control worker, but its run directory is invalid.'
+            return 1
+        }
+        watchdog_control_worker="${APO_REMOTE_WORK_DIR}/network-watchdog-control-worker.sh"
+        if ! apo_remote_upload_root "$APO_LOCAL_WORKER" "$watchdog_control_worker"; then
+            APO_LAST_CLASS=HARNESS_FAILURE
+            APO_LAST_REASON='Could not deploy a current watchdog control worker without replacing the worker owned by the pending stress job.'
+            return 1
+        fi
+        APO_REMOTE_WORKER=$watchdog_control_worker
+    fi
     apo_discovery_capture || return 1
     [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" &&
        ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" ]] || {

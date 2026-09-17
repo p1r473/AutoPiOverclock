@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.82 - 2026-09-16
+
+- Fixed resume across controller upgrades while an older detached stress job is still active. Watchdog discovery and reconciliation now use a current run-scoped sidecar worker without replacing the exact worker owned by the live job.
+
 ## 0.1.0-alpha.81 - 2026-09-16
 
 - Added a hash-bound Batocera self-companion mode for a registered project watchdog that is intentionally stopped. The run-owned companion temporarily becomes the sole hardware and network watchdog, preserves the permanent files and timing configuration byte-for-byte, and restores the unchanged permanent provider after successful cleanup.
