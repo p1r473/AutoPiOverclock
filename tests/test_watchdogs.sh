@@ -421,6 +421,29 @@ for PROFILE_NAME in debian batocera; do
     '
 done
 
+# The shipped Batocera companion bundle must pass the exact worker-side marker
+# checks used on the target. A shortened service marker is not ownership proof.
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/batocera-worker.sh" REPO_ROOT="$ROOT" TEST_ROOT="$TEMP_DIR/packaged-batocera-companion" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    mkdir -p "$TEST_ROOT"
+    installer="$REPO_ROOT/assets/batocera/install_network_watchdog.sh"
+    keeper="$REPO_ROOT/assets/batocera/watchdog_keeper.py"
+    service="$REPO_ROOT/assets/batocera/AutoPiOverclockNetworkWatchdog"
+    accepted_directory="$PERSISTENT_ROOT/runs/fixture/network-watchdog-assets"
+    readlink() { printf "%s" "$accepted_directory"; }
+
+    batocera_network_companion_asset_paths_ready "$installer" "$keeper" "$service"
+    [[ $BATOCERA_NETWORK_COMPANION_ASSET_REASON == ready ]]
+
+    grep -Fv "AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG SERVICE" "$service" > "$TEST_ROOT/service-with-short-marker"
+    if batocera_network_companion_asset_paths_ready "$installer" "$keeper" "$TEST_ROOT/service-with-short-marker"; then
+        echo "shortened Batocera companion service marker unexpectedly passed" >&2
+        exit 1
+    fi
+    [[ $BATOCERA_NETWORK_COMPANION_ASSET_REASON == service-marker-missing ]]
+'
+
 # A resumed detached stress job keeps the exact worker it started with. Newer
 # watchdog reconciliation must use a current sidecar worker without replacing
 # that job-owned path, and the canonical path must be restored on return.

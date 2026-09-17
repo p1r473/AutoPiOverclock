@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.83 - 2026-09-16
+
+- Fixed the packaged Batocera companion service ownership marker so the real uploaded bundle passes the worker and installer safety checks. Asset rejection now reports the exact failed path or marker check, and the shipped bundle is covered by a worker-side regression.
+
 ## 0.1.0-alpha.82 - 2026-09-16
 
 - Fixed resume across controller upgrades while an older detached stress job is still active. Watchdog discovery and reconciliation now use a current run-scoped sidecar worker without replacing the exact worker owned by the live job.

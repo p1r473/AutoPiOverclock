@@ -3087,16 +3087,43 @@ batocera_network_companion_service_ready() {
 
 batocera_network_companion_asset_paths_ready() {
     local installer=$1 keeper=$2 service=$3 installer_directory keeper_directory service_directory
-    [[ -f $installer && ! -L $installer && -x $installer ]] || return 1
-    [[ -f $keeper && ! -L $keeper && -f $service && ! -L $service ]] || return 1
+    BATOCERA_NETWORK_COMPANION_ASSET_REASON=unknown
+    [[ -f $installer && ! -L $installer && -x $installer ]] || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='installer-missing-or-unsafe'
+        return 1
+    }
+    [[ -f $keeper && ! -L $keeper ]] || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='keeper-missing-or-unsafe'
+        return 1
+    }
+    [[ -f $service && ! -L $service ]] || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='service-missing-or-unsafe'
+        return 1
+    }
     installer_directory=$(readlink -f -- "$(dirname "$installer")" 2>/dev/null || true)
     keeper_directory=$(readlink -f -- "$(dirname "$keeper")" 2>/dev/null || true)
     service_directory=$(readlink -f -- "$(dirname "$service")" 2>/dev/null || true)
-    [[ -n $installer_directory && $installer_directory == "$keeper_directory" && $installer_directory == "$service_directory" ]] || return 1
-    [[ $installer_directory == "$PERSISTENT_ROOT"/runs/* ]] || return 1
-    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$installer" &&
-        grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$keeper" &&
-        grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG SERVICE' "$service"
+    [[ -n $installer_directory && $installer_directory == "$keeper_directory" && $installer_directory == "$service_directory" ]] || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='asset-directories-do-not-match'
+        return 1
+    }
+    [[ $installer_directory == "$PERSISTENT_ROOT"/runs/* ]] || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='asset-directory-outside-run'
+        return 1
+    }
+    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$installer" || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='installer-marker-missing'
+        return 1
+    }
+    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG' "$keeper" || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='keeper-marker-missing'
+        return 1
+    }
+    grep -Fq 'AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG SERVICE' "$service" || {
+        BATOCERA_NETWORK_COMPANION_ASSET_REASON='service-marker-missing'
+        return 1
+    }
+    BATOCERA_NETWORK_COMPANION_ASSET_REASON=ready
 }
 
 batocera_network_companion_installer_ready() {
@@ -3110,7 +3137,7 @@ batocera_network_companion_installer_ready() {
 cmd_plan_network_watchdog_companion() {
     local installer=${1:-} keeper=${2:-} service=${3:-} run_id=${4:-} mode=${5:-}
     batocera_network_companion_asset_paths_ready "$installer" "$keeper" "$service" || {
-        emit_result PREFLIGHT_FAILURE 'Batocera network-watchdog plan received missing, foreign, or unsafe project assets.'
+        emit_result PREFLIGHT_FAILURE "Batocera network-watchdog plan received missing, foreign, or unsafe project assets (${BATOCERA_NETWORK_COMPANION_ASSET_REASON:-unknown})."
         return 1
     }
     "$installer" plan "$keeper" "$service" "$run_id" "$mode"
@@ -3119,7 +3146,7 @@ cmd_plan_network_watchdog_companion() {
 cmd_install_network_watchdog_companion() {
     local installer=${1:-} keeper=${2:-} service=${3:-}
     batocera_network_companion_asset_paths_ready "$installer" "$keeper" "$service" || {
-        emit_result PREFLIGHT_FAILURE 'Batocera network-watchdog installation received missing, foreign, or unsafe project assets.'
+        emit_result PREFLIGHT_FAILURE "Batocera network-watchdog installation received missing, foreign, or unsafe project assets (${BATOCERA_NETWORK_COMPANION_ASSET_REASON:-unknown})."
         return 1
     }
     "$installer" apply "$keeper" "$service" "${@:4}"

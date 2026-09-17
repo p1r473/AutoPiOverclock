@@ -1,5 +1,5 @@
 #!/bin/sh
-# AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG
+# AUTOPIOVERCLOCK MANAGED BATOCERA NETWORK WATCHDOG SERVICE
 
 keeper=/userdata/system/autopioverclock/network-watchdog/network_watchdog_keeper.py
 config=/userdata/system/autopioverclock/network-watchdog/watchdog.conf
