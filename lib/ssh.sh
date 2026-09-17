@@ -91,6 +91,11 @@ apo_ssh_init() {
 }
 
 apo_ssh_exec() { command ssh "${APO_SSH_OPTIONS[@]}" -n -T "$APO_REMOTE_TARGET" "$@"; }
+apo_ssh_exec_replace() {
+    local ssh_binary
+    ssh_binary=$(type -P ssh) || return 127
+    exec "$ssh_binary" "${APO_SSH_OPTIONS[@]}" -n -T "$APO_REMOTE_TARGET" "$@"
+}
 apo_ssh_exec_stdin() {
     local remote_command=$1
     command ssh "${APO_SSH_OPTIONS[@]}" -T "$APO_REMOTE_TARGET" "$remote_command"
@@ -135,6 +140,13 @@ apo_remote_root() {
     if (( APO_REMOTE_IS_ROOT == 1 )); then wrapper="/bin/bash -c $(apo_sh_quote "$remote_command")";
     else wrapper="sudo -n /bin/bash -c $(apo_sh_quote "$remote_command")"; fi
     apo_ssh_exec "$wrapper"
+}
+
+apo_remote_root_exec() {
+    local remote_command=$1 wrapper
+    if (( APO_REMOTE_IS_ROOT == 1 )); then wrapper="/bin/bash -c $(apo_sh_quote "$remote_command")";
+    else wrapper="sudo -n /bin/bash -c $(apo_sh_quote "$remote_command")"; fi
+    apo_ssh_exec_replace "$wrapper"
 }
 
 apo_remote_root_read() {

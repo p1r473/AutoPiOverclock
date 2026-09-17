@@ -71,6 +71,39 @@ capture_command_output() {
     return 0
 }
 
+# The long-lived follow coprocess must become the transport itself. If a Bash
+# wrapper remains above it, controller shutdown can kill the wrapper and orphan
+# its SSH child while the target job remains active.
+(
+    # shellcheck source=lib/ssh.sh
+    source "$ROOT/lib/ssh.sh"
+    # shellcheck source=lib/remote_job.sh
+    source "$ROOT/lib/remote_job.sh"
+    TEST_SLEEP=$(type -P sleep)
+    TEST_SLEEP_REAL=$(readlink -f -- "$TEST_SLEEP")
+    APO_REMOTE_JOB_HELPER=/tmp/autopioverclock-test-remote-job
+    apo_remote_root() { "$TEST_SLEEP" 300; }
+    apo_remote_root_exec() { exec "$TEST_SLEEP" 300; }
+    coproc APO_REMOTE_JOB_FOLLOW_COPROC { apo_remote_job_follow_command fixture; }
+    APO_REMOTE_JOB_FOLLOW_PID=${APO_REMOTE_JOB_FOLLOW_COPROC_PID:-}
+    APO_REMOTE_JOB_FOLLOW_FD=${APO_REMOTE_JOB_FOLLOW_COPROC[0]:-}
+    APO_REMOTE_JOB_FOLLOW_INPUT_FD=${APO_REMOTE_JOB_FOLLOW_COPROC[1]:-}
+    FOLLOW_EXEC_READY=0
+    for _ in {1..50}; do
+        if [[ -r /proc/${APO_REMOTE_JOB_FOLLOW_PID}/exe &&
+              $(readlink -f -- "/proc/${APO_REMOTE_JOB_FOLLOW_PID}/exe") == "$TEST_SLEEP_REAL" ]]; then
+            FOLLOW_EXEC_READY=1
+            break
+        fi
+        sleep 0.02
+    done
+    [[ $FOLLOW_EXEC_READY == 1 ]]
+    [[ -z $(pgrep -P "$APO_REMOTE_JOB_FOLLOW_PID" 2>/dev/null || true) ]]
+    FOLLOW_EXEC_PID=$APO_REMOTE_JOB_FOLLOW_PID
+    apo_remote_job_follow_transport_cleanup
+    ! kill -0 "$FOLLOW_EXEC_PID" 2>/dev/null
+)
+
 START_OUTPUT=''
 capture_command_output START_OUTPUT "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
 [[ $START_OUTPUT =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
@@ -271,7 +304,8 @@ fi
 # It must not wait for the observer's original lifetime.
 (
     source "$ROOT/lib/remote_job.sh"
-    apo_remote_job_command() { sleep 60; }
+    TEST_SLEEP=$(type -P sleep)
+    apo_remote_job_command() { exec "$TEST_SLEEP" 60; }
     coproc APO_REMOTE_JOB_FOLLOW_COPROC {
         apo_remote_job_follow_command fixture
     }

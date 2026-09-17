@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.80 - 2026-09-16
+
+- Fixed controller shutdown cleanup for a detached-stress follow operation. The follow coprocess now becomes the SSH transport itself, so its saved PID identifies the real child and `TERM` or `HUP` cannot leave an orphaned SSH observer behind while the target job remains resumable.
+
 ## 0.1.0-alpha.79 - 2026-09-16
 
 - Fixed strict network-watchdog attribution when a disconnected target reboots more than once before the controller reconnects. Every accepted boot edge is archived, the complete ordered chain is verified without a numeric cap, and the unchanged-clock run retains only the target-reported stress credit that was complete before the final proved request.

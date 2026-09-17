@@ -217,14 +217,21 @@ apo_remote_job_command() {
     local argument command_line
     command_line=$(apo_sh_quote "$APO_REMOTE_JOB_HELPER")
     for argument in "$@"; do command_line+=" $(apo_sh_quote "$argument")"; done
-    apo_remote_root "$command_line"
+    if [[ ${APO_REMOTE_JOB_EXEC_TRANSPORT:-0} == 1 ]]; then
+        apo_remote_root_exec "$command_line"
+    else
+        apo_remote_root "$command_line"
+    fi
 }
 
 # This function runs only in the long-lived follow producer. Close its inherited
 # controller lock so a controller failure cannot leave the local transport
 # owning the lock.
 apo_remote_job_follow_command() {
+    local APO_REMOTE_JOB_EXEC_TRANSPORT=1
     if [[ ${APO_LOCK_FD:-} =~ ^[0-9]+$ ]]; then exec {APO_LOCK_FD}>&-; fi
+    # Replace the coprocess shell with SSH so the PID retained by the parent is
+    # the actual transport. Terminating that PID cannot orphan an SSH child.
     apo_remote_job_command follow "$@"
 }
 
