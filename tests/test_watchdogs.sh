@@ -513,6 +513,71 @@ DETECT="$ROOT/lib/detect.sh" CURRENT_WORKER="$ROOT/workers/batocera-worker.sh" b
     [[ $APO_REMOTE_WORKER == "$CANONICAL_WORKER" ]]
 '
 
+# Adopting an original or otherwise preexisting provider must replace stale
+# run-owned companion display metadata with the live provider fingerprint.
+DETECT="$ROOT/lib/detect.sh" bash -c '
+    set -Eeuo pipefail
+    source "$DETECT"
+    APO_PROFILE=batocera
+    APO_RUN_ID=fixture
+    APO_PERMANENT_CONFIG_HASH=$(printf "%064d" 1)
+    HASH_CONFIG=$(printf "%064d" 2)
+    HASH_KEEPER=$(printf "%064d" 3)
+    HASH_SERVICE=$(printf "%064d" 4)
+    declare -A TEST_STATE=(
+        [NETWORK_WATCHDOG_INSTALLED_BY_RUN]=0
+        [NETWORK_WATCHDOG_INSTALL_KIND]=batocera-network-companion
+        [NETWORK_WATCHDOG_INSTALL_BACKUP]=/stale/backup
+        [NETWORK_WATCHDOG_INSTALL_HARDWARE_MODE]=self
+        [NETWORK_WATCHDOG_INSTALL_OLD_KEEPER_HASH]=stale
+        [NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_HASH]=stale
+        [NETWORK_WATCHDOG_INSTALL_OLD_CONFIG_HASH]=stale
+        [NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ENABLED]=1
+        [NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ACTIVE]=1
+        [NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH]=stale
+        [NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH]=stale
+    )
+    declare -A APO_DISCOVERY=()
+
+    apo_state_get() { printf "%s" "${TEST_STATE[$1]-${2-}}"; }
+    apo_state_set() { TEST_STATE[$1]=${2-}; }
+    apo_store_discovery_state() { :; }
+    apo_remote_job_pending() { return 1; }
+    apo_profile_network_watchdog_ready() { return 0; }
+    apo_discovery_capture() {
+        APO_DISCOVERY=(
+            [PROFILE]=batocera
+            [PERMANENT_HASH]=$APO_PERMANENT_CONFIG_HASH
+            [NETWORK_WATCHDOG_KIND]=batocera-hardware-keeper
+            [NETWORK_WATCHDOG_TARGET]=192.0.2.1
+            [NETWORK_WATCHDOG_CONFIG_HASH]=$HASH_CONFIG
+            [NETWORK_WATCHDOG_KEEPER_HASH]=$HASH_KEEPER
+            [NETWORK_WATCHDOG_SERVICE_HASH]=$HASH_SERVICE
+            [NETWORK_WATCHDOG_SERVICE_ACTIVE]=1
+            [NETWORK_WATCHDOG_INSTALL_RUN_ID]=
+            [NETWORK_WATCHDOG_INSTALL_BACKUP]=
+        )
+    }
+
+    apo_network_watchdog_ensure_for_run
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALLED_BY_RUN]} == 0 ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_STATUS]} == PREEXISTING ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]} == batocera-hardware-keeper ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_TARGET]} == 192.0.2.1 ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_CONFIG_HASH]} == "$HASH_CONFIG" ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_KEEPER_HASH]} == "$HASH_KEEPER" ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_SERVICE_HASH]} == "$HASH_SERVICE" ]]
+    [[ -z ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_BACKUP]} ]]
+    [[ -z ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_HARDWARE_MODE]} ]]
+    [[ -z ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_OLD_KEEPER_HASH]} ]]
+    [[ -z ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_HASH]} ]]
+    [[ -z ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_OLD_CONFIG_HASH]} ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ENABLED]} == 0 ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ACTIVE]} == 0 ]]
+    [[ -z ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH]} ]]
+    [[ -z ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH]} ]]
+'
+
 # Resume must atomically follow a supported native Debian watcher's live state.
 # Starting the native watcher replaces the run-owned rebooting companion with a
 # passive observer; stopping it performs the inverse transition. The live

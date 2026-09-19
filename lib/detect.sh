@@ -791,6 +791,20 @@ apo_network_watchdog_ensure_for_run() {
             return 1
         else
             apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
+            apo_state_set NETWORK_WATCHDOG_INSTALL_KIND "${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-}"
+            apo_state_set NETWORK_WATCHDOG_INSTALL_TARGET "${APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]:-}"
+            apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP ''
+            apo_state_set NETWORK_WATCHDOG_INSTALL_CONFIG_HASH "${APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]:-}"
+            apo_state_set NETWORK_WATCHDOG_INSTALL_KEEPER_HASH "${APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]:-}"
+            apo_state_set NETWORK_WATCHDOG_INSTALL_SERVICE_HASH "${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]:-}"
+            apo_state_set NETWORK_WATCHDOG_INSTALL_HARDWARE_MODE ''
+            apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_KEEPER_HASH ''
+            apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_HASH ''
+            apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_CONFIG_HASH ''
+            apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ENABLED 0
+            apo_state_set NETWORK_WATCHDOG_INSTALL_OLD_SERVICE_ACTIVE 0
+            apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_OLD_HASH ''
+            apo_state_set NETWORK_WATCHDOG_INSTALL_PLATFORM_NEW_HASH ''
             apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS PREEXISTING
         fi
         apo_store_discovery_state
