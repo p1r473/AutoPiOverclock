@@ -20,10 +20,12 @@ TESTS=(
     test_controller_watchdog.sh
     test_selection.sh
     test_history.sh
+    test_history_ledger.sh
     test_history_scheduler.sh
     test_resume_progress.sh
     test_interrupted_state.sh
     test_apply_resume.sh
+    test_complete.sh
     test_reset.sh
     test_restore.sh
     test_package.sh

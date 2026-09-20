@@ -589,6 +589,38 @@ cmd_release() {
     emit_result PASS 'Run-owned controller watchdog lease released; project-owned protection remains only for other active runs.'
 }
 
+cmd_forget_release() {
+    local keeper_source=$1 service_source=$2 run_id=$3
+    local lease=${LEASE_ROOT}/${run_id}.lease releasing=${LEASE_ROOT}/${run_id}.releasing
+    local receipt=${RELEASE_ROOT}/${run_id}.released
+    [[ -r $keeper_source && -r $service_source ]] && safe_run_id "$run_id" || {
+        emit_result RECOVERY_FAILURE 'Controller watchdog receipt cleanup arguments are invalid.'
+        return 1
+    }
+    acquire_lock || { emit_result RECOVERY_FAILURE 'Could not acquire the root controller watchdog lock for receipt cleanup.'; return 1; }
+    directory_is_safe "$LIVE_ROOT" && directory_is_safe "$LEASE_ROOT" && directory_is_safe "$RELEASE_ROOT" || {
+        emit_result RECOVERY_FAILURE 'Controller watchdog state directories are missing or unsafe during receipt cleanup.'
+        return 1
+    }
+    [[ ! -e $lease && ! -L $lease && ! -e $releasing && ! -L $releasing ]] || {
+        emit_result RECOVERY_FAILURE 'Controller watchdog receipt cleanup refuses an active or releasing lease.'
+        return 1
+    }
+    if [[ ! -e $receipt && ! -L $receipt ]]; then
+        emit_result PASS 'Controller watchdog release receipt is already absent; watchdog providers and native configuration were not changed.'
+        return 0
+    fi
+    release_receipt_valid "$receipt" "$run_id" || {
+        emit_result RECOVERY_FAILURE 'Controller watchdog release receipt is malformed.'
+        return 1
+    }
+    rm -f -- "$receipt" && sync "$RELEASE_ROOT" || {
+        emit_result RECOVERY_FAILURE 'Could not remove the exact controller watchdog release receipt.'
+        return 1
+    }
+    emit_result PASS 'Controller watchdog release receipt removed; watchdog providers and native configuration were not changed.'
+}
+
 cmd_status() {
     local lease_count
     acquire_lock || { emit_result HARNESS_FAILURE 'Could not acquire the root controller watchdog lock for status.'; return 1; }
@@ -613,6 +645,7 @@ main() {
     case $command_name in
         ensure) cmd_ensure "$@" ;;
         release) cmd_release "$@" ;;
+        forget-release) cmd_forget_release "$@" ;;
         status) cmd_status "$@" ;;
         *) emit_result PREFLIGHT_FAILURE 'Unknown controller watchdog manager command.'; return 2 ;;
     esac

@@ -84,11 +84,11 @@ Graphical and headless operation are supported. The controller must be a separat
 
 This repository is alpha software. Automated fixtures are not a substitute for Raspberry Pi hardware evidence, and the live CI badge above is the authoritative status for the current GitHub commit.
 
-As of 2026-09-17, `prepare` and `overclock` are the two everyday commands, with `reset` available when a user wants to return to stock and start over. A fresh public overclock uses compatible retained failure evidence by default, searches and qualifies CPU first, then GPU, and runs one 48-hour combined final validation. A domain with no useful retained limit uses the normal forward sweep. A clear retained ceiling starts a complete reverse sweep at that ceiling. For a full run, the newest nondominated ambiguous failed pair automatically becomes the reverse-search anchor, and AutoPiOverclock begins with the CPU-lowered isolation branch instead of asking the user to repeat that pair through `--cpu-max` and `--gpu-max`. CPU coarse movement is normally 100 MHz and GPU coarse movement is normally 50 MHz; if a chosen resolution is larger, it also becomes that domain's coarse step. Ambiguous failed pairs use ordered CPU-only, GPU-only, then paired isolation rather than pretending either domain failed alone. Timed stress survives controller transport loss under a target-enforced deadline. A strictly proved chain of one or more consecutive network-watchdog reboots keeps only target-reported completed stress and runs the remaining duration at the same clocks. An unproved reboot earns no new time from its interrupted segment, retains only earlier proof-bound credit for the identical gate, and receives one conservative same-clock replay of the uncredited remainder before it can become stability evidence. Detached-job launch and result verification accept a contradictory child status only when the exact expected output is complete and structurally valid; every disagreement is diagnosed, while missing or malformed evidence still fails closed. The long-lived follow coprocess directly becomes its SSH transport, so controller shutdown terminates the exact local observer without orphaning a child. Target startup allows a bounded 15-second ownership handshake before declaring a loaded job orphaned. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware.
+As of 2026-09-20, `prepare` and `overclock` are the two everyday commands, with `complete` available after a successfully applied overclock and `reset` available when a user wants to return to stock. A fresh public overclock uses compatible retained failure evidence by default, searches and qualifies CPU first, then GPU, and runs one 48-hour combined final validation. A domain with no useful retained limit uses the normal forward sweep. A clear retained ceiling starts a complete reverse sweep at the highest resolution-aligned clock strictly below that failed boundary. For a full run, the newest nondominated ambiguous failed pair automatically becomes the reverse-search anchor, and AutoPiOverclock begins with the CPU-lowered isolation branch instead of asking the user to repeat that pair through `--cpu-max` and `--gpu-max`. CPU coarse movement is normally 100 MHz and GPU coarse movement is normally 50 MHz; if a chosen resolution is larger, it also becomes that domain's coarse step. Ambiguous failed pairs use ordered CPU-only, GPU-only, then paired isolation rather than pretending either domain failed alone. Timed stress survives controller transport loss under a target-enforced deadline. A strictly proved chain of one or more consecutive network-watchdog reboots keeps only target-reported completed stress and runs the remaining duration at the same clocks. An unproved reboot earns no new time from its interrupted segment, retains only earlier proof-bound credit for the identical gate, and receives one conservative same-clock replay of the uncredited remainder before it can become stability evidence. Detached-job launch and result verification accept a contradictory child status only when the exact expected output is complete and structurally valid; every disagreement is diagnosed, while missing or malformed evidence still fails closed. The long-lived follow coprocess directly becomes its SSH transport, so controller shutdown terminates the exact local observer without orphaning a child. Target startup allows a bounded 15-second ownership handshake before declaring a loaded job orphaned. Raspberry Pi OS/Debian headless operation is automatic and does not require display or audio hardware.
 
 | Evidence | Current status |
 | --- | --- |
-| Bash fixture suite | 26 scripted suites cover the normal/manual-test interface, retained-history planning, isolation scheduling, durable target stress jobs, live observers, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, target and controller watchdog ownership and reboot proof, selection, resume, apply, restore, reset, packaging, and public-safety contracts. |
+| Bash fixture suite | 28 scripted suites cover the normal/manual-test interface, retained-history planning and durable ledger, isolation scheduling, durable target stress jobs, live observers, progress calculations/rendering, installed entry point, state, classification, workers, tryboot, target and controller watchdog ownership and reboot proof, selection, resume, apply, complete, restore, reset, packaging, and public-safety contracts. |
 | GitHub CI and ShellCheck | The workflow runs all fixture suites and ShellCheck; see the live badge for the current published `main` result. |
 | Debian-family Raspberry Pi 5 run | One Debian 13 Pi 5 completed and applied a retained **alpha.39** result at **CPU 3100 MHz and V3D 1175 MHz with the firmware-default voltage state**. Each domain qualification ran for two hours; combined CPU/GPU/I/O validation ran for 24 hours; three additional candidate/normal boot cycles passed; maximum recorded temperature was 59.3 C with `throttled=0x0`; and the apply verification reboot passed. This proves that retained result, not the current history/search paths. |
 | Batocera Raspberry Pi 5 run | Recovery and existing-watchdog observation have been exercised, but complete current-version end-to-end validation remains pending. |
@@ -98,7 +98,7 @@ Do not infer a general production recommendation from one board, a candidate pas
 
 ## How automatic overclocking works
 
-Every `autopioverclock overclock TARGET` invocation creates a fresh run. It never silently resumes or changes an older run. Before building the new plan, it screens retained state metadata, ignores and preserves older or missing schemas, strictly validates compatible current-schema evidence-bearing automatic runs, and reuses proved CPU, GPU, and failed-pair boundaries. Unrelated audits and abandoned runs with no committed failure evidence are ignored. If no manual maxima are supplied, the newest nondominated ambiguous failed pair becomes the automatic full-run anchor and the first safe CPU-lowered pair is derived at the selected resolution. The planning notice prints that anchor, its source run, the first isolated pair, retained ceilings, search directions, evidence, and `target-failures.txt` path. Explicit `--cpu-max` and `--gpu-max` values remain authoritative manual overrides. A fresh `--no-history` run skips the state scan and ledger update without deleting prior artifacts.
+Every `autopioverclock overclock TARGET` invocation creates a fresh run. It never silently resumes or changes an older run. Before building the new plan, it strictly validates the target's durable `history/failures.txt` ledger and any compatible current-schema run states, then reuses proved CPU, GPU, and failed-pair boundaries. Unrelated audits and abandoned runs with no committed failure evidence are ignored. After `complete`, the sealed applied result in that ledger becomes the protected floor and retained failures remain hard exclusive ceilings. If no manual maxima are supplied, the newest nondominated ambiguous failed pair becomes the automatic full-run anchor and the first safe CPU-lowered pair is derived at the selected resolution. The planning notice prints that anchor, its source run, the first isolated pair, retained ceilings, search directions, evidence, and ledger path. Explicit `--cpu-max` and `--gpu-max` values remain authoritative manual overrides after a warning. A fresh `--no-history` run skips the history scan and ledger update without deleting prior artifacts.
 
 1. **Prove the installed baseline and recovery path.** Before any new search candidate, the controller temporarily boots the protected installed clocks, then returns to the same permanent config and verifies its hash, watchdog chain, normal boot, and owned `tryboot` cleanup. In a fresh full run this is the stock pair; in a one-domain run it is the retained applied pair.
 2. **Search CPU first, by itself.** With no useful retained limit or explicit CPU ceiling, the normal forward sweep starts at 2500 MHz and rises in 100 MHz coarse steps. A clear CPU boundary, an automatically selected ambiguous-pair anchor, or `--cpu-max` starts a reverse search; the reverse sweep tests that exact ceiling first and descends until it finds a pass. It then refines the proved pass/fail gap at `--cpu-resolution` granularity, 25 MHz by default, to find the highest actual pass. GPU remains at the protected baseline throughout this CPU search.
@@ -138,6 +138,7 @@ Every operational command requires a target such as `pi@hostname`.
 | `recover TARGET` | Returns a selected run from temporary `tryboot` state to its protected permanent config. | A run stopped mid-candidate and the target needs safe normalization. |
 | `restore TARGET` | Restores a retained, fully validated applied config after an outside edit. | The boot config was manually changed and you want AutoPiOverclock's validated bytes back. |
 | `apply TARGET` | Applies a selected fully validated result after an exact diff and typed confirmation. | Using the expert `run` workflow; normal `overclock` applies its own result automatically. |
+| `complete TARGET` | Seals the applied result and failure history, simplifies the permanent clock config, and removes that target's disposable run artifacts. | The selected overclock is fully validated, applied, and no longer needs to be resumable. |
 | `report TARGET` | Generates a concise saved-run report. | Reviewing or sharing results; add `--redact` before sharing. |
 
 ### Options
@@ -155,9 +156,9 @@ Every operational command requires a target such as `pi@hostname`.
 | `--cpu MHZ` / `--gpu MHZ` | `test` | Select the exact CPU/GPU pair to test. Both are required. |
 | `--minutes MINUTES` | `test` | Legacy exact-test duration; use this or `--final-hours`, never both. |
 | `--restart-from POINT` | `resume` | Keep the saved position with `current`, or deliberately repeat `cpu-qualification`, `gpu-qualification`, or `final` in a saved full two-domain run. |
-| `--run-id RUN_ID` | `resume`, `status`, `summary`, `recover`, `restore`, `apply`, `report` | Select an older saved operation instead of the command's normal latest choice. |
+| `--run-id RUN_ID` | `resume`, `status`, `summary`, `recover`, `restore`, `apply`, `complete`, `report` | Select an older saved operation instead of the command's normal latest choice. |
 | `--redact` | `status`, `summary`, `report` | Hide known target/controller identifiers from displayed or generated output. |
-| `--output-dir DIR` | operational commands | Store/read flat artifacts somewhere other than `$HOME/overclock-results`. |
+| `--output-dir DIR` | operational commands | Use `DIR` as this target's custom state directory, with disposable run artifacts in `DIR` and durable history in `DIR/history`. |
 | `--ssh-port PORT` | operational commands | Connect to a nonstandard SSH port. |
 | `--identity-file FILE` | operational commands | Use one explicit SSH private key. |
 | `--config FILE` | `run` | Load a strict, data-only expert tuning plan. |
@@ -193,6 +194,13 @@ autopioverclock resume pi@hostname --restart-from final --final-hours 100
 
 # Get evidence for one exact pair without tuning or applying it.
 autopioverclock test pi@hostname --cpu 3100 --gpu 1150 --final-hours 72
+
+# After a successful applied run, seal its history and remove disposable artifacts.
+autopioverclock complete pi@hostname
+
+# Later, verify readiness and continue tuning above the sealed applied clocks.
+autopioverclock prepare pi@hostname
+autopioverclock overclock pi@hostname
 ```
 
 The inspection and recovery commands follow the same target-first form:
@@ -205,6 +213,7 @@ autopioverclock report pi@hostname --redact
 autopioverclock recover pi@hostname
 autopioverclock restore pi@hostname --run-id RUN_ID
 autopioverclock apply pi@hostname --run-id RUN_ID
+autopioverclock complete pi@hostname --run-id RUN_ID
 autopioverclock reset pi@hostname
 autopioverclock run pi@hostname --config plan.conf --mode headless --yes
 ```
@@ -325,34 +334,38 @@ Reset then forces a permanent-config reboot and accepts success only after a new
 
 Reset does not run `tmux`, Byobu, job-control, or process-wide kill commands. If another controller still owns the per-target lock, reset fails without signaling that process or its terminal session; stop that one foreground controller yourself and repeat `autopioverclock reset TARGET`.
 
-`recover` abandons or cleans up a selected run's temporary `tryboot` candidate and proves the permanent config already protected by that run; it does not restore an overwritten permanent file. `restore` backs up the current permanent config, reinstalls a retained fully validated applied config, reboots, and verifies it. `reset` removes permanent tuning and verifies firmware-stock clocks. None deletes prior run artifacts.
+`recover` abandons or cleans up a selected run's temporary `tryboot` candidate and proves the permanent config already protected by that run; it does not restore an overwritten permanent file. `restore` backs up the current permanent config, reinstalls a retained fully validated applied config, reboots, and verifies it. `reset` removes permanent tuning and verifies firmware-stock clocks. These commands retain prior run artifacts. Only the separately confirmed `complete` command deletes them.
+
+## Complete a finished overclock
+
+`autopioverclock complete TARGET [--run-id RUN_ID]` accepts only a current-schema tuning run that passed full validation, was permanently applied, and owns no live target stress job. It strictly checks every retained state for that target, shows the exact permanent-config diff, lists the run IDs to be removed, and requires the typed confirmation `COMPLETE TARGET_SLUG RUN_ID`. It then verifies the simplified config and live health before deleting anything.
+
+Successful completion preserves the target's permanent native Debian watchdog or permanent Batocera watchdog and preserves unrelated boot settings and pre-existing comments. It removes only AutoPiOverclock's managed clock comments, completion hash marker, temporary candidate fan override, run-owned target/controller watchdog helpers, harness directories, backups, logs, reports, evidence, and state for that target. The final boot config keeps the validated values as ordinary settings under `[all]`, including `over_voltage_delta`, `arm_freq`, and the detected GPU clock key. The user's original fan settings remain.
+
+Completion is intentionally destructive and makes those deleted runs non-resumable. Before cleanup, it atomically consolidates their human-readable failures, strict encoded machine history, and the validated applied clock/config binding into `history/failures.txt`. That file is retained permanently so a later `prepare` followed by `overclock` can prove the applied clocks as its protected floor and continue upward without retesting from stock.
 
 ## Results
 
-All targets and runs share one flat output directory, `$HOME/overclock-results` by default. There are no per-host subdirectories, and prior runs are never deleted. A typical tuning run creates the following artifacts; a standalone reset creates its own audit state/log/summary/CSV/JSON but intentionally does not manufacture a tuning `.conf` or candidate logs.
+By default, controller state is separated by target below `${XDG_STATE_HOME:-$HOME/.local/state}/autopioverclock/targets/`. Each target has disposable `runs/` and permanent `history/` directories. A typical layout is:
 
 ```text
-target-20260823-010000-a1b2c3d4e5f60708.log
-target-20260823-010000-a1b2c3d4e5f60708.csv
-target-20260823-010000-a1b2c3d4e5f60708.json
-target-20260823-010000-a1b2c3d4e5f60708.state
-target-20260823-010000-a1b2c3d4e5f60708.conf
-target-20260823-010000-a1b2c3d4e5f60708.jsonl
-target-20260823-010000-a1b2c3d4e5f60708-discovery.txt
-target-20260823-010000-a1b2c3d4e5f60708-summary.txt
-target-20260823-010000-a1b2c3d4e5f60708-cpu-CLOCK_gpu-CLOCK-candidate.log
-target-failures.txt
-target-latest.log
-target-latest-summary.txt
-target-latest.state
-target-latest.json
+~/.local/state/autopioverclock/targets/target/
+|-- runs/
+|   |-- target-20260823-010000-a1b2c3d4e5f60708.log
+|   |-- target-20260823-010000-a1b2c3d4e5f60708.state
+|   |-- target-20260823-010000-a1b2c3d4e5f60708-summary.txt
+|   `-- target-latest.state
+`-- history/
+    `-- failures.txt
 ```
 
 The atomic `.state`, log, event stream, and summary are written during a run. The finalized `.json` array is generated when the controller exits through its cleanup handler, so its target can be absent while a run is active or after an uncatchable kill; that does not mean the saved state was lost. See [the output reference](docs/output.md) for artifact fields and failure classifications.
 
-`target-failures.txt` is a human-readable audit derived from the authoritative `.state` files, not scheduling input. Every fresh history-enabled public overclock rescans those states, creates the ledger if missing, and atomically replaces it only when the materially derived content changes. With unchanged evidence, its bytes, inode, `Generated:` time, and filesystem timestamp stay untouched. `resume` uses the selected run's saved plan without rescanning; a fresh `--no-history` run does not scan or modify the ledger.
+`history/failures.txt` is both a readable failure ledger and strict machine scheduling input. Every fresh history-enabled public overclock validates the encoded section, combines it with compatible current run states, and atomically replaces the ledger only when the materially derived content changes. `complete` also seals the applied clock tuple, permanent-config hash, run schema, and validation schema into it before deleting run state. With unchanged evidence, its bytes, inode, `Generated:` time, and filesystem timestamp stay untouched. `resume` always uses the selected run's immutable saved plan and never rescans mutable history. A fresh `--no-history` run does not scan or modify the ledger.
 
-A completed automatic result must show `Status: PASS`, `Phase: COMPLETE`, `Validated: 1`, and—after the normal `overclock` flow finishes—`APPLY_STATUS=APPLIED`.
+For each clear failed boundary `F`, applied floor `P`, and configured resolution `R`, automatic history planning uses `P + floor((F - P - 1) / R) * R` as the highest legal candidate. A failure at or below the validated floor is contradictory and stops before any reboot or clock change. A positive gap no larger than one resolution step has no legal candidate, so that domain is skipped while the other domain may continue. If both domains have no headroom, the new run stops without mutation. A failed pair is an exclusive northeast boundary: an applied floor at or beyond both failed coordinates is contradictory. Explicit `--cpu-max` or `--gpu-max` remains the only intentional override of the corresponding retained ceiling and is announced before testing.
+
+A completed automatic result must show `Status: PASS`, `Phase: COMPLETE`, `Validated: 1`, and, after the normal `overclock` flow finishes, `APPLY_STATUS=APPLIED`.
 
 A successful apply adds a small managed block and leaves unrelated boot settings intact:
 
@@ -365,7 +378,7 @@ v3d_freq=1175
 # END AUTOPIOVERCLOCK MANAGED CLOCKS
 ```
 
-Those clocks are only an example. When the tested voltage delta is the firmware default, it remains part of the retained evidence without adding a redundant setting to the boot config. Leave the managed markers intact so `autopioverclock reset TARGET` can remove the block safely.
+Those clocks are only an example. Before `complete`, leave the managed markers intact so `autopioverclock reset TARGET` can remove the block safely. After `complete`, the same validated values remain as simple settings without AutoPiOverclock comments; the sealed ledger becomes the binding evidence for future tuning.
 
 Before sharing, generate `autopioverclock report TARGET --redact` and still review the report for private hostnames, addresses, or other context.
 

@@ -204,7 +204,7 @@ for command_line in \
     grep -Fq "$command_line" <<< "$help_output"
 done
 
-for advanced_command in run resume status summary recover restore apply report; do
+for advanced_command in run resume status summary recover restore apply complete report; do
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
@@ -220,7 +220,7 @@ if grep -Fq -- '--gpu-start-at' <<< "$help_output"; then
     exit 1
 fi
 
-for documented_command in prepare overclock test reset run resume status summary recover restore apply report; do
+for documented_command in prepare overclock test reset run resume status summary recover restore apply complete report; do
     documented_pattern=$(printf '| `%s TARGET' "$documented_command")
     grep -Fq "$documented_pattern" "$ROOT/README.md"
 done
@@ -231,7 +231,7 @@ for documented_option in --config --mode --run-id --install-missing --dry-run --
     grep -Fq -- "$documented_option" "$ROOT/README.md"
 done
 
-for normal_command in prepare overclock reset; do
+for normal_command in prepare overclock complete reset; do
     documented_pattern=$(printf '| `%s TARGET' "$normal_command")
     grep -Fq "$documented_pattern" "$ROOT/docs/cli.md"
 done

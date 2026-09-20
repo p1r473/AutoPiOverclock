@@ -141,25 +141,31 @@ apo_config_migrate_duration_schema_9() {
 
 apo_config_stock_auto_baseline_ready() {
     local cpu_mhz=$1 gpu_mhz=$2 voltage_uv=$3 provenance=${4:-missing} evidence=${5:-missing}
-    [[ $provenance == verified-default && $evidence == none &&
-       $cpu_mhz == "$APO_PI5_STOCK_CPU_MHZ" &&
-       ( $gpu_mhz == 800 || $gpu_mhz == 960 ) &&
-       $voltage_uv == "$APO_PI5_STOCK_VOLTAGE_UV" ]]
+    if [[ $provenance == verified-default && $evidence == none &&
+          $cpu_mhz == "$APO_PI5_STOCK_CPU_MHZ" &&
+          ( $gpu_mhz == 800 || $gpu_mhz == 960 ) &&
+          $voltage_uv == "$APO_PI5_STOCK_VOLTAGE_UV" ]]; then
+        return 0
+    fi
+    [[ $provenance == verified-completed-ledger &&
+       $evidence =~ ^failure-ledger-v1:[0-9a-f]{64}$ &&
+       $cpu_mhz =~ ^[1-9][0-9]*$ && $gpu_mhz =~ ^[1-9][0-9]*$ &&
+       $voltage_uv =~ ^-?[0-9]+$ ]]
 }
 
 apo_config_require_stock_auto_baseline() {
     local cpu_mhz=$1 gpu_mhz=$2 voltage_uv=$3 provenance=${4:-missing} evidence=${5:-missing}
+    apo_config_stock_auto_baseline_ready "$cpu_mhz" "$gpu_mhz" "$voltage_uv" "$provenance" "$evidence" && return 0
     if [[ $provenance != verified-default || $evidence != none ]]; then
         if [[ ${APO_PUBLIC_COMMAND:-} == overclock ]]; then
             apo_die "The target is not at a clean stock boot configuration. Run autopioverclock reset ${APO_RAW_TARGET}, then run autopioverclock overclock ${APO_RAW_TARGET}. Audit details: ${provenance:-missing}; evidence: ${evidence:-missing}." "$APO_EXIT_PREFLIGHT"
         fi
-        apo_die "Configuration-free auto mode requires proof that one protected permanent root-config snapshot contains no explicit clock or voltage control and no unbound include directive: audit=${provenance:-missing}, evidence=${evidence:-missing}; discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV. Remove or separately preserve and review arm_boost, force_turbo, initial_turbo, core_freq_fixed, every *_freq or *_freq_min assignment, every over_voltage* assignment, and any include directive, then reboot normally and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
+        apo_die "Configuration-free auto mode requires either a clean stock root-config snapshot or an exact completed-result binding from the retained failures ledger: audit=${provenance:-missing}, evidence=${evidence:-missing}; discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV. Remove or separately preserve and review arm_boost, force_turbo, initial_turbo, core_freq_fixed, every *_freq or *_freq_min assignment, every over_voltage* assignment, and any include directive, then reboot normally and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
     fi
-    apo_config_stock_auto_baseline_ready "$cpu_mhz" "$gpu_mhz" "$voltage_uv" "$provenance" "$evidence" && return 0
     if [[ ${APO_PUBLIC_COMMAND:-} == overclock ]]; then
         apo_die "The target is not running stock Raspberry Pi 5 clocks (CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV). Run autopioverclock reset ${APO_RAW_TARGET}, then run autopioverclock overclock ${APO_RAW_TARGET}." "$APO_EXIT_PREFLIGHT"
     fi
-    apo_die "Configuration-free auto mode requires a verified stock Raspberry Pi 5 baseline before testing any overclock: discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV; expected CPU=${APO_PI5_STOCK_CPU_MHZ}MHz, V3D=800MHz or 960MHz according to the active firmware generation, and voltage-delta=${APO_PI5_STOCK_VOLTAGE_UV}uV. Restore and review the permanent boot configuration, reboot normally, and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
+    apo_die "Configuration-free auto mode requires either a verified stock Raspberry Pi 5 baseline or the exact validated applied floor from the retained failures ledger before testing any higher overclock: discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV. Restore and review the permanent boot configuration, or restore the matching failures ledger, reboot normally, and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
 }
 
 apo_config_auto_ladder() {
@@ -228,15 +234,20 @@ apo_config_resolve_auto_candidates() {
     if [[ $sweep_domain != gpu ]]; then
         apo_validate_uint_range "$cpu_max" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_AUTO_CPU_MAX_MHZ" ||
             apo_die 'The requested automatic CPU maximum is malformed.' "$APO_EXIT_USAGE"
-        (( cpu_max > normal_cpu )) ||
-            apo_die "--cpu-max must be above the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
         if [[ -n $cpu_min ]]; then
             apo_validate_uint_range "$cpu_min" "$APO_CPU_CLOCK_MIN_MHZ" "$cpu_max" ||
                 apo_die 'The requested automatic CPU minimum is malformed or exceeds its maximum.' "$APO_EXIT_USAGE"
             (( cpu_min > normal_cpu )) ||
                 apo_die "--cpu-min must be above the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
         fi
-        if [[ ${APO_CPU_SEARCH_DIRECTION:-forward} == descending ]]; then
+        if (( cpu_max <= normal_cpu )); then
+            if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 1 )); then
+                apo_die "--cpu-max must be above the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
+            fi
+            (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 0 )) ||
+                apo_die "The requested CPU range has no candidate above the protected current CPU clock (${normal_cpu} MHz)." "$APO_EXIT_USAGE"
+            APO_CFG[CPU_CANDIDATES]=''
+        elif [[ ${APO_CPU_SEARCH_DIRECTION:-forward} == descending ]]; then
             APO_CFG[CPU_CANDIDATES]=$cpu_max
         elif [[ -n $cpu_min ]]; then
             APO_CFG[CPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$cpu_min" "$cpu_step" "$cpu_max" "$APO_CPU_CLOCK_MIN_MHZ") ||
@@ -251,15 +262,20 @@ apo_config_resolve_auto_candidates() {
     if [[ $sweep_domain != cpu ]]; then
         apo_validate_uint_range "$gpu_max" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_AUTO_GPU_MAX_MHZ" ||
             apo_die 'The requested automatic GPU maximum is malformed.' "$APO_EXIT_USAGE"
-        (( gpu_max > normal_gpu )) ||
-            apo_die "--gpu-max must be above the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
         if [[ -n $gpu_min ]]; then
             apo_validate_uint_range "$gpu_min" "$APO_GPU_CLOCK_MIN_MHZ" "$gpu_max" ||
                 apo_die 'The requested automatic GPU minimum is malformed or exceeds its maximum.' "$APO_EXIT_USAGE"
             (( gpu_min > normal_gpu )) ||
                 apo_die "--gpu-min must be above the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
         fi
-        if [[ ${APO_GPU_SEARCH_DIRECTION:-forward} == descending ]]; then
+        if (( gpu_max <= normal_gpu )); then
+            if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 1 )); then
+                apo_die "--gpu-max must be above the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
+            fi
+            (( ${APO_GPU_MIN_OPTION_SEEN:-0} == 0 )) ||
+                apo_die "The requested GPU/V3D range has no candidate above the protected current GPU/V3D clock (${normal_gpu} MHz)." "$APO_EXIT_USAGE"
+            APO_CFG[GPU_CANDIDATES]=''
+        elif [[ ${APO_GPU_SEARCH_DIRECTION:-forward} == descending ]]; then
             APO_CFG[GPU_CANDIDATES]=$gpu_max
         elif [[ -n $gpu_min ]]; then
             APO_CFG[GPU_CANDIDATES]=$(apo_config_auto_ladder_from_exact "$gpu_min" "$gpu_step" "$gpu_max" "$APO_GPU_CLOCK_MIN_MHZ") ||
@@ -279,7 +295,7 @@ apo_config_resolve_auto_candidates() {
         case $sweep_domain in
             cpu) apo_die "The protected current CPU clock is already at or above the requested ceiling (${cpu_max} MHz)." "$APO_EXIT_USAGE" ;;
             gpu) apo_die "The protected current GPU/V3D clock is already at or above the requested ceiling (${gpu_max} MHz)." "$APO_EXIT_USAGE" ;;
-            *) apo_die "The discovered CPU and GPU clocks are already at or above the requested ceilings (${cpu_max}/${gpu_max} MHz). Supply higher bounds or an explicit --config plan." "$APO_EXIT_USAGE" ;;
+            *) apo_die "No untested CPU or GPU clock remains above the protected applied floor and below the retained failure ceilings (${normal_cpu}/${normal_gpu} MHz floor; ${cpu_max}/${gpu_max} MHz candidate ceilings)." "$APO_EXIT_USAGE" ;;
         esac
     fi
 }

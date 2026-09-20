@@ -71,6 +71,34 @@ apo_refined_sweep_domain() {
     printf '%s' "${APO_SWEEP_DOMAIN:-$(apo_state_get CFG_SWEEP_DOMAIN all)}"
 }
 
+apo_completed_ledger_baseline_active() {
+    [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 &&
+       $(apo_refined_sweep_domain) == all &&
+       ${APO_AUTO_BASELINE_PROVENANCE:-} == verified-completed-ledger &&
+       ${APO_AUTO_BASELINE_EVIDENCE:-} =~ ^failure-ledger-v1:[0-9a-f]{64}$ ]]
+}
+
+apo_completed_ledger_cpu_has_no_headroom() {
+    apo_completed_ledger_baseline_active && (( ${#APO_CPU_CANDIDATES[@]} == 0 ))
+}
+
+apo_seed_completed_ledger_cpu_floor() {
+    local safe_cpu
+    apo_completed_ledger_cpu_has_no_headroom || return 0
+    safe_cpu=$(apo_state_get SAFE_CPU '')
+    [[ $safe_cpu == "$APO_NORMAL_CPU" && $(apo_state_get CPU_GUARD_VERIFIED 0) == 1 ]] || return 1
+    if [[ $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) == INHERITED &&
+          $(apo_state_get CPU_QUALIFICATION_TARGET '') == "$safe_cpu" &&
+          $(apo_state_get CPU_QUALIFIED_CLOCK '') == "$safe_cpu" ]]; then
+        return 0
+    fi
+    apo_state_set CPU_QUALIFICATION_STATUS INHERITED
+    apo_state_set CPU_QUALIFICATION_TARGET "$safe_cpu"
+    apo_state_set CPU_QUALIFIED_CLOCK "$safe_cpu"
+    apo_state_save
+    apo_summary_line "CPU DOMAIN: no resolution-aligned clock remains above the completed applied floor; retained CPU=$safe_cpu MHz as inherited qualification."
+}
+
 apo_history_isolation_stage() {
     apo_state_get HISTORY_ISOLATION_STAGE NONE
 }
@@ -1301,7 +1329,17 @@ apo_auto_validate_qualification_state() {
         gpu_floor=$(apo_refined_domain_floor GPU) || return 1
     fi
 
-    case $cpu_status in NOT_STARTED|RUNNING|PASS) ;; INHERITED) apo_refined_max_policy_active && [[ $(apo_refined_sweep_domain) == gpu ]] || { APO_AUTO_VALIDATION_REASON='Inherited CPU qualification is valid only for a refined GPU-only run'; return 1; } ;; *) APO_AUTO_VALIDATION_REASON="Saved CPU qualification status is malformed: ${cpu_status:-missing}"; return 1 ;; esac
+    case $cpu_status in
+        NOT_STARTED|RUNNING|PASS) ;;
+        INHERITED)
+            { apo_refined_max_policy_active && [[ $(apo_refined_sweep_domain) == gpu ]]; } ||
+                apo_completed_ledger_cpu_has_no_headroom || {
+                    APO_AUTO_VALIDATION_REASON='Inherited CPU qualification is valid only for a refined GPU-only run or an exhausted completed-ledger CPU domain'
+                    return 1
+                }
+            ;;
+        *) APO_AUTO_VALIDATION_REASON="Saved CPU qualification status is malformed: ${cpu_status:-missing}"; return 1 ;;
+    esac
     case $gpu_status in NOT_STARTED|RUNNING|PASS) ;; INHERITED) apo_refined_max_policy_active && [[ $(apo_refined_sweep_domain) == cpu ]] || { APO_AUTO_VALIDATION_REASON='Inherited GPU qualification is valid only for a refined CPU-only run'; return 1; } ;; *) APO_AUTO_VALIDATION_REASON="Saved GPU qualification status is malformed: ${gpu_status:-missing}"; return 1 ;; esac
 
     if [[ -n $cpu_target ]]; then
@@ -2505,11 +2543,17 @@ apo_validate_auto_resume_state() {
         fi
     fi
     if (( auto_marker == 1 )); then
-        if [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} != verified-default || ${APO_AUTO_BASELINE_EVIDENCE:-missing} != none ||
-              ${APO_AUTO_BASELINE_CPU:-missing} != "$APO_PI5_STOCK_CPU_MHZ" ||
-              ( ${APO_AUTO_BASELINE_GPU:-missing} != 800 && ${APO_AUTO_BASELINE_GPU:-missing} != 960 ) ||
-              ${APO_AUTO_BASELINE_VOLTAGE:-missing} != "$APO_PI5_STOCK_VOLTAGE_UV" ]]; then
-            apo_auto_state_invalid "Saved automatic stock-baseline evidence is missing or inconsistent: CPU=${APO_AUTO_BASELINE_CPU:-missing}, GPU=${APO_AUTO_BASELINE_GPU:-missing}, voltage=${APO_AUTO_BASELINE_VOLTAGE:-missing}, audit=${APO_AUTO_BASELINE_PROVENANCE:-missing}, evidence=${APO_AUTO_BASELINE_EVIDENCE:-missing}."
+        if ! { [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} == verified-default &&
+                   ${APO_AUTO_BASELINE_EVIDENCE:-missing} == none &&
+                   ${APO_AUTO_BASELINE_CPU:-missing} == "$APO_PI5_STOCK_CPU_MHZ" &&
+                   ( ${APO_AUTO_BASELINE_GPU:-missing} == 800 || ${APO_AUTO_BASELINE_GPU:-missing} == 960 ) &&
+                   ${APO_AUTO_BASELINE_VOLTAGE:-missing} == "$APO_PI5_STOCK_VOLTAGE_UV" ]] ||
+               [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} == verified-completed-ledger &&
+                   ${APO_AUTO_BASELINE_EVIDENCE:-missing} =~ ^failure-ledger-v1:[0-9a-f]{64}$ &&
+                   ${APO_AUTO_BASELINE_CPU:-missing} =~ ^[1-9][0-9]*$ &&
+                   ${APO_AUTO_BASELINE_GPU:-missing} =~ ^[1-9][0-9]*$ &&
+                   ${APO_AUTO_BASELINE_VOLTAGE:-missing} =~ ^-?[0-9]+$ ]]; }; then
+            apo_auto_state_invalid "Saved automatic baseline evidence is missing or inconsistent: CPU=${APO_AUTO_BASELINE_CPU:-missing}, GPU=${APO_AUTO_BASELINE_GPU:-missing}, voltage=${APO_AUTO_BASELINE_VOLTAGE:-missing}, audit=${APO_AUTO_BASELINE_PROVENANCE:-missing}, evidence=${APO_AUTO_BASELINE_EVIDENCE:-missing}."
             return 1
         fi
         plan_cpu=$APO_AUTO_BASELINE_CPU
@@ -3038,6 +3082,10 @@ apo_sweep_cpu() {
             cpu_guard=$APO_AUTO_CPU_GUARD_MHZ
         fi
         apo_auto_verify_guard CPU "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$stress_kind" "$cpu_guard" || return 1
+        apo_seed_completed_ledger_cpu_floor || {
+            apo_state_fail HARNESS_FAILURE 'Could not bind an exhausted CPU domain to the exact completed applied floor.'
+            return 1
+        }
     elif (( ${#APO_CPU_CANDIDATES[@]} > 0 )) && [[ -z $passed_csv ]]; then
         apo_state_fail STABILITY_FAILURE 'No CPU candidate passed the complete candidate gate.'
         return 1
@@ -3165,7 +3213,8 @@ apo_qualify_cpu() {
         apo_state_fail HARNESS_FAILURE 'CPU qualification has no valid guarded CPU target.'
         return 1
     }
-    if [[ $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) == PASS &&
+    if [[ ( $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) == PASS ||
+            $(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED) == INHERITED ) &&
           $(apo_state_get CPU_QUALIFIED_CLOCK '') == "$target_cpu" ]]; then
         return 0
     fi
@@ -3763,7 +3812,7 @@ apo_restart_production_pair() {
 }
 
 apo_restart_active_automatic_state() {
-    local checkpoint=$1 phase cpu_target gpu_target restart_description sweep_domain cpu_status gpu_status
+    local checkpoint=$1 phase cpu_target gpu_target restart_description sweep_domain cpu_status gpu_status cpu_inherited_allowed=0
     [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" &&
        $(apo_state_get ORIGIN_COMMAND '') == overclock &&
        $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
@@ -3827,6 +3876,9 @@ apo_restart_active_automatic_state() {
         cpu_target=$APO_RESTART_PAIR_CPU
         gpu_target=$APO_RESTART_PAIR_GPU
     fi
+    if apo_completed_ledger_cpu_has_no_headroom; then
+        cpu_inherited_allowed=1
+    fi
 
     APO_QUALIFICATION_DURATION_S=$APO_RESTART_QUALIFICATION_DURATION_S
     APO_FINAL_DURATION_S=$APO_RESTART_FINAL_DURATION_S
@@ -3884,7 +3936,7 @@ apo_restart_active_automatic_state() {
                 return 1
             fi
             cpu_status=$(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED)
-            [[ ( $cpu_status == PASS || ( $cpu_status == INHERITED && $sweep_domain == gpu ) ) &&
+            [[ ( $cpu_status == PASS || ( $cpu_status == INHERITED && $cpu_inherited_allowed == 1 ) ) &&
                $(apo_state_get CPU_QUALIFIED_CLOCK '') == "$cpu_target" &&
                $(apo_state_get GPU_GUARD_VERIFIED 0) == 1 ]] || {
                 APO_LAST_REASON='GPU-qualification restart requires the exact retained CPU qualification and a verified GPU guard.'
@@ -3905,7 +3957,7 @@ apo_restart_active_automatic_state() {
         final)
             cpu_status=$(apo_state_get CPU_QUALIFICATION_STATUS NOT_STARTED)
             gpu_status=$(apo_state_get GPU_QUALIFICATION_STATUS NOT_STARTED)
-            [[ ( $cpu_status == PASS || ( $cpu_status == INHERITED && $sweep_domain == gpu ) ) &&
+            [[ ( $cpu_status == PASS || ( $cpu_status == INHERITED && $cpu_inherited_allowed == 1 ) ) &&
                $(apo_state_get CPU_QUALIFIED_CLOCK '') == "$cpu_target" ]] || {
                 APO_LAST_REASON='Final restart requires the exact retained CPU qualification.'
                 return 1

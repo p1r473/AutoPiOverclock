@@ -29,18 +29,10 @@ parse_fixture prepare prepare prepare prepare tron
 
 parse_fixture run overclock overclock overclock tron
 
-# Every operation uses an explicit command.  A bare target is not an undocumented
-# alias for the advanced run interface.
-unknown_command_error=''
-if unknown_command_error=$("$ROOT/autopioverclock" version 2>&1); then
-    echo 'an unsupported version command was accepted' >&2
-    exit 1
-fi
-expected_unknown_command_error='ERROR: Unknown command: version. Valid commands: prepare, overclock, test, reset, run, resume, status, summary, recover, restore, apply, and report. Global options: --help and --version.'
-if [[ $unknown_command_error != "$expected_unknown_command_error" ]]; then
-    printf 'unknown-command guidance was incomplete:\n%s\n' "$unknown_command_error" >&2
-    exit 1
-fi
+# Every operation uses an explicit command. A bare target is not an undocumented
+# alias for the advanced run interface. Both documented version forms work.
+[[ $("$ROOT/autopioverclock" version) == "$(<"$ROOT/VERSION")" ]]
+[[ $("$ROOT/autopioverclock" --version) == "$(<"$ROOT/VERSION")" ]]
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -168,6 +160,7 @@ assert_non_resume_rejects_restart summary
 assert_non_resume_rejects_restart recover
 assert_non_resume_rejects_restart restore
 assert_non_resume_rejects_restart apply
+assert_non_resume_rejects_restart complete
 assert_non_resume_rejects_restart report
 
 if (
@@ -337,9 +330,27 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
 
 parse_fixture reset reset reset reset tron
 parse_fixture restore restore '' restore tron
+parse_fixture complete complete '' complete tron
 parse_fixture status status '' status tron
 parse_fixture summary summary '' summary tron
 parse_fixture report report '' report tron
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli status tron
+    expected_root="${XDG_STATE_HOME:-${HOME}/.local/state}/autopioverclock/targets/tron"
+    [[ $APO_TARGET_STATE_DIR == "$expected_root" ]]
+    [[ $APO_OUTPUT_DIR == "$expected_root/runs" ]]
+    [[ $APO_HISTORY_DIR == "$expected_root/history" ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli status tron --output-dir /tmp/custom-tron-state
+    [[ $APO_TARGET_STATE_DIR == /tmp/custom-tron-state ]]
+    [[ $APO_OUTPUT_DIR == /tmp/custom-tron-state ]]
+    [[ $APO_HISTORY_DIR == /tmp/custom-tron-state/history ]]
+)
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"

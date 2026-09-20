@@ -132,7 +132,7 @@ grep -Rqs 'reboot-stock-reset' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profil
 if grep -RInE -- '(byobu|pkill|killall|tmux[[:space:]]+(attach|detach|kill|new|rename|respawn|send|set|split|swap|move|link|unlink)[[:alnum:]_-]*)' "$ROOT/autopioverclock" "$ROOT/lib" "$ROOT/profiles"; then
     fail 'controller contains forbidden terminal/session or process-wide management'
 fi
-grep -Fq 'Existing run files are never deleted' "$ROOT/lib/logging.sh" || fail 'artifact-retention invariant is missing'
+grep -Fq 'Existing run files are retained unless' "$ROOT/lib/logging.sh" || fail 'artifact-retention invariant is missing'
 
 # Worker contract: reset and post-reboot verification exist on both platforms,
 # publish hash/backup evidence, preserve disabled source lines, and use the

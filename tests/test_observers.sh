@@ -172,7 +172,8 @@ for state_key in "${!SAVED_OBSERVER_STATE[@]}"; do
 done
 APO_STATE_FILE=$saved_state_file
 
-lock_file="$APO_OUTPUT_DIR/.${APO_TARGET_SLUG}.lock"
+APO_TARGET_STATE_DIR=$APO_OUTPUT_DIR
+lock_file="$APO_TARGET_STATE_DIR/.lock"
 lock_ready="$TEMP_DIR/lock-ready"
 lock_release="$TEMP_DIR/lock-release"
 : > "$lock_file"

@@ -1661,6 +1661,95 @@ apo_restart_active_automatic_state final
 [[ $(apo_state_get CFG_FINAL_DURATION_S) == 360000 && -z $(apo_state_get VALIDATION_DURATION_S '') ]]
 [[ $(apo_state_get REMOTE_STRESS_CREDIT_SECONDS) == 0 && -z $(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '') ]]
 
+# A full run whose completed-ledger CPU domain had no resolution-aligned
+# headroom retains its exact inherited CPU proof across checkpoint restarts.
+APO_STATE=()
+APO_SELECTION_POLICY=adaptive-refined-v1
+APO_SWEEP_DOMAIN=all
+APO_AUTO_GENERATED_CANDIDATES=1
+APO_AUTO_BASELINE_PROVENANCE=verified-completed-ledger
+APO_AUTO_BASELINE_EVIDENCE=failure-ledger-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+APO_AUTO_BASELINE_CPU=3050
+APO_AUTO_BASELINE_GPU=1125
+APO_AUTO_BASELINE_VOLTAGE=0
+APO_NORMAL_CPU=3050
+APO_NORMAL_GPU=1125
+APO_NORMAL_VOLTAGE=0
+APO_TEST_VOLTAGE=0
+APO_CPU_MIN=''
+APO_GPU_MIN=''
+APO_CPU_MAX=3050
+APO_GPU_MAX=1150
+APO_CPU_RESOLUTION_MHZ=25
+APO_GPU_RESOLUTION_MHZ=25
+APO_CPU_SEARCH_DIRECTION=forward
+APO_GPU_SEARCH_DIRECTION=forward
+APO_CPU_CANDIDATES=()
+APO_GPU_CANDIDATES=(1150)
+APO_REQUIRE_GPU_STRESS=1
+APO_CFG[CPU_CANDIDATES]=''
+APO_CFG[GPU_CANDIDATES]=1150
+APO_CFG[BACKOFF_STEPS]=0
+APO_CFG[VOLTAGE_DELTA_UV]=existing
+apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+apo_state_set ORIGIN_COMMAND overclock
+apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
+apo_state_set CFG_SWEEP_DOMAIN all
+apo_state_set APPLY_STATUS NOT_APPLIED
+apo_state_set POST_FLOOR_EDGE 0
+apo_state_set POST_FLOOR_FINAL 0
+apo_state_set STATUS INTERRUPTED
+apo_state_set PHASE FINAL_VALIDATION
+apo_state_set SUBPHASE ENDURANCE
+apo_state_set FINAL_STAGE ENDURANCE
+apo_state_set REMOTE_STRESS_STATUS IDLE
+apo_state_set TRYBOOT_EXPECTED 0
+apo_state_set TRYBOOT_FILE_MAY_EXIST 0
+apo_state_set CPU_INDEX 0
+apo_state_set PASSED_CPUS ''
+apo_state_set CPU_FAILURE_BOUNDARY ''
+apo_state_set CPU_REFINE_CANDIDATES ''
+apo_state_set CPU_REFINE_INDEX 0
+apo_state_set CPU_REFINE_COMPLETE 1
+apo_state_set CPU_GUARD_TARGET 3050
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 3050
+apo_state_set CPU_QUALIFICATION_STATUS INHERITED
+apo_state_set CPU_QUALIFICATION_TARGET 3050
+apo_state_set CPU_QUALIFIED_CLOCK 3050
+apo_state_set GPU_INDEX 1
+apo_state_set PASSED_GPUS 1150
+apo_state_set GPU_FAILURE_BOUNDARY ''
+apo_state_set GPU_REFINE_CANDIDATES ''
+apo_state_set GPU_REFINE_INDEX 0
+apo_state_set GPU_REFINE_COMPLETE 1
+apo_state_set GPU_GUARD_TARGET 1150
+apo_state_set GPU_GUARD_VERIFIED 1
+apo_state_set SAFE_GPU 1150
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3050
+apo_state_set GPU_QUALIFICATION_TARGET 1150
+apo_state_set GPU_QUALIFIED_CPU 3050
+apo_state_set GPU_QUALIFIED_CLOCK 1150
+apo_state_set RECOMMENDED_CPU 3050
+apo_state_set RECOMMENDED_GPU 1150
+apo_state_set FINAL_TARGET_CPU 3050
+apo_state_set FINAL_TARGET_GPU 1150
+apo_state_set FINAL_BACKOFF_COUNT 0
+APO_RESTART_SOURCE_STATUS=INTERRUPTED
+APO_RESTART_SOURCE_PHASE=FINAL_VALIDATION
+APO_RESTART_SOURCE_FINAL_STAGE=ENDURANCE
+APO_RESTART_SOURCE_FAILURE_CLASS=''
+APO_RESTART_SOURCE_REMOTE_CLEAR=1
+APO_RESTART_QUALIFICATION_DURATION_S=10800
+APO_RESTART_FINAL_DURATION_S=360000
+APO_RESTART_EDGE_DURATION_S=360000
+apo_restart_active_automatic_state final
+[[ $(apo_state_get CPU_QUALIFICATION_STATUS) == INHERITED ]]
+[[ $(apo_state_get CPU_QUALIFIED_CLOCK) == 3050 ]]
+[[ $(apo_state_get PHASE) == FINAL_VALIDATION && $(apo_state_get SUBPHASE) == RESTART_REQUESTED ]]
+
 # A real stability failure is not a recovery-only bookkeeping failure and may
 # never be erased by the final restart option.
 apo_state_set STATUS FAILED

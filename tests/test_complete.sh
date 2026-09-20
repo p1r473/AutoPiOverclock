@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+TEST_ROOT=$(mktemp -d "${ROOT}/.test-complete.XXXXXX")
+trap 'rm -rf -- "$TEST_ROOT"' EXIT
+
+write_managed_config() {
+    local destination=$1
+    cat > "$destination" <<'EOF'
+# User header stays exactly here
+dtparam=fan_temp=65000
+# AUTOPIOVERCLOCK-STOCK-DISABLED arm_freq=2400
+# AUTOPIOVERCLOCK-STOCK-DISABLED gpu_freq=950
+
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: selected-run
+[all]
+over_voltage_delta=0
+arm_freq=3050
+v3d_freq=1200
+# AUTOPIOVERCLOCK CANDIDATE COOLING: PI PWM FAN 100 PERCENT
+dtparam=fan_temp0=0
+dtparam=fan_temp0_speed=255
+dtparam=fan_temp1_speed=255
+dtparam=fan_temp2_speed=255
+dtparam=fan_temp3_speed=255
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+
+# User fan settings stay
+dtparam=fan_temp=60000
+dtparam=fan_temp_speed=180
+# AUTOPIOVERCLOCK TRYBOOT COMPLETE: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+EOF
+}
+
+write_expected_config() {
+    local destination=$1
+    cat > "$destination" <<'EOF'
+# User header stays exactly here
+dtparam=fan_temp=65000
+
+[all]
+over_voltage_delta=0
+arm_freq=3050
+v3d_freq=1200
+
+# User fan settings stay
+dtparam=fan_temp=60000
+dtparam=fan_temp_speed=180
+EOF
+}
+
+test_worker_renderer() {
+    local worker=$1 profile_dir=$2 input expected rendered invalid
+    input="${profile_dir}/config.txt"
+    expected="${profile_dir}/expected.txt"
+    rendered="${profile_dir}/rendered.txt"
+    invalid="${profile_dir}/invalid.txt"
+    mkdir -p -- "$profile_dir"
+    write_managed_config "$input"
+    write_expected_config "$expected"
+
+    (
+        export APO_WORKER_LIBRARY_ONLY=1
+        source "$worker"
+        complete_validate_config "$input" 3050 1200 v3d_freq 0 selected-run
+        complete_render_config "$input" "$rendered" 3050 1200 v3d_freq 0
+        complete_validate_sealed_config "$rendered" 3050 1200 v3d_freq 0
+    )
+    cmp -s -- "$expected" "$rendered"
+    [[ $(grep -c '^arm_freq=3050$' "$rendered") == 1 ]]
+    [[ $(grep -c '^v3d_freq=1200$' "$rendered") == 1 ]]
+    [[ $(grep -c '^over_voltage_delta=0$' "$rendered") == 1 ]]
+    ! grep -Fq 'AUTOPIOVERCLOCK' "$rendered"
+    grep -Fxq '# User header stays exactly here' "$rendered"
+    grep -Fxq 'dtparam=fan_temp=65000' "$rendered"
+    grep -Fxq 'dtparam=fan_temp=60000' "$rendered"
+    grep -Fxq 'dtparam=fan_temp_speed=180' "$rendered"
+
+    cp -- "$input" "$invalid"
+    printf 'arm_freq=3100\n' >> "$invalid"
+    if (
+        export APO_WORKER_LIBRARY_ONLY=1
+        source "$worker"
+        complete_validate_config "$invalid" 3050 1200 v3d_freq 0 selected-run
+    ); then
+        printf 'complete accepted an active tuning key outside its managed block: %s\n' "$worker" >&2
+        return 1
+    fi
+
+    cp -- "$input" "$invalid"
+    printf 'include extra.txt\n' >> "$invalid"
+    if (
+        export APO_WORKER_LIBRARY_ONLY=1
+        source "$worker"
+        complete_validate_config "$invalid" 3050 1200 v3d_freq 0 selected-run
+    ); then
+        printf 'complete accepted an active include: %s\n' "$worker" >&2
+        return 1
+    fi
+
+    cp -- "$rendered" "$invalid"
+    printf 'arm_freq=3050\n' >> "$invalid"
+    if (
+        export APO_WORKER_LIBRARY_ONLY=1
+        source "$worker"
+        complete_validate_sealed_config "$invalid" 3050 1200 v3d_freq 0
+    ); then
+        printf 'completed config accepted a duplicate tuning key: %s\n' "$worker" >&2
+        return 1
+    fi
+
+    if (
+        export APO_WORKER_LIBRARY_ONLY=1
+        source "$worker"
+        complete_validate_config "$input" 3050 1200 v3d_freq 0 wrong-run
+    ); then
+        printf 'complete accepted a managed block belonging to another run: %s\n' "$worker" >&2
+        return 1
+    fi
+}
+
+test_worker_renderer "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian"
+test_worker_renderer "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera"
+
+# Controller cleanup is target scoped. It removes every known artifact for the
+# completed target, including public reports, and preserves durable history.
+(
+    APO_ROOT=$ROOT
+    source "$ROOT/lib/common.sh"
+    source "$ROOT/lib/state.sh"
+    source "$ROOT/lib/logging.sh"
+    source "$ROOT/lib/history.sh"
+    source "$ROOT/lib/complete.sh"
+
+    APO_TARGET_SLUG=tron
+    APO_REMOTE_TARGET=pi@tron
+    APO_TARGET_STATE_DIR="$TEST_ROOT/controller/targets/tron"
+    APO_OUTPUT_DIR="$APO_TARGET_STATE_DIR/runs"
+    APO_HISTORY_DIR="$APO_TARGET_STATE_DIR/history"
+    APO_COMPLETE_RUN_IDS=(run-a run-b)
+    APO_RUN_PREFIX="$APO_OUTPUT_DIR/tron-run-a"
+    APO_STATE_FILE="$APO_RUN_PREFIX.state"
+    APO_LOG_FILE="$APO_RUN_PREFIX.log"
+    APO_CSV_FILE="$APO_RUN_PREFIX.csv"
+    APO_JSONL_FILE="$APO_RUN_PREFIX.jsonl"
+    APO_JSON_FILE="$APO_RUN_PREFIX.json"
+    APO_SUMMARY_FILE="$APO_RUN_PREFIX-summary.txt"
+    mkdir -p -- "$APO_OUTPUT_DIR" "$APO_HISTORY_DIR"
+    printf 'durable history\n' > "$APO_HISTORY_DIR/failures.txt"
+    printf 'lock\n' > "$APO_TARGET_STATE_DIR/.lock"
+    touch -- \
+        "$APO_RUN_PREFIX.state" "$APO_RUN_PREFIX.log" "$APO_RUN_PREFIX.csv" \
+        "$APO_RUN_PREFIX.jsonl" "$APO_RUN_PREFIX.json" "$APO_RUN_PREFIX-summary.txt" \
+        "$APO_OUTPUT_DIR/tron-run-b.state" "$APO_OUTPUT_DIR/tron-run-b.log" \
+        "$APO_OUTPUT_DIR/autopioverclock-run-a-public-report.txt" \
+        "$APO_OUTPUT_DIR/autopioverclock-run-b-public-report.txt"
+    ln -s -- tron-run-a.state "$APO_OUTPUT_DIR/tron-latest.state"
+    ln -s -- tron-run-a.log "$APO_OUTPUT_DIR/tron-latest.log"
+    ln -s -- tron-run-a-summary.txt "$APO_OUTPUT_DIR/tron-latest-summary.txt"
+    ln -s -- tron-run-a.json "$APO_OUTPUT_DIR/tron-latest.json"
+
+    apo_event() { :; }
+    apo_progress_clear_line() { :; }
+    sync() { :; }
+    apo_complete_delete_controller_artifacts >/dev/null
+
+    [[ ! -e $APO_OUTPUT_DIR && ! -L $APO_OUTPUT_DIR ]]
+    [[ -f $APO_HISTORY_DIR/failures.txt ]]
+    [[ $(<"$APO_HISTORY_DIR/failures.txt") == 'durable history' ]]
+    [[ -f $APO_TARGET_STATE_DIR/.lock ]]
+)
+
+printf 'complete tests passed\n'

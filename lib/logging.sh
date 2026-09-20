@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
-# Flat controller-side artifacts. Existing run files are never deleted.
+# Per-target controller-side artifacts. Existing run files are retained unless
+# the user explicitly confirms the destructive complete command.
 
 apo_safe_mkdir() {
     local directory=$1
     mkdir -p -- "$directory"
     chmod 700 "$directory" 2>/dev/null || true
+}
+
+apo_configure_state_paths() {
+    if (( ${APO_OUTPUT_DIR_OPTION_SEEN:-0} == 1 )); then
+        APO_TARGET_STATE_DIR=$APO_OUTPUT_DIR
+        APO_HISTORY_DIR="${APO_TARGET_STATE_DIR}/history"
+    else
+        APO_TARGET_STATE_DIR="${APO_STATE_ROOT}/targets/${APO_TARGET_SLUG}"
+        APO_OUTPUT_DIR="${APO_TARGET_STATE_DIR}/runs"
+        APO_HISTORY_DIR="${APO_TARGET_STATE_DIR}/history"
+    fi
+    export APO_STATE_ROOT APO_TARGET_STATE_DIR APO_OUTPUT_DIR APO_HISTORY_DIR
 }
 
 apo_init_artifacts() {

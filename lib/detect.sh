@@ -508,7 +508,7 @@ apo_verify_domain_sweep_source_discovery() {
 }
 
 apo_context_from_discovery() {
-    local audio_attempt_suffix=''
+    local audio_attempt_suffix='' ledger_adopt_rc
     APO_BOOT_CONFIG=${APO_DISCOVERY[BOOT_CONFIG]:-}
     APO_TRYBOOT_CONFIG=${APO_DISCOVERY[TRYBOOT_CONFIG]:-}
     APO_INITIAL_TRYBOOT_EXISTS=${APO_DISCOVERY[TRYBOOT_EXISTS]:-}
@@ -546,6 +546,16 @@ apo_context_from_discovery() {
     [[ $APO_NORMAL_GPU =~ ^[1-9][0-9]{0,8}$ ]] || apo_die "Discovery returned an invalid normal GPU clock: $APO_NORMAL_GPU" "$APO_EXIT_PREFLIGHT"
     apo_is_int "$APO_NORMAL_VOLTAGE" || apo_die "Discovery returned an invalid normal voltage delta: $APO_NORMAL_VOLTAGE" "$APO_EXIT_PREFLIGHT"
     [[ $APO_PERMANENT_CONFIG_HASH =~ ^[0-9a-f]{64}$ ]] || apo_die 'Discovery returned an invalid permanent-config hash.' "$APO_EXIT_PREFLIGHT"
+    if declare -F apo_history_adopt_completed_baseline >/dev/null 2>&1; then
+        if apo_history_adopt_completed_baseline; then
+            :
+        else
+            ledger_adopt_rc=$?
+            if (( ledger_adopt_rc == 2 )); then
+                apo_die "Completed-result ledger validation failed: ${APO_HISTORY_SCAN_ERROR:-invalid retained failures ledger}" "$APO_EXIT_PREFLIGHT"
+            fi
+        fi
+    fi
     apo_verify_domain_sweep_source_discovery
     if declare -F apo_history_resolve_new_overclock_plan >/dev/null 2>&1; then
         apo_history_resolve_new_overclock_plan ||

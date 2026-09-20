@@ -2089,6 +2089,384 @@ atomic_replace_verified() {
     [[ $actual_hash == "$expected_hash" ]]
 }
 
+COMPLETE_LAST_REASON=''
+COMPLETE_RUN_IDS=()
+COMPLETE_CLEANUP_PATHS=()
+
+complete_safe_id() {
+    local value=${1-}
+    [[ $value =~ ^[A-Za-z0-9._-]+$ && $value != . && $value != .. && ${#value} -le 128 ]]
+}
+
+complete_tuning_key() {
+    local key=${1,,}
+    [[ $key == arm_boost || $key == force_turbo || $key == initial_turbo ||
+       $key == core_freq_fixed || $key == *_freq || $key == *_freq_min ||
+       $key == over_voltage* ]]
+}
+
+complete_validate_managed_lines() {
+    local expected_cpu=$1 expected_gpu=$2 expected_gpu_key=$3 expected_voltage=$4 expected_run=$5
+    shift 5
+    local -a lines=("$@")
+    local index=0
+    (( ${#lines[@]} >= 4 )) || return 1
+    [[ ${lines[index++]} == "# Run: ${expected_run}" ]] || return 1
+    [[ ${lines[index++]} == '[all]' ]] || return 1
+    if [[ ${lines[index]:-} == over_voltage_delta=* ]]; then
+        [[ ${lines[index++]} == "over_voltage_delta=${expected_voltage}" ]] || return 1
+    else
+        [[ $expected_voltage == 0 ]] || return 1
+    fi
+    [[ ${lines[index++]:-} == "arm_freq=${expected_cpu}" ]] || return 1
+    [[ ${lines[index++]:-} == "${expected_gpu_key}=${expected_gpu}" ]] || return 1
+    if (( index < ${#lines[@]} )); then
+        [[ ${lines[index++]:-} == "$CANDIDATE_FAN_COMMENT" &&
+           ${lines[index++]:-} == 'dtparam=fan_temp0=0' &&
+           ${lines[index++]:-} == 'dtparam=fan_temp0_speed=255' &&
+           ${lines[index++]:-} == 'dtparam=fan_temp1_speed=255' &&
+           ${lines[index++]:-} == 'dtparam=fan_temp2_speed=255' &&
+           ${lines[index++]:-} == 'dtparam=fan_temp3_speed=255' ]] || return 1
+    fi
+    (( index == ${#lines[@]} ))
+}
+
+complete_validate_config() {
+    local config_file=$1 expected_cpu=$2 expected_gpu=$3 expected_gpu_key=$4 expected_voltage=$5 expected_run=$6
+    local line semantic trimmed lower key inside=0 marker_count=0
+    local -a managed_lines=()
+    COMPLETE_LAST_REASON=''
+    [[ -f $config_file && ! -L $config_file && -r $config_file ]] || {
+        COMPLETE_LAST_REASON='The permanent config is missing, unreadable, non-regular, or a symlink.'
+        return 1
+    }
+    complete_safe_id "$expected_run" || { COMPLETE_LAST_REASON='The selected run ID is unsafe.'; return 1; }
+    [[ $expected_cpu =~ ^[1-9][0-9]*$ && $expected_gpu =~ ^[1-9][0-9]*$ &&
+       ( $expected_gpu_key == gpu_freq || $expected_gpu_key == v3d_freq ) &&
+       $expected_voltage =~ ^-?[0-9]+$ ]] || {
+        COMPLETE_LAST_REASON='The selected applied clock evidence is malformed.'
+        return 1
+    }
+    while IFS= read -r line || [[ -n $line ]]; do
+        semantic=${line%$'\r'}
+        if [[ $semantic == "$CLOCK_MARKER_BEGIN" ]]; then
+            (( inside == 0 )) || { COMPLETE_LAST_REASON='The permanent config contains nested managed clock markers.'; return 1; }
+            marker_count=$((marker_count + 1))
+            (( marker_count == 1 )) || { COMPLETE_LAST_REASON='The permanent config contains multiple managed clock blocks.'; return 1; }
+            inside=1
+            managed_lines=()
+            continue
+        fi
+        if [[ $semantic == "$CLOCK_MARKER_END" ]]; then
+            (( inside == 1 )) || { COMPLETE_LAST_REASON='The permanent config contains an unmatched managed clock end marker.'; return 1; }
+            complete_validate_managed_lines "$expected_cpu" "$expected_gpu" "$expected_gpu_key" "$expected_voltage" "$expected_run" "${managed_lines[@]}" || {
+                COMPLETE_LAST_REASON='The managed clock block does not exactly match the selected applied run.'
+                return 1
+            }
+            inside=0
+            continue
+        fi
+        if [[ $semantic == *'AUTOPIOVERCLOCK MANAGED CLOCKS'* ]]; then
+            COMPLETE_LAST_REASON='The permanent config contains a malformed managed clock marker.'
+            return 1
+        fi
+        if (( inside == 1 )); then
+            managed_lines+=("$semantic")
+            continue
+        fi
+        trimmed=${semantic#"${semantic%%[![:space:]]*}"}
+        [[ -n $trimmed && $trimmed != \#* ]] || continue
+        lower=${trimmed,,}
+        if [[ $lower =~ ^include([[:space:]]|$) ]]; then
+            COMPLETE_LAST_REASON='The permanent config contains an active include directive, so complete cannot prove the full configuration graph.'
+            return 1
+        fi
+        if [[ $lower =~ ^([[:alnum:]_]+)[[:space:]]*= ]]; then
+            key=${BASH_REMATCH[1]}
+            if complete_tuning_key "$key"; then
+                COMPLETE_LAST_REASON='The permanent config contains an active tuning key outside the managed clock block.'
+                return 1
+            fi
+        fi
+    done < "$config_file"
+    (( inside == 0 && marker_count == 1 )) || {
+        COMPLETE_LAST_REASON='The permanent config does not contain exactly one complete managed clock block.'
+        return 1
+    }
+}
+
+complete_render_config() {
+    local source_file=$1 destination_file=$2 cpu_mhz=$3 gpu_mhz=$4 gpu_key=$5 voltage_uv=$6
+    awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" \
+        -v cpu="$cpu_mhz" -v gpu="$gpu_mhz" -v gpu_key="$gpu_key" -v voltage="$voltage_uv" '
+        function tuning_key(key) {
+            key=tolower(key)
+            return key=="arm_boost" || key=="force_turbo" || key=="initial_turbo" || key=="core_freq_fixed" ||
+                   key ~ /_freq$/ || key ~ /_freq_min$/ || key ~ /^over_voltage/
+        }
+        {
+            raw=$0
+            semantic=$0
+            sub(/\r$/, "", semantic)
+            if (semantic==begin) {inside=1; next}
+            if (semantic==end) {
+                inside=0
+                print "[all]"
+                print "over_voltage_delta=" voltage
+                print "arm_freq=" cpu
+                print gpu_key "=" gpu
+                next
+            }
+            if (inside) next
+            if (semantic ~ /^# AUTOPIOVERCLOCK TRYBOOT COMPLETE: [0-9a-f]+$/) {
+                token=semantic
+                sub(/^# AUTOPIOVERCLOCK TRYBOOT COMPLETE: /, "", token)
+                if (length(token)==64) next
+            }
+            if (semantic ~ /^# AUTOPIOVERCLOCK-STOCK-DISABLED /) {
+                payload=semantic
+                sub(/^# AUTOPIOVERCLOCK-STOCK-DISABLED /, "", payload)
+                probe=payload
+                sub(/^[[:space:]]*/, "", probe)
+                if (probe ~ /^[[:alnum:]_]+[[:space:]]*=/) {
+                    key=probe
+                    sub(/[[:space:]]*=.*$/, "", key)
+                    if (tuning_key(key)) next
+                }
+            }
+            print raw
+        }
+    ' "$source_file" > "$destination_file"
+}
+
+complete_validate_sealed_config() {
+    local config_file=$1 expected_cpu=$2 expected_gpu=$3 expected_gpu_key=$4 expected_voltage=$5
+    local line semantic trimmed lower key index match_count=0 voltage_count=0 cpu_count=0 gpu_count=0
+    local -a lines=()
+    [[ -f $config_file && ! -L $config_file && -r $config_file ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        semantic=${line%$'\r'}
+        [[ $semantic != "$CLOCK_MARKER_BEGIN" && $semantic != "$CLOCK_MARKER_END" &&
+           $semantic != "$CANDIDATE_FAN_COMMENT" &&
+           $semantic != '# AUTOPIOVERCLOCK TRYBOOT COMPLETE: '* &&
+           $semantic != '# AUTOPIOVERCLOCK-STOCK-DISABLED '* ]] || return 1
+        trimmed=${semantic#"${semantic%%[![:space:]]*}"}
+        if [[ -n $trimmed && $trimmed != \#* ]]; then
+            lower=${trimmed,,}
+            [[ ! $lower =~ ^include([[:space:]]|$) ]] || return 1
+            if [[ $lower =~ ^([[:alnum:]_]+)[[:space:]]*= ]]; then
+                key=${BASH_REMATCH[1]}
+                if complete_tuning_key "$key"; then
+                    case $semantic in
+                        "over_voltage_delta=${expected_voltage}") voltage_count=$((voltage_count + 1)) ;;
+                        "arm_freq=${expected_cpu}") cpu_count=$((cpu_count + 1)) ;;
+                        "${expected_gpu_key}=${expected_gpu}") gpu_count=$((gpu_count + 1)) ;;
+                        *) return 1 ;;
+                    esac
+                fi
+            fi
+        fi
+        lines+=("$semantic")
+    done < "$config_file"
+    for (( index=0; index+3<${#lines[@]}; index++ )); do
+        if [[ ${lines[index]} == '[all]' &&
+              ${lines[index+1]} == "over_voltage_delta=${expected_voltage}" &&
+              ${lines[index+2]} == "arm_freq=${expected_cpu}" &&
+              ${lines[index+3]} == "${expected_gpu_key}=${expected_gpu}" ]]; then
+            match_count=$((match_count + 1))
+        fi
+    done
+    (( match_count == 1 && voltage_count == 1 && cpu_count == 1 && gpu_count == 1 ))
+}
+
+cmd_render_complete() {
+    local cpu_mhz=$1 gpu_mhz=$2 gpu_key=$3 voltage_uv=$4 run_id=$5 expected_hash=$6
+    local boot_config current_hash rendered_file
+    valid_sha256 "$expected_hash" && complete_safe_id "$run_id" || return 1
+    boot_config=$(find_boot_config) || return 1
+    apply_tryboot_clear "$boot_config" || return 1
+    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $current_hash == "$expected_hash" ]] || return 1
+    complete_validate_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" || return 1
+    rendered_file=$(mktemp /tmp/autopioverclock-complete-render.XXXXXX) || return 1
+    if ! complete_render_config "$boot_config" "$rendered_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" ||
+       ! complete_validate_sealed_config "$rendered_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv"; then
+        rm -f -- "$rendered_file"
+        return 1
+    fi
+    cat -- "$rendered_file"
+    rm -f -- "$rendered_file"
+}
+
+cmd_complete_permanent() {
+    local uploaded_file=$1 expected_old_hash=$2 expected_new_hash=$3 run_id=$4
+    local cpu_mhz=$5 gpu_mhz=$6 gpu_key=$7 voltage_uv=$8
+    local boot_config current_hash proposed_hash backup_dir backup_file backup_hash
+    valid_sha256 "$expected_old_hash" && valid_sha256 "$expected_new_hash" && complete_safe_id "$run_id" || {
+        emit_result APPLY_FAILURE 'Complete received malformed transaction evidence.'
+        return 1
+    }
+    boot_config=$(find_boot_config) || { emit_result APPLY_FAILURE 'Boot config is missing for complete.'; return 1; }
+    apply_tryboot_clear "$boot_config" || { emit_result APPLY_FAILURE 'Complete requires normal boot with no tryboot evidence.'; return 1; }
+    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    if [[ $current_hash == "$expected_new_hash" ]]; then
+        complete_validate_sealed_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || {
+            emit_result APPLY_FAILURE 'The saved completed hash does not have the expected simplified structure.'
+            return 1
+        }
+        emit_data COMPLETE_NEW_HASH "$expected_new_hash"
+        emit_result PASS 'Permanent config already has the verified completed form.'
+        return 0
+    fi
+    [[ $current_hash == "$expected_old_hash" ]] || { emit_result APPLY_FAILURE 'Permanent config changed before complete.'; return 1; }
+    complete_validate_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" || {
+        emit_result APPLY_FAILURE "$COMPLETE_LAST_REASON"
+        return 1
+    }
+    [[ -f $uploaded_file && ! -L $uploaded_file ]] || { emit_result APPLY_FAILURE 'Uploaded completed config is unsafe.'; return 1; }
+    proposed_hash=$(sha256sum "$uploaded_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $proposed_hash == "$expected_new_hash" ]] || { emit_result APPLY_FAILURE 'Uploaded completed config hash does not match the saved transaction.'; return 1; }
+    complete_validate_sealed_config "$uploaded_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || {
+        emit_result APPLY_FAILURE 'Uploaded completed config does not have the expected simplified structure.'
+        return 1
+    }
+    backup_dir=/var/lib/autopioverclock/backups
+    mkdir -p -- "$backup_dir" || { emit_result APPLY_FAILURE 'Could not create complete backup directory.'; return 1; }
+    [[ -d $backup_dir && ! -L $backup_dir ]] || { emit_result APPLY_FAILURE 'Complete backup directory is unsafe.'; return 1; }
+    backup_file="${backup_dir}/config-${run_id}-before-complete.txt"
+    backup_hash=$(sha256sum "$backup_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    if [[ $backup_hash != "$expected_old_hash" ]]; then
+        [[ ! -e $backup_file && ! -L $backup_file ]] || { emit_result APPLY_FAILURE 'Unexpected complete backup already exists.'; return 1; }
+        atomic_replace_verified "$boot_config" "$backup_file" "$expected_old_hash" complete-backup || {
+            emit_result APPLY_FAILURE 'Could not create the verified complete backup.'
+            return 1
+        }
+    fi
+    if ! chmod --reference="$boot_config" "$uploaded_file" 2>/dev/null && ! chmod 644 "$uploaded_file"; then
+        emit_result APPLY_FAILURE 'Could not preserve completed-config permissions.'
+        return 1
+    fi
+    apply_tryboot_clear "$boot_config" || { emit_result APPLY_FAILURE 'Tryboot evidence appeared at the complete mutation boundary.'; return 1; }
+    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $current_hash == "$expected_old_hash" ]] || { emit_result APPLY_FAILURE 'Permanent config changed at the complete mutation boundary.'; return 1; }
+    if ! atomic_replace_verified "$uploaded_file" "$boot_config" "$expected_new_hash" complete; then
+        atomic_replace_verified "$backup_file" "$boot_config" "$expected_old_hash" complete-restore || true
+        emit_result APPLY_FAILURE 'Could not install the simplified permanent config; verified restoration was attempted.'
+        return 1
+    fi
+    emit_data COMPLETE_NEW_HASH "$expected_new_hash"
+    emit_result PASS 'Permanent config was simplified without changing the applied clock values.'
+}
+
+complete_worker_dir() { cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P; }
+complete_run_dir() { printf '/tmp/autopioverclock-%s' "$1"; }
+complete_backup_root() { printf '/var/lib/autopioverclock/backups'; }
+
+complete_supervisor_identity_matches() {
+    local pid=$1 root=$2 helper_path index candidate
+    local -a command_line=()
+    helper_path="${root}/remote-stress-job.sh"
+    [[ -r /proc/${pid}/cmdline ]] || return 1
+    mapfile -d '' -t command_line < "/proc/${pid}/cmdline" || return 1
+    for (( index=0; index<${#command_line[@]}; index++ )); do
+        candidate=${command_line[index]}
+        if [[ $candidate == "$helper_path" && ${command_line[index+1]:-} == run &&
+              ${command_line[index+2]:-} == "$root" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+complete_run_has_live_stress() {
+    local run_dir=$1 pid_file pid
+    local -a pid_files=()
+    shopt -s nullglob
+    pid_files=("$run_dir"/jobs/job-*/supervisor.pid)
+    shopt -u nullglob
+    for pid_file in "${pid_files[@]}"; do
+        [[ -f $pid_file && ! -L $pid_file ]] || return 0
+        IFS= read -r pid < "$pid_file" || return 0
+        if [[ $pid =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null &&
+           complete_supervisor_identity_matches "$pid" "$run_dir"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+complete_collect_backup_paths() {
+    local run_id=$1 backup_root candidate
+    local -a candidates=()
+    backup_root=$(complete_backup_root)
+    [[ ! -e $backup_root && ! -L $backup_root ]] && return 0
+    [[ -d $backup_root && ! -L $backup_root ]] || return 1
+    shopt -s nullglob
+    candidates=(
+        "$backup_root/config-${run_id}-before-apply.txt"
+        "$backup_root/config-${run_id}-before-complete.txt"
+        "$backup_root"/config-????????T??????Z-reset-"$run_id".txt
+        "$backup_root"/tryboot-????????T??????Z-reset-"$run_id"-*.txt
+        "$backup_root"/network-watchdog-????????T??????Z-"$run_id".*
+        "$backup_root"/network-watchdog-observer-????????T??????Z-"$run_id".*
+    )
+    shopt -u nullglob
+    for candidate in "${candidates[@]}"; do
+        [[ $candidate == "$backup_root/"* && $candidate != "$backup_root" ]] || return 1
+        if [[ -L $candidate || ( ! -f $candidate && ! -d $candidate ) ]]; then return 1; fi
+        COMPLETE_CLEANUP_PATHS+=("$candidate")
+    done
+}
+
+cmd_cleanup_complete_artifacts() {
+    local manifest_file=$1 expected_hash=$2 current_run=$3 worker_dir actual_hash line run_id run_dir candidate
+    local removed_runs=0 removed_backups=0 found_current=0
+    local -A seen=()
+    valid_sha256 "$expected_hash" && complete_safe_id "$current_run" || { emit_result RECOVERY_FAILURE 'Complete cleanup received malformed transaction evidence.'; return 1; }
+    worker_dir=$(complete_worker_dir) || { emit_result RECOVERY_FAILURE 'Complete cleanup could not resolve its worker directory.'; return 1; }
+    [[ $manifest_file == "$worker_dir/complete-run-ids.txt" && -f $manifest_file && ! -L $manifest_file ]] || {
+        emit_result RECOVERY_FAILURE 'Complete cleanup manifest path is unsafe.'
+        return 1
+    }
+    actual_hash=$(sha256sum "$manifest_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+    [[ $actual_hash == "$expected_hash" ]] || { emit_result RECOVERY_FAILURE 'Complete cleanup manifest hash does not match.'; return 1; }
+    COMPLETE_RUN_IDS=()
+    COMPLETE_CLEANUP_PATHS=()
+    while IFS= read -r line || [[ -n $line ]]; do
+        run_id=${line%$'\r'}
+        complete_safe_id "$run_id" && [[ ! -v seen[$run_id] ]] || { emit_result RECOVERY_FAILURE 'Complete cleanup manifest contains an unsafe or duplicate run ID.'; return 1; }
+        seen[$run_id]=1
+        COMPLETE_RUN_IDS+=("$run_id")
+        [[ $run_id == "$current_run" ]] && found_current=1
+    done < "$manifest_file"
+    (( found_current == 1 && ${#COMPLETE_RUN_IDS[@]} > 0 )) || { emit_result RECOVERY_FAILURE 'Complete cleanup manifest omits the selected run.'; return 1; }
+    for run_id in "${COMPLETE_RUN_IDS[@]}"; do
+        run_dir=$(complete_run_dir "$run_id")
+        [[ $run_dir == "/tmp/autopioverclock-${run_id}" ]] || { emit_result RECOVERY_FAILURE 'Complete cleanup resolved an unsafe run path.'; return 1; }
+        if [[ -e $run_dir || -L $run_dir ]]; then
+            [[ -d $run_dir && ! -L $run_dir ]] || { emit_result RECOVERY_FAILURE "Unsafe run harness path: $run_dir"; return 1; }
+            if complete_run_has_live_stress "$run_dir"; then emit_result RECOVERY_FAILURE "A target stress supervisor is still active in $run_dir."; return 1; fi
+        fi
+        complete_collect_backup_paths "$run_id" || { emit_result RECOVERY_FAILURE 'Complete found an unsafe target backup path.'; return 1; }
+    done
+    for run_id in "${COMPLETE_RUN_IDS[@]}"; do
+        [[ $run_id == "$current_run" ]] && continue
+        run_dir=$(complete_run_dir "$run_id")
+        if [[ -d $run_dir && ! -L $run_dir ]]; then rm -rf -- "$run_dir" || { emit_result RECOVERY_FAILURE "Could not remove run harness $run_dir."; return 1; }; removed_runs=$((removed_runs + 1)); fi
+    done
+    for candidate in "${COMPLETE_CLEANUP_PATHS[@]}"; do
+        if [[ -d $candidate && ! -L $candidate ]]; then rm -rf -- "$candidate"
+        elif [[ -f $candidate && ! -L $candidate ]]; then rm -f -- "$candidate"
+        else emit_result RECOVERY_FAILURE "Target cleanup path changed before deletion: $candidate"; return 1
+        fi || { emit_result RECOVERY_FAILURE "Could not remove target cleanup path: $candidate"; return 1; }
+        removed_backups=$((removed_backups + 1))
+    done
+    sync || { emit_result RECOVERY_FAILURE 'Could not durably flush completed target cleanup.'; return 1; }
+    emit_data COMPLETE_REMOVED_RUN_DIRS "$removed_runs"
+    emit_data COMPLETE_REMOVED_BACKUPS "$removed_backups"
+    emit_result PASS 'Run harnesses and run-specific target backups were removed; native and permanent watchdogs were preserved.'
+}
+
 cmd_apply_permanent() {
     local uploaded_file=$1 expected_old_hash=$2 expected_new_hash=$3 run_id=$4
     local boot_config current_hash proposed_hash backup_dir backup_file backup_hash
@@ -3004,10 +3382,13 @@ main() {
         stress) cmd_stress "$@" ;;
         reset-throttle-history) cmd_reset_throttle_history "$@" ;;
         render-permanent) cmd_render_permanent "$@" ;;
+        render-complete) cmd_render_complete "$@" ;;
         reset-stock) run_with_mutation_lock "reset-${2:-}" APPLY_FAILURE cmd_reset_stock "$@" ;;
         reboot-stock-reset) run_with_mutation_lock "reset-reboot-${BASHPID}" RECOVERY_FAILURE cmd_reboot_stock_reset "$@" ;;
         verify-stock-reset) run_with_mutation_lock "reset-verify-${BASHPID}" RECOVERY_FAILURE cmd_verify_stock_reset "$@" ;;
         apply-permanent) run_with_mutation_lock "apply-${4:-}" APPLY_FAILURE cmd_apply_permanent "$@" ;;
+        complete-permanent) run_with_mutation_lock "complete-${4:-}" APPLY_FAILURE cmd_complete_permanent "$@" ;;
+        cleanup-complete-artifacts) run_with_mutation_lock "complete-cleanup-${3:-}" RECOVERY_FAILURE cmd_cleanup_complete_artifacts "$@" ;;
         restore-backup) run_with_mutation_lock "restore-${2:-}" APPLY_FAILURE cmd_restore_backup "$@" ;;
         plan-watchdog-repair) cmd_plan_watchdog_repair "$@" ;;
         repair-watchdogs) run_with_mutation_lock "watchdog-${5:-}" PREFLIGHT_FAILURE cmd_repair_watchdogs "$@" ;;

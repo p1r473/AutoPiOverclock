@@ -11,9 +11,22 @@ TMP=$(mktemp -d)
 trap 'rm -rf -- "$TMP"' EXIT
 
 APO_OUTPUT_DIR=$TMP/good
+APO_HISTORY_DIR=$TMP/good-history
 APO_TARGET_SLUG=pi-one
 APO_REMOTE_TARGET=pi@pi-one
-APO_PROFILE=pi5
+APO_PROFILE=debian
+APO_GPU_KEY=v3d_freq
+APO_TEST_VOLTAGE=0
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_NORMAL_VOLTAGE=0
+APO_BOOT_CONFIG=/boot/firmware/config.txt
+APO_TRYBOOT_CONFIG=/boot/firmware/tryboot.txt
+declare -Ag APO_DISCOVERY=(
+    [MODEL]='Raspberry Pi 5 Model B'
+    [COMPATIBLE]='raspberrypi,5-model-b'
+    [ARCH]=aarch64
+)
 mkdir -p -- "$APO_OUTPUT_DIR"
 
 # Windows Git Bash cannot fsync its synthetic /tmp.  Production keeps the
@@ -67,7 +80,12 @@ write_auto_state() {
         CREATED_AT 2026-09-07T01:00:00-0400 UPDATED_AT 2026-09-07T02:00:00-0400 \
         REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" \
         ORIGIN_COMMAND overclock READ_ONLY_RUN 0 CFG_AUTO_GENERATED_CANDIDATES 1 \
-        CFG_SELECTION_POLICY refined-max-25 PROFILE pi5 TEST_VALID 1 "$@"
+        CFG_SELECTION_POLICY refined-max-25 PROFILE debian GPU_KEY v3d_freq TEST_VOLTAGE 0 \
+        NORMAL_CPU 2400 NORMAL_GPU 960 NORMAL_VOLTAGE 0 \
+        AUTO_BASELINE_CPU 2400 AUTO_BASELINE_GPU 960 AUTO_BASELINE_VOLTAGE 0 \
+        DISC_MODEL 'Raspberry Pi 5 Model B' DISC_COMPATIBLE 'raspberrypi,5-model-b' DISC_ARCH aarch64 \
+        BOOT_CONFIG /boot/firmware/config.txt TRYBOOT_CONFIG /boot/firmware/tryboot.txt \
+        TEST_VALID 1 "$@"
 }
 
 # Persisted structured evidence remains useful even when the run itself was
@@ -150,7 +168,7 @@ apo_history_refresh
 [[ $APO_HISTORY_PROVENANCE == *'PAIR|2975/1200|run-c|FINAL_BACKOFF_TRIAL_CPU|'* ]]
 [[ $APO_HISTORY_PROVENANCE != *'999'* ]]
 [[ -f $APO_HISTORY_LEDGER_FILE && ! -L $APO_HISTORY_LEDGER_FILE ]]
-grep -Fq 'Authority: validated .state files only; this ledger is derived output and never read as input.' "$APO_HISTORY_LEDGER_FILE"
+grep -Fq 'Authority: strictly validated state evidence plus the encoded durable section in this file.' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq 'Clear CPU failed boundary: 2900' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq 'Ambiguous failed-pair frontier: 2975/1200,3000/1175' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq '2026-09-07T03:00:00-0400 | run-d | 2900 | 1150 | STABILITY_FAILURE | CPU | Recovered exact CPU failure.' "$APO_HISTORY_LEDGER_FILE"
@@ -164,11 +182,11 @@ fi
 # and both its clear 3175 CPU boundary and ambiguous 3100/1200 pair remain
 # usable retained evidence.  This compatibility is history-screening-only.
 APO_OUTPUT_DIR=$TMP/legacy-alpha48
+APO_HISTORY_DIR=$TMP/legacy-alpha48-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_auto_state alpha48-valid \
     APP_VERSION 0.1.0-alpha.48 \
     CFG_SWEEP_DOMAIN all CFG_CPU_START_AT 3100 CFG_GPU_START_AT 1150 \
-    NORMAL_CPU 2400 NORMAL_GPU 960 AUTO_BASELINE_CPU 2400 AUTO_BASELINE_GPU 960 \
     CPU_FAILURE_BOUNDARY 3175 \
     FINAL_BACKOFF_HISTORY 'TRIAL_CPU:3100/1200>3075/1200' \
     FINAL_BACKOFF_CPU 3075 FINAL_BACKOFF_GPU 1200
@@ -182,11 +200,11 @@ apo_history_scan_retained_states
 # The adapter recognizes a legacy shape; it does not waive strict validation.
 # A malformed seed in the same alpha.48/schema-10 shape remains fatal.
 APO_OUTPUT_DIR=$TMP/legacy-alpha48-malformed
+APO_HISTORY_DIR=$TMP/legacy-alpha48-malformed-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_auto_state alpha48-malformed \
     APP_VERSION 0.1.0-alpha.48 \
     CFG_SWEEP_DOMAIN all CFG_CPU_START_AT not-a-clock CFG_GPU_START_AT 1150 \
-    NORMAL_CPU 2400 NORMAL_GPU 960 AUTO_BASELINE_CPU 2400 AUTO_BASELINE_GPU 960 \
     CPU_FAILURE_BOUNDARY 3175
 if apo_history_scan_retained_states; then
     printf 'malformed alpha.48 START_AT history was accepted\n' >&2
@@ -197,6 +215,7 @@ fi
 
 # Return to the primary fixture directory for the remaining scanner tests.
 APO_OUTPUT_DIR=$TMP/good
+APO_HISTORY_DIR=$TMP/good-history
 # The production definition was sourced above; a planner-only fixture override
 # appears later in this file.
 # shellcheck disable=SC2218
@@ -310,12 +329,13 @@ unset -f cmp
 
 # A validator-rejected exact current-schema state fails the entire scan.
 APO_OUTPUT_DIR=$TMP/rejected
+APO_HISTORY_DIR=$TMP/rejected-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-rejected.state" \
     FORMAT_VERSION 1 RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA" RUN_ID rejected \
     REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" \
     ORIGIN_COMMAND overclock READ_ONLY_RUN 0 CFG_AUTO_GENERATED_CANDIDATES 1 \
-    CFG_SELECTION_POLICY refined-max-25 PROFILE pi5 TEST_VALID 0 CPU_FAILURE_BOUNDARY 2800
+    CFG_SELECTION_POLICY refined-max-25 PROFILE debian TEST_VALID 0 CPU_FAILURE_BOUNDARY 2800
 if apo_history_scan_retained_states; then
     printf 'expected validator-rejected history to fail closed\n' >&2
     exit 1
@@ -329,6 +349,7 @@ fi
 # Unrelated audit commands are also ignored before their unrelated damaged
 # payload is decoded.
 APO_OUTPUT_DIR=$TMP/early-and-audits
+APO_HISTORY_DIR=$TMP/early-and-audits-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_auto_state abandoned-prepare \
     STATUS PREPARING PHASE PREPARE TEST_VALID 0
@@ -349,6 +370,7 @@ apo_history_scan_retained_states
 # retained history must not manufacture a new source that recursively
 # propagates the same boundary into future runs.
 APO_OUTPUT_DIR=$TMP/imported-only
+APO_HISTORY_DIR=$TMP/imported-only-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_auto_state imported-only \
     STATUS RUNNING PHASE CPU_SWEEP TEST_VALID 0 \
@@ -362,6 +384,7 @@ apo_history_scan_retained_states
 # Once a state contains committed evidence, damage anywhere in its payload is
 # authoritative uncertainty and the complete strict loader must fail closed.
 APO_OUTPUT_DIR=$TMP/evidence-damaged
+APO_HISTORY_DIR=$TMP/evidence-damaged-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_auto_state evidence-damaged \
     STATUS FAILED PHASE CPU_SWEEP TEST_VALID 1 CPU_FAILURE_BOUNDARY 3000
@@ -376,6 +399,7 @@ fi
 
 # Duplicate keys are rejected before validation instead of last-value-wins.
 APO_OUTPUT_DIR=$TMP/duplicate
+APO_HISTORY_DIR=$TMP/duplicate-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_auto_state duplicate CPU_FAILURE_BOUNDARY 3000
 printf 'CPU_FAILURE_BOUNDARY\t%s\n' "$(apo_state_encode 3200)" >> "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-duplicate.state"
@@ -388,6 +412,7 @@ fi
 # The just-created state is never treated as retained history, even if it is
 # incomplete while discovery is still filling it in.
 APO_OUTPUT_DIR=$TMP/current
+APO_HISTORY_DIR=$TMP/current-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-current.state" \
     FORMAT_VERSION 1 RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA" RUN_ID current \
@@ -402,6 +427,7 @@ unset APO_STATE_FILE
 # resumable, but is not itself a fresh history authority.  Its source run owns
 # the retained evidence until the child reaches an evidence-bearing stage.
 APO_OUTPUT_DIR=$TMP/rollback-transition
+APO_HISTORY_DIR=$TMP/rollback-transition-history
 mkdir -p -- "$APO_OUTPUT_DIR"
 for transition_stage in ROLLBACK_PENDING ROLLBACK_COMPLETE; do
     run_id=$(printf '%s' "$transition_stage" | tr '[:upper:]_' '[:lower:]-')
@@ -446,8 +472,8 @@ apo_history_resolve_scalar_caps 3200 1200
 [[ $APO_HISTORY_EFFECTIVE_GPU_MAX == 1199 ]]
 [[ $APO_HISTORY_CPU_RETAINED_CAP == 3095 && $APO_HISTORY_GPU_RETAINED_CAP == 1199 ]]
 
-# A user-selected resolution larger than a low retained boundary clamps at the
-# first legal overclock rather than producing a negative arithmetic candidate.
+# A retained failure with no resolution-aligned point above the protected floor
+# exhausts that domain at the floor. It never invents a one-MHz candidate.
 APO_CPU_RESOLUTION_MHZ=1000
 APO_GPU_RESOLUTION_MHZ=1000
 APO_HISTORY_CPU_FAILURE_BOUNDARY=2500
@@ -455,10 +481,75 @@ APO_HISTORY_GPU_FAILURE_BOUNDARY=975
 APO_CPU_MAX_OPTION_SEEN=0
 APO_GPU_MAX_OPTION_SEEN=0
 apo_history_resolve_scalar_caps 3200 1200
-[[ $APO_HISTORY_EFFECTIVE_CPU_MAX == 2401 ]]
-[[ $APO_HISTORY_EFFECTIVE_GPU_MAX == 961 ]]
+[[ $APO_HISTORY_EFFECTIVE_CPU_MAX == 2400 ]]
+[[ $APO_HISTORY_EFFECTIVE_GPU_MAX == 960 ]]
 APO_CPU_RESOLUTION_MHZ=25
 APO_GPU_RESOLUTION_MHZ=25
+
+# Exclusive failure ceilings are aligned from the validated applied floor, not
+# from zero and never from an implicit one-MHz step.
+assert_exclusive_cap() {
+    local boundary=$1 resolution=$2 expected=$3 actual
+    actual=$(apo_history_failure_exclusive_cap CPU "$boundary" "$resolution")
+    [[ $actual == "$expected" ]] || {
+        printf 'exclusive cap for floor=3050 boundary=%s resolution=%s was %s, expected %s\n' \
+            "$boundary" "$resolution" "$actual" "$expected" >&2
+        exit 1
+    }
+}
+assert_exclusive_rejected() {
+    local boundary=$1 resolution=$2 expected_rc=$3 actual_rc
+    if apo_history_failure_exclusive_cap CPU "$boundary" "$resolution" >/dev/null; then
+        printf 'exclusive cap accepted floor=3050 boundary=%s resolution=%s\n' "$boundary" "$resolution" >&2
+        exit 1
+    else
+        actual_rc=$?
+    fi
+    [[ $actual_rc == "$expected_rc" ]] || {
+        printf 'exclusive cap rejected with rc=%s, expected %s\n' "$actual_rc" "$expected_rc" >&2
+        exit 1
+    }
+}
+APO_NORMAL_CPU=3050
+assert_exclusive_rejected 3050 25 2
+assert_exclusive_rejected 3049 25 2
+assert_exclusive_cap 3051 25 3050
+assert_exclusive_cap 3075 25 3050
+assert_exclusive_cap 3076 25 3075
+assert_exclusive_cap 3100 25 3075
+assert_exclusive_cap 3101 25 3100
+assert_exclusive_cap 3051 5 3050
+assert_exclusive_cap 3055 5 3050
+assert_exclusive_cap 3056 5 3055
+assert_exclusive_cap 3060 5 3055
+assert_exclusive_cap 3061 5 3060
+assert_exclusive_cap 3051 1 3050
+assert_exclusive_cap 3052 1 3051
+assert_exclusive_rejected 3100 0 1
+
+# A clear scalar failure at or below the applied floor is contradictory and
+# fails closed. A pair frontier uses its existing northeast-quadrant meaning.
+APO_HISTORY_CPU_FAILURE_BOUNDARY=3050
+APO_HISTORY_GPU_FAILURE_BOUNDARY=''
+APO_CPU_MAX_OPTION_SEEN=0
+if apo_history_resolve_scalar_caps 3200 1200; then
+    printf 'scalar failure at the applied floor was accepted\n' >&2
+    exit 1
+fi
+[[ $APO_HISTORY_VALIDATION_REASON == *'at or below the validated applied floor'* ]]
+APO_NORMAL_GPU=1200
+APO_HISTORY_PAIR_FRONTIERS=3050/1200
+apo_history_pair_is_forbidden 3050 1200
+apo_history_pair_is_forbidden 3075 1225
+if apo_history_pair_is_forbidden 3025 1225; then
+    printf 'pair below the frontier CPU coordinate was incorrectly forbidden\n' >&2
+    exit 1
+fi
+APO_NORMAL_CPU=2400
+APO_NORMAL_GPU=960
+APO_HISTORY_CPU_FAILURE_BOUNDARY=2500
+APO_HISTORY_GPU_FAILURE_BOUNDARY=975
+APO_HISTORY_PAIR_FRONTIERS=''
 
 # The ambiguous frontier forbids its northeast quadrant, not either scalar
 # domain independently.
@@ -564,9 +655,9 @@ apo_history_resolve_new_overclock_plan
 [[ $(apo_state_get HISTORY_CPU_TRIAL_CPU '') == 3050 ]]
 [[ $(apo_state_get HISTORY_CPU_TRIAL_GPU '') == 1200 ]]
 [[ $(apo_state_get HISTORY_GPU_TRIAL_CPU '') == 3075 ]]
-[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1175 ]]
+[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1185 ]]
 [[ $(apo_state_get HISTORY_PAIR_TRIAL_CPU '') == 3050 ]]
-[[ $(apo_state_get HISTORY_PAIR_TRIAL_GPU '') == 1175 ]]
+[[ $(apo_state_get HISTORY_PAIR_TRIAL_GPU '') == 1185 ]]
 [[ -z $APO_CPU_MIN && -z $APO_GPU_MIN ]]
 [[ $(apo_state_get CFG_CPU_MIN_SOURCE '') == automatic-baseline ]]
 [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]
@@ -585,7 +676,7 @@ apo_history_resolve_new_overclock_plan
 [[ -z $APO_CPU_MAX_REQUESTED && -z $APO_GPU_MAX_REQUESTED ]]
 [[ $APO_CPU_MAX == 3075 && $APO_GPU_MAX == 1200 ]]
 [[ $(apo_state_get HISTORY_CPU_TRIAL_CPU '') == 3050 ]]
-[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1175 ]]
+[[ $(apo_state_get HISTORY_GPU_TRIAL_GPU '') == 1185 ]]
 [[ -z $APO_CPU_MIN && -z $APO_GPU_MIN ]]
 [[ ${#history_announcements[@]} == 4 ]]
 APO_CPU_RESOLUTION_MHZ=5

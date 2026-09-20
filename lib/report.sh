@@ -62,7 +62,7 @@ apo_report_selection_policy() {
 }
 
 apo_status_controller_state() {
-    local lock_file="${APO_OUTPUT_DIR}/.${APO_TARGET_SLUG}.lock" lock_fd
+    local lock_file="${APO_TARGET_STATE_DIR}/.lock" lock_fd
     if ! command -v flock >/dev/null 2>&1; then
         APO_STATUS_CONTROLLER_STATE=UNKNOWN
         return 0

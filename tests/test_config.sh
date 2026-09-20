@@ -395,6 +395,56 @@ fi
 [[ $(apo_config_auto_ladder 1100 50 1200 200) == '1150,1200' ]]
 [[ -z $(apo_config_auto_ladder 1200 50 1200 200) ]]
 
+completed_ledger_evidence=failure-ledger-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+apo_config_stock_auto_baseline_ready 3050 1125 0 verified-completed-ledger "$completed_ledger_evidence"
+(
+    APO_PUBLIC_COMMAND=overclock
+    apo_config_require_stock_auto_baseline 3050 1125 0 verified-completed-ledger "$completed_ledger_evidence"
+)
+
+# A completed floor may exhaust one domain while the other still has legal
+# resolution-aligned headroom. Both exhausted domains stop before a run starts.
+(
+    APO_COMMAND=run
+    APO_PUBLIC_COMMAND=overclock
+    APO_DRY_RUN=0
+    APO_CONFIG_FILE=''
+    APO_MODE_REQUESTED=auto
+    APO_SWEEP_DOMAIN=all
+    APO_CPU_MIN=''
+    APO_GPU_MIN=''
+    APO_CPU_MAX=3050
+    APO_GPU_MAX=1175
+    APO_CPU_MAX_OPTION_SEEN=0
+    APO_GPU_MAX_OPTION_SEEN=0
+    APO_CPU_SEARCH_DIRECTION=forward
+    APO_GPU_SEARCH_DIRECTION=forward
+    apo_config_load_for_new_run
+    resolve_discovered_auto_plan debian 3050 1125 0 verified-completed-ledger "$completed_ledger_evidence"
+    [[ -z ${APO_CFG[CPU_CANDIDATES]} ]]
+    [[ ${APO_CFG[GPU_CANDIDATES]} == '1150,1175' ]]
+)
+if (
+    APO_COMMAND=run
+    APO_PUBLIC_COMMAND=overclock
+    APO_DRY_RUN=0
+    APO_CONFIG_FILE=''
+    APO_MODE_REQUESTED=auto
+    APO_SWEEP_DOMAIN=all
+    APO_CPU_MIN=''
+    APO_GPU_MIN=''
+    APO_CPU_MAX=3050
+    APO_GPU_MAX=1125
+    APO_CPU_MAX_OPTION_SEEN=0
+    APO_GPU_MAX_OPTION_SEEN=0
+    apo_config_load_for_new_run
+    resolve_discovered_auto_plan debian 3050 1125 0 verified-completed-ledger "$completed_ledger_evidence"
+) >"$TEMP_DIR/completed-no-headroom.out" 2>&1; then
+    echo 'completed floor accepted a plan with no candidate in either domain' >&2
+    exit 1
+fi
+grep -Fq 'No untested CPU or GPU clock remains above the protected applied floor' "$TEMP_DIR/completed-no-headroom.out"
+
 (
     APO_COMMAND=run
     APO_PUBLIC_COMMAND=overclock
@@ -431,6 +481,12 @@ expect_auto_max_below_current_rejection() {
         APO_GPU_MIN=''
         APO_CPU_MAX=$cpu_max
         APO_GPU_MAX=$gpu_max
+        APO_CPU_MAX_OPTION_SEEN=0
+        APO_GPU_MAX_OPTION_SEEN=0
+        case $domain in
+            cpu) APO_CPU_MAX_OPTION_SEEN=1 ;;
+            gpu) APO_GPU_MAX_OPTION_SEEN=1 ;;
+        esac
         apo_config_load_for_new_run
         resolve_discovered_auto_plan debian 2400 960 0
     ) >"$output_file" 2>&1
