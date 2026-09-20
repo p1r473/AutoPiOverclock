@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.87 - 2026-09-20
+
+- Corrected status, summary, report, and startup wording for final validation. Genuine clock, health, and workload failures restart the complete requirement, while strictly proved network-watchdog reboots retain only validated target-reported credit at unchanged clocks.
+- Added saved final-credit reporting with the exact credited duration and replacement-segment duration when the retained checkpoint matches the current final gate.
+
 ## 0.1.0-alpha.85 - 2026-09-19
 
 - Reduced the temporary controller companion startup grace and continuous network-failure window from 180 seconds to 60 seconds. Native Debian watchdog targets, repair binaries, configuration, and timeouts remain untouched.

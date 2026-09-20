@@ -204,9 +204,9 @@ Commands:
   complete   Simplify the applied config and delete this target's retained run artifacts
   report     Generate a concise report for a selected or latest run
 
-  Automatic defaults are 2-hour domain qualifications and one uninterrupted
-  48-hour combined final validation. Each domain refines to 25 MHz by default,
-  qualifies separately, and then enters combined final validation.
+  Automatic defaults are 2-hour domain qualifications and 48 hours of accepted
+  combined final workload. Genuine failures restart that requirement; strictly
+  proved network-watchdog reboots retain only target-reported completed work.
 
 Target:
   hostname | IP | username@hostname | username@IP
@@ -1518,7 +1518,7 @@ apo_start_new_run() {
     else
         apo_summary_line "Candidate duration: ${APO_CFG[CANDIDATE_DURATION_S]}s"
         apo_summary_line "CPU/GPU qualification duration: ${APO_QUALIFICATION_DURATION_S}s each"
-        apo_summary_line "Uninterrupted combined final duration: ${APO_CFG[FINAL_DURATION_S]}s"
+        apo_summary_line "Combined final workload requirement: ${APO_CFG[FINAL_DURATION_S]}s"
         if (( APO_EDGE_CPU_24H == 1 )); then
             apo_summary_line "Legacy edge duration: ${APO_EDGE_DURATION_S}s"
         fi
@@ -1536,7 +1536,8 @@ apo_start_new_run() {
         apo_summary_line "Automatic selection policy: ${APO_SELECTION_POLICY:-adaptive-refined-v1}"
         apo_summary_line "CPU qualification: ${APO_QUALIFICATION_DURATION_S}s with GPU held at its selected clock"
         apo_summary_line "GPU qualification: ${APO_QUALIFICATION_DURATION_S}s with CPU held at its selected clock"
-        apo_summary_line "Final validation: ${APO_CFG[FINAL_DURATION_S]}s uninterrupted combined CPU/GPU/I/O"
+        apo_summary_line "Final validation requirement: ${APO_CFG[FINAL_DURATION_S]}s accepted combined CPU/GPU/I/O workload"
+        apo_summary_line 'Final credit policy: genuine failures restart from zero; proved network-watchdog reboots retain target-reported completed work'
     fi
     apo_summary_line ''
     apo_event run-start INFO '' "command=$APO_ORIGIN_COMMAND version=$APO_VERSION"

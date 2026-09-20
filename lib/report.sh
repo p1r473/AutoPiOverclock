@@ -61,6 +61,35 @@ apo_report_selection_policy() {
     apo_state_get CFG_SELECTION_POLICY guarded-v1
 }
 
+apo_report_matching_final_credit() {
+    local duration=$1 credit context credit_duration event context_phase context_hash
+    credit=$(apo_state_get REMOTE_STRESS_CREDIT_SECONDS 0)
+    context=$(apo_state_get REMOTE_STRESS_CREDIT_CONTEXT '')
+    credit_duration=$(apo_state_get REMOTE_STRESS_CREDIT_DURATION_S '')
+    event=$(apo_state_get REMOTE_STRESS_CREDIT_EVENT_ID '')
+    context_phase=${context%%:*}
+    context_hash=${context#*:}
+    if apo_validate_uint_range "$duration" 1 "$APO_MAX_TUNING_DURATION_S" &&
+       apo_validate_uint_range "$credit" 1 "$APO_MAX_TUNING_DURATION_S" &&
+       (( credit < duration )) && [[ $credit_duration == "$duration" &&
+          $context_phase == final-endurance && $context != "$context_hash" &&
+          $context_hash =~ ^[0-9a-f]{64}$ && $event =~ ^[0-9a-f]{32}$ ]]; then
+        printf '%s' "$credit"
+    else
+        printf 0
+    fi
+}
+
+apo_report_final_credit_text() {
+    local duration=$1 credit
+    credit=$(apo_report_matching_final_credit "$duration")
+    if (( credit > 0 )); then
+        printf '%ss of %ss; replacement segment=%ss' "$credit" "$duration" "$((duration - credit))"
+    else
+        printf none
+    fi
+}
+
 apo_status_controller_state() {
     local lock_file="${APO_TARGET_STATE_DIR}/.lock" lock_fd
     if ! command -v flock >/dev/null 2>&1; then
@@ -352,7 +381,7 @@ EOF_LIVE
 
 apo_print_saved_status() {
     local policy sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
-    local cpu_effective_max gpu_effective_max history_policy
+    local cpu_effective_max gpu_effective_max history_policy final_duration
     local auto_cpu_max=${APO_AUTO_CPU_MAX_MHZ:-3200} auto_gpu_max=${APO_AUTO_GPU_MAX_MHZ:-1200}
     policy=$(apo_report_selection_policy)
     sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
@@ -373,6 +402,7 @@ apo_print_saved_status() {
             ;;
     esac
     history_policy=$([[ $(apo_state_get CFG_USE_HISTORY 0) == 1 ]] && printf enabled || printf disabled)
+    final_duration=$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")
     cat <<EOF_STATUS
 AutoPiOverclock ${APO_VERSION}
 Run ID:         $(apo_report_state_value RUN_ID unknown)
@@ -411,8 +441,10 @@ EOF_STATUS
         printf 'Selected clocks: CPU %s MHz / GPU %s MHz\n' \
             "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
             "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
-        printf 'Final duration:  %ss uninterrupted; failed attempts receive no time credit\n' \
+        printf 'Final requirement: %ss accepted combined workload\n' \
             "$(apo_report_state_value CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")"
+        printf 'Final policy:    genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit\n'
+        printf 'Saved final credit: %s\n' "$(apo_report_final_credit_text "$final_duration")"
         printf 'Final recovery:  anchor=%s/%sMHz trial=%s history=%s\n' \
             "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_CPU none)" \
             "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_GPU none)" \
@@ -496,7 +528,7 @@ apo_summary_next_action() {
 }
 
 apo_print_summary() {
-    local phase qualification_duration final_duration policy sweep_domain
+    local phase qualification_duration final_duration final_duration_seconds policy sweep_domain
     apo_print_live_status
     printf '\nRun story\n=========\n'
     if [[ -z ${APO_STATE_FILE:-} ]]; then
@@ -506,7 +538,8 @@ apo_print_summary() {
     fi
     phase=$(apo_report_friendly_phase "$(apo_state_get PHASE '')")
     qualification_duration=$(apo_report_duration "$(apo_state_get CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")")
-    final_duration=$(apo_report_duration "$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")")
+    final_duration_seconds=$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")
+    final_duration=$(apo_report_duration "$final_duration_seconds")
     policy=$(apo_report_selection_policy)
     sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
     cat <<EOF_SUMMARY
@@ -518,7 +551,9 @@ Search:         CPU passes=$(apo_report_state_value PASSED_CPUS none), boundary=
 CPU decision:   $(apo_report_state_value CPU_QUALIFICATION_STATUS NOT_STARTED), target=$(apo_report_state_value CPU_QUALIFICATION_TARGET pending) MHz, qualified=$(apo_report_state_value CPU_QUALIFIED_CLOCK pending) MHz
 GPU decision:   $(apo_report_state_value GPU_QUALIFICATION_STATUS NOT_STARTED), target=$(apo_report_state_value GPU_QUALIFICATION_CPU pending)/$(apo_report_state_value GPU_QUALIFICATION_TARGET pending) MHz, qualified=$(apo_report_state_value GPU_QUALIFIED_CPU pending)/$(apo_report_state_value GPU_QUALIFIED_CLOCK pending) MHz
 Selected pair:  CPU $(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)") MHz / GPU $(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)") MHz
-Test lengths:   qualification=$qualification_duration per domain; final=$final_duration uninterrupted
+Test lengths:   qualification=$qualification_duration per domain; final requirement=$final_duration combined workload
+Final policy:   genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit
+Saved credit:   $(apo_report_final_credit_text "$final_duration_seconds")
 Final recovery: retries=$(apo_report_state_value FINAL_BACKOFF_COUNT 0), trial=$(apo_report_state_value FINAL_BACKOFF_TRIAL none), history=$(apo_report_state_value FINAL_BACKOFF_HISTORY none)
 Final proof:    validated=$(apo_report_state_value VALIDATED 0), duration=$(apo_report_duration "$(apo_state_get VALIDATION_DURATION_S '')"), clocks=CPU $(apo_report_state_value FINAL_CPU pending) / GPU $(apo_report_state_value FINAL_GPU pending) MHz
 Application:    $(apo_report_state_value APPLY_STATUS NOT_APPLIED)
@@ -534,7 +569,7 @@ EOF_SUMMARY
 
 apo_generate_report() {
     local report_file policy sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
-    local cpu_effective_max gpu_effective_max history_policy
+    local cpu_effective_max gpu_effective_max history_policy final_duration
     local auto_cpu_max=${APO_AUTO_CPU_MAX_MHZ:-3200} auto_gpu_max=${APO_AUTO_GPU_MAX_MHZ:-1200}
     if [[ ${APO_REDACT:-0} == 1 ]]; then
         # Do not inherit APO_RUN_PREFIX: it contains the target slug.
@@ -561,6 +596,7 @@ apo_generate_report() {
             ;;
     esac
     history_policy=$([[ $(apo_state_get CFG_USE_HISTORY 0) == 1 ]] && printf enabled || printf disabled)
+    final_duration=$(apo_state_get CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")
     {
         printf 'AutoPiOverclock run report\n'
         printf '==========================\n'
@@ -646,10 +682,12 @@ apo_generate_report() {
                 "$(apo_report_state_value POST_FLOOR_FINAL 0)" "$(apo_report_state_value SOURCE_FINAL_RUN_ID none)" \
                 "$(apo_report_state_value POST_FLOOR_FINAL_STAGE none)"
         fi
-        printf 'Duration policy: %s (qualification=%ss each, final=%ss uninterrupted)\n' \
+        printf 'Duration policy: %s (qualification=%ss each, final requirement=%ss accepted combined workload)\n' \
             "$(apo_report_state_value CFG_DURATION_POLICY default)" \
             "$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")" \
             "$(apo_report_state_value CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")"
+        printf 'Final credit policy: genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit\n'
+        printf 'Saved final credit: %s\n' "$(apo_report_final_credit_text "$final_duration")"
         printf 'Manual stability test: status=%s, CPU=%s MHz, GPU=%s MHz, duration=%s\n' \
             "$(apo_report_state_value MANUAL_TEST_STATUS NOT_REQUESTED)" "$(apo_report_state_value MANUAL_CPU n/a)" \
             "$(apo_report_state_value MANUAL_GPU n/a)" "$(apo_report_manual_duration)"

@@ -145,7 +145,9 @@ grep -Fq 'Quick health:   GOOD' <<< "$status_output"
 grep -Fq 'Tryboot:        CLEAR' <<< "$status_output"
 grep -Fq 'CPU passes=3000,3100, boundary=3125 MHz' <<< "$summary_output"
 grep -Fq 'GPU passes=1150,1175, boundary=1200 MHz' <<< "$summary_output"
-grep -Fq 'qualification=2h per domain; final=24h uninterrupted' <<< "$summary_output"
+grep -Fq 'qualification=2h per domain; final requirement=24h combined workload' <<< "$summary_output"
+grep -Fq 'Final policy:   genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit' <<< "$summary_output"
+grep -Fq 'Saved credit:   none' <<< "$summary_output"
 grep -Fq 'validated=1, duration=24h, clocks=CPU 3100 / GPU 1175 MHz' <<< "$summary_output"
 
 APO_REDACT=1

@@ -257,6 +257,7 @@ APO_VERSION=fixture
 APO_REDACT=0
 apo_state_set CFG_MAX_FAN 0
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
+apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
 apo_state_set CFG_CPU_SEARCH_DIRECTION descending
 apo_state_set CFG_CPU_RESOLUTION_MHZ 10
 apo_state_set CFG_GPU_SEARCH_DIRECTION forward
@@ -265,12 +266,58 @@ status_output=$(apo_print_status)
 grep -Fq 'Max fan tuning: disabled' <<< "$status_output"
 grep -Fq 'Gate retries:   0/5 context=none' <<< "$status_output"
 grep -Fq 'Search policy:   CPU descending at 10 MHz resolution / GPU forward at 5 MHz resolution' <<< "$status_output"
+grep -Fq 'Final requirement: 172800s accepted combined workload' <<< "$status_output"
+grep -Fq 'Final policy:    genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit' <<< "$status_output"
+grep -Fq 'Saved final credit: none' <<< "$status_output"
+if grep -Fq 'failed attempts receive no time credit' <<< "$status_output"; then
+    echo 'status retained the obsolete universal no-credit policy' >&2
+    exit 1
+fi
 APO_RUN_PREFIX="$TEMP_DIR/fixture-report"
 report_output=$(apo_generate_report)
 grep -Fq 'Maximum fan cooling during tuning: disabled' "$TEMP_DIR/fixture-report-report.txt"
 grep -Fq 'Automatic gate retries: 0/5, context=none' "$TEMP_DIR/fixture-report-report.txt"
 grep -Fq 'Automatic search: CPU descending at 10 MHz resolution, GPU forward at 5 MHz resolution' "$TEMP_DIR/fixture-report-report.txt"
+grep -Fq 'final requirement=172800s accepted combined workload' "$TEMP_DIR/fixture-report-report.txt"
+grep -Fq 'Saved final credit: none' "$TEMP_DIR/fixture-report-report.txt"
 grep -Fq 'Report file:' <<< "$report_output"
+
+# Reporting accepts only the same proof-bound final credit shape used by the
+# progress calculation. It shows the immutable replacement-segment length,
+# not controller outage time or an estimate of live work since resume.
+FINAL_CREDIT_SPEC=$(printf 'a%.0s' {1..64})
+FINAL_CREDIT_EVENT=$(printf 'b%.0s' {1..32})
+apo_state_set CFG_FINAL_DURATION_S 360000
+apo_state_set REMOTE_STRESS_CREDIT_CONTEXT "final-endurance:$FINAL_CREDIT_SPEC"
+apo_state_set REMOTE_STRESS_CREDIT_SECONDS 252928
+apo_state_set REMOTE_STRESS_CREDIT_DURATION_S 360000
+apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID "$FINAL_CREDIT_EVENT"
+credit_status_output=$(apo_print_status)
+credit_summary_output=$(apo_print_summary)
+grep -Fq 'Saved final credit: 252928s of 360000s; replacement segment=107072s' <<< "$credit_status_output"
+grep -Fq 'Saved credit:   252928s of 360000s; replacement segment=107072s' <<< "$credit_summary_output"
+APO_RUN_PREFIX="$TEMP_DIR/credit-report"
+apo_generate_report >/dev/null
+grep -Fq 'Saved final credit: 252928s of 360000s; replacement segment=107072s' "$TEMP_DIR/credit-report-report.txt"
+
+apo_state_set REMOTE_STRESS_CREDIT_DURATION_S 172800
+mismatched_credit_output=$(apo_print_status)
+grep -Fq 'Saved final credit: none' <<< "$mismatched_credit_output"
+if grep -Fq '252928s of 360000s' <<< "$mismatched_credit_output"; then
+    echo 'status displayed credit from a different final-duration plan' >&2
+    exit 1
+fi
+
+for invalid_credit in 0 360000 360001 999999999999999999999999999999; do
+    apo_state_set REMOTE_STRESS_CREDIT_SECONDS "$invalid_credit"
+    apo_state_set REMOTE_STRESS_CREDIT_DURATION_S 360000
+    invalid_credit_output=$(apo_print_status)
+    grep -Fq 'Saved final credit: none' <<< "$invalid_credit_output"
+done
+apo_state_set REMOTE_STRESS_CREDIT_CONTEXT ''
+apo_state_set REMOTE_STRESS_CREDIT_SECONDS 0
+apo_state_set REMOTE_STRESS_CREDIT_DURATION_S ''
+apo_state_set REMOTE_STRESS_CREDIT_EVENT_ID ''
 
 # Every state scalar rendered by status/summary/report passes through one terminal-safe
 # boundary. Printable UTF-8 is retained; line breaks, ANSI escapes, and other
