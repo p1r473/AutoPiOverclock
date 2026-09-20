@@ -137,13 +137,13 @@ apo_complete_cleanup_controller_watchdog_records() {
 }
 
 apo_complete_write_run_manifest() {
-    local destination=$1 run_id
+    local manifest_path=$1 run_id
     umask 077
-    : > "$destination" || return 1
+    : > "$manifest_path" || return 1
     for run_id in "${APO_COMPLETE_RUN_IDS[@]}"; do
-        printf '%s\n' "$run_id" >> "$destination" || return 1
+        printf '%s\n' "$run_id" >> "$manifest_path" || return 1
     done
-    chmod 600 "$destination"
+    chmod 600 "$manifest_path"
 }
 
 apo_complete_show_plan() {

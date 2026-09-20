@@ -109,7 +109,7 @@ apo_history_scan_retained_states
 APO_COMMAND=run
 APO_AUTO_GENERATED_CANDIDATES=1
 APO_SWEEP_DOMAIN=all
-APO_PERMANENT_TUNING_PROVENANCE=verified-applied
+APO_PERMANENT_TUNING_PROVENANCE='verified-applied'
 APO_PERMANENT_TUNING_EVIDENCE=applied-run
 APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 apo_history_adopt_completed_baseline

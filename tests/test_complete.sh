@@ -53,6 +53,8 @@ EOF
 
 test_worker_renderer() {
     local worker=$1 profile_dir=$2 input expected rendered invalid
+    local APO_WORKER_LIBRARY_ONLY=1
+    export APO_WORKER_LIBRARY_ONLY
     input="${profile_dir}/config.txt"
     expected="${profile_dir}/expected.txt"
     rendered="${profile_dir}/rendered.txt"
@@ -62,7 +64,6 @@ test_worker_renderer() {
     write_expected_config "$expected"
 
     (
-        export APO_WORKER_LIBRARY_ONLY=1
         source "$worker"
         complete_validate_config "$input" 3050 1200 v3d_freq 0 selected-run
         complete_render_config "$input" "$rendered" 3050 1200 v3d_freq 0
@@ -72,7 +73,10 @@ test_worker_renderer() {
     [[ $(grep -c '^arm_freq=3050$' "$rendered") == 1 ]]
     [[ $(grep -c '^v3d_freq=1200$' "$rendered") == 1 ]]
     [[ $(grep -c '^over_voltage_delta=0$' "$rendered") == 1 ]]
-    ! grep -Fq 'AUTOPIOVERCLOCK' "$rendered"
+    if grep -Fq 'AUTOPIOVERCLOCK' "$rendered"; then
+        printf 'completed config retained project-owned metadata: %s\n' "$worker" >&2
+        return 1
+    fi
     grep -Fxq '# User header stays exactly here' "$rendered"
     grep -Fxq 'dtparam=fan_temp=65000' "$rendered"
     grep -Fxq 'dtparam=fan_temp=60000' "$rendered"
@@ -81,7 +85,6 @@ test_worker_renderer() {
     cp -- "$input" "$invalid"
     printf 'arm_freq=3100\n' >> "$invalid"
     if (
-        export APO_WORKER_LIBRARY_ONLY=1
         source "$worker"
         complete_validate_config "$invalid" 3050 1200 v3d_freq 0 selected-run
     ); then
@@ -92,7 +95,6 @@ test_worker_renderer() {
     cp -- "$input" "$invalid"
     printf 'include extra.txt\n' >> "$invalid"
     if (
-        export APO_WORKER_LIBRARY_ONLY=1
         source "$worker"
         complete_validate_config "$invalid" 3050 1200 v3d_freq 0 selected-run
     ); then
@@ -103,7 +105,6 @@ test_worker_renderer() {
     cp -- "$rendered" "$invalid"
     printf 'arm_freq=3050\n' >> "$invalid"
     if (
-        export APO_WORKER_LIBRARY_ONLY=1
         source "$worker"
         complete_validate_sealed_config "$invalid" 3050 1200 v3d_freq 0
     ); then
@@ -112,7 +113,6 @@ test_worker_renderer() {
     fi
 
     if (
-        export APO_WORKER_LIBRARY_ONLY=1
         source "$worker"
         complete_validate_config "$input" 3050 1200 v3d_freq 0 wrong-run
     ); then

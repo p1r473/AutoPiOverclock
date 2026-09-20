@@ -360,7 +360,7 @@ apo_history_load_machine_ledger() {
                 if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" ]]; then return 1; fi
                 if [[ $line == "$APO_HISTORY_MACHINE_END" ]]; then
                     end_count=$((end_count + 1))
-                    section=done
+                    section=finished
                     continue
                 fi
                 kind=''; key=''; encoded=''; extra=''
@@ -385,7 +385,7 @@ apo_history_load_machine_ledger() {
                     *) return 1 ;;
                 esac
                 ;;
-            done)
+            finished)
                 [[ -z $line ]] || return 1
                 ;;
         esac
@@ -1696,12 +1696,12 @@ apo_history_refresh() {
 
 apo_history_adopt_completed_baseline() {
     local ledger_file ledger_rc ledger_hash provenance=${APO_PERMANENT_TUNING_PROVENANCE:-missing}
-    local evidence=${APO_PERMANENT_TUNING_EVIDENCE:-missing}
+    local tuning_evidence=${APO_PERMANENT_TUNING_EVIDENCE:-missing}
 
     APO_HISTORY_COMPLETED_BASELINE_ADOPTED=0
     [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 && ${APO_SWEEP_DOMAIN:-all} == all ]] || return 1
     [[ ${APO_COMMAND:-} == run || ${APO_COMMAND:-} == prepare ]] || return 1
-    if [[ $provenance == verified-default && $evidence == none ]]; then
+    if [[ $provenance == verified-default && $tuning_evidence == none ]]; then
         return 1
     fi
     ledger_file=$(apo_history_ledger_path) || {
