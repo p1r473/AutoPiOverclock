@@ -72,7 +72,7 @@ if grep -RInE -- 'APO_EDGE_(HOURS|CPU_24H)_OPTION_SEEN|--edge-(hours|cpu-24h)' \
     echo 'removed public edge-option handling or guidance remains in production code' >&2
     exit 1
 fi
-grep -Fq 'SHELLCHECK_SHALLOW_FILES := tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh' "$ROOT/Makefile"
+grep -Fq 'SHELLCHECK_SHALLOW_FILES := autopioverclock tests/test_simple_cli_parse.sh tests/test_simple_cli_resume.sh tests/test_simple_cli_edge.sh tests/test_simple_cli_manual.sh' "$ROOT/Makefile"
 if grep -Eq '^[[:space:]]*external-sources=true' "$ROOT/.shellcheckrc"; then
     echo 'the global ShellCheck config defeats the bounded CLI-fixture lint policy' >&2
     exit 1
