@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.85 - 2026-09-19
+
+- Reduced the temporary controller companion startup grace and continuous network-failure window from 180 seconds to 60 seconds. Native Debian watchdog targets, repair binaries, configuration, and timeouts remain untouched.
+
 ## 0.1.0-alpha.84 - 2026-09-17
 
 - Fixed conservative replay after an unattributed target reboot so it grants no time from the interrupted segment but retains any earlier proof-bound credit for the identical stress gate. Only the uncredited remainder is replayed; mismatched or malformed credit still clears, and unrelated harness retries still restart their complete gate.

@@ -54,6 +54,8 @@ rm "$APO_CONTROLLER_WATCHDOG_ROOT"
 
 cmd_ensure "$KEEPER_SOURCE" "$SERVICE_SOURCE" run-a >"$RESULT"
 grep -Fqx 'APO_RESULT_CLASS=PASS' "$RESULT"
+grep -Fqx 'STARTUP_GRACE_SECONDS=60' "$LIVE_CONFIG"
+grep -Fqx 'FAILURE_WINDOW_SECONDS=60' "$LIVE_CONFIG"
 grep -Fqx 'MAX_REBOOTS=0' "$LIVE_CONFIG"
 [[ -f $LIVE_KEEPER && -f $LIVE_SERVICE && -f $LEASE_ROOT/run-a.lease ]]
 # Exercise create_lease without a dynamically scoped caller variable. Its path
