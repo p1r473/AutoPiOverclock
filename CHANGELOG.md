@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.88 - 2026-09-21
+
+- Fixed `complete` falsely rejecting an abandoned controller checkpoint whose saved status remained `RUNNING` or `PREPARING` after the controller had exited. The command already holds the exclusive target lock before this check, and it now identifies those stale controller-only checkpoints in the cleanup plan.
+- Preserved the hard refusal for any retained target-side stress ownership, run-owned target watchdog companion, unsafe path, foreign ownership, invalid lease, tryboot state, config mismatch, or failed health verification.
+
 ## 0.1.0-alpha.87 - 2026-09-20
 
 - Corrected status, summary, report, and startup wording for final validation. Genuine clock, health, and workload failures restart the complete requirement, while strictly proved network-watchdog reboots retain only validated target-reported credit at unchanged clocks.

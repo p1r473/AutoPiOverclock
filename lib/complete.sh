@@ -3,6 +3,7 @@
 
 APO_COMPLETE_RUN_IDS=()
 APO_COMPLETE_LEASE_IDS=()
+APO_COMPLETE_STALE_CONTROLLER_RUN_IDS=()
 APO_COMPLETE_EXPECTED_HASH=''
 
 apo_complete_valid_hash() { [[ ${1-} =~ ^[0-9a-f]{64}$ ]]; }
@@ -56,6 +57,7 @@ apo_complete_collect_target_runs() {
     local -a candidates=()
     APO_COMPLETE_RUN_IDS=()
     APO_COMPLETE_LEASE_IDS=()
+    APO_COMPLETE_STALE_CONTROLLER_RUN_IDS=()
     shopt -s nullglob
     candidates=("${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"*.state)
     shopt -u nullglob
@@ -80,8 +82,14 @@ apo_complete_collect_target_runs() {
             apo_die "Complete found retained state whose identity does not match its filename: $state_file" "$APO_EXIT_INTERNAL"
         status=${fields[STATUS]:-}
         remote_status=${fields[REMOTE_STRESS_STATUS]:-IDLE}
-        if [[ $status == RUNNING || $status == PREPARING || $remote_status == RUNNING ]]; then
-            apo_die "Complete refuses cleanup while retained run $run_id may still be active." "$APO_EXIT_USAGE"
+        if [[ $remote_status == RUNNING ]]; then
+            apo_die "Complete refuses cleanup while retained run $run_id still owns a target-side stress job." "$APO_EXIT_USAGE"
+        fi
+        if [[ $status == RUNNING || $status == PREPARING ]]; then
+            # complete already owns the exclusive per-target controller lock.
+            # A retained controller status can therefore be stale, but target-
+            # side stress ownership above remains a hard refusal.
+            apo_complete_add_unique "$run_id" APO_COMPLETE_STALE_CONTROLLER_RUN_IDS
         fi
         target_companion=${fields[NETWORK_WATCHDOG_INSTALLED_BY_RUN]:-0}
         [[ $target_companion == 0 || $target_companion == 1 ]] ||
@@ -165,6 +173,10 @@ apo_complete_show_plan() {
     printf '=======================================\n\n' >&2
     printf 'Controller and target run IDs scheduled for cleanup:\n' >&2
     for run_id in "${APO_COMPLETE_RUN_IDS[@]}"; do printf '  %s\n' "$run_id" >&2; done
+    if (( ${#APO_COMPLETE_STALE_CONTROLLER_RUN_IDS[@]} > 0 )); then
+        printf '\nAbandoned controller checkpoints accepted after exclusive target-lock verification:\n' >&2
+        for run_id in "${APO_COMPLETE_STALE_CONTROLLER_RUN_IDS[@]}"; do printf '  %s\n' "$run_id" >&2; done
+    fi
     printf '\nPermanent native watchdogs and the permanent Batocera watchdog are preserved.\n' >&2
 }
 

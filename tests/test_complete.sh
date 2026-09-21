@@ -51,6 +51,35 @@ dtparam=fan_temp_speed=180
 EOF
 }
 
+write_state_field() {
+    local destination=$1 key=$2 value=${3-}
+    printf '%s\t' "$key" >> "$destination"
+    printf '%s' "$value" | base64 | tr -d '\n' >> "$destination"
+    printf '\n' >> "$destination"
+}
+
+write_retained_state() {
+    local destination=$1 run_id=$2 status=$3 remote_status=${4-__OMIT__}
+    : > "$destination"
+    write_state_field "$destination" FORMAT_VERSION 1
+    write_state_field "$destination" RUN_ID "$run_id"
+    write_state_field "$destination" TARGET_SLUG tron
+    write_state_field "$destination" REMOTE_TARGET pi@tron
+    write_state_field "$destination" STATUS "$status"
+    if [[ $remote_status != __OMIT__ ]]; then
+        write_state_field "$destination" REMOTE_STRESS_STATUS "$remote_status"
+    fi
+}
+
+array_has_value() {
+    local needle=$1 item
+    shift
+    for item in "$@"; do
+        [[ $item == "$needle" ]] && return 0
+    done
+    return 1
+}
+
 test_worker_renderer() {
     local worker=$1 profile_dir=$2 input expected rendered invalid
     local APO_WORKER_LIBRARY_ONLY=1
@@ -123,6 +152,49 @@ test_worker_renderer() {
 
 test_worker_renderer "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian"
 test_worker_renderer "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera"
+
+# The public complete command owns the exclusive target lock before it reaches
+# retained-state collection. Stale controller-only RUNNING or PREPARING text is
+# therefore safe to show and clean, but durable target stress ownership is not.
+(
+    APO_ROOT=$ROOT
+    source "$ROOT/lib/common.sh"
+    source "$ROOT/lib/state.sh"
+    source "$ROOT/lib/complete.sh"
+
+    APO_TARGET_SLUG=tron
+    APO_REMOTE_TARGET=pi@tron
+    APO_RUN_ID=selected-run
+    APO_OUTPUT_DIR="$TEST_ROOT/collect-stale"
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    write_retained_state "$APO_OUTPUT_DIR/tron-stale-run.state" stale-run RUNNING
+    write_retained_state "$APO_OUTPUT_DIR/tron-preparing-run.state" preparing-run PREPARING IDLE
+
+    apo_complete_collect_target_runs
+    array_has_value stale-run "${APO_COMPLETE_RUN_IDS[@]}"
+    array_has_value preparing-run "${APO_COMPLETE_RUN_IDS[@]}"
+    array_has_value selected-run "${APO_COMPLETE_RUN_IDS[@]}"
+    array_has_value stale-run "${APO_COMPLETE_STALE_CONTROLLER_RUN_IDS[@]}"
+    array_has_value preparing-run "${APO_COMPLETE_STALE_CONTROLLER_RUN_IDS[@]}"
+)
+
+if (
+    APO_ROOT=$ROOT
+    source "$ROOT/lib/common.sh"
+    source "$ROOT/lib/state.sh"
+    source "$ROOT/lib/complete.sh"
+
+    APO_TARGET_SLUG=tron
+    APO_REMOTE_TARGET=pi@tron
+    APO_RUN_ID=selected-run
+    APO_OUTPUT_DIR="$TEST_ROOT/collect-active-target"
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    write_retained_state "$APO_OUTPUT_DIR/tron-active-run.state" active-run RUNNING RUNNING
+    apo_complete_collect_target_runs
+) 2>/dev/null; then
+    printf 'complete accepted a retained target-side stress job\n' >&2
+    exit 1
+fi
 
 # Controller cleanup is target scoped. It removes every known artifact for the
 # completed target, including public reports, and preserves durable history.
