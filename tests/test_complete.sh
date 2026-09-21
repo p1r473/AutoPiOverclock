@@ -53,9 +53,11 @@ EOF
 
 write_state_field() {
     local destination=$1 key=$2 value=${3-}
-    printf '%s\t' "$key" >> "$destination"
-    printf '%s' "$value" | base64 | tr -d '\n' >> "$destination"
-    printf '\n' >> "$destination"
+    {
+        printf '%s\t' "$key"
+        printf '%s' "$value" | base64 | tr -d '\n'
+        printf '\n'
+    } >> "$destination"
 }
 
 write_retained_state() {
@@ -156,6 +158,7 @@ test_worker_renderer "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera"
 # The public complete command owns the exclusive target lock before it reaches
 # retained-state collection. Stale controller-only RUNNING or PREPARING text is
 # therefore safe to show and clean, but durable target stress ownership is not.
+# shellcheck disable=SC2030  # These controller globals are intentionally subshell-isolated.
 (
     APO_ROOT=$ROOT
     source "$ROOT/lib/common.sh"
@@ -178,6 +181,7 @@ test_worker_renderer "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera"
     array_has_value preparing-run "${APO_COMPLETE_STALE_CONTROLLER_RUN_IDS[@]}"
 )
 
+# shellcheck disable=SC2030  # These controller globals are intentionally subshell-isolated.
 if (
     APO_ROOT=$ROOT
     source "$ROOT/lib/common.sh"
