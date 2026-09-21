@@ -641,13 +641,22 @@ fi
 [[ ${#ACTIONS[@]} == 0 ]]
 
 # The final clocks, validation schema, and PASS/COMPLETE markers are one atomic
-# state checkpoint rather than two crash-separable writes.
+# state checkpoint rather than two crash-separable writes. A recovered run also
+# clears its active SSH-wait marker while retaining the historical wait count.
 APO_STATE=()
 SAVE_COUNT=0
+apo_state_set RECOVERY_WAIT_STATUS WAITING
+apo_state_set RECOVERY_WAIT_CONTEXT final-endurance-network-wait
+apo_state_set RECOVERY_WAIT_STARTED_AT 2026-09-16T14:30:03-04:00
+apo_state_set RECOVERY_WAIT_TIMEOUTS 15
 apo_state_complete 2900 850 "$APO_DEFAULT_FINAL_DURATION_S"
 [[ $SAVE_COUNT == 1 ]]
 [[ $(apo_state_get FINAL_CPU) == 2900 && $(apo_state_get FINAL_GPU) == 850 ]]
 [[ $(apo_state_get VALIDATED) == 1 && $(apo_state_get STATUS) == PASS ]]
+[[ $(apo_state_get RECOVERY_WAIT_STATUS) == IDLE ]]
+[[ -z $(apo_state_get RECOVERY_WAIT_CONTEXT '') ]]
+[[ -z $(apo_state_get RECOVERY_WAIT_STARTED_AT '') ]]
+[[ $(apo_state_get RECOVERY_WAIT_TIMEOUTS) == 15 ]]
 
 # Optional edge mode checkpoints the completed production floor, then uses the
 # immutable custom edge duration for the next 25 MHz CPU step.

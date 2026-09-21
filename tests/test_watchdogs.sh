@@ -1431,6 +1431,10 @@ APO_CLI_LIBRARY_ONLY=1 APO_ROOT="$ROOT" bash -c '
 
     APO_AUTO_APPLY=0
     CLEANUP_CALLS=0
+    SAVE_CALLS=0
+    RECOVERY_STATUS=WAITING
+    RECOVERY_CONTEXT=final-endurance-network-wait
+    RECOVERY_STARTED=2026-09-16T14:30:03-04:00
     apo_state_get() {
         case $1 in
             STATUS) printf PASS ;;
@@ -1438,13 +1442,28 @@ APO_CLI_LIBRARY_ONLY=1 APO_ROOT="$ROOT" bash -c '
             NETWORK_WATCHDOG_INSTALLED_BY_RUN) printf 1 ;;
             APPLY_STATUS) printf NOT_APPLIED ;;
             OVERCLOCK_COMPLETE_RECORDED) printf 0 ;;
+            RECOVERY_WAIT_STATUS) printf "%s" "$RECOVERY_STATUS" ;;
+            RECOVERY_WAIT_CONTEXT) printf "%s" "$RECOVERY_CONTEXT" ;;
+            RECOVERY_WAIT_STARTED_AT) printf "%s" "$RECOVERY_STARTED" ;;
+            RECOVERY_WAIT_TIMEOUTS) printf 15 ;;
             *) printf "%s" "${2-}" ;;
         esac
     }
+    apo_state_set() {
+        case $1 in
+            RECOVERY_WAIT_STATUS) RECOVERY_STATUS=$2 ;;
+            RECOVERY_WAIT_CONTEXT) RECOVERY_CONTEXT=$2 ;;
+            RECOVERY_WAIT_STARTED_AT) RECOVERY_STARTED=$2 ;;
+        esac
+    }
+    apo_state_save() { SAVE_CALLS=$((SAVE_CALLS + 1)); }
     apo_profile_cleanup_run_watchdog() { CLEANUP_CALLS=$((CLEANUP_CALLS + 1)); }
     apo_apply_recommendation() { printf "unexpected apply\n" >&2; return 1; }
     apo_finish_public_overclock
     [[ $CLEANUP_CALLS == 1 ]]
+    [[ $SAVE_CALLS == 1 ]]
+    [[ $RECOVERY_STATUS == IDLE ]]
+    [[ -z $RECOVERY_CONTEXT && -z $RECOVERY_STARTED ]]
 '
 
 for INSTALLER_SPEC in \

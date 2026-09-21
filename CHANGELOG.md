@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.90 - 2026-09-21
+
+- Fixed completed runs retaining an active `SSH recovery: WAITING` status and old recovery context after a safely resumed outage. Terminal success now records recovery as idle while preserving the cumulative extended-wait count as historical evidence.
+- Added regression coverage for both final-validation completion and final public cleanup, including repair of already completed retained runs when `resume` re-enters the idempotent cleanup path.
+
 ## 0.1.0-alpha.89 - 2026-09-21
 
 - Fixed `complete` target cleanup falsely rejecting old runs that legitimately have no deterministic apply or complete backup file. Literal optional backup paths are now skipped only when absent, while symlinks and non-file/non-directory objects still fail closed.

@@ -822,6 +822,12 @@ apo_state_clear_final_validation() {
     apo_state_set VALIDATED 0
 }
 
+apo_state_recovery_wait_idle() {
+    apo_state_set RECOVERY_WAIT_STATUS IDLE
+    apo_state_set RECOVERY_WAIT_CONTEXT ''
+    apo_state_set RECOVERY_WAIT_STARTED_AT ''
+}
+
 apo_state_complete() {
     local final_cpu=$1 final_gpu=$2 validation_duration=$3
     [[ -n $final_cpu && -n $final_gpu ]] &&
@@ -836,5 +842,8 @@ apo_state_complete() {
     apo_state_set SUBPHASE DONE
     apo_state_set FINAL_STAGE COMPLETE
     apo_state_set VALIDATED 1
+    # Recovery timeout count remains durable history, but a completed run is
+    # no longer actively waiting for SSH and must not report an old context.
+    apo_state_recovery_wait_idle
     apo_state_save
 }

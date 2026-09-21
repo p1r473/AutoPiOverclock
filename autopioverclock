@@ -1481,6 +1481,12 @@ apo_finish_public_overclock() {
         [[ $(apo_state_get APPLY_STATUS '') == APPLIED ]] || return 0
     fi
     apo_cleanup_completed_run_watchdog
+    if [[ $(apo_state_get RECOVERY_WAIT_STATUS IDLE) != IDLE ||
+          -n $(apo_state_get RECOVERY_WAIT_CONTEXT '') ||
+          -n $(apo_state_get RECOVERY_WAIT_STARTED_AT '') ]]; then
+        apo_state_recovery_wait_idle
+        apo_state_save
+    fi
     if [[ $(apo_state_get APPLY_STATUS '') == APPLIED && $(apo_state_get OVERCLOCK_COMPLETE_RECORDED 0) != 1 ]]; then
         apo_summary_line 'OVERCLOCK COMPLETE: the validated clocks were applied and verified after reboot.'
         apo_event overclock PASS '' 'Automatic tuning, final validation, permanent application, and post-reboot verification completed.'
