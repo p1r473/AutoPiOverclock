@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.89 - 2026-09-21
+
+- Fixed `complete` target cleanup falsely rejecting old runs that legitimately have no deterministic apply or complete backup file. Literal optional backup paths are now skipped only when absent, while symlinks and non-file/non-directory objects still fail closed.
+- Added matching Debian and Batocera regression coverage for absent optional backups, present run-owned backups, and unsafe backup symlinks.
+
 ## 0.1.0-alpha.88 - 2026-09-21
 
 - Fixed `complete` falsely rejecting an abandoned controller checkpoint whose saved status remained `RUNNING` or `PREPARING` after the controller had exited. The command already holds the exclusive target lock before this check, and it now identifies those stale controller-only checkpoints in the cleanup plan.

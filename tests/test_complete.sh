@@ -82,6 +82,35 @@ array_has_value() {
     return 1
 }
 
+test_worker_backup_collection() {
+    local worker=$1 profile_dir=$2
+    local APO_WORKER_LIBRARY_ONLY=1
+    export APO_WORKER_LIBRARY_ONLY
+    (
+        local test_backup_root="${profile_dir}/backups"
+        source "$worker"
+        complete_backup_root() { printf '%s' "$test_backup_root"; }
+        mkdir -p -- "$test_backup_root"
+
+        COMPLETE_CLEANUP_PATHS=()
+        complete_collect_backup_paths missing-run
+        (( ${#COMPLETE_CLEANUP_PATHS[@]} == 0 ))
+
+        touch -- "$test_backup_root/config-present-run-before-apply.txt"
+        COMPLETE_CLEANUP_PATHS=()
+        complete_collect_backup_paths present-run
+        (( ${#COMPLETE_CLEANUP_PATHS[@]} == 1 ))
+        [[ ${COMPLETE_CLEANUP_PATHS[0]} == "$test_backup_root/config-present-run-before-apply.txt" ]]
+
+        ln -s -- missing-target "$test_backup_root/config-unsafe-run-before-apply.txt"
+        COMPLETE_CLEANUP_PATHS=()
+        if complete_collect_backup_paths unsafe-run; then
+            printf 'complete accepted an unsafe backup symlink: %s\n' "$worker" >&2
+            return 1
+        fi
+    )
+}
+
 test_worker_renderer() {
     local worker=$1 profile_dir=$2 input expected rendered invalid
     local APO_WORKER_LIBRARY_ONLY=1
@@ -154,6 +183,8 @@ test_worker_renderer() {
 
 test_worker_renderer "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian"
 test_worker_renderer "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera"
+test_worker_backup_collection "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian-backups"
+test_worker_backup_collection "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera-backups"
 
 # The public complete command owns the exclusive target lock before it reaches
 # retained-state collection. Stale controller-only RUNNING or PREPARING text is

@@ -2413,6 +2413,7 @@ complete_collect_backup_paths() {
     shopt -u nullglob
     for candidate in "${candidates[@]}"; do
         [[ $candidate == "$backup_root/"* && $candidate != "$backup_root" ]] || return 1
+        [[ ! -e $candidate && ! -L $candidate ]] && continue
         if [[ -L $candidate || ( ! -f $candidate && ! -d $candidate ) ]]; then return 1; fi
         COMPLETE_CLEANUP_PATHS+=("$candidate")
     done
