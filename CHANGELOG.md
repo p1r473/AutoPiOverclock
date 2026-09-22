@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-alpha.93 - 2026-09-22
+
+- Fixed retained-history planning so clear CPU or GPU ceilings always constrain an automatically selected failed-pair anchor. A known hard ceiling can no longer be scheduled again merely because paired evidence also exists.
+- Removed intermediate-build compatibility from active planning and resume paths. Only the current adaptive selection policy, current run schema, current detached-stress sample history, and machine-ledger schema v2 are accepted. Existing validated evidence was corrected once during deployment rather than migrated by production code.
+- Added a successful no-headroom result for a default full-domain `overclock`. When retained scalar and pair frontiers leave no legal resolution-sized CPU or GPU step above the sealed floor, the command records `PASS` without a confirmation, candidate boot, clock change, stress test, or automatic apply.
+- Made `complete TARGET` repeatable after its original applied state has already been removed. It can now remove strictly validated later `prepare`, preflight-failed, and no-headroom controller runs while preserving the permanent config, clocks, watchdogs, and durable history.
+- Removed the old `test --minutes` alias. Exact-pair tests now accept only `--final-hours`.
+- Added exact regression coverage for the retained Monkeebutt 3050/1200 and Tron 2900/1125 frontiers, including hard scalar ceilings, failed-pair exclusion, no-headroom planning, and repeatable cleanup.
+
 ## 0.1.0-alpha.92 - 2026-09-21
 
 - Fixed completed retained-history isolation plans failing resume validation after permanent apply. The history-plan validator now checks saved candidate floors against the immutable pre-run baseline, or the retained applied source for a domain-only run, instead of the mutable normal clocks that apply replaces with the final result.

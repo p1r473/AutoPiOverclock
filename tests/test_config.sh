@@ -165,7 +165,7 @@ resolve_discovered_auto_plan debian 2400 960 0
     [[ ${APO_STATE[CFG_MAX_FAN]} == 0 ]]
     grep -Fq '# candidate_max_fan=disabled' "$TEMP_DIR/debian-edge-auto.conf"
     grep -Fq '# automatic_domain_qualification_seconds=7200' "$TEMP_DIR/debian-edge-auto.conf"
-    grep -Fq '# legacy_automatic_edge_seconds=86400' "$TEMP_DIR/debian-edge-auto.conf"
+    grep -Fq '# automatic_edge_seconds=86400' "$TEMP_DIR/debian-edge-auto.conf"
     grep -Fq '# automatic_duration_policy=default' "$TEMP_DIR/debian-edge-auto.conf"
     apo_config_restore_from_state
     [[ $APO_MAX_FAN == 0 ]]
@@ -194,26 +194,6 @@ resolve_discovered_auto_plan debian 2400 960 0
     [[ ${APO_STATE[CFG_EDGE_DURATION_S]} == 43200 ]]
     [[ ${APO_STATE[CFG_DURATION_POLICY]} == custom ]]
 )
-
-# Schema 9 had fixed 2h/24h qualification and edge semantics. Migration binds
-# those defaults explicitly without changing its saved final duration.
-APO_STATE=()
-APO_STATE_FILE="$TEMP_DIR/schema-9-duration-migration.state"
-apo_state_set FORMAT_VERSION 1
-apo_state_set RUN_SCHEMA 9
-apo_state_set CFG_FINAL_DURATION_S 43200
-apo_config_restore_from_state
-apo_config_migrate_duration_schema_9
-[[ $(apo_state_get RUN_SCHEMA) == "$APO_CURRENT_RUN_SCHEMA" ]]
-[[ $(apo_state_get CFG_QUALIFICATION_DURATION_S) == 7200 ]]
-[[ $(apo_state_get CFG_FINAL_DURATION_S) == 43200 ]]
-[[ $(apo_state_get CFG_EDGE_DURATION_S) == 86400 ]]
-[[ $(apo_state_get CFG_DURATION_POLICY) == custom ]]
-
-# Retained 24-hour runs marked with the old default policy stay valid after
-# new automatic runs adopt the 48-hour default.
-apo_config_saved_duration_policy_matches 7200 86400 86400 default
-[[ $(apo_config_duration_policy 7200 86400 86400) == custom ]]
 
 # A crash before PREPARE persisted its plan remains inspectable and reaches the
 # dedicated safe-resume refusal. Once tuning has begun, the same missing plan
@@ -395,7 +375,7 @@ fi
 [[ $(apo_config_auto_ladder 1100 50 1200 200) == '1150,1200' ]]
 [[ -z $(apo_config_auto_ladder 1200 50 1200 200) ]]
 
-completed_ledger_evidence=failure-ledger-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+completed_ledger_evidence=failure-ledger-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 apo_config_stock_auto_baseline_ready 3050 1125 0 verified-completed-ledger "$completed_ledger_evidence"
 (
     APO_PUBLIC_COMMAND=overclock
@@ -748,17 +728,16 @@ grep -Fq 'malformed or mismatched AutoPiOverclock clock markers' "$TEMP_DIR/doma
 
 (
     APO_STATE=()
-    apo_state_set CFG_SELECTION_POLICY refined-max-25
+    apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
     apo_state_set CFG_SWEEP_DOMAIN all
     apo_config_restore_from_state
-    [[ $APO_SELECTION_POLICY == refined-max-25 && $APO_SWEEP_DOMAIN == all ]]
+    [[ $APO_SELECTION_POLICY == adaptive-refined-v1 && $APO_SWEEP_DOMAIN == all ]]
     [[ $APO_CPU_RESOLUTION_MHZ == 25 && $APO_GPU_RESOLUTION_MHZ == 25 ]]
     [[ $APO_CPU_SEARCH_DIRECTION == forward && $APO_GPU_SEARCH_DIRECTION == forward ]]
 )
 
-# New adaptive plans persist arbitrary hard bounds, per-domain resolution, and
-# the chosen search direction.  Keep the refined-max-25 fixture above as an
-# explicit legacy restore check rather than rewriting it to the new policy.
+# Current adaptive plans persist arbitrary hard bounds, per-domain resolution,
+# and the chosen search direction.
 (
     APO_STATE=()
     apo_config_defaults
@@ -785,7 +764,7 @@ grep -Fq 'malformed or mismatched AutoPiOverclock clock markers' "$TEMP_DIR/doma
     [[ $(apo_state_get CFG_CPU_RESOLUTION_MHZ '') == 5 && $(apo_state_get CFG_GPU_RESOLUTION_MHZ '') == 1 ]]
     [[ $(apo_state_get CFG_CPU_SEARCH_DIRECTION '') == descending && $(apo_state_get CFG_GPU_SEARCH_DIRECTION '') == descending ]]
 
-    APO_SELECTION_POLICY=guarded-v1
+    APO_SELECTION_POLICY=adaptive-refined-v1
     APO_CPU_RESOLUTION_MHZ=25
     APO_GPU_RESOLUTION_MHZ=25
     APO_CPU_SEARCH_DIRECTION=forward
@@ -820,7 +799,7 @@ fi
 (
     APO_STATE=()
     apo_config_restore_from_state
-    [[ $APO_SELECTION_POLICY == guarded-v1 && $APO_SWEEP_DOMAIN == all ]]
+    [[ $APO_SELECTION_POLICY == adaptive-refined-v1 && $APO_SWEEP_DOMAIN == all ]]
 )
 
 APO_COMMAND=run

@@ -180,6 +180,137 @@ apo_complete_show_plan() {
     printf '\nPermanent native watchdogs and the permanent Batocera watchdog are preserved.\n' >&2
 }
 
+apo_complete_collect_sealed_cleanup_runs() {
+    local state_file expected_file run_id origin status phase failure_class remote_status
+    local target_companion leased controller_status no_headroom tryboot_expected tryboot_may_exist
+    local -A fields=()
+    local -a candidates=()
+
+    APO_COMPLETE_RUN_IDS=()
+    APO_COMPLETE_LEASE_IDS=()
+    APO_COMPLETE_STALE_CONTROLLER_RUN_IDS=()
+    if [[ -e $APO_OUTPUT_DIR || -L $APO_OUTPUT_DIR ]]; then
+        [[ -d $APO_OUTPUT_DIR && ! -L $APO_OUTPUT_DIR ]] ||
+            apo_die 'Complete found an unsafe target runs path.' "$APO_EXIT_INTERNAL"
+        shopt -s nullglob
+        candidates=("${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"*.state)
+        shopt -u nullglob
+    fi
+
+    for state_file in "${candidates[@]}"; do
+        [[ $state_file == "${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-latest.state" ]] && continue
+        [[ -f $state_file && ! -L $state_file ]] ||
+            apo_die "Complete found an unsafe state path and will not delete anything: $state_file" "$APO_EXIT_INTERNAL"
+        fields=()
+        apo_state_load_fields "$state_file" fields \
+            FORMAT_VERSION RUN_ID TARGET_SLUG REMOTE_TARGET ORIGIN_COMMAND STATUS PHASE FAILURE_CLASS \
+            REMOTE_STRESS_STATUS NETWORK_WATCHDOG_INSTALLED_BY_RUN CONTROLLER_WATCHDOG_LEASED \
+            CONTROLLER_WATCHDOG_STATUS OVERCLOCK_NO_HEADROOM TRYBOOT_EXPECTED TRYBOOT_FILE_MAY_EXIST \
+            TRYBOOT_OWNED_HASH TRYBOOT_RESERVATION_HASH TRYBOOT_OWNERSHIP_TOKEN TRYBOOT_QUARANTINE_PATH ||
+            apo_die "Complete could not validate retained state before sealed cleanup: $state_file" "$APO_EXIT_INTERNAL"
+        [[ ${fields[FORMAT_VERSION]:-} == 1 ]] ||
+            apo_die "Complete found an unsupported retained state format: $state_file" "$APO_EXIT_INTERNAL"
+        [[ ${fields[TARGET_SLUG]:-} == "$APO_TARGET_SLUG" &&
+           ${fields[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" ]] || continue
+        run_id=${fields[RUN_ID]:-}
+        apo_is_safe_run_id "$run_id" ||
+            apo_die "Complete found an invalid retained run ID: $state_file" "$APO_EXIT_INTERNAL"
+        expected_file="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${run_id}.state"
+        [[ $state_file == "$expected_file" ]] ||
+            apo_die "Complete found retained state whose identity does not match its filename: $state_file" "$APO_EXIT_INTERNAL"
+
+        origin=${fields[ORIGIN_COMMAND]:-}
+        status=${fields[STATUS]:-}
+        phase=${fields[PHASE]:-}
+        failure_class=${fields[FAILURE_CLASS]:-}
+        remote_status=${fields[REMOTE_STRESS_STATUS]:-IDLE}
+        target_companion=${fields[NETWORK_WATCHDOG_INSTALLED_BY_RUN]:-0}
+        leased=${fields[CONTROLLER_WATCHDOG_LEASED]:-0}
+        controller_status=${fields[CONTROLLER_WATCHDOG_STATUS]:-NOT_STARTED}
+        no_headroom=${fields[OVERCLOCK_NO_HEADROOM]:-0}
+        tryboot_expected=${fields[TRYBOOT_EXPECTED]:-0}
+        tryboot_may_exist=${fields[TRYBOOT_FILE_MAY_EXIST]:-0}
+
+        [[ ( -z $remote_status || $remote_status == IDLE ) &&
+           $target_companion == 0 && $leased == 0 &&
+           ( $controller_status == NOT_STARTED || -z $controller_status ) &&
+           $tryboot_expected == 0 && $tryboot_may_exist == 0 &&
+           -z ${fields[TRYBOOT_OWNED_HASH]:-} && -z ${fields[TRYBOOT_RESERVATION_HASH]:-} &&
+           -z ${fields[TRYBOOT_OWNERSHIP_TOKEN]:-} && -z ${fields[TRYBOOT_QUARANTINE_PATH]:-} ]] || return 1
+
+        if [[ $origin == prepare && $status == PASS && $phase == COMPLETE && $no_headroom == 0 ]]; then
+            :
+        elif [[ ( $origin == overclock || $origin == run ) && $status == FAILED &&
+                  $failure_class == PREFLIGHT_FAILURE && $no_headroom == 0 ]]; then
+            :
+        elif [[ ( $origin == overclock || $origin == run ) && $status == PASS &&
+                  $phase == COMPLETE && -z $failure_class && $no_headroom == 1 ]]; then
+            :
+        else
+            return 1
+        fi
+        apo_complete_add_unique "$run_id" APO_COMPLETE_RUN_IDS
+    done
+    return 0
+}
+
+apo_complete_show_sealed_cleanup_plan() {
+    local run_id
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
+    printf '\n===== ALREADY-COMPLETED CLEANUP =====\n' >&2
+    printf 'Sealed applied run: %s at %s/%s MHz\n' \
+        "$APO_HISTORY_SEALED_RUN_ID" "$APO_HISTORY_SEALED_CPU" "$APO_HISTORY_SEALED_GPU" >&2
+    printf 'Permanent config is not changed. Durable failure history is preserved.\n' >&2
+    printf 'Safe post-completion controller runs scheduled for cleanup:\n' >&2
+    for run_id in "${APO_COMPLETE_RUN_IDS[@]}"; do printf '  %s\n' "$run_id" >&2; done
+    printf '=======================================\n\n' >&2
+}
+
+apo_complete_attach_cleanup_artifacts() {
+    local run_id=$1
+    APO_RUN_ID=$run_id
+    APO_RUN_PREFIX="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-${run_id}"
+    APO_STATE_FILE="${APO_RUN_PREFIX}.state"
+    APO_LOG_FILE="${APO_RUN_PREFIX}.log"
+    APO_CSV_FILE="${APO_RUN_PREFIX}.csv"
+    APO_JSONL_FILE="${APO_RUN_PREFIX}.jsonl"
+    APO_JSON_FILE="${APO_RUN_PREFIX}.json"
+    APO_SUMMARY_FILE="${APO_RUN_PREFIX}-summary.txt"
+    APO_EFFECTIVE_CONFIG_FILE="${APO_RUN_PREFIX}.conf"
+    APO_DISCOVERY_FILE="${APO_RUN_PREFIX}-discovery.txt"
+}
+
+apo_complete_try_sealed_cleanup() {
+    local ledger_file run_id expected_confirmation
+
+    [[ -z ${APO_SELECTED_RUN_ID:-} ]] || return 1
+    ledger_file=$(apo_history_ledger_path) || return 1
+    [[ -e $ledger_file || -L $ledger_file ]] || return 1
+    [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] ||
+        apo_die 'Complete found an unsafe durable failure ledger.' "$APO_EXIT_INTERNAL"
+    apo_history_load_machine_ledger "$ledger_file" 0 1 ||
+        apo_die 'Complete could not strictly validate the durable sealed failure ledger.' "$APO_EXIT_INTERNAL"
+    [[ -n $APO_HISTORY_SEALED_RUN_ID &&
+       $APO_HISTORY_SEALED_RUN_SCHEMA == "$APO_CURRENT_RUN_SCHEMA" &&
+       $APO_HISTORY_SEALED_VALIDATION_SCHEMA == "$APO_CURRENT_VALIDATION_SCHEMA" ]] || return 1
+    apo_complete_collect_sealed_cleanup_runs || return 1
+
+    if (( ${#APO_COMPLETE_RUN_IDS[@]} == 0 )); then
+        printf 'Complete already finished for %s. No target runs remain; durable history remains at %s.\n' \
+            "$APO_REMOTE_TARGET" "$ledger_file"
+        return 0
+    fi
+
+    apo_complete_show_sealed_cleanup_plan
+    expected_confirmation="COMPLETE ${APO_TARGET_SLUG} ${APO_HISTORY_SEALED_RUN_ID}"
+    apo_confirm_exact 'Complete will remove only the listed safe post-completion controller artifacts. It will not change the permanent config, target clocks, watchdogs, or durable failure ledger.' "$expected_confirmation" ||
+        apo_die 'Complete was not confirmed.' "$APO_EXIT_USAGE"
+    run_id=${APO_COMPLETE_RUN_IDS[0]}
+    apo_complete_attach_cleanup_artifacts "$run_id"
+    apo_complete_delete_controller_artifacts
+    return 0
+}
+
 apo_complete_remote_work_dir_is_safe() {
     case ${APO_PROFILE:-} in
         debian) [[ $APO_REMOTE_WORK_DIR == "/tmp/autopioverclock-${APO_RUN_ID}" ]] ;;

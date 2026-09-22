@@ -691,7 +691,6 @@ apo_remote_job_record_network_credit() {
     local spec_hash duration segment_duration start_epoch last_seen confirmed_elapsed confirmed_samples context
     local prior_context prior_credit prior_duration observed_seconds total_credit maximum_credit
     local entry sample_epoch sample_elapsed selected_epoch='' sample_count=0 decision='no-safe-sample'
-    local post_request_seconds request_elapsed_bound
     local previous_epoch=0 previous_elapsed=-1 history_valid=1
     local -a confirmed_sample_entries=()
     spec_hash=$(apo_state_get REMOTE_STRESS_SPEC_HASH '')
@@ -756,29 +755,6 @@ apo_remote_job_record_network_credit() {
             observed_seconds=0
             selected_epoch=''
             decision='reject-invalid-history'
-        fi
-    elif [[ $start_epoch =~ ^[1-9][0-9]*$ && $last_seen =~ ^[1-9][0-9]*$ &&
-            $last_seen -ge $start_epoch && $requested_epoch -ge $start_epoch &&
-            $confirmed_elapsed =~ ^[0-9]+$ && $confirmed_elapsed -le $segment_duration ]]; then
-        # Alpha.68 retained only its latest target-reported workload sample.
-        # If that heartbeat arrived after the watchdog request, subtract the
-        # complete post-request wall-clock interval. This is a conservative
-        # lower bound even when the cached telemetry sample itself is older.
-        if (( last_seen <= requested_epoch )); then
-            observed_seconds=$confirmed_elapsed
-            selected_epoch=$last_seen
-            decision='legacy-sample'
-        else
-            post_request_seconds=$((last_seen - requested_epoch))
-            if (( confirmed_elapsed > post_request_seconds )); then
-                observed_seconds=$((confirmed_elapsed - post_request_seconds))
-                request_elapsed_bound=$((requested_epoch - start_epoch))
-                if (( observed_seconds > request_elapsed_bound )); then
-                    observed_seconds=$request_elapsed_bound
-                fi
-                selected_epoch=$requested_epoch
-                decision='legacy-post-request-bound'
-            fi
         fi
     fi
     apo_remote_job_stage_log "$phase" network-credit \

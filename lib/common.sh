@@ -23,15 +23,6 @@ readonly APO_MAX_TUNING_DURATION_S=2147482800
 readonly APO_DEFAULT_QUALIFICATION_DURATION_S=7200
 readonly APO_DEFAULT_FINAL_DURATION_S=172800
 readonly APO_DEFAULT_EDGE_DURATION_S=86400
-# Runs created before the 48-hour default recorded either the former 24-hour
-# or older eight-hour final as policy=default. Keep both historical labels
-# verifiable without treating new requests for those durations as current
-# defaults.
-readonly APO_PREVIOUS_DEFAULT_FINAL_DURATION_S=86400
-readonly APO_LEGACY_DEFAULT_FINAL_DURATION_S=28800
-# Retained as a source-compatible name for older fixture/support code. New
-# automatic runs use the immutable per-run APO_QUALIFICATION_DURATION_S value.
-readonly APO_DOMAIN_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
 readonly APO_MIN_FINAL_DURATION_S=$APO_MIN_TUNING_DURATION_S
 
 APO_QUALIFICATION_DURATION_S=${APO_QUALIFICATION_DURATION_S:-$APO_DEFAULT_QUALIFICATION_DURATION_S}

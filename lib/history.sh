@@ -12,9 +12,9 @@ declare -Ag APO_HISTORY_SEEN_PAIRS=()
 declare -Ag APO_HISTORY_SEEN_LEDGER_RECORDS=()
 declare -Ag APO_HISTORY_LEDGER_META=()
 
-APO_HISTORY_LEDGER_SCHEMA=1
-APO_HISTORY_MACHINE_BEGIN='----- BEGIN AUTOPIOVERCLOCK MACHINE HISTORY v1 -----'
-APO_HISTORY_MACHINE_END='----- END AUTOPIOVERCLOCK MACHINE HISTORY v1 -----'
+APO_HISTORY_LEDGER_SCHEMA=2
+APO_HISTORY_MACHINE_BEGIN='----- BEGIN AUTOPIOVERCLOCK MACHINE HISTORY v2 -----'
+APO_HISTORY_MACHINE_END='----- END AUTOPIOVERCLOCK MACHINE HISTORY v2 -----'
 
 APO_HISTORY_CPU_FAILURE_BOUNDARY=''
 APO_HISTORY_GPU_FAILURE_BOUNDARY=''
@@ -59,6 +59,7 @@ APO_HISTORY_SEALED_VOLTAGE=''
 APO_HISTORY_SEALED_HASH=''
 APO_HISTORY_SEALED_RUN_SCHEMA=''
 APO_HISTORY_SEALED_VALIDATION_SCHEMA=''
+APO_HISTORY_NO_HEADROOM=0
 
 apo_history_ledger_path() {
     [[ -n ${APO_HISTORY_DIR:-} ]] || return 1
@@ -101,6 +102,7 @@ apo_history_reset() {
     APO_HISTORY_SEALED_HASH=''
     APO_HISTORY_SEALED_RUN_SCHEMA=''
     APO_HISTORY_SEALED_VALIDATION_SCHEMA=''
+    APO_HISTORY_NO_HEADROOM=0
     APO_HISTORY_RECORDS=()
     APO_HISTORY_RAW_PAIRS=()
     APO_HISTORY_LEDGER_RECORDS=()
@@ -194,25 +196,6 @@ apo_history_state_value() {
     else
         printf '%s' "$fallback"
     fi
-}
-
-# Schema 10 briefly persisted --*-start-at as a search seed.  The current
-# controller reads that legacy spelling as --*-min, whose stronger floor
-# semantics can make an otherwise valid saved backoff fail replay validation.
-# Recognize only that exact pre-adaptive plan shape.  The caller uses the
-# result solely inside the retained-history screening subshell; ordinary
-# resume keeps its strict current semantics.
-apo_history_loaded_state_uses_legacy_start_at_semantics() {
-    local map_name=$1
-    local -n state_map=$map_name
-    local selection_policy
-
-    selection_policy=$(apo_history_state_value "$map_name" CFG_SELECTION_POLICY '')
-    [[ $selection_policy == refined-max-25 ]] || return 1
-    [[ ! -v state_map[CFG_CPU_MIN] && ! -v state_map[CFG_GPU_MIN] ]] || return 1
-    [[ ! -v state_map[CFG_CPU_RESOLUTION_MHZ] && ! -v state_map[CFG_GPU_RESOLUTION_MHZ] &&
-       ! -v state_map[CFG_CPU_SEARCH_DIRECTION] && ! -v state_map[CFG_GPU_SEARCH_DIRECTION] ]] || return 1
-    [[ -v state_map[CFG_CPU_START_AT] || -v state_map[CFG_GPU_START_AT] ]]
 }
 
 # This hook deliberately validates in the caller's subshell.  Tests may replace
@@ -333,7 +316,8 @@ apo_history_machine_record_import() {
 }
 
 apo_history_load_machine_ledger() {
-    local source_file=$1 import_records=${2:-1} line section=human kind key encoded decoded extra
+    local source_file=$1 import_records=${2:-1} skip_live_context=${3:-0}
+    local line section=human kind key encoded decoded extra
     local expected_baseline expected_cpu expected_gpu expected_voltage expected_value record
     local live_cpu=${APO_NORMAL_CPU:-} live_gpu=${APO_NORMAL_GPU:-} live_voltage=${APO_NORMAL_VOLTAGE:-}
     local begin_count=0 end_count=0
@@ -345,6 +329,8 @@ apo_history_load_machine_ledger() {
         SEALED_VOLTAGE SEALED_HASH SEALED_RUN_SCHEMA SEALED_VALIDATION_SCHEMA
     )
 
+    [[ $import_records == 0 || $import_records == 1 ]] || return 1
+    [[ $skip_live_context == 0 || $skip_live_context == 1 ]] || return 1
     [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
     while IFS= read -r line || [[ -n $line ]]; do
         case $section in
@@ -391,10 +377,7 @@ apo_history_load_machine_ledger() {
         esac
     done < "$source_file"
 
-    (( begin_count == 1 && end_count == 1 )) || {
-        (( begin_count == 0 && end_count == 0 )) && return 3
-        return 1
-    }
+    (( begin_count == 1 && end_count == 1 )) || return 1
     for key in "${required_keys[@]}"; do [[ -v parsed_meta[$key] ]] || return 1; done
     (( ${#parsed_meta[@]} == ${#required_keys[@]} )) || return 1
     [[ ${parsed_meta[LEDGER_SCHEMA]} == "$APO_HISTORY_LEDGER_SCHEMA" ]] || return 1
@@ -408,20 +391,22 @@ apo_history_load_machine_ledger() {
     [[ -n ${parsed_meta[MODEL]} && -n ${parsed_meta[COMPATIBLE]} && -n ${parsed_meta[ARCH]} &&
        ${parsed_meta[BOOT_CONFIG]} == /* && ${parsed_meta[TRYBOOT_CONFIG]} == /* ]] || return 1
 
-    expected_baseline=$(apo_history_expected_context_baseline) || return 1
-    IFS='|' read -r expected_cpu expected_gpu expected_voltage extra <<< "$expected_baseline"
-    [[ -z $extra && -n $expected_cpu && -n $expected_gpu && -n $expected_voltage ]] || return 1
-    for key in PROFILE GPU_KEY TEST_VOLTAGE MODEL COMPATIBLE ARCH BOOT_CONFIG TRYBOOT_CONFIG; do
-        expected_value=$(apo_history_current_context_value "$key") || return 1
-        [[ -n $expected_value && ${parsed_meta[$key]} == "$expected_value" ]] || return 1
-    done
-    if [[ ${parsed_meta[BASELINE_CPU]} != "$expected_cpu" ||
-          ${parsed_meta[BASELINE_GPU]} != "$expected_gpu" ||
-          ${parsed_meta[BASELINE_VOLTAGE]} != "$expected_voltage" ]]; then
-        [[ -n $live_cpu && -n $live_gpu && -n $live_voltage &&
-           ${parsed_meta[BASELINE_CPU]} == "$live_cpu" &&
-           ${parsed_meta[BASELINE_GPU]} == "$live_gpu" &&
-           ${parsed_meta[BASELINE_VOLTAGE]} == "$live_voltage" ]] || return 1
+    if (( skip_live_context == 0 )); then
+        expected_baseline=$(apo_history_expected_context_baseline) || return 1
+        IFS='|' read -r expected_cpu expected_gpu expected_voltage extra <<< "$expected_baseline"
+        [[ -z $extra && -n $expected_cpu && -n $expected_gpu && -n $expected_voltage ]] || return 1
+        for key in PROFILE GPU_KEY TEST_VOLTAGE MODEL COMPATIBLE ARCH BOOT_CONFIG TRYBOOT_CONFIG; do
+            expected_value=$(apo_history_current_context_value "$key") || return 1
+            [[ -n $expected_value && ${parsed_meta[$key]} == "$expected_value" ]] || return 1
+        done
+        if [[ ${parsed_meta[BASELINE_CPU]} != "$expected_cpu" ||
+              ${parsed_meta[BASELINE_GPU]} != "$expected_gpu" ||
+              ${parsed_meta[BASELINE_VOLTAGE]} != "$expected_voltage" ]]; then
+            [[ -n $live_cpu && -n $live_gpu && -n $live_voltage &&
+               ${parsed_meta[BASELINE_CPU]} == "$live_cpu" &&
+               ${parsed_meta[BASELINE_GPU]} == "$live_gpu" &&
+               ${parsed_meta[BASELINE_VOLTAGE]} == "$live_voltage" ]] || return 1
+        fi
     fi
 
     if [[ -n ${parsed_meta[SEALED_RUN_ID]} || -n ${parsed_meta[SEALED_CPU]} ||
@@ -479,7 +464,7 @@ apo_history_emit_ledger() {
         "$encoded_source" "$encoded_reason" "$basename"
 }
 
-apo_history_emit_legacy_ledger() {
+apo_history_emit_boundary_ledger() {
     local run_id=$1 basename=$2 cpu=$3 gpu=$4 domain=$5 source=$6
     local timestamp reason
     timestamp=$(apo_state_get UPDATED_AT "$(apo_state_get CREATED_AT unknown)")
@@ -534,19 +519,19 @@ apo_history_emit_pair() {
 apo_history_emit_cpu_fact() {
     local value=$1 run_id=$2 source=$3 basename=$4
     apo_history_emit_cpu "$value" "$run_id" "$source" "$basename" || return 1
-    apo_history_emit_legacy_ledger "$run_id" "$basename" "$value" - CPU "$source"
+    apo_history_emit_boundary_ledger "$run_id" "$basename" "$value" - CPU "$source"
 }
 
 apo_history_emit_gpu_fact() {
     local value=$1 run_id=$2 source=$3 basename=$4
     apo_history_emit_gpu "$value" "$run_id" "$source" "$basename" || return 1
-    apo_history_emit_legacy_ledger "$run_id" "$basename" - "$value" GPU "$source"
+    apo_history_emit_boundary_ledger "$run_id" "$basename" - "$value" GPU "$source"
 }
 
 apo_history_emit_pair_fact() {
     local cpu=$1 gpu=$2 run_id=$3 source=$4 basename=$5
     apo_history_emit_pair "$cpu" "$gpu" "$run_id" "$source" "$basename" || return 1
-    apo_history_emit_legacy_ledger "$run_id" "$basename" "$cpu" "$gpu" PAIR "$source"
+    apo_history_emit_boundary_ledger "$run_id" "$basename" "$cpu" "$gpu" PAIR "$source"
 }
 
 # Durable per-failure audit records use a versioned, newline-separated grammar:
@@ -682,6 +667,8 @@ apo_history_emit_loaded_evidence() {
     local from_cpu from_gpu pair_extra edge_status edge_class edge_target
     local -a entries=()
 
+    selection_policy=$(apo_state_get CFG_SELECTION_POLICY '')
+    [[ $selection_policy == adaptive-refined-v1 ]] || return 1
     boundary=$(apo_state_get CPU_FAILURE_BOUNDARY '')
     [[ -z $boundary ]] || apo_history_emit_cpu_fact "$boundary" "$run_id" CPU_FAILURE_BOUNDARY "$basename" || return 1
     boundary=$(apo_state_get GPU_FAILURE_BOUNDARY '')
@@ -700,13 +687,6 @@ apo_history_emit_loaded_evidence() {
     fi
 
     history=$(apo_state_get FINAL_BACKOFF_HISTORY '')
-    selection_policy=$(apo_state_get CFG_SELECTION_POLICY guarded-v1)
-    # Schema-10 evidence may use either the original fixed-order policy name
-    # or the adaptive scheduler introduced for new runs.  Both policies commit
-    # the same domain-attributed FINAL_BACKOFF_HISTORY record shapes.
-    if [[ $selection_policy == adaptive-refined-v1 ]]; then
-        selection_policy=refined-max-25
-    fi
     if [[ -n $history ]]; then
         IFS=',' read -r -a entries <<< "$history"
         for entry in "${entries[@]}"; do
@@ -714,35 +694,23 @@ apo_history_emit_loaded_evidence() {
             IFS=':>' read -r domain from_value to_value extra <<< "$entry"
             [[ -n $domain && -n $from_value && -n $to_value && -z $extra ]] || return 1
             case $selection_policy:$domain in
-                refined-max-25:QUAL_CPU|refined-max-25:DOMAIN_CPU|refined-max-25:EXACT_CPU)
+                adaptive-refined-v1:QUAL_CPU|adaptive-refined-v1:DOMAIN_CPU|adaptive-refined-v1:EXACT_CPU)
                     from_cpu=''; from_gpu=''; pair_extra=''
                     IFS='/' read -r from_cpu from_gpu pair_extra <<< "$from_value"
                     [[ $from_cpu =~ ^[0-9]+$ && $from_gpu =~ ^[0-9]+$ && -z $pair_extra ]] || return 1
                     apo_history_emit_cpu_fact "$from_cpu" "$run_id" "FINAL_BACKOFF_$domain" "$basename" || return 1
                     ;;
-                refined-max-25:QUAL_GPU|refined-max-25:DOMAIN_GPU|refined-max-25:EXACT_GPU)
+                adaptive-refined-v1:QUAL_GPU|adaptive-refined-v1:DOMAIN_GPU|adaptive-refined-v1:EXACT_GPU)
                     from_cpu=''; from_gpu=''; pair_extra=''
                     IFS='/' read -r from_cpu from_gpu pair_extra <<< "$from_value"
                     [[ $from_cpu =~ ^[0-9]+$ && $from_gpu =~ ^[0-9]+$ && -z $pair_extra ]] || return 1
                     apo_history_emit_gpu_fact "$from_gpu" "$run_id" "FINAL_BACKOFF_$domain" "$basename" || return 1
                     ;;
-                refined-max-25:TRIAL_CPU|refined-max-25:TRIAL_GPU|refined-max-25:TRIAL_PAIR)
+                adaptive-refined-v1:TRIAL_CPU|adaptive-refined-v1:TRIAL_GPU|adaptive-refined-v1:TRIAL_PAIR)
                     from_cpu=''; from_gpu=''; pair_extra=''
                     IFS='/' read -r from_cpu from_gpu pair_extra <<< "$from_value"
                     [[ $from_cpu =~ ^[0-9]+$ && $from_gpu =~ ^[0-9]+$ && -z $pair_extra ]] || return 1
                     apo_history_emit_pair_fact "$from_cpu" "$from_gpu" "$run_id" "FINAL_BACKOFF_$domain" "$basename" || return 1
-                    ;;
-                guarded-v1:CPU)
-                    apo_history_emit_cpu_fact "$from_value" "$run_id" FINAL_BACKOFF_CPU "$basename" || return 1
-                    ;;
-                guarded-v1:GPU)
-                    apo_history_emit_gpu_fact "$from_value" "$run_id" FINAL_BACKOFF_GPU "$basename" || return 1
-                    ;;
-                guarded-v1:PAIR)
-                    from_cpu=''; from_gpu=''; pair_extra=''
-                    IFS='/' read -r from_cpu from_gpu pair_extra <<< "$from_value"
-                    [[ $from_cpu =~ ^[0-9]+$ && $from_gpu =~ ^[0-9]+$ && -z $pair_extra ]] || return 1
-                    apo_history_emit_pair_fact "$from_cpu" "$from_gpu" "$run_id" FINAL_BACKOFF_PAIR "$basename" || return 1
                     ;;
                 *) return 1 ;;
             esac
@@ -764,7 +732,7 @@ apo_history_emit_loaded_evidence() {
     # future clock-boundary authority.
 }
 
-# Run all parsing, restore, validation, compatibility checks, and extraction in
+# Run all parsing, restore, validation, identity checks, and extraction in
 # a subshell so a retained file cannot alter the new run's controller state.
 apo_history_screen_validate_emit_file() (
     local source_file=$1 basename run_id origin schema read_only auto_generated edge_status edge_class
@@ -800,10 +768,8 @@ apo_history_screen_validate_emit_file() (
         esac
     fi
 
-    # Schema compatibility is the first and cheapest screen.  Retained files
-    # from an older controller may predate FORMAT_VERSION or other metadata
-    # required by the current strict validator.  They are preserved but ignored;
-    # only a current-schema state can constrain a new plan or fail the scan.
+    # Only current-schema state can constrain a new plan. Older controller
+    # artifacts are ignored and are never interpreted or upgraded.
     apo_history_load_screen_fields "$source_file" schema_fields RUN_SCHEMA || return 1
     schema=$(apo_history_state_value schema_fields RUN_SCHEMA '')
     [[ $schema == "$APO_CURRENT_RUN_SCHEMA" ]] || return 3
@@ -886,10 +852,6 @@ apo_history_screen_validate_emit_file() (
     # arithmetic expressions.
     # shellcheck disable=SC2004
     for state_key in "${!loaded_state[@]}"; do APO_STATE[$state_key]=${loaded_state[$state_key]}; done
-    APO_HISTORY_LEGACY_START_AT_SEMANTICS=0
-    if apo_history_loaded_state_uses_legacy_start_at_semantics loaded_state; then
-        APO_HISTORY_LEGACY_START_AT_SEMANTICS=1
-    fi
     # This assignment is intentionally isolated by the surrounding subshell.
     # shellcheck disable=SC2030
     APO_STATE_FILE=$source_file
@@ -1119,8 +1081,7 @@ apo_history_resolve_failure_cap() {
 }
 
 apo_history_resolve_scalar_caps() {
-    local requested_cpu=$1 requested_gpu=$2 preserve_pair_anchor=${3:-0} cap resolution
-    [[ $preserve_pair_anchor == 0 || $preserve_pair_anchor == 1 ]] || return 1
+    local requested_cpu=$1 requested_gpu=$2 cap resolution
     APO_HISTORY_EFFECTIVE_CPU_MAX=$requested_cpu
     APO_HISTORY_EFFECTIVE_GPU_MAX=$requested_gpu
     APO_HISTORY_CPU_RETAINED_CAP=''
@@ -1134,7 +1095,7 @@ apo_history_resolve_scalar_caps() {
             return 1
         fi
         APO_HISTORY_CPU_RETAINED_CAP=$cap
-        if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 && preserve_pair_anchor == 0 )) &&
+        if (( ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 )) &&
            [[ -z $APO_HISTORY_EFFECTIVE_CPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_CPU_MAX ]]; then
             APO_HISTORY_EFFECTIVE_CPU_MAX=$cap
         fi
@@ -1146,7 +1107,7 @@ apo_history_resolve_scalar_caps() {
             return 1
         fi
         APO_HISTORY_GPU_RETAINED_CAP=$cap
-        if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 && preserve_pair_anchor == 0 )) &&
+        if (( ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 )) &&
            [[ -z $APO_HISTORY_EFFECTIVE_GPU_MAX || $cap -lt APO_HISTORY_EFFECTIVE_GPU_MAX ]]; then
             APO_HISTORY_EFFECTIVE_GPU_MAX=$cap
         fi
@@ -1300,8 +1261,8 @@ apo_history_validate_plan_pair() {
     fi
 }
 
-# Validate the independently persisted history-isolation scheduler plan.  This
-# is safe for alpha.49 schema-10 states: absent fields mean NONE/no plan.
+# Validate the independently persisted current history-isolation scheduler
+# plan. A cleared current plan is represented explicitly as NONE.
 apo_history_validate_plan_state() {
     local stage frontiers anchor_cpu anchor_gpu cpu_trial_cpu cpu_trial_gpu
     local gpu_trial_cpu gpu_trial_gpu pair_trial_cpu pair_trial_gpu handoff_cpu handoff_gpu cpu_floor gpu_floor
@@ -1418,8 +1379,8 @@ apo_history_validate_plan_state() {
 }
 
 # Scan every exact regular TARGET-RUN_ID.state file in the target runs
-# directory and merge it with the target's durable history ledger. Old schemas
-# and unrelated commands are ignored. A malformed or
+# directory and merge it with the target's durable history ledger. Non-current
+# schemas and unrelated commands are ignored. A malformed or
 # validator-rejected current-schema auto-overclock state for this exact target
 # fails closed instead of silently authorizing a higher clock.
 apo_history_scan_retained_states() {
@@ -1447,12 +1408,10 @@ apo_history_scan_retained_states() {
             APO_HISTORY_LEDGER_FILE=$ledger_file
         else
             ledger_rc=$?
-            if (( ledger_rc != 3 )); then
-                APO_HISTORY_SCAN_ERROR="Retained failure ledger failed strict machine-history validation: ${ledger_file##*/}"
-                apo_history_reset
-                APO_HISTORY_SCAN_ERROR="Retained failure ledger failed strict machine-history validation: ${ledger_file##*/}"
-                return 1
-            fi
+            APO_HISTORY_SCAN_ERROR="Retained failure ledger failed strict machine-history validation: ${ledger_file##*/}"
+            apo_history_reset
+            APO_HISTORY_SCAN_ERROR="Retained failure ledger failed strict machine-history validation: ${ledger_file##*/}"
+            return "$ledger_rc"
         fi
     fi
 
@@ -1733,9 +1692,6 @@ apo_history_adopt_completed_baseline() {
         :
     else
         ledger_rc=$?
-        if (( ledger_rc == 3 )); then
-            return 1
-        fi
         APO_HISTORY_SCAN_ERROR='The retained failures ledger failed strict machine-history validation.'
         return 2
     fi
@@ -1761,7 +1717,7 @@ apo_history_adopt_completed_baseline() {
         return 2
     }
     APO_PERMANENT_TUNING_PROVENANCE=verified-completed-ledger
-    APO_PERMANENT_TUNING_EVIDENCE="failure-ledger-v1:${ledger_hash}"
+    APO_PERMANENT_TUNING_EVIDENCE="failure-ledger-v2:${ledger_hash}"
     if declare -p APO_DISCOVERY >/dev/null 2>&1; then
         APO_DISCOVERY[PERMANENT_TUNING_PROVENANCE]=$APO_PERMANENT_TUNING_PROVENANCE
         APO_DISCOVERY[PERMANENT_TUNING_EVIDENCE]=$APO_PERMANENT_TUNING_EVIDENCE
@@ -1815,6 +1771,8 @@ apo_history_clear_plan_state() {
     apo_state_set HISTORY_CPU_TRIAL_QUALIFIED_CLOCK ''
     apo_state_set HISTORY_ISOLATION_HANDOFF_CPU ''
     apo_state_set HISTORY_ISOLATION_HANDOFF_GPU ''
+    APO_HISTORY_NO_HEADROOM=0
+    apo_state_set HISTORY_NO_HEADROOM 0
 }
 
 apo_history_snapshot_scan_state() {
@@ -1826,6 +1784,38 @@ apo_history_snapshot_scan_state() {
     apo_state_set HISTORY_SCANNED_STATES "$APO_HISTORY_SCANNED_STATES"
     apo_state_set HISTORY_ACCEPTED_STATES "$APO_HISTORY_ACCEPTED_STATES"
     apo_state_set HISTORY_EVIDENCE_COUNT "$APO_HISTORY_EVIDENCE_COUNT"
+}
+
+apo_history_has_legal_axis_headroom() {
+    local effective_cpu=$1 effective_gpu=$2 cpu_resolution=$3 gpu_resolution=$4 candidate pair_rc
+    apo_is_uint "$effective_cpu" && apo_is_uint "$effective_gpu" || return 2
+    apo_is_uint "$cpu_resolution" && (( cpu_resolution > 0 )) || return 2
+    apo_is_uint "$gpu_resolution" && (( gpu_resolution > 0 )) || return 2
+    apo_is_uint "${APO_NORMAL_CPU:-}" && apo_is_uint "${APO_NORMAL_GPU:-}" || return 2
+
+    if (( effective_cpu > APO_NORMAL_CPU )); then
+        candidate=$((APO_NORMAL_CPU + cpu_resolution))
+        (( candidate <= effective_cpu )) || candidate=$effective_cpu
+        if apo_history_pair_is_forbidden "$candidate" "$APO_NORMAL_GPU"; then
+            :
+        else
+            pair_rc=$?
+            (( pair_rc == 1 )) && return 0
+            return 2
+        fi
+    fi
+    if (( effective_gpu > APO_NORMAL_GPU )); then
+        candidate=$((APO_NORMAL_GPU + gpu_resolution))
+        (( candidate <= effective_gpu )) || candidate=$effective_gpu
+        if apo_history_pair_is_forbidden "$APO_NORMAL_CPU" "$candidate"; then
+            :
+        else
+            pair_rc=$?
+            (( pair_rc == 1 )) && return 0
+            return 2
+        fi
+    fi
+    return 1
 }
 
 apo_history_set_validation_error() {
@@ -1923,7 +1913,11 @@ apo_history_announce_resolved_plan() {
         if declare -F apo_info >/dev/null 2>&1; then apo_info "$line"; else printf '%s\n' "$line"; fi
         if declare -F apo_summary_line >/dev/null 2>&1; then apo_summary_line "$line"; fi
     fi
-    line="Final validation: every accepted pair must complete the full ${APO_FINAL_DURATION_S:-unknown}s duration; any clock backoff restarts that timer from zero."
+    if (( APO_HISTORY_NO_HEADROOM == 1 )); then
+        line="No-headroom result: the sealed applied floor remains unchanged and no candidate boot or stress test will run."
+    else
+        line="Final validation: every accepted pair must complete the full ${APO_FINAL_DURATION_S:-unknown}s duration; any clock backoff restarts that timer from zero."
+    fi
     if declare -F apo_info >/dev/null 2>&1; then apo_info "$line"; else printf '%s\n' "$line"; fi
     if declare -F apo_summary_line >/dev/null 2>&1; then apo_summary_line "$line"; fi
     warning=${APO_HISTORY_PLAN_WARNING:-}
@@ -1942,7 +1936,8 @@ apo_history_announce_resolved_plan() {
 apo_history_resolve_new_overclock_plan() {
     local domain=${APO_SWEEP_DOMAIN:-all} use_history=${APO_USE_HISTORY:-1}
     local requested_cpu requested_gpu effective_cpu effective_gpu pair failed_cpu failed_gpu extra cap
-    local cpu_trial gpu_trial pair_cpu pair_gpu cpu_resolution gpu_resolution auto_pair_anchor=0
+    local cpu_trial gpu_trial pair_cpu pair_gpu cpu_resolution gpu_resolution auto_pair_anchor=0 headroom_rc
+    local pair_anchor_cpu='' pair_anchor_gpu=''
     local -a frontiers=()
 
     [[ ${APO_ORIGIN_COMMAND:-${APO_PUBLIC_COMMAND:-}} == overclock && ${APO_COMMAND:-} == run && ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 ]] || return 0
@@ -2043,16 +2038,24 @@ apo_history_resolve_new_overclock_plan() {
             effective_cpu=$failed_cpu
             effective_gpu=$failed_gpu
             auto_pair_anchor=1
+            pair_anchor_cpu=$failed_cpu
+            pair_anchor_gpu=$failed_gpu
             APO_HISTORY_AUTO_PAIR_ANCHOR=$APO_HISTORY_RECENT_PAIR_FRONTIER
             APO_HISTORY_AUTO_PAIR_RUN_ID=$APO_HISTORY_RECENT_PAIR_RUN_ID
         fi
     fi
-    apo_history_resolve_scalar_caps "$effective_cpu" "$effective_gpu" "$auto_pair_anchor" || {
+    apo_history_resolve_scalar_caps "$effective_cpu" "$effective_gpu" || {
         apo_history_set_validation_error "${APO_HISTORY_VALIDATION_REASON:-A retained clear failure boundary cannot produce a safe exclusive ceiling.}"
         return 1
     }
     effective_cpu=$APO_HISTORY_EFFECTIVE_CPU_MAX
     effective_gpu=$APO_HISTORY_EFFECTIVE_GPU_MAX
+    if (( auto_pair_anchor == 1 )) &&
+       (( effective_cpu != pair_anchor_cpu || effective_gpu != pair_anchor_gpu )); then
+        auto_pair_anchor=0
+        APO_HISTORY_AUTO_PAIR_ANCHOR=''
+        APO_HISTORY_AUTO_PAIR_RUN_ID=''
+    fi
     cpu_resolution=$(apo_history_domain_resolution_mhz CPU) || {
         apo_history_set_validation_error 'The CPU resolution is malformed.'
         return 1
@@ -2108,10 +2111,31 @@ apo_history_resolve_new_overclock_plan() {
         done
     fi
 
+    if [[ $domain == all ]] &&
+       (( ${APO_CPU_MIN_OPTION_SEEN:-0} == 0 && ${APO_GPU_MIN_OPTION_SEEN:-0} == 0 &&
+          ${APO_CPU_MAX_OPTION_SEEN:-0} == 0 && ${APO_GPU_MAX_OPTION_SEEN:-0} == 0 )); then
+        if apo_history_has_legal_axis_headroom "$effective_cpu" "$effective_gpu" "$cpu_resolution" "$gpu_resolution"; then
+            :
+        else
+            headroom_rc=$?
+            if (( headroom_rc == 1 )); then
+                effective_cpu=$APO_NORMAL_CPU
+                effective_gpu=$APO_NORMAL_GPU
+                APO_HISTORY_NO_HEADROOM=1
+            else
+                apo_history_set_validation_error 'A retained ambiguous pair frontier is malformed.'
+                return 1
+            fi
+        fi
+    fi
+
     apo_history_finalize_ceiling_warnings "$effective_cpu" "$effective_gpu" || {
         apo_history_set_validation_error 'Could not resolve retained-history ceiling warnings.'
         return 1
     }
+    if (( APO_HISTORY_NO_HEADROOM == 1 )); then
+        apo_history_append_plan_warning "Retained history leaves no legal untested clock above the sealed applied floor ${APO_NORMAL_CPU}/${APO_NORMAL_GPU} MHz; this overclock command will finish without changing clocks or rebooting."
+    fi
     apo_state_set HISTORY_CPU_RETAINED_CAP "$APO_HISTORY_CPU_RETAINED_CAP"
     apo_state_set HISTORY_GPU_RETAINED_CAP "$APO_HISTORY_GPU_RETAINED_CAP"
     apo_state_set HISTORY_CPU_EXPLICIT_MAX_OVERRIDE "$APO_HISTORY_CPU_EXPLICIT_MAX_OVERRIDE"
@@ -2131,6 +2155,7 @@ apo_history_resolve_new_overclock_plan() {
     APO_GPU_MAX=$effective_gpu
     apo_state_set CFG_CPU_MAX_EFFECTIVE "$effective_cpu"
     apo_state_set CFG_GPU_MAX_EFFECTIVE "$effective_gpu"
+    apo_state_set HISTORY_NO_HEADROOM "$APO_HISTORY_NO_HEADROOM"
 
     # Full-domain runs preserve an ambiguous pair as a pair constraint.  Only
     # when the requested/effective anchor enters its northeast quadrant do we

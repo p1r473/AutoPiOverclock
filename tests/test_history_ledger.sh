@@ -115,7 +115,7 @@ APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 apo_history_adopt_completed_baseline
 [[ $APO_HISTORY_COMPLETED_BASELINE_ADOPTED == 1 ]]
 [[ $APO_PERMANENT_TUNING_PROVENANCE == verified-completed-ledger ]]
-[[ $APO_PERMANENT_TUNING_EVIDENCE == failure-ledger-v1:* ]]
+[[ $APO_PERMANENT_TUNING_EVIDENCE == failure-ledger-v2:* ]]
 APO_PERMANENT_CONFIG_HASH=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 if apo_history_adopt_completed_baseline; then
     printf 'completed floor adoption accepted a live hash mismatch\n' >&2
@@ -158,15 +158,12 @@ if apo_history_load_machine_ledger "$bad_base64" 1; then
     exit 1
 fi
 
-legacy="$TEST_ROOT/legacy.txt"
-printf 'AutoPiOverclock retained failure ledger\nGenerated: 2026-09-20T01:00:00-0400\n' > "$legacy"
-if apo_history_load_machine_ledger "$legacy" 1; then
+human_only="$TEST_ROOT/human-only.txt"
+printf 'AutoPiOverclock retained failure ledger\nGenerated: 2026-09-20T01:00:00-0400\n' > "$human_only"
+if apo_history_load_machine_ledger "$human_only" 1; then
     printf 'human-only ledger was accepted as machine history\n' >&2
     exit 1
-else
-    legacy_rc=$?
 fi
-[[ $legacy_rc == 3 ]]
 
 # A failed render cannot replace the previously validated durable ledger.
 ledger_hash_before=$(sha256sum "$ledger" | awk 'NR == 1 {print $1}')

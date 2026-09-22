@@ -55,29 +55,6 @@ configured_target() {
     printf '%s' "$target"
 }
 
-legacy_watchdog_target() {
-    local target count
-    [[ -f /etc/watchdog.conf && ! -L /etc/watchdog.conf ]] || return 1
-    count=$(awk -F= '
-        /^[[:space:]]*#/ {next}
-        /^[[:space:]]*ping[[:space:]]*=/ {
-            value=$2; sub(/[[:space:]]*#.*/, "", value); gsub(/[[:space:]]/, "", value)
-            if (value != "") {count++; selected=value}
-        }
-        END {print count+0}
-    ' /etc/watchdog.conf)
-    [[ $count == 1 ]] || return 1
-    target=$(awk -F= '
-        /^[[:space:]]*#/ {next}
-        /^[[:space:]]*ping[[:space:]]*=/ {
-            value=$2; sub(/[[:space:]]*#.*/, "", value); gsub(/[[:space:]]/, "", value)
-            if (value != "") print value
-        }
-    ' /etc/watchdog.conf)
-    valid_ipv4 "$target" || return 1
-    printf '%s' "$target"
-}
-
 default_gateway() {
     local gateway
     gateway=$(ip -4 route show default 2>/dev/null | awk '

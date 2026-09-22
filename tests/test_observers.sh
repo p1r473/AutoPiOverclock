@@ -55,7 +55,7 @@ apo_state_set GPU_QUALIFICATION_CPU 3100
 apo_state_set GPU_QUALIFICATION_TARGET 1175
 apo_state_set GPU_QUALIFIED_CPU 3100
 apo_state_set GPU_QUALIFIED_CLOCK 1175
-apo_state_set CFG_SELECTION_POLICY refined-max-25
+apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
 apo_state_set CFG_SWEEP_DOMAIN all
 apo_state_set CFG_QUALIFICATION_DURATION_S 7200
 apo_state_set CFG_FINAL_DURATION_S 86400

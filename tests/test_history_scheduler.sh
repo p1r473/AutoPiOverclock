@@ -10,7 +10,7 @@ source "$ROOT/lib/candidates.sh"
 
 SAVE_COUNT=0
 APO_CFG=([FINAL_DURATION_S]=172800 [BACKOFF_STEPS]=0 [VOLTAGE_DELTA_UV]=existing)
-APO_SELECTION_POLICY=refined-max-25
+APO_SELECTION_POLICY=adaptive-refined-v1
 APO_SWEEP_DOMAIN=all
 APO_AUTO_GENERATED_CANDIDATES=1
 APO_AUTO_BASELINE_CPU=2400
@@ -295,7 +295,7 @@ apo_refined_validate_final_backoff_state
 
 # Ambiguous current-run isolation also honors each domain independently: CPU
 # moves by 5 MHz, GPU by 1 MHz, then the pair branch combines those exact
-# tested coordinates.  These fixtures are separate from the legacy 25 MHz
+# tested coordinates. These fixtures are separate from the default 25 MHz
 # retained-history scheduler cases above.
 seed_active_trial
 APO_SELECTION_POLICY=adaptive-refined-v1

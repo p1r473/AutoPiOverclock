@@ -18,6 +18,7 @@ APO_AUTO_BASELINE_PROVENANCE=''
 APO_AUTO_BASELINE_EVIDENCE=''
 APO_AUTO_GENERATED_CANDIDATES=0
 APO_EDGE_CPU_24H=0
+APO_SELECTION_POLICY=adaptive-refined-v1
 
 apo_state_get() {
     local state_key=$1 fallback=${2-}
@@ -51,9 +52,9 @@ apo_select_conservative_clocks
 [[ -z ${APO_STATE[FINAL_GPU]} ]]
 
 # Configuration-free auto mode climbs coarsely, refines only the final
-# passing-to-failing gap at 25 MHz, then selects a tested CPU clock 50 MHz
-# below the refined failure boundary.
+# passing-to-failing gap at 25 MHz, then selects the highest tested pass.
 APO_STATE=()
+APO_SELECTION_POLICY=adaptive-refined-v1
 APO_AUTO_GENERATED_CANDIDATES=1
 APO_AUTO_BASELINE_CPU=2400
 APO_AUTO_BASELINE_GPU=800
@@ -80,8 +81,8 @@ apo_sweep_cpu
 [[ $(apo_state_get PASSED_CPUS) == '2500,2600,2700,2800,2900,3000,3025,3050' ]]
 [[ $(apo_state_get CPU_FAILURE_BOUNDARY) == 3075 ]]
 [[ $(apo_state_get CPU_REFINE_CANDIDATES) == '3025,3050' ]]
-[[ $(apo_state_get SAFE_CPU) == 3025 ]]
-[[ $(apo_state_get CPU_GUARD_TARGET) == 3025 ]]
+[[ $(apo_state_get SAFE_CPU) == 3050 ]]
+[[ $(apo_state_get CPU_GUARD_TARGET) == 3050 ]]
 [[ $(apo_state_get CPU_GUARD_VERIFIED) == 1 ]]
 [[ ${AUTO_CALLS[*]} == 'cpu:2500 cpu:2600 cpu:2700 cpu:2800 cpu:2900 cpu:3000 cpu:3100 cpu:3025 cpu:3050 cpu:3075' ]]
 
@@ -104,41 +105,8 @@ apo_sweep_gpu
 [[ $(apo_state_get GPU_GUARD_VERIFIED) == 1 ]]
 
 apo_select_conservative_clocks
-[[ $(apo_state_get RECOMMENDED_CPU) == 3025 ]]
+[[ $(apo_state_get RECOMMENDED_CPU) == 3050 ]]
 [[ $(apo_state_get RECOMMENDED_GPU) == 1175 ]]
-
-# If the ceiling passes, the non-coarse 50 MHz CPU guard clock is itself
-# candidate-tested before it can be selected.
-APO_STATE=()
-APO_NORMAL_CPU=2400
-GUARD_CALLS=()
-apo_test_candidate() { GUARD_CALLS+=("$1"); return 0; }
-apo_sweep_cpu
-[[ $(apo_state_get CPU_FAILURE_BOUNDARY '') == '' ]]
-[[ $(apo_state_get SAFE_CPU) == 3150 ]]
-[[ ${GUARD_CALLS[*]} == '2500 2600 2700 2800 2900 3000 3100 3200 3150' ]]
-
-# If an untested ceiling-derived guard candidate fails, treat that lower
-# failure as the new boundary and fall back by the full production guard. A
-# prior higher short pass must never override the lower reproduced failure.
-APO_STATE=()
-APO_NORMAL_CPU=2400
-GUARD_CALLS=()
-apo_test_candidate() {
-    GUARD_CALLS+=("$1")
-    if (( $1 == 3150 )); then
-        APO_LAST_CLASS=STABILITY_FAILURE
-        APO_LAST_REASON='guard fixture boundary'
-        return 1
-    fi
-    return 0
-}
-apo_sweep_cpu
-[[ $(apo_state_get CPU_FAILURE_BOUNDARY) == 3150 ]]
-[[ $(apo_state_get CPU_GUARD_TARGET) == 3100 ]]
-[[ $(apo_state_get SAFE_CPU) == 3100 ]]
-[[ $(apo_state_get CPU_GUARD_VERIFIED) == 1 ]]
-[[ ${GUARD_CALLS[*]} == '2500 2600 2700 2800 2900 3000 3100 3200 3150' ]]
 
 # Adaptive explicit maxima are tested exactly first.  After that ceiling fails,
 # CPU descends coarsely to the first pass and refines upward at the configured

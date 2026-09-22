@@ -4,21 +4,14 @@
 : "${APO_TRANSIENT_PHASE_RETRY_MAX:=5}"
 
 apo_refined_max_policy_active() {
-    case ${APO_SELECTION_POLICY:-$(apo_state_get CFG_SELECTION_POLICY guarded-v1)} in
-        refined-max-25|adaptive-refined-v1) return 0 ;;
-        *) return 1 ;;
-    esac
+    [[ ${APO_SELECTION_POLICY:-$(apo_state_get CFG_SELECTION_POLICY '')} == adaptive-refined-v1 ]]
 }
 
 apo_adaptive_refined_policy_active() {
-    [[ ${APO_SELECTION_POLICY:-$(apo_state_get CFG_SELECTION_POLICY guarded-v1)} == adaptive-refined-v1 ]]
+    apo_refined_max_policy_active
 }
 
 apo_refined_domain_resolution() {
-    if ! apo_adaptive_refined_policy_active; then
-        printf '%s' "$APO_AUTO_REFINE_STEP_MHZ"
-        return 0
-    fi
     apo_domain_resolution_mhz "$1"
 }
 
@@ -75,7 +68,7 @@ apo_completed_ledger_baseline_active() {
     [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 &&
        $(apo_refined_sweep_domain) == all &&
        ${APO_AUTO_BASELINE_PROVENANCE:-} == verified-completed-ledger &&
-       ${APO_AUTO_BASELINE_EVIDENCE:-} =~ ^failure-ledger-v1:[0-9a-f]{64}$ ]]
+       ${APO_AUTO_BASELINE_EVIDENCE:-} =~ ^failure-ledger-v2:[0-9a-f]{64}$ ]]
 }
 
 apo_completed_ledger_cpu_has_no_headroom() {
@@ -341,12 +334,7 @@ apo_refined_domain_floor() {
         GPU) requested_floor=${APO_GPU_MIN:-} ;;
         *) return 1 ;;
     esac
-    # During retained-history screening only, schema-10 START_AT values retain
-    # their original seed semantics.  They must remain available to rebuild
-    # the old candidate plan, but must not invalidate a later saved backoff by
-    # acting as today's hard minimum.
-    if [[ ${APO_HISTORY_LEGACY_START_AT_SEMANTICS:-0} != 1 &&
-          $requested_floor =~ ^[0-9]+$ ]] && (( requested_floor > floor )); then
+    if [[ $requested_floor =~ ^[0-9]+$ ]] && (( requested_floor > floor )); then
         floor=$requested_floor
     fi
     printf '%s' "$floor"
@@ -745,7 +733,7 @@ apo_post_floor_edge_source_is_eligible() {
     apo_validate_uint_range "$source_edge" "$APO_MIN_TUNING_DURATION_S" "$APO_MAX_TUNING_DURATION_S" || return 1
     apo_config_saved_duration_policy_matches "$source_qualification" "$source_final" "$source_edge" "$source_policy" || return 1
     [[ $(apo_state_get FORMAT_VERSION '') == 1 &&
-       ( $run_schema == "$APO_CURRENT_RUN_SCHEMA" || $run_schema == 9 ) &&
+        $run_schema == "$APO_CURRENT_RUN_SCHEMA" &&
        $(apo_state_get ORIGIN_COMMAND '') == overclock &&
        $(apo_state_get READ_ONLY_RUN 0) == 0 &&
        $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
@@ -1549,46 +1537,8 @@ apo_validate_recovery_wait_state() {
     esac
 }
 
-apo_normalize_network_watchdog_retry_residue() {
-    local retry_context retry_count status failure_class failure_reason
-    local network_count network_event network_target
-    retry_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
-    retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
-    status=$(apo_state_get STATUS '')
-    failure_class=$(apo_state_get FAILURE_CLASS '')
-    failure_reason=$(apo_state_get FAILURE_REASON '')
-    network_count=$(apo_state_get NETWORK_WATCHDOG_REPLAY_COUNT 0)
-    network_event=$(apo_state_get NETWORK_WATCHDOG_LAST_EVENT_ID '')
-    network_target=$(apo_state_get NETWORK_WATCHDOG_LAST_TARGET '')
-    case $status in
-        RUNNING|INTERRUPTED) ;;
-        FAILED)
-            [[ $failure_class == HARNESS_FAILURE &&
-               $failure_reason == 'Idle automatic transport-retry state retains a context' ]] || return 0
-            ;;
-        *) return 0 ;;
-    esac
-    [[ $retry_count == 0 && -n $retry_context && $retry_context =~ ^[A-Za-z0-9._:-]+$ &&
-       $network_count =~ ^[1-9][0-9]*$ && $network_event =~ ^[0-9a-f]{32}$ &&
-       $network_target =~ ^[0-9]+([.][0-9]+){3}$ ]] || return 0
-    # Alpha.58 through alpha.69 recorded the current gate context while a
-    # proved watchdog continuation intentionally left its retry count at zero.
-    # The context has no operative meaning without a count. Canonicalize only
-    # when strict saved watcher identity proves this exact historical writer.
-    apo_state_set TRANSIENT_RETRY_CONTEXT ''
-    if [[ $status == FAILED ]]; then
-        # The old strict validator could save this exact compatibility defect
-        # as a harness failure before restart handling began. Restore the
-        # interrupted source state that the rejected resume was trying to use.
-        apo_state_set STATUS INTERRUPTED
-        apo_state_set FAILURE_CLASS ''
-        apo_state_set FAILURE_REASON ''
-    fi
-}
-
 apo_validate_transient_retry_state() {
     local retry_context retry_count
-    apo_normalize_network_watchdog_retry_residue
     retry_context=$(apo_state_get TRANSIENT_RETRY_CONTEXT '')
     retry_count=$(apo_state_get TRANSIENT_RETRY_COUNT 0)
     [[ $retry_count =~ ^[0-9]+$ && $retry_count -le $APO_TRANSIENT_PHASE_RETRY_MAX ]] || {
@@ -2462,7 +2412,7 @@ apo_auto_validate_non_auto_state() {
 apo_validate_auto_resume_state() {
     local auto_marker=${APO_AUTO_GENERATED_CANDIDATES:-0} edge_marker=${APO_EDGE_CPU_24H:-0}
     local expected_cpu_csv expected_gpu_csv apply_status final_cpu final_gpu selection_policy sweep_domain plan_cpu plan_gpu plan_voltage
-    local refined_policy=0 cpu_coarse_step=$APO_AUTO_CPU_STEP_MHZ gpu_coarse_step=$APO_AUTO_GPU_STEP_MHZ
+    local cpu_coarse_step=$APO_AUTO_CPU_STEP_MHZ gpu_coarse_step=$APO_AUTO_GPU_STEP_MHZ
     local source_applied_hash source_live_hash source_hash_relation source_hash_evidence
     local post_floor_edge source_floor_run_id source_floor_hash floor_cpu floor_gpu permanent_hash edge_status
     local post_floor_final post_floor_final_stage source_final_run_id source_final_hash source_final_duration source_final_backup
@@ -2475,32 +2425,23 @@ apo_validate_auto_resume_state() {
     fi
     apo_auto_validate_boolean 'automatic-candidate' "$auto_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
     apo_auto_validate_boolean 'edge CPU option' "$edge_marker" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
-    selection_policy=${APO_SELECTION_POLICY:-$(apo_state_get CFG_SELECTION_POLICY guarded-v1)}
+    selection_policy=${APO_SELECTION_POLICY:-$(apo_state_get CFG_SELECTION_POLICY '')}
     sweep_domain=${APO_SWEEP_DOMAIN:-$(apo_state_get CFG_SWEEP_DOMAIN all)}
-    case $selection_policy in
-        guarded-v1) ;;
-        refined-max-25|adaptive-refined-v1) refined_policy=1 ;;
-        *) apo_auto_state_invalid "Saved automatic selection policy is malformed: ${selection_policy:-missing}"; return 1 ;;
-    esac
+    [[ $selection_policy == adaptive-refined-v1 ]] || {
+        apo_auto_state_invalid "Saved automatic selection policy is not current: ${selection_policy:-missing}"
+        return 1
+    }
     case $sweep_domain in all|cpu|gpu) ;; *) apo_auto_state_invalid "Saved automatic sweep domain is malformed: ${sweep_domain:-missing}"; return 1 ;; esac
-    if (( refined_policy == 1 )) && [[ $edge_marker != 0 ]]; then
-        apo_auto_state_invalid 'The refined-maximum policy cannot contain an edge run.'
+    if [[ $edge_marker != 0 ]]; then
+        apo_auto_state_invalid 'The current automatic policy cannot contain an edge run.'
         return 1
     fi
     post_floor_edge=$(apo_state_get POST_FLOOR_EDGE 0)
     source_floor_run_id=$(apo_state_get SOURCE_FLOOR_RUN_ID '')
     source_floor_hash=$(apo_state_get SOURCE_FLOOR_PERMANENT_HASH '')
     apo_auto_validate_boolean 'post-floor edge continuation' "$post_floor_edge" || { apo_auto_state_invalid "$APO_AUTO_VALIDATION_REASON"; return 1; }
-    if (( post_floor_edge == 0 )); then
-        if [[ -n $source_floor_run_id || -n $source_floor_hash ]]; then
-            apo_auto_state_invalid 'Saved source-floor identity exists outside a post-floor edge continuation.'
-            return 1
-        fi
-    elif (( auto_marker != 1 || edge_marker != 1 )); then
-        apo_auto_state_invalid 'Post-floor edge continuation is saved on a non-auto or non-edge run.'
-        return 1
-    elif ! apo_is_safe_run_id "$source_floor_run_id" || [[ $source_floor_run_id == $(apo_state_get RUN_ID '') || ! $source_floor_hash =~ ^[0-9a-f]{64}$ ]]; then
-        apo_auto_state_invalid 'Saved post-floor edge continuation has an invalid source run or permanent-config hash.'
+    if (( post_floor_edge != 0 )) || [[ -n $source_floor_run_id || -n $source_floor_hash ]]; then
+        apo_auto_state_invalid 'Saved state contains a non-current post-floor edge continuation.'
         return 1
     fi
     post_floor_final=$(apo_state_get POST_FLOOR_FINAL 0)
@@ -2536,19 +2477,10 @@ apo_validate_auto_resume_state() {
             return 1
         fi
         if [[ $post_floor_final_stage == BACKOFF_TUNING ]]; then
-            if (( refined_policy == 1 )) && [[ $edge_marker != 0 ]]; then
-                apo_auto_state_invalid 'Refined longer-final backoff cannot introduce an edge plan.'
-                return 1
-            elif (( refined_policy == 0 )) && [[ $edge_marker != 1 ]]; then
-                apo_auto_state_invalid 'Legacy longer-final automatic backoff is missing its edge-first plan.'
+            if [[ $edge_marker != 0 ]]; then
+                apo_auto_state_invalid 'Current longer-final backoff cannot introduce an edge plan.'
                 return 1
             fi
-        fi
-        if (( refined_policy == 0 && edge_marker == 1 )) &&
-           [[ ${APO_EDGE_ORDER:-floor-first} != edge-first ||
-              $(apo_state_get CFG_EDGE_DURATION_S '') != "$(apo_state_get CFG_FINAL_DURATION_S '')" ]]; then
-            apo_auto_state_invalid 'Longer-final automatic backoff must use one equal-duration edge-first final plan.'
-            return 1
         fi
     fi
     if (( auto_marker == 1 )); then
@@ -2558,7 +2490,7 @@ apo_validate_auto_resume_state() {
                    ( ${APO_AUTO_BASELINE_GPU:-missing} == 800 || ${APO_AUTO_BASELINE_GPU:-missing} == 960 ) &&
                    ${APO_AUTO_BASELINE_VOLTAGE:-missing} == "$APO_PI5_STOCK_VOLTAGE_UV" ]] ||
                [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} == verified-completed-ledger &&
-                   ${APO_AUTO_BASELINE_EVIDENCE:-missing} =~ ^failure-ledger-v1:[0-9a-f]{64}$ &&
+                    ${APO_AUTO_BASELINE_EVIDENCE:-missing} =~ ^failure-ledger-v2:[0-9a-f]{64}$ &&
                    ${APO_AUTO_BASELINE_CPU:-missing} =~ ^[1-9][0-9]*$ &&
                    ${APO_AUTO_BASELINE_GPU:-missing} =~ ^[1-9][0-9]*$ &&
                    ${APO_AUTO_BASELINE_VOLTAGE:-missing} =~ ^-?[0-9]+$ ]]; }; then
@@ -2568,7 +2500,7 @@ apo_validate_auto_resume_state() {
         plan_cpu=$APO_AUTO_BASELINE_CPU
         plan_gpu=$APO_AUTO_BASELINE_GPU
         plan_voltage=$APO_AUTO_BASELINE_VOLTAGE
-        if (( refined_policy == 1 )) && [[ $sweep_domain != all ]]; then
+        if [[ $sweep_domain != all ]]; then
             plan_cpu=$(apo_state_get SOURCE_APPLIED_CPU '')
             plan_gpu=$(apo_state_get SOURCE_APPLIED_GPU '')
             plan_voltage=$(apo_state_get SOURCE_APPLIED_VOLTAGE '')
@@ -2620,15 +2552,13 @@ apo_validate_auto_resume_state() {
                 return 1
             fi
         fi
-        if [[ $selection_policy == adaptive-refined-v1 ]]; then
-            cpu_coarse_step=$(apo_domain_coarse_step_mhz CPU) || { apo_auto_state_invalid 'Saved adaptive CPU coarse step is malformed.'; return 1; }
-            gpu_coarse_step=$(apo_domain_coarse_step_mhz GPU) || { apo_auto_state_invalid 'Saved adaptive GPU coarse step is malformed.'; return 1; }
-        fi
-        if (( refined_policy == 1 )) && [[ $sweep_domain == gpu ]]; then
+        cpu_coarse_step=$(apo_domain_coarse_step_mhz CPU) || { apo_auto_state_invalid 'Saved adaptive CPU coarse step is malformed.'; return 1; }
+        gpu_coarse_step=$(apo_domain_coarse_step_mhz GPU) || { apo_auto_state_invalid 'Saved adaptive GPU coarse step is malformed.'; return 1; }
+        if [[ $sweep_domain == gpu ]]; then
             expected_cpu_csv=''
-        elif [[ $selection_policy == adaptive-refined-v1 && ${APO_CPU_SEARCH_DIRECTION:-forward} == descending ]]; then
+        elif [[ ${APO_CPU_SEARCH_DIRECTION:-forward} == descending ]]; then
             expected_cpu_csv=${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ}
-        elif (( refined_policy == 1 )) && [[ -n ${APO_CPU_MIN:-} ]]; then
+        elif [[ -n ${APO_CPU_MIN:-} ]]; then
             expected_cpu_csv=$(apo_config_auto_ladder_from_exact "$APO_CPU_MIN" "$cpu_coarse_step" "${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ}" "$APO_CPU_CLOCK_MIN_MHZ") || {
                 apo_auto_state_invalid 'Saved automatic CPU plan could not be reconstructed from its exact minimum.'
                 return 1
@@ -2639,11 +2569,11 @@ apo_validate_auto_resume_state() {
                 return 1
             }
         fi
-        if (( refined_policy == 1 )) && [[ $sweep_domain == cpu ]]; then
+        if [[ $sweep_domain == cpu ]]; then
             expected_gpu_csv=''
-        elif [[ $selection_policy == adaptive-refined-v1 && ${APO_GPU_SEARCH_DIRECTION:-forward} == descending ]]; then
+        elif [[ ${APO_GPU_SEARCH_DIRECTION:-forward} == descending ]]; then
             expected_gpu_csv=${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}
-        elif (( refined_policy == 1 )) && [[ -n ${APO_GPU_MIN:-} ]]; then
+        elif [[ -n ${APO_GPU_MIN:-} ]]; then
             expected_gpu_csv=$(apo_config_auto_ladder_from_exact "$APO_GPU_MIN" "$gpu_coarse_step" "${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}" "$APO_GPU_CLOCK_MIN_MHZ") || {
                 apo_auto_state_invalid 'Saved automatic GPU plan could not be reconstructed from its exact minimum.'
                 return 1
@@ -3455,7 +3385,6 @@ apo_final_saved_failure_is_retryable() {
        $(apo_state_get RECOMMENDED_CPU '') == "$(apo_state_get FINAL_TARGET_CPU '')" &&
        $(apo_state_get RECOMMENDED_GPU '') == "$(apo_state_get FINAL_TARGET_GPU '')" ]] || return 1
     case $(apo_state_get FINAL_STAGE '') in
-        CPU_STRESS|GPU_STRESS) (( run_schema < APO_CURRENT_RUN_SCHEMA )) ;;
         PRE_STRESS_BOOT|ENDURANCE|BOOT_*) return 0 ;;
         *) return 1 ;;
     esac
@@ -3521,8 +3450,7 @@ apo_saved_normal_return_failure_is_retryable() {
     final_stage=$(apo_state_get FINAL_STAGE '')
     case $phase in
         TRYBOOT_PROOF)
-            # Baseline replay was introduced together with the durable marker;
-            # there is no trustworthy legacy marker-free shape to adopt.
+            # Baseline replay does not have a safe retry point here.
             return 1
             ;;
         CPU_SWEEP|GPU_SWEEP|CPU_QUALIFICATION|GPU_QUALIFICATION)
@@ -3645,121 +3573,6 @@ apo_initialize_current_qualification_state() {
     [[ -v APO_STATE[RECOVERY_WAIT_STATUS] ]] || apo_state_set RECOVERY_WAIT_STATUS IDLE
     [[ -v APO_STATE[RECOVERY_WAIT_TIMEOUTS] ]] || apo_state_set RECOVERY_WAIT_TIMEOUTS 0
     [[ -v APO_STATE[TRANSIENT_RETRY_COUNT] ]] || apo_state_set TRANSIENT_RETRY_COUNT 0
-}
-
-apo_migrate_active_automatic_state() {
-    local legacy_schema=$1 status phase failed_stage='' failure_class='' failure_reason=''
-    local expected_cpu_csv expected_gpu_csv target_cpu target_gpu
-    [[ $legacy_schema == 7 || $legacy_schema == 8 ]] || return 1
-    [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 &&
-       $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
-       $(apo_state_get ORIGIN_COMMAND '') == overclock &&
-       $(apo_state_get APPLY_STATUS NOT_APPLIED) != APPLIED &&
-       $(apo_state_get FLOOR_VALIDATED 0) == 0 &&
-       $(apo_state_get EDGE_CPU_STATUS NOT_REQUESTED) == NOT_REQUESTED ]] || return 1
-    status=$(apo_state_get STATUS '')
-    phase=$(apo_state_get PHASE '')
-    [[ $status == RUNNING || $status == INTERRUPTED ]] || {
-        apo_final_saved_failure_is_retryable "$legacy_schema" || return 1
-        failed_stage=$(apo_state_get FINAL_STAGE '')
-        failure_class=$(apo_state_get FAILURE_CLASS '')
-        failure_reason=$(apo_state_get FAILURE_REASON '')
-    }
-    [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} == verified-default &&
-       ${APO_AUTO_BASELINE_EVIDENCE:-missing} == none &&
-       ${APO_AUTO_BASELINE_CPU:-missing} == "$APO_PI5_STOCK_CPU_MHZ" &&
-       ( ${APO_AUTO_BASELINE_GPU:-missing} == 800 || ${APO_AUTO_BASELINE_GPU:-missing} == 960 ) &&
-       ${APO_AUTO_BASELINE_VOLTAGE:-missing} == "$APO_PI5_STOCK_VOLTAGE_UV" ]] || return 1
-    expected_cpu_csv=$(apo_config_auto_ladder "$APO_AUTO_BASELINE_CPU" "$APO_AUTO_CPU_STEP_MHZ" "$APO_AUTO_CPU_MAX_MHZ" "$APO_CPU_CLOCK_MIN_MHZ") || return 1
-    expected_gpu_csv=$(apo_config_auto_ladder "$APO_AUTO_BASELINE_GPU" "$APO_AUTO_GPU_STEP_MHZ" "$APO_AUTO_GPU_MAX_MHZ" "$APO_GPU_CLOCK_MIN_MHZ") || return 1
-    [[ ${APO_CFG[CPU_CANDIDATES]:-} == "$expected_cpu_csv" &&
-       ${APO_CFG[GPU_CANDIDATES]:-} == "$expected_gpu_csv" &&
-       ${APO_CFG[BACKOFF_STEPS]:-missing} == 0 &&
-       ${APO_CFG[VOLTAGE_DELTA_UV]:-missing} == existing &&
-       ${APO_CFG[FINAL_DURATION_S]:-missing} == 28800 &&
-       ${APO_TEST_VOLTAGE:-missing} == "$APO_PI5_STOCK_VOLTAGE_UV" ]] || return 1
-    apo_auto_validate_domain_state CPU || return 1
-    apo_auto_validate_domain_state GPU || return 1
-    apo_final_initialize_backoff_state
-    apo_initialize_current_qualification_state
-    APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
-    APO_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
-    APO_FINAL_DURATION_S=${APO_CFG[FINAL_DURATION_S]}
-    APO_DURATION_POLICY=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "$APO_FINAL_DURATION_S" "$APO_EDGE_DURATION_S")
-    apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
-    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
-    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
-    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
-    apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
-
-    if [[ -n $failed_stage ]]; then
-        apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason" || return 1
-    else
-        case $phase in
-            TRYBOOT_PROOF|GPU_SMOKE|CPU_SWEEP)
-                ;;
-            SELECTION)
-                if [[ $(apo_state_get SUBPHASE '') != CPU ]]; then
-                    target_cpu=$(apo_state_get SAFE_CPU '')
-                    target_gpu=$(apo_state_get SAFE_GPU '')
-                    [[ $target_cpu =~ ^[0-9]+$ ]] || return 1
-                    apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
-                    apo_state_set CPU_QUALIFICATION_TARGET "$target_cpu"
-                    apo_state_set CPU_QUALIFIED_CLOCK ''
-                    apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
-                    apo_state_set GPU_QUALIFICATION_CPU "$target_cpu"
-                    apo_state_set GPU_QUALIFICATION_TARGET "$target_gpu"
-                    apo_state_set GPU_QUALIFIED_CPU ''
-                    apo_state_set GPU_QUALIFIED_CLOCK ''
-                    apo_state_set RECOMMENDED_CPU "$target_cpu"
-                    apo_state_set RECOMMENDED_GPU "$target_gpu"
-                    apo_state_set PHASE CPU_QUALIFICATION
-                    apo_state_set SUBPHASE READY
-                fi
-                ;;
-            CPU_QUALIFICATION)
-                target_cpu=$(apo_state_get SAFE_CPU '')
-                [[ $target_cpu =~ ^[0-9]+$ ]] || return 1
-                apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
-                apo_state_set CPU_QUALIFICATION_TARGET "$target_cpu"
-                apo_state_set CPU_QUALIFIED_CLOCK ''
-                apo_state_set RECOMMENDED_CPU "$target_cpu"
-                ;;
-            GPU_SWEEP|GPU_QUALIFICATION|FINAL_VALIDATION)
-                target_cpu=$(apo_state_get RECOMMENDED_CPU "$(apo_state_get SAFE_CPU '')")
-                target_gpu=$(apo_state_get RECOMMENDED_GPU "$(apo_state_get SAFE_GPU '')")
-                [[ $target_cpu =~ ^[0-9]+$ ]] || return 1
-                apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
-                apo_state_set CPU_QUALIFICATION_TARGET "$target_cpu"
-                apo_state_set CPU_QUALIFIED_CLOCK ''
-                apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
-                apo_state_set GPU_QUALIFICATION_CPU "$target_cpu"
-                apo_state_set GPU_QUALIFICATION_TARGET "$target_gpu"
-                apo_state_set GPU_QUALIFIED_CPU ''
-                apo_state_set GPU_QUALIFIED_CLOCK ''
-                apo_state_set RECOMMENDED_CPU "$target_cpu"
-                apo_state_set RECOMMENDED_GPU "$target_gpu"
-                apo_state_clear_final_validation
-                apo_state_set FINAL_STAGE ''
-                apo_state_set FINAL_TARGET_CPU "$target_cpu"
-                apo_state_set FINAL_TARGET_GPU "$target_gpu"
-                apo_clear_candidate_checkpoint
-                apo_state_set PHASE CPU_QUALIFICATION
-                apo_state_set SUBPHASE READY
-                ;;
-            *) return 1 ;;
-        esac
-        apo_state_set STATUS RUNNING
-        apo_state_set FAILURE_CLASS ''
-        apo_state_set FAILURE_REASON ''
-        apo_state_save
-    fi
-    apo_event overclock-state-upgrade INFO '' "Upgraded active automatic run schema $legacy_schema to $APO_CURRENT_RUN_SCHEMA; the new isolated CPU/GPU qualifications will run before combined production validation."
-}
-
-apo_final_migrate_legacy_retry_state() {
-    local legacy_schema=$1
-    apo_migrate_active_automatic_state "$legacy_schema"
 }
 
 apo_restart_clear_final_sequence() {
@@ -4586,58 +4399,19 @@ apo_final_schedule_stress_backoff() {
 apo_post_floor_final_schedule_stress_backoff() {
     local failed_stage=$1 failure_class=$2 failure_reason=$3 attributed_domain=${4:-}
     local failed_cpu failed_gpu next_cpu next_gpu
-    local old_edge_marker old_edge_order old_edge_duration old_duration_policy old_extension_stage old_app_version
+    local old_extension_stage old_app_version
     [[ $(apo_state_get POST_FLOOR_FINAL 0) == 1 ]] || return 1
     case $(apo_state_get POST_FLOOR_FINAL_STAGE '') in VALIDATING|FAILED) ;; *) return 1 ;; esac
     apo_class_is_edge_failure "$failure_class" || return 1
 
     failed_cpu=$(apo_state_get FINAL_TARGET_CPU '')
     failed_gpu=$(apo_state_get FINAL_TARGET_GPU '')
-    old_edge_marker=${APO_EDGE_CPU_24H:-0}
-    old_edge_order=${APO_EDGE_ORDER:-floor-first}
-    old_edge_duration=${APO_EDGE_DURATION_S:-$APO_DEFAULT_EDGE_DURATION_S}
-    old_duration_policy=${APO_DURATION_POLICY:-default}
     old_extension_stage=$(apo_state_get POST_FLOOR_FINAL_STAGE '')
     old_app_version=$(apo_state_get APP_VERSION '')
 
-    if apo_refined_max_policy_active; then
-        apo_state_set POST_FLOOR_FINAL_STAGE BACKOFF_TUNING
-        apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
-        if ! apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason" "$attributed_domain"; then
-            apo_state_set POST_FLOOR_FINAL_STAGE "$old_extension_stage"
-            apo_state_set APP_VERSION "$old_app_version"
-            return 1
-        fi
-        next_cpu=$(apo_state_get RECOMMENDED_CPU '?')
-        next_gpu=$(apo_state_get RECOMMENDED_GPU '?')
-        apo_summary_line "LONGER FINAL AUTO BACKOFF: CPU $failed_cpu MHz / GPU $failed_gpu MHz was safely rejected; stock remains active while CPU $next_cpu MHz / GPU $next_gpu MHz is requalified before a fresh full ${APO_FINAL_DURATION_S}s combined final"
-        apo_event post-floor-final-backoff WARN "$failure_class" "Longer validation safely rejected CPU=$failed_cpu GPU=$failed_gpu: $failure_reason; source clocks were not reapplied, the refined isolation sequence selected CPU=$next_cpu GPU=$next_gpu for requalification and a fresh full ${APO_FINAL_DURATION_S}s final"
-        return 0
-    fi
-
-    # The requested longer-final duration becomes both alternatives in the
-    # fresh edge-first sequence. These state changes are intentionally held in
-    # memory until the generic scheduler performs its single atomic save.
-    APO_EDGE_CPU_24H=1
-    APO_EDGE_ORDER='edge-first'
-    APO_EDGE_DURATION_S=$APO_FINAL_DURATION_S
-    APO_DURATION_POLICY=$(apo_config_duration_policy "$APO_QUALIFICATION_DURATION_S" "$APO_FINAL_DURATION_S" "$APO_EDGE_DURATION_S")
-    apo_state_set CFG_EDGE_CPU_24H 1
-    apo_state_set CFG_EDGE_ORDER edge-first
-    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
-    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
     apo_state_set POST_FLOOR_FINAL_STAGE BACKOFF_TUNING
     apo_state_set APP_VERSION "${APO_VERSION:-$(apo_state_get APP_VERSION unknown)}"
-
-    if ! apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason"; then
-        APO_EDGE_CPU_24H=$old_edge_marker
-        APO_EDGE_ORDER=$old_edge_order
-        APO_EDGE_DURATION_S=$old_edge_duration
-        APO_DURATION_POLICY=$old_duration_policy
-        apo_state_set CFG_EDGE_CPU_24H "$old_edge_marker"
-        apo_state_set CFG_EDGE_ORDER "$old_edge_order"
-        apo_state_set CFG_EDGE_DURATION_S "$old_edge_duration"
-        apo_state_set CFG_DURATION_POLICY "$old_duration_policy"
+    if ! apo_final_schedule_stress_backoff "$failed_stage" "$failure_class" "$failure_reason" "$attributed_domain"; then
         apo_state_set POST_FLOOR_FINAL_STAGE "$old_extension_stage"
         apo_state_set APP_VERSION "$old_app_version"
         return 1
@@ -4645,8 +4419,8 @@ apo_post_floor_final_schedule_stress_backoff() {
 
     next_cpu=$(apo_state_get RECOMMENDED_CPU '?')
     next_gpu=$(apo_state_get RECOMMENDED_GPU '?')
-    apo_summary_line "LONGER FINAL AUTO BACKOFF: CPU $failed_cpu MHz / GPU $failed_gpu MHz was safely rejected; stock remains active while CPU $next_cpu MHz / GPU $next_gpu MHz is requalified before a fresh edge-first ${APO_FINAL_DURATION_S}s final sequence"
-    apo_event post-floor-final-backoff WARN "$failure_class" "Longer validation safely rejected CPU=$failed_cpu GPU=$failed_gpu: $failure_reason; source clocks were not reapplied, conservatively reduced pair CPU=$next_cpu GPU=$next_gpu will repeat both qualifications, then edge-first and guarded-floor alternatives each use ${APO_FINAL_DURATION_S}s"
+    apo_summary_line "LONGER FINAL AUTO BACKOFF: CPU $failed_cpu MHz / GPU $failed_gpu MHz was safely rejected; stock remains active while CPU $next_cpu MHz / GPU $next_gpu MHz is requalified before a fresh full ${APO_FINAL_DURATION_S}s combined final"
+    apo_event post-floor-final-backoff WARN "$failure_class" "Longer validation safely rejected CPU=$failed_cpu GPU=$failed_gpu: $failure_reason; source clocks were not reapplied, the refined isolation sequence selected CPU=$next_cpu GPU=$next_gpu for requalification and a fresh full ${APO_FINAL_DURATION_S}s final"
 }
 
 apo_final_record_failure() {

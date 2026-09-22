@@ -291,14 +291,14 @@ assert_cli_rejects 'resume accepted irrelevant --yes' resume tron --yes
 assert_cli_rejects 'status accepted irrelevant --yes' status tron --yes
 assert_cli_rejects 'standalone apply accepted --yes despite typed confirmation' apply tron --yes
 
-parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
+parse_fixture run test test test tron --cpu 3100 --gpu 1150 --final-hours 2
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli test tron --cpu 3100 --gpu 1150 --minutes 90 --no-max-fan
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 2 --no-max-fan
     [[ $APO_COMMAND == run && $APO_ORIGIN_COMMAND == test && $APO_PUBLIC_COMMAND == test ]]
     [[ $APO_MANUAL_TEST == 1 && $APO_MANUAL_CPU == 3100 && $APO_MANUAL_GPU == 1150 ]]
-    [[ $APO_MANUAL_MINUTES == 90 && $APO_MANUAL_DURATION_S == 5400 ]]
+    [[ $APO_MANUAL_MINUTES == 120 && $APO_MANUAL_DURATION_S == 7200 ]]
     [[ $APO_ASSUME_YES == 1 && $APO_AUTO_APPLY == 0 && $APO_MAX_FAN == 0 ]]
 )
 (
@@ -321,13 +321,6 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --minutes 90
     apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 596523
     [[ $APO_MANUAL_MINUTES == 35791380 && $APO_MANUAL_DURATION_S == 2147482800 ]]
 )
-(
-    export APO_CLI_LIBRARY_ONLY=1
-    source "$ROOT/autopioverclock"
-    apo_parse_cli test tron --cpu 3100 --gpu 1150 --minutes 35791380
-    [[ $APO_MANUAL_MINUTES == 35791380 && $APO_MANUAL_DURATION_S == 2147482800 ]]
-)
-
 parse_fixture reset reset reset reset tron
 parse_fixture restore restore '' restore tron
 parse_fixture complete complete '' complete tron

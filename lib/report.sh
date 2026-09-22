@@ -58,7 +58,7 @@ apo_report_fan_policy() {
 }
 
 apo_report_selection_policy() {
-    apo_state_get CFG_SELECTION_POLICY guarded-v1
+    apo_state_get CFG_SELECTION_POLICY adaptive-refined-v1
 }
 
 apo_report_matching_final_credit() {
@@ -380,10 +380,9 @@ EOF_LIVE
 }
 
 apo_print_saved_status() {
-    local policy sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
+    local sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
     local cpu_effective_max gpu_effective_max history_policy final_duration
     local auto_cpu_max=${APO_AUTO_CPU_MAX_MHZ:-3200} auto_gpu_max=${APO_AUTO_GPU_MAX_MHZ:-1200}
-    policy=$(apo_report_selection_policy)
     sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
     cpu_min=$(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT auto)")
     gpu_min=$(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT auto)")
@@ -414,7 +413,7 @@ Status:         $(apo_report_state_value STATUS unknown)
 Phase:          $(apo_report_state_value PHASE unknown)
 Subphase:       $(apo_report_state_value SUBPHASE unknown)
 Sweep scope:    $(apo_report_state_value CFG_SWEEP_DOMAIN all)
-Selection:      $(apo_report_state_value CFG_SELECTION_POLICY guarded-v1)
+Selection:      $(apo_report_state_value CFG_SELECTION_POLICY adaptive-refined-v1)
 Requested bounds: CPU $(apo_report_value "${cpu_min:-auto}")..$(apo_report_value "${cpu_requested_max:-$auto_cpu_max}") MHz / GPU $(apo_report_value "${gpu_min:-auto}")..$(apo_report_value "${gpu_requested_max:-$auto_gpu_max}") MHz
 Effective caps:  CPU $(apo_report_value "${cpu_effective_max:-$auto_cpu_max}") MHz / GPU $(apo_report_value "${gpu_effective_max:-$auto_gpu_max}") MHz (history $history_policy)
 Search policy:   CPU $(apo_report_state_value CFG_CPU_SEARCH_DIRECTION forward) at $(apo_report_state_value CFG_CPU_RESOLUTION_MHZ 25) MHz resolution / GPU $(apo_report_state_value CFG_GPU_SEARCH_DIRECTION forward) at $(apo_report_state_value CFG_GPU_RESOLUTION_MHZ 25) MHz resolution
@@ -437,28 +436,18 @@ GPU boundary:   $(apo_report_state_value GPU_FAILURE_BOUNDARY none)
 CPU qualify:    $(apo_report_state_value CPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value CPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value CPU_QUALIFIED_CLOCK pending)MHz duration=$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s
 GPU qualify:    $(apo_report_state_value GPU_QUALIFICATION_STATUS NOT_STARTED) target=$(apo_report_state_value GPU_QUALIFICATION_CPU pending)/$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)MHz qualified=$(apo_report_state_value GPU_QUALIFIED_CPU pending)/$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)MHz duration=$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s
 EOF_STATUS
-    if [[ $policy == refined-max-25 || $policy == adaptive-refined-v1 ]]; then
-        printf 'Selected clocks: CPU %s MHz / GPU %s MHz\n' \
-            "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
-            "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
-        printf 'Final requirement: %ss accepted combined workload\n' \
-            "$(apo_report_state_value CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")"
-        printf 'Final policy:    genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit\n'
-        printf 'Saved final credit: %s\n' "$(apo_report_final_credit_text "$final_duration")"
-        printf 'Final recovery:  anchor=%s/%sMHz trial=%s history=%s\n' \
-            "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_CPU none)" \
-            "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_GPU none)" \
-            "$(apo_report_state_value FINAL_BACKOFF_TRIAL none)" \
-            "$(apo_report_state_value FINAL_BACKOFF_HISTORY none)"
-    else
-        cat <<EOF_STATUS
-Recommended:    CPU $(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)") MHz / GPU $(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)") MHz
-Validated floor: CPU $(apo_report_state_value FLOOR_CPU pending) MHz / GPU $(apo_report_state_value FLOOR_GPU pending) MHz ($(apo_report_state_value FLOOR_VALIDATED 0))
-Edge CPU:       $(apo_report_state_value EDGE_CPU_STATUS NOT_REQUESTED) target=$(apo_report_state_value EDGE_CPU_TARGET none)MHz duration=$(apo_report_state_value CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")s order=$(apo_report_state_value CFG_EDGE_ORDER floor-first)
-Edge source:    run=$(apo_report_state_value SOURCE_FLOOR_RUN_ID none) post-floor=$(apo_report_state_value POST_FLOOR_EDGE 0)
-Final extension: $(apo_report_state_value POST_FLOOR_FINAL 0) source=$(apo_report_state_value SOURCE_FINAL_RUN_ID none) stage=$(apo_report_state_value POST_FLOOR_FINAL_STAGE none)
-EOF_STATUS
-    fi
+    printf 'Selected clocks: CPU %s MHz / GPU %s MHz\n' \
+        "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
+        "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
+    printf 'Final requirement: %ss accepted combined workload\n' \
+        "$(apo_report_state_value CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")"
+    printf 'Final policy:    genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit\n'
+    printf 'Saved final credit: %s\n' "$(apo_report_final_credit_text "$final_duration")"
+    printf 'Final recovery:  anchor=%s/%sMHz trial=%s history=%s\n' \
+        "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_CPU none)" \
+        "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_GPU none)" \
+        "$(apo_report_state_value FINAL_BACKOFF_TRIAL none)" \
+        "$(apo_report_state_value FINAL_BACKOFF_HISTORY none)"
     cat <<EOF_STATUS
 Auto retries:   $(apo_report_state_value FINAL_BACKOFF_COUNT 0)
 Duration policy: $(apo_report_state_value CFG_DURATION_POLICY default) qualification=$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")s final=$(apo_report_state_value CFG_FINAL_DURATION_S "$APO_DEFAULT_FINAL_DURATION_S")s
@@ -568,7 +557,7 @@ EOF_SUMMARY
 }
 
 apo_generate_report() {
-    local report_file policy sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
+    local report_file sweep_domain cpu_min gpu_min cpu_requested_max gpu_requested_max
     local cpu_effective_max gpu_effective_max history_policy final_duration
     local auto_cpu_max=${APO_AUTO_CPU_MAX_MHZ:-3200} auto_gpu_max=${APO_AUTO_GPU_MAX_MHZ:-1200}
     if [[ ${APO_REDACT:-0} == 1 ]]; then
@@ -577,7 +566,6 @@ apo_generate_report() {
     else
         report_file="${APO_RUN_PREFIX}-report.txt"
     fi
-    policy=$(apo_report_selection_policy)
     sweep_domain=$(apo_state_get CFG_SWEEP_DOMAIN all)
     cpu_min=$(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT auto)")
     gpu_min=$(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT auto)")
@@ -607,7 +595,7 @@ apo_generate_report() {
         printf 'Profile: %s\n' "$(apo_report_state_value PROFILE unknown)"
         printf 'Mode: %s\n' "$(apo_report_state_value MODE_EFFECTIVE unknown)"
         printf 'Automatic sweep scope: %s\n' "$(apo_report_state_value CFG_SWEEP_DOMAIN all)"
-        printf 'Automatic selection policy: %s\n' "$(apo_report_state_value CFG_SELECTION_POLICY guarded-v1)"
+        printf 'Automatic selection policy: %s\n' "$(apo_report_state_value CFG_SELECTION_POLICY adaptive-refined-v1)"
         printf 'Requested automatic bounds: CPU %s..%s MHz, GPU %s..%s MHz\n' \
             "$(apo_report_value "${cpu_min:-auto}")" "$(apo_report_value "${cpu_requested_max:-$auto_cpu_max}")" \
             "$(apo_report_value "${gpu_min:-auto}")" "$(apo_report_value "${gpu_requested_max:-$auto_gpu_max}")"
@@ -644,44 +632,22 @@ apo_generate_report() {
             "$(apo_report_state_value GPU_QUALIFICATION_STATUS NOT_STARTED)" "$(apo_report_state_value GPU_QUALIFICATION_CPU pending)" \
             "$(apo_report_state_value GPU_QUALIFICATION_TARGET pending)" "$(apo_report_state_value GPU_QUALIFIED_CPU pending)" \
             "$(apo_report_state_value GPU_QUALIFIED_CLOCK pending)" "$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")"
-        if [[ $policy == refined-max-25 || $policy == adaptive-refined-v1 ]]; then
-            printf 'Highest selected passing clocks: CPU %s MHz, GPU %s MHz\n' \
-                "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
-                "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
-            printf 'Final-failure isolation: anchor=%s/%s MHz, trial=%s, history=%s\n' \
-                "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_CPU none)" \
-                "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_GPU none)" \
-                "$(apo_report_state_value FINAL_BACKOFF_TRIAL none)" \
-                "$(apo_report_state_value FINAL_BACKOFF_HISTORY none)"
-        else
-            printf 'Conservative recommendation: CPU %s MHz, GPU %s MHz\n' \
-                "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
-                "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
-        fi
+        printf 'Highest selected passing clocks: CPU %s MHz, GPU %s MHz\n' \
+            "$(apo_report_state_value RECOMMENDED_CPU "$(apo_report_state_value SAFE_CPU pending)")" \
+            "$(apo_report_state_value RECOMMENDED_GPU "$(apo_report_state_value SAFE_GPU pending)")"
+        printf 'Final-failure isolation: anchor=%s/%s MHz, trial=%s, history=%s\n' \
+            "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_CPU none)" \
+            "$(apo_report_state_value FINAL_BACKOFF_ANCHOR_GPU none)" \
+            "$(apo_report_state_value FINAL_BACKOFF_TRIAL none)" \
+            "$(apo_report_state_value FINAL_BACKOFF_HISTORY none)"
         printf 'Automatic qualification/final retries: count=%s, target=%s/%s MHz, history=%s\n' \
             "$(apo_report_state_value FINAL_BACKOFF_COUNT 0)" "$(apo_report_state_value FINAL_BACKOFF_CPU none)" \
             "$(apo_report_state_value FINAL_BACKOFF_GPU none)" "$(apo_report_state_value FINAL_BACKOFF_HISTORY none)"
         printf 'Last automatic backoff boundary: stage=%s, class=%s, reason=%s\n' \
             "$(apo_report_state_value FINAL_BACKOFF_LAST_STAGE none)" "$(apo_report_state_value FINAL_BACKOFF_LAST_CLASS none)" \
             "$(apo_report_sensitive_value "$(apo_report_state_value FINAL_BACKOFF_LAST_REASON none)")"
-        if [[ $policy != refined-max-25 && $policy != adaptive-refined-v1 ]]; then
-            printf 'Validated production floor: CPU %s MHz, GPU %s MHz (validated=%s, duration=%ss)\n' \
-                "$(apo_report_state_value FLOOR_CPU pending)" "$(apo_report_state_value FLOOR_GPU pending)" \
-                "$(apo_report_state_value FLOOR_VALIDATED 0)" "$(apo_report_state_value FLOOR_DURATION_S pending)"
-            printf 'Edge CPU: status=%s, target=%s MHz, duration=%ss, order=%s\n' \
-                "$(apo_report_state_value EDGE_CPU_STATUS NOT_REQUESTED)" "$(apo_report_state_value EDGE_CPU_TARGET none)" \
-                "$(apo_report_state_value CFG_EDGE_DURATION_S "$APO_DEFAULT_EDGE_DURATION_S")" "$(apo_report_state_value CFG_EDGE_ORDER floor-first)"
-            printf 'Post-floor edge source: enabled=%s, run=%s, permanent-hash=%s\n' \
-                "$(apo_report_state_value POST_FLOOR_EDGE 0)" "$(apo_report_state_value SOURCE_FLOOR_RUN_ID none)" \
-                "$(apo_report_state_value SOURCE_FLOOR_PERMANENT_HASH none)"
-        fi
         printf 'Maximum fan cooling during tuning: %s\n' \
             "$(apo_report_fan_policy)"
-        if [[ $policy != refined-max-25 && $policy != adaptive-refined-v1 ]]; then
-            printf 'Longer final extension: enabled=%s, source=%s, stage=%s\n' \
-                "$(apo_report_state_value POST_FLOOR_FINAL 0)" "$(apo_report_state_value SOURCE_FINAL_RUN_ID none)" \
-                "$(apo_report_state_value POST_FLOOR_FINAL_STAGE none)"
-        fi
         printf 'Duration policy: %s (qualification=%ss each, final requirement=%ss accepted combined workload)\n' \
             "$(apo_report_state_value CFG_DURATION_POLICY default)" \
             "$(apo_report_state_value CFG_QUALIFICATION_DURATION_S "$APO_DEFAULT_QUALIFICATION_DURATION_S")" \
@@ -692,10 +658,6 @@ apo_generate_report() {
             "$(apo_report_state_value MANUAL_TEST_STATUS NOT_REQUESTED)" "$(apo_report_state_value MANUAL_CPU n/a)" \
             "$(apo_report_state_value MANUAL_GPU n/a)" "$(apo_report_manual_duration)"
         printf 'Maximum observed run temperature: %sC\n' "$(apo_report_state_value RUN_MAX_TEMP pending)"
-        if [[ $policy != refined-max-25 && $policy != adaptive-refined-v1 ]]; then
-            printf 'Edge failure: class=%s, reason=%s\n' \
-                "$(apo_report_state_value EDGE_CPU_FAILURE_CLASS none)" "$(apo_report_sensitive_value "$(apo_report_state_value EDGE_CPU_FAILURE_REASON none)")"
-        fi
         printf 'Final validated clocks: CPU %s MHz, GPU %s MHz\n' "$(apo_report_state_value FINAL_CPU pending)" "$(apo_report_state_value FINAL_GPU pending)"
         printf 'Voltage delta: %s uV\n' "$(apo_report_state_value TEST_VOLTAGE '?')"
         printf 'Validated: %s\n' "$(apo_report_state_value VALIDATED 0)"

@@ -639,14 +639,14 @@ fi
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
     [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
 
-    # Alpha.68 retained only the latest workload sample. If its heartbeat was
-    # observed after the watchdog request, subtract the entire later interval
-    # and retain only the conservative pre-request lower bound.
+    # A lone latest-sample value has no independently saved observation time.
+    # Current state therefore grants no credit from it, even if subtracting the
+    # later heartbeat interval could produce a plausible lower bound.
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1090
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
     apo_remote_job_record_network_credit "$TEST_PHASE" "$TEST_EVENT" 1080
-    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 50 ]]
-    [[ $APO_REMOTE_STRESS_CREDIT_REMAINING == 50 ]]
+    [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
+    [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
 
     # Explicit history does not interpolate a sample observed only after the
     # request because its exact timestamp is already known.
@@ -679,8 +679,8 @@ fi
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
     [[ -z ${TEST_STATE[REMOTE_STRESS_CREDIT_CONTEXT]} ]]
 
-    # A request timestamp before the saved job start cannot earn legacy
-    # credit, even when the later heartbeat contains elapsed telemetry.
+    # A request timestamp before the saved job start cannot earn credit, even
+    # when the later heartbeat contains elapsed telemetry.
     TEST_STATE[REMOTE_STRESS_CONFIRMED_SAMPLES]=''
     TEST_STATE[REMOTE_STRESS_START_EPOCH]=1085
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1090

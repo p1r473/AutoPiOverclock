@@ -101,12 +101,7 @@ apo_config_duration_policy() {
 apo_config_saved_duration_policy_matches() {
     local qualification_duration=$1 final_duration=$2 edge_duration=$3 saved_policy=$4 expected_policy
     expected_policy=$(apo_config_duration_policy "$qualification_duration" "$final_duration" "$edge_duration")
-    [[ $saved_policy == "$expected_policy" ]] && return 0
-    [[ $saved_policy == default &&
-       $qualification_duration == "$APO_DEFAULT_QUALIFICATION_DURATION_S" &&
-       ( $final_duration == "$APO_PREVIOUS_DEFAULT_FINAL_DURATION_S" ||
-         $final_duration == "$APO_LEGACY_DEFAULT_FINAL_DURATION_S" ) &&
-       $edge_duration == "$APO_DEFAULT_EDGE_DURATION_S" ]]
+    [[ $saved_policy == "$expected_policy" ]]
 }
 
 apo_config_validate_duration_plan() {
@@ -124,21 +119,6 @@ apo_config_validate_duration_plan() {
     APO_DURATION_POLICY=${APO_DURATION_POLICY:-$expected_policy}
 }
 
-apo_config_migrate_duration_schema_9() {
-    [[ $(apo_state_get RUN_SCHEMA '') == 9 ]] || return 1
-    # Schema 9 always used fixed two-hour qualifications and a fixed 24-hour
-    # edge. Its saved final_duration_seconds remains authoritative.
-    [[ $APO_QUALIFICATION_DURATION_S == "$APO_DEFAULT_QUALIFICATION_DURATION_S" &&
-       $APO_EDGE_DURATION_S == "$APO_DEFAULT_EDGE_DURATION_S" ]] || return 1
-    apo_config_validate_duration_plan
-    apo_state_set CFG_QUALIFICATION_DURATION_S "$APO_QUALIFICATION_DURATION_S"
-    apo_state_set CFG_EDGE_DURATION_S "$APO_EDGE_DURATION_S"
-    apo_state_set CFG_DURATION_POLICY "$APO_DURATION_POLICY"
-    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
-    apo_state_set APP_VERSION "$APO_VERSION"
-    apo_state_save
-}
-
 apo_config_stock_auto_baseline_ready() {
     local cpu_mhz=$1 gpu_mhz=$2 voltage_uv=$3 provenance=${4:-missing} evidence=${5:-missing}
     if [[ $provenance == verified-default && $evidence == none &&
@@ -148,7 +128,7 @@ apo_config_stock_auto_baseline_ready() {
         return 0
     fi
     [[ $provenance == verified-completed-ledger &&
-       $evidence =~ ^failure-ledger-v1:[0-9a-f]{64}$ &&
+       $evidence =~ ^failure-ledger-v2:[0-9a-f]{64}$ &&
        $cpu_mhz =~ ^[1-9][0-9]*$ && $gpu_mhz =~ ^[1-9][0-9]*$ &&
        $voltage_uv =~ ^-?[0-9]+$ ]]
 }
@@ -292,6 +272,9 @@ apo_config_resolve_auto_candidates() {
     APO_AUTO_CANDIDATES_PENDING=0
     apo_config_validate
     if [[ ${APO_COMMAND:-prepare} == run && ${APO_DRY_RUN:-0} == 0 && -z ${APO_CFG[CPU_CANDIDATES]} && -z ${APO_CFG[GPU_CANDIDATES]} ]]; then
+        if [[ $sweep_domain == all && ${APO_HISTORY_NO_HEADROOM:-0} == 1 ]]; then
+            return 0
+        fi
         case $sweep_domain in
             cpu) apo_die "The protected current CPU clock is already at or above the requested ceiling (${cpu_max} MHz)." "$APO_EXIT_USAGE" ;;
             gpu) apo_die "The protected current GPU/V3D clock is already at or above the requested ceiling (${gpu_max} MHz)." "$APO_EXIT_USAGE" ;;
@@ -481,8 +464,12 @@ apo_config_state_requires_duration_plan() {
 }
 
 apo_config_restore_from_state() {
-    local config_key internal_key
+    local config_key internal_key run_schema phase
     apo_config_defaults
+    run_schema=$(apo_state_get RUN_SCHEMA '')
+    phase=$(apo_state_get PHASE '')
+    [[ -z $run_schema || $run_schema == "$APO_CURRENT_RUN_SCHEMA" ]] ||
+        apo_die 'Saved run schema is not current.' "$APO_EXIT_INTERNAL"
     for config_key in "${APO_ALLOWED_CONFIG_KEYS[@]}"; do
         internal_key=$(apo_config_internal_key "$config_key")
         APO_CFG[$internal_key]=$(apo_state_get "CFG_${internal_key}" "${APO_CFG[$internal_key]}")
@@ -498,17 +485,19 @@ apo_config_restore_from_state() {
     APO_SWEEP_DOMAIN=$(apo_state_get CFG_SWEEP_DOMAIN all)
     [[ $APO_SWEEP_DOMAIN == all || $APO_SWEEP_DOMAIN == cpu || $APO_SWEEP_DOMAIN == gpu ]] ||
         apo_die 'Saved sweep-domain plan is malformed.' "$APO_EXIT_INTERNAL"
-    APO_SELECTION_POLICY=$(apo_state_get CFG_SELECTION_POLICY guarded-v1)
-    [[ $APO_SELECTION_POLICY == guarded-v1 || $APO_SELECTION_POLICY == refined-max-25 || $APO_SELECTION_POLICY == adaptive-refined-v1 ]] ||
-        apo_die 'Saved automatic selection policy is malformed.' "$APO_EXIT_INTERNAL"
-    if [[ $APO_SELECTION_POLICY == adaptive-refined-v1 && $APO_AUTO_GENERATED_CANDIDATES == 1 ]] &&
-       apo_config_state_requires_duration_plan; then
+    APO_SELECTION_POLICY=$(apo_state_get CFG_SELECTION_POLICY '')
+    if [[ -z $APO_SELECTION_POLICY && ( -z $run_schema || $phase == PREPARE ) ]]; then
+        APO_SELECTION_POLICY=adaptive-refined-v1
+    fi
+    [[ $APO_SELECTION_POLICY == adaptive-refined-v1 ]] ||
+        apo_die 'Saved automatic selection policy is not current.' "$APO_EXIT_INTERNAL"
+    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )) && apo_config_state_requires_duration_plan; then
         [[ -v APO_STATE[CFG_CPU_RESOLUTION_MHZ] && -v APO_STATE[CFG_GPU_RESOLUTION_MHZ] &&
            -v APO_STATE[CFG_CPU_SEARCH_DIRECTION] && -v APO_STATE[CFG_GPU_SEARCH_DIRECTION] ]] ||
             apo_die 'Saved adaptive search state is missing its immutable per-domain resolution or direction.' "$APO_EXIT_INTERNAL"
     fi
-    APO_CPU_MIN=$(apo_state_get CFG_CPU_MIN "$(apo_state_get CFG_CPU_START_AT '')")
-    APO_GPU_MIN=$(apo_state_get CFG_GPU_MIN "$(apo_state_get CFG_GPU_START_AT '')")
+    APO_CPU_MIN=$(apo_state_get CFG_CPU_MIN '')
+    APO_GPU_MIN=$(apo_state_get CFG_GPU_MIN '')
     APO_CPU_MAX=$(apo_state_get CFG_CPU_MAX '')
     APO_GPU_MAX=$(apo_state_get CFG_GPU_MAX '')
     APO_CPU_MAX_REQUESTED=$(apo_state_get CFG_CPU_MAX_REQUESTED "$APO_CPU_MAX")
@@ -630,13 +619,13 @@ apo_config_restore_from_state() {
     APO_MAX_FAN=$(apo_state_get CFG_MAX_FAN 1)
     [[ $APO_MAX_FAN == 0 || $APO_MAX_FAN == 1 ]] ||
         apo_die 'Saved maximum-fan policy is malformed.' "$APO_EXIT_INTERNAL"
-    APO_MANUAL_TEST=$(apo_state_get CFG_MANUAL_TEST "$(apo_state_get MANUAL_TEST 0)")
+    APO_MANUAL_TEST=$(apo_state_get CFG_MANUAL_TEST 0)
     [[ $APO_MANUAL_TEST == 0 || $APO_MANUAL_TEST == 1 ]] ||
         apo_die 'Saved manual-test marker is malformed.' "$APO_EXIT_INTERNAL"
-    APO_MANUAL_CPU=$(apo_state_get CFG_MANUAL_CPU "$(apo_state_get MANUAL_CPU '')")
-    APO_MANUAL_GPU=$(apo_state_get CFG_MANUAL_GPU "$(apo_state_get MANUAL_GPU '')")
-    APO_MANUAL_MINUTES=$(apo_state_get CFG_MANUAL_MINUTES "$(apo_state_get MANUAL_MINUTES '')")
-    APO_MANUAL_DURATION_S=$(apo_state_get CFG_MANUAL_DURATION_S "$(apo_state_get MANUAL_DURATION_S '')")
+    APO_MANUAL_CPU=$(apo_state_get CFG_MANUAL_CPU '')
+    APO_MANUAL_GPU=$(apo_state_get CFG_MANUAL_GPU '')
+    APO_MANUAL_MINUTES=$(apo_state_get CFG_MANUAL_MINUTES '')
+    APO_MANUAL_DURATION_S=$(apo_state_get CFG_MANUAL_DURATION_S '')
     if (( APO_MANUAL_TEST == 1 )); then
         apo_validate_uint_range "$APO_MANUAL_CPU" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" ||
             apo_die 'Saved manual CPU clock is malformed.' "$APO_EXIT_INTERNAL"
@@ -675,7 +664,7 @@ apo_write_effective_config() {
             printf '# automatic_use_history=%s\n' "${APO_USE_HISTORY:-1}"
             printf '# automatic_domain_qualification_seconds=%s\n' "$APO_QUALIFICATION_DURATION_S"
             if (( ${APO_EDGE_CPU_24H:-0} == 1 )); then
-                printf '# legacy_automatic_edge_seconds=%s\n' "$APO_EDGE_DURATION_S"
+                printf '# automatic_edge_seconds=%s\n' "$APO_EDGE_DURATION_S"
             fi
             printf '# automatic_duration_policy=%s\n' "$APO_DURATION_POLICY"
             printf '# automatic_final_workload=combined CPU/GPU/I/O\n'

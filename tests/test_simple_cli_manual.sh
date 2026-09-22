@@ -23,16 +23,16 @@ mkdir -p "$CONTINUATION_OUTPUT"
 MANUAL_RUN=20260827-010205-abcdef0123456789
 MANUAL_STATE="$CONTINUATION_OUTPUT/tron-${MANUAL_RUN}.state"
 write_state_fixture "$MANUAL_STATE" \
-    FORMAT_VERSION 1 RUN_SCHEMA 9 RUN_ID "$MANUAL_RUN" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$MANUAL_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND test \
     STATUS INTERRUPTED PHASE MANUAL_TEST APPLY_STATUS NOT_APPLIED \
-    CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 CFG_MANUAL_MINUTES 90 \
-    CFG_MANUAL_DURATION_S 5400 CFG_MAX_FAN 1
+    CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 CFG_MANUAL_MINUTES 120 \
+    CFG_MANUAL_DURATION_S 7200 CFG_MAX_FAN 1
 ln -sfn "$(basename "$MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli test tron --cpu 3100 --gpu 1150 --minutes 90
+    apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 2
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_test_select_continuation
     [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$MANUAL_RUN" ]]
@@ -57,22 +57,13 @@ ln -sfn "$(basename "$LONG_MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.sta
     [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$LONG_MANUAL_RUN" ]]
     [[ $APO_MANUAL_MINUTES == 2880 && $APO_MANUAL_DURATION_S == 172800 ]]
 )
-# Canonical duration matching lets an interrupted one-hour test continue with
-# either supported spelling without weakening the immutable duration check.
+# Canonical duration matching lets an interrupted one-hour test continue.
 write_state_fixture "$LONG_MANUAL_STATE" \
     FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$LONG_MANUAL_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND test \
     STATUS INTERRUPTED PHASE MANUAL_TEST APPLY_STATUS NOT_APPLIED \
     CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 CFG_MANUAL_MINUTES 60 \
     CFG_MANUAL_DURATION_S 3600 CFG_MAX_FAN 1
-(
-    export APO_CLI_LIBRARY_ONLY=1
-    source "$ROOT/autopioverclock"
-    apo_parse_cli test tron --cpu 3100 --gpu 1150 --minutes 60
-    APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
-    apo_public_test_select_continuation
-    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$LONG_MANUAL_RUN" ]]
-)
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -116,7 +107,7 @@ ln -sfn "$(basename "$MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
-    apo_parse_cli test tron --cpu 3125 --gpu 1150 --minutes 90
+    apo_parse_cli test tron --cpu 3125 --gpu 1150 --final-hours 2
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_test_select_continuation
 ) 2>"$TEMP_DIR/manual-plan-change.err"; then
@@ -143,17 +134,13 @@ done
 
 for invalid_test_args in \
     '--cpu 3100 --gpu 1150' \
-    '--cpu 3100 --minutes 60' \
-    '--gpu 1150 --minutes 60' \
-    '--cpu 599 --gpu 1150 --minutes 60' \
-    '--cpu 3100 --gpu 1150 --minutes 0' \
-    '--cpu 3100 --gpu 1150 --minutes 35791381' \
-    '--cpu 3100 --gpu 1150 --minutes 18446744073709551617' \
-    '--cpu 3100 --gpu 1150 --minutes 000060' \
+    '--cpu 3100 --final-hours 1' \
+    '--gpu 1150 --final-hours 1' \
+    '--cpu 599 --gpu 1150 --final-hours 1' \
+    '--cpu 3100 --gpu 1150 --minutes 60' \
     '--cpu 3100 --gpu 1150 --final-hours 0' \
     '--cpu 3100 --gpu 1150 --final-hours 596524' \
-    '--cpu 3100 --gpu 1150 --final-hours 1.5' \
-    '--cpu 3100 --gpu 1150 --minutes 60 --final-hours 1'; do
+    '--cpu 3100 --gpu 1150 --final-hours 1.5'; do
     # The fixture arguments are fixed numeric tokens without shell metacharacters.
     # shellcheck disable=SC2086
     if "$ROOT/autopioverclock" test tron $invalid_test_args >/dev/null 2>&1; then
@@ -208,7 +195,7 @@ for advanced_command in run resume status summary recover restore apply complete
     grep -Eq "^[[:space:]]+${advanced_command}[[:space:]]" <<< "$help_output"
 done
 
-for retained_option in --config --mode --run-id --install-missing --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution; do
+for retained_option in --config --mode --run-id --install-missing --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution; do
     grep -Fq -- "$retained_option" <<< "$help_output"
 done
 if grep -Fq -- '--cpu-start-at' <<< "$help_output"; then
@@ -227,7 +214,7 @@ done
 
 # The public README is the concise command reference, so every accepted public
 # option must remain discoverable there even when several share one table row.
-for documented_option in --config --mode --run-id --install-missing --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --minutes --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution --help --version; do
+for documented_option in --config --mode --run-id --install-missing --dry-run --yes --redact --no-max-fan --no-history --cpu --gpu --qualification-hours --final-hours --restart-from --cpu-only --gpu-only --cpu-min --cpu-max --gpu-min --gpu-max --cpu-resolution --gpu-resolution --help --version; do
     grep -Fq -- "$documented_option" "$ROOT/README.md"
 done
 

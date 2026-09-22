@@ -109,11 +109,10 @@ apo_progress_qualification_cost() {
 }
 
 apo_progress_domain_remaining_count() {
-    local domain=$1 phase=${2:-} index boundary refine_csv refine_index refine_complete guard_verified coarse_count remaining=0
-    local refine_reserve selection_policy resolution coarse_step direction floor reverse_pass
+    local domain=$1 phase=${2:-} index boundary refine_csv refine_index refine_complete coarse_count remaining=0
+    local refine_reserve resolution coarse_step direction floor reverse_pass
     local candidates_name explicit_floor=0
     apo_progress_domain_is_selected "$domain" || { printf 0; return; }
-    selection_policy=$(apo_state_get CFG_SELECTION_POLICY "${APO_SELECTION_POLICY:-guarded-v1}")
     case $domain in
         CPU)
             candidates_name=APO_CPU_CANDIDATES
@@ -122,7 +121,6 @@ apo_progress_domain_remaining_count() {
             refine_csv=$(apo_state_get CPU_REFINE_CANDIDATES '')
             refine_index=$(apo_state_get CPU_REFINE_INDEX 0)
             refine_complete=$(apo_state_get CPU_REFINE_COMPLETE 0)
-            guard_verified=$(apo_state_get CPU_GUARD_VERIFIED 0)
             resolution=$(apo_state_get CFG_CPU_RESOLUTION_MHZ "${APO_CPU_RESOLUTION_MHZ:-$APO_AUTO_REFINE_STEP_MHZ}")
             coarse_step=$APO_AUTO_CPU_STEP_MHZ
             direction=$(apo_state_get CFG_CPU_SEARCH_DIRECTION "${APO_CPU_SEARCH_DIRECTION:-forward}")
@@ -137,7 +135,6 @@ apo_progress_domain_remaining_count() {
             refine_csv=$(apo_state_get GPU_REFINE_CANDIDATES '')
             refine_index=$(apo_state_get GPU_REFINE_INDEX 0)
             refine_complete=$(apo_state_get GPU_REFINE_COMPLETE 0)
-            guard_verified=$(apo_state_get GPU_GUARD_VERIFIED 0)
             resolution=$(apo_state_get CFG_GPU_RESOLUTION_MHZ "${APO_GPU_RESOLUTION_MHZ:-$APO_AUTO_REFINE_STEP_MHZ}")
             coarse_step=$APO_AUTO_GPU_STEP_MHZ
             direction=$(apo_state_get CFG_GPU_SEARCH_DIRECTION "${APO_GPU_SEARCH_DIRECTION:-forward}")
@@ -160,7 +157,7 @@ apo_progress_domain_remaining_count() {
         esac
     fi
     if [[ -z $boundary ]] && (( index < coarse_count )); then remaining=$((remaining + coarse_count - index)); fi
-    if [[ $selection_policy == adaptive-refined-v1 && $direction == descending && -n $boundary && -z $reverse_pass &&
+    if [[ $direction == descending && -n $boundary && -z $reverse_pass &&
           $boundary =~ ^[0-9]+$ && $floor =~ ^[0-9]+$ && $boundary -gt $floor ]]; then
         if (( explicit_floor == 1 )); then
             remaining=$((remaining + (boundary - floor + coarse_step - 1) / coarse_step))
@@ -183,9 +180,6 @@ apo_progress_domain_remaining_count() {
                 # maximum possible refinement work and remove it dynamically.
                 remaining=$((remaining + refine_reserve))
             fi
-        fi
-        if [[ $selection_policy != refined-max-25 && $selection_policy != adaptive-refined-v1 && $guard_verified != 1 ]]; then
-            remaining=$((remaining + 1))
         fi
     fi
     printf '%s' "$remaining"

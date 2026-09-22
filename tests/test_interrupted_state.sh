@@ -211,10 +211,8 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
     [[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 2 ]]
 )
 
-# Alpha.58 through alpha.69 could retain a gate context with a zero retry count
-# after a proved network-watchdog continuation. Exact saved watcher identity
-# permits that inert residue to be canonicalized, but unrelated residue still
-# fails strict state validation.
+# Current state never carries a retry context with a zero retry count. Even
+# otherwise valid watchdog evidence cannot make that malformed state resumable.
 (
     reset_recovery_fixture
     apo_state_set STATUS INTERRUPTED
@@ -223,32 +221,8 @@ rm -f -- "$EXIT_RECOVERY_MARKER"
     apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 1
     apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     apo_state_set NETWORK_WATCHDOG_LAST_TARGET 192.0.2.1
-    apo_validate_transient_retry_state
-    [[ -z $(apo_state_get TRANSIENT_RETRY_CONTEXT '') ]]
-)
-(
-    reset_recovery_fixture
-    apo_state_set STATUS FAILED
-    apo_state_set FAILURE_CLASS HARNESS_FAILURE
-    apo_state_set FAILURE_REASON 'Idle automatic transport-retry state retains a context'
-    apo_state_set TRANSIENT_RETRY_CONTEXT final-ENDURANCE-stress
-    apo_state_set TRANSIENT_RETRY_COUNT 0
-    apo_state_set NETWORK_WATCHDOG_REPLAY_COUNT 1
-    apo_state_set NETWORK_WATCHDOG_LAST_EVENT_ID aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    apo_state_set NETWORK_WATCHDOG_LAST_TARGET 192.0.2.1
-    apo_validate_transient_retry_state
-    [[ -z $(apo_state_get TRANSIENT_RETRY_CONTEXT '') ]]
-    [[ $(apo_state_get STATUS '') == INTERRUPTED ]]
-    [[ -z $(apo_state_get FAILURE_CLASS '') ]]
-    [[ -z $(apo_state_get FAILURE_REASON '') ]]
-)
-(
-    reset_recovery_fixture
-    apo_state_set STATUS INTERRUPTED
-    apo_state_set TRANSIENT_RETRY_CONTEXT final-ENDURANCE-stress
-    apo_state_set TRANSIENT_RETRY_COUNT 0
     if apo_validate_transient_retry_state; then
-        echo 'unbound idle retry context bypassed strict validation' >&2
+        echo 'idle retry context bypassed strict current-state validation' >&2
         exit 1
     fi
     [[ $APO_AUTO_VALIDATION_REASON == 'Idle automatic transport-retry state retains a context' ]]

@@ -29,7 +29,7 @@ APO_REQUIRE_GPU_STRESS=1
 APO_EDGE_CPU_24H=0
 APO_MANUAL_TEST=0
 APO_SWEEP_DOMAIN=all
-APO_SELECTION_POLICY=refined-max-25
+APO_SELECTION_POLICY=adaptive-refined-v1
 APO_NORMAL_CPU=2400
 APO_NORMAL_GPU=960
 APO_AUTO_BASELINE_CPU=2400
@@ -44,7 +44,7 @@ apo_state_set SUBPHASE INITIAL
 # held applied domain. It still budgets one combined final validation.
 APO_SWEEP_DOMAIN=cpu
 apo_state_set CFG_SWEEP_DOMAIN cpu
-apo_state_set CFG_SELECTION_POLICY refined-max-25
+apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
 [[ $(apo_progress_estimate_remaining_tests) == 13 ]]
 APO_SWEEP_DOMAIN=gpu
 apo_state_set CFG_SWEEP_DOMAIN gpu
@@ -385,7 +385,7 @@ APO_NEED_GPU=0
 APO_REQUIRE_GPU_STRESS=1
 APO_EDGE_CPU_24H=0
 APO_SWEEP_DOMAIN=all
-APO_SELECTION_POLICY=refined-max-25
+APO_SELECTION_POLICY=adaptive-refined-v1
 APO_NORMAL_CPU=2400
 APO_NORMAL_GPU=960
 APO_CPU_CANDIDATES=()
