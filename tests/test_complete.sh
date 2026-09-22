@@ -303,6 +303,7 @@ test_controller_reseal_backup_identity() (
     (( remote_calls == 1 ))
 )
 
+# shellcheck disable=SC2030  # These ledger globals are intentionally subshell-isolated.
 test_reseal_ledger_identity() (
     local ledger source_b64 reason_b64 record_count
 
