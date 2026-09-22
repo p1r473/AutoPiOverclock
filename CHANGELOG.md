@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.91 - 2026-09-21
+
+- Fixed completed adaptive descending-search runs failing resume validation after permanent apply. The validator now reconstructs saved pass evidence from the immutable pre-run baseline, or the retained applied source for a domain-only run, instead of the mutable normal clocks that apply replaces with the final result.
+- Added regression coverage for completed, applied all-domain and domain-only exact-ceiling results with retained SSH recovery history.
+
 ## 0.1.0-alpha.90 - 2026-09-21
 
 - Fixed completed runs retaining an active `SSH recovery: WAITING` status and old recovery context after a safely resumed outage. Terminal success now records recovery as idle while preserving the cumulative extended-wait count as historical evidence.

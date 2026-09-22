@@ -306,30 +306,39 @@ apo_structured_boot_failure_domain() {
     return 1
 }
 
-apo_refined_domain_floor() {
-    local sweep_domain floor requested_floor=''
+apo_refined_domain_baseline() {
+    local sweep_domain baseline
     sweep_domain=$(apo_refined_sweep_domain)
     case $1 in
         CPU)
             if [[ $sweep_domain != all && -n $(apo_state_get SOURCE_APPLIED_CPU '') ]]; then
-                floor=$(apo_state_get SOURCE_APPLIED_CPU)
+                baseline=$(apo_state_get SOURCE_APPLIED_CPU)
             elif [[ -n ${APO_AUTO_BASELINE_CPU:-} ]]; then
-                floor=$APO_AUTO_BASELINE_CPU
+                baseline=$APO_AUTO_BASELINE_CPU
             else
-                floor=$APO_NORMAL_CPU
+                baseline=$APO_NORMAL_CPU
             fi
-            requested_floor=${APO_CPU_MIN:-}
             ;;
         GPU)
             if [[ $sweep_domain != all && -n $(apo_state_get SOURCE_APPLIED_GPU '') ]]; then
-                floor=$(apo_state_get SOURCE_APPLIED_GPU)
+                baseline=$(apo_state_get SOURCE_APPLIED_GPU)
             elif [[ -n ${APO_AUTO_BASELINE_GPU:-} ]]; then
-                floor=$APO_AUTO_BASELINE_GPU
+                baseline=$APO_AUTO_BASELINE_GPU
             else
-                floor=$APO_NORMAL_GPU
+                baseline=$APO_NORMAL_GPU
             fi
-            requested_floor=${APO_GPU_MIN:-}
             ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "$baseline"
+}
+
+apo_refined_domain_floor() {
+    local floor requested_floor=''
+    floor=$(apo_refined_domain_baseline "$1") || return 1
+    case $1 in
+        CPU) requested_floor=${APO_CPU_MIN:-} ;;
+        GPU) requested_floor=${APO_GPU_MIN:-} ;;
         *) return 1 ;;
     esac
     # During retained-history screening only, schema-10 START_AT values retain
@@ -1734,7 +1743,7 @@ apo_auto_validate_reverse_domain_state() {
     case $domain in
         CPU)
             coarse_name=APO_CPU_CANDIDATES
-            normal_clock=$APO_NORMAL_CPU
+            normal_clock=$(apo_refined_domain_baseline CPU) || return 1
             maximum=${APO_CPU_MAX:-$APO_AUTO_CPU_MAX_MHZ}
             passed_key=PASSED_CPUS; boundary_key=CPU_FAILURE_BOUNDARY
             candidates_key=CPU_REFINE_CANDIDATES; index_key=CPU_REFINE_INDEX; complete_key=CPU_REFINE_COMPLETE
@@ -1746,7 +1755,7 @@ apo_auto_validate_reverse_domain_state() {
             ;;
         GPU)
             coarse_name=APO_GPU_CANDIDATES
-            normal_clock=$APO_NORMAL_GPU
+            normal_clock=$(apo_refined_domain_baseline GPU) || return 1
             maximum=${APO_GPU_MAX:-$APO_AUTO_GPU_MAX_MHZ}
             passed_key=PASSED_GPUS; boundary_key=GPU_FAILURE_BOUNDARY
             candidates_key=GPU_REFINE_CANDIDATES; index_key=GPU_REFINE_INDEX; complete_key=GPU_REFINE_COMPLETE

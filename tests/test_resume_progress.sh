@@ -2139,6 +2139,68 @@ apo_state_set CPU_REFINE_INDEX 1
 apo_state_set CPU_REFINE_COMPLETE 1
 assert_adaptive_reverse_resume_invalid 'COMPLETE with a partial passed prefix'
 
+# Applying a completed descending-search result updates the mutable normal
+# clocks to that result. Resume validation must continue reconstructing the
+# saved search from its immutable pre-run baseline, including an exact ceiling
+# pass, instead of manufacturing an impossible applied+1 through ceiling range.
+seed_adaptive_reverse_resume_plan
+apo_state_set CPU_INDEX 1
+apo_state_set PASSED_CPUS 3175
+apo_state_set CPU_REFINE_COMPLETE 1
+apo_state_set CPU_GUARD_TARGET 3175
+apo_state_set CPU_GUARD_VERIFIED 1
+apo_state_set SAFE_CPU 3175
+apo_state_set GPU_INDEX 1
+apo_state_set PASSED_GPUS 1187
+apo_state_set GPU_REFINE_COMPLETE 1
+apo_state_set GPU_GUARD_TARGET 1187
+apo_state_set GPU_GUARD_VERIFIED 1
+apo_state_set SAFE_GPU 1187
+apo_state_set CPU_QUALIFICATION_STATUS PASS
+apo_state_set CPU_QUALIFICATION_TARGET 3175
+apo_state_set CPU_QUALIFIED_CLOCK 3175
+apo_state_set GPU_QUALIFICATION_STATUS PASS
+apo_state_set GPU_QUALIFICATION_CPU 3175
+apo_state_set GPU_QUALIFICATION_TARGET 1187
+apo_state_set GPU_QUALIFIED_CPU 3175
+apo_state_set GPU_QUALIFIED_CLOCK 1187
+apo_state_set RECOMMENDED_CPU 3175
+apo_state_set RECOMMENDED_GPU 1187
+apo_state_set FINAL_TARGET_CPU 3175
+apo_state_set FINAL_TARGET_GPU 1187
+apo_state_set FINAL_CPU 3175
+apo_state_set FINAL_GPU 1187
+apo_state_set VALIDATED 1
+apo_state_set VALIDATION_SCHEMA "$APO_CURRENT_VALIDATION_SCHEMA"
+apo_state_set VALIDATION_DURATION_S "${APO_CFG[FINAL_DURATION_S]}"
+apo_state_set STATUS PASS
+apo_state_set PHASE COMPLETE
+apo_state_set SUBPHASE DONE
+apo_state_set FINAL_STAGE COMPLETE
+apo_state_set APPLY_STATUS APPLIED
+apo_state_set RECOVERY_WAIT_STATUS IDLE
+apo_state_set RECOVERY_WAIT_CONTEXT ''
+apo_state_set RECOVERY_WAIT_STARTED_AT ''
+apo_state_set RECOVERY_WAIT_TIMEOUTS 15
+APO_NORMAL_CPU=3175
+APO_NORMAL_GPU=1187
+APO_NORMAL_VOLTAGE=0
+assert_adaptive_reverse_resume_valid 'completed applied exact-ceiling result'
+[[ $(apo_state_get RECOVERY_WAIT_TIMEOUTS) == 15 ]]
+
+# A completed domain-only apply has a different immutable search baseline: the
+# retained applied source for that domain. Its later mutable normal clock must
+# not replace that source when the reverse evidence is checked.
+APO_SWEEP_DOMAIN=gpu
+apo_state_set CFG_SWEEP_DOMAIN gpu
+apo_state_set SOURCE_APPLIED_GPU 1125
+APO_NORMAL_GPU=1187
+[[ $(apo_refined_domain_baseline GPU) == 1125 ]]
+if ! apo_auto_validate_reverse_domain_state GPU; then
+    echo "valid applied GPU-only reverse state was rejected: ${APO_AUTO_VALIDATION_REASON:-unknown reason}" >&2
+    exit 1
+fi
+
 seed_valid_refined_auto_floor_plan() {
     seed_valid_guarded_auto_floor_plan
     APO_SELECTION_POLICY=refined-max-25
