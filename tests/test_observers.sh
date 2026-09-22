@@ -25,6 +25,8 @@ APO_VERSION=fixture
 fixture_hash=$(printf 'a%.0s' {1..64})
 apo_init_artifacts
 apo_state_initialize
+# apo_state_initialize assigns this controller-owned path in the current shell.
+# shellcheck disable=SC2031
 TUNING_STATE=$APO_STATE_FILE
 TUNING_RUN=$APO_RUN_ID
 apo_state_set ORIGIN_COMMAND overclock
