@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.95 - 2026-09-22
+
+- Canonicalized permanent Raspberry Pi boot-config sections after managed clock removal. Global-only configurations now contain exactly one `[all]` before the first active directive, while meaningful model or serial filters and the `[all]` resets they require remain intact.
+- Prevented the Debian and Batocera watchdog renderers from appending redundant `[all]` headers when the configuration is already in global scope.
+- Added exact regression fixtures for the completed Tron and Monkeebutt layouts, conditional-section preservation, repeated rendering, reset, and watchdog installation.
+
 ## 0.1.0-alpha.94 - 2026-09-22
 
 - Fixed `status` and `summary` after successful `complete`. When disposable run state is gone, they now recognize the permanent sealed machine-ledger result only if its target identity, current schemas, hardware identity, profile, boot paths, GPU key, voltage, clocks, and permanent-config hash all match the live target.

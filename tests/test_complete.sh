@@ -38,9 +38,9 @@ write_expected_config() {
     local destination=$1
     cat > "$destination" <<'EOF'
 # User header stays exactly here
+[all]
 dtparam=fan_temp=65000
 
-[all]
 over_voltage_delta=0
 arm_freq=3050
 v3d_freq=1200
@@ -48,6 +48,89 @@ v3d_freq=1200
 # User fan settings stay
 dtparam=fan_temp=60000
 dtparam=fan_temp_speed=180
+EOF
+}
+
+write_tron_managed_config() {
+    local destination=$1
+    cat > "$destination" <<'EOF'
+arm_64bit=1
+kernel=boot/linux
+initramfs boot/initrd.lz4
+dtoverlay=vc4-kms-v3d,cma-512
+
+dtparam=krnbt=on
+[Overclock]
+
+[all]
+# Stable Tron overclock validated under combined CPU and GPU load
+# AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
+temp_limit=80
+
+[all]
+
+[all]
+# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG
+[all]
+kernel_watchdog_timeout=180
+# END AUTOPIOVERCLOCK MANAGED WATCHDOG
+
+[all]
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: selected-run
+[all]
+arm_freq=2900
+v3d_freq=1125
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+EOF
+}
+
+write_monkeebutt_managed_config() {
+    local destination=$1
+    cat > "$destination" <<'EOF'
+# For more options and information see
+# http://rptl.io/configtxt
+dtparam=i2c_arm=on
+dtparam=audio=on
+arm_64bit=1
+disable_overscan=1
+
+[all]
+usb_max_current_enable=1
+dtparam=watchdog=on
+dtparam=fan_temp0=50000
+dtparam=fan_temp0_speed=75
+kernel_watchdog_timeout=60
+
+[all]
+
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: selected-run
+[all]
+arm_freq=3050
+v3d_freq=1200
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
+EOF
+}
+
+write_conditional_managed_config() {
+    local destination=$1
+    cat > "$destination" <<'EOF'
+# A real conditional section must remain conditional.
+[Overclock]
+# An empty label is not a meaningful section.
+[pi5]
+dtparam=pciex1
+[all]
+dtparam=audio=on
+
+# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS
+# Run: selected-run
+[all]
+over_voltage_delta=0
+arm_freq=3050
+v3d_freq=1200
+# END AUTOPIOVERCLOCK MANAGED CLOCKS
 EOF
 }
 
@@ -181,8 +264,76 @@ test_worker_renderer() {
     fi
 }
 
+test_global_section_regressions() {
+    local worker=$1 profile_dir=$2 input rendered canonical_again
+    local APO_WORKER_LIBRARY_ONLY=1
+    export APO_WORKER_LIBRARY_ONLY
+    mkdir -p -- "$profile_dir"
+
+    input="${profile_dir}/tron.txt"
+    rendered="${profile_dir}/tron.rendered.txt"
+    canonical_again="${profile_dir}/tron.canonical-again.txt"
+    write_tron_managed_config "$input"
+    (
+        source "$worker"
+        complete_validate_config "$input" 2900 1125 v3d_freq 0 selected-run
+        complete_render_config "$input" "$rendered" 2900 1125 v3d_freq 0
+        complete_validate_sealed_config "$rendered" 2900 1125 v3d_freq 0
+        canonicalize_global_sections "$rendered" "$canonical_again" 1
+    )
+    [[ $(grep -c '^\[all\]$' "$rendered") == 1 ]]
+    if grep -Fqx '[Overclock]' "$rendered"; then
+        echo 'Tron completion retained an empty section label' >&2
+        return 1
+    fi
+    if grep -Fq 'AUTOPIOVERCLOCK MANAGED CLOCKS' "$rendered"; then
+        echo 'Tron completion retained managed clock markers' >&2
+        return 1
+    fi
+    grep -Fqx '# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG' "$rendered"
+    grep -Fqx 'kernel_watchdog_timeout=180' "$rendered"
+    grep -Fqx 'arm_freq=2900' "$rendered"
+    grep -Fqx 'v3d_freq=1125' "$rendered"
+    cmp -s -- "$rendered" "$canonical_again"
+
+    input="${profile_dir}/monkeebutt.txt"
+    rendered="${profile_dir}/monkeebutt.rendered.txt"
+    write_monkeebutt_managed_config "$input"
+    (
+        source "$worker"
+        complete_validate_config "$input" 3050 1200 v3d_freq 0 selected-run
+        complete_render_config "$input" "$rendered" 3050 1200 v3d_freq 0
+        complete_validate_sealed_config "$rendered" 3050 1200 v3d_freq 0
+    )
+    [[ $(grep -c '^\[all\]$' "$rendered") == 1 ]]
+    grep -Fqx 'dtparam=fan_temp0=50000' "$rendered"
+    grep -Fqx 'kernel_watchdog_timeout=60' "$rendered"
+    grep -Fqx 'arm_freq=3050' "$rendered"
+    grep -Fqx 'v3d_freq=1200' "$rendered"
+
+    input="${profile_dir}/conditional.txt"
+    rendered="${profile_dir}/conditional.rendered.txt"
+    write_conditional_managed_config "$input"
+    (
+        source "$worker"
+        complete_validate_config "$input" 3050 1200 v3d_freq 0 selected-run
+        complete_render_config "$input" "$rendered" 3050 1200 v3d_freq 0
+        complete_validate_sealed_config "$rendered" 3050 1200 v3d_freq 0
+    )
+    if grep -Fqx '[Overclock]' "$rendered"; then
+        echo 'Conditional completion retained an empty section label' >&2
+        return 1
+    fi
+    grep -Fqx '# An empty label is not a meaningful section.' "$rendered"
+    grep -Fqx '[pi5]' "$rendered"
+    grep -Fqx 'dtparam=pciex1' "$rendered"
+    [[ $(grep -c '^\[all\]$' "$rendered") == 1 ]]
+}
+
 test_worker_renderer "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian"
 test_worker_renderer "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera"
+test_global_section_regressions "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian-sections"
+test_global_section_regressions "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera-sections"
 test_worker_backup_collection "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian-backups"
 test_worker_backup_collection "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera-backups"
 

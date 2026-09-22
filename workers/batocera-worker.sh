@@ -393,11 +393,68 @@ reset_recent_throttle() {
     printf '%s\n' "$reset_output"
 }
 
+canonicalize_global_sections() {
+    local source_file=$1 destination_file=$2 insert_all=${3:-1}
+    [[ $insert_all == 0 || $insert_all == 1 ]] || return 1
+    awk -v insert_all="$insert_all" '
+        function normalized(value) {
+            sub(/\r$/, "", value)
+            sub(/^[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            return value
+        }
+        function section_header(value) {
+            value=normalized(value)
+            return length(value) >= 3 && substr(value, 1, 1) == "[" && substr(value, length(value), 1) == "]"
+        }
+        function active_directive(value) {
+            value=normalized(value)
+            return value != "" && substr(value, 1, 1) != "#" && !section_header(value)
+        }
+        {
+            lines[NR]=$0
+            probe=normalized($0)
+            if (section_header(probe)) {
+                current_header=NR
+                current_non_all=(tolower(probe) != "[all]")
+                next
+            }
+            if (current_non_all && active_directive(probe)) {
+                meaningful_header[current_header]=1
+                meaningful_non_all=1
+            }
+        }
+        END {
+            inserted=0
+            current="[all]"
+            for (line_number=1; line_number<=NR; line_number++) {
+                probe=normalized(lines[line_number])
+                if (!meaningful_non_all && section_header(probe)) continue
+                if (meaningful_non_all && section_header(probe)) {
+                    scope=tolower(probe)
+                    if (scope != "[all]" && !meaningful_header[line_number]) continue
+                    if (scope == "[all]" && current == "[all]") continue
+                    print lines[line_number]
+                    current=scope
+                    continue
+                }
+                if (!meaningful_non_all && insert_all && !inserted && active_directive(probe)) {
+                    print "[all]"
+                    inserted=1
+                }
+                print lines[line_number]
+            }
+            if (!meaningful_non_all && insert_all && !inserted) print "[all]"
+        }
+    ' "$source_file" > "$destination_file"
+}
+
 render_clock_config() {
     local source_file=$1 destination_file=$2 cpu_mhz=$3 gpu_mhz=$4 gpu_key=$5 voltage_uv=$6 run_id=$7
-    local voltage_render_mode=${8:-explicit}
+    local voltage_render_mode=${8:-explicit} stripped_file
     [[ $voltage_render_mode == explicit || $voltage_render_mode == omit-default-zero ]] || return 1
     [[ $voltage_render_mode != omit-default-zero || $voltage_uv == 0 ]] || return 1
+    stripped_file=$(mktemp /tmp/autopioverclock-clock-render.XXXXXX) || return 1
     awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" '
         function stripped(value) {
             sub(/\r$/, "", value)
@@ -469,7 +526,9 @@ render_clock_config() {
                 print kept[line_number]
             }
         }
-    ' "$source_file" > "$destination_file" || return 1
+    ' "$source_file" > "$stripped_file" || { rm -f -- "$stripped_file"; return 1; }
+    canonicalize_global_sections "$stripped_file" "$destination_file" 0 || { rm -f -- "$stripped_file"; return 1; }
+    rm -f -- "$stripped_file"
     printf '\n%s\n# Run: %s\n[all]\n' "$CLOCK_MARKER_BEGIN" "$run_id" >> "$destination_file" || return 1
     if [[ $voltage_render_mode == explicit ]]; then
         printf 'over_voltage_delta=%s\n' "$voltage_uv" >> "$destination_file" || return 1
@@ -2183,7 +2242,9 @@ reset_stock_validate_config() {
 }
 
 reset_stock_render_config() {
-    local source_file=$1 destination_file=$2
+    local source_file=$1 destination_file=$2 rendered_file had_managed=0
+    grep -Fqx -- "$CLOCK_MARKER_BEGIN" "$source_file" && had_managed=1
+    rendered_file=$(mktemp /tmp/autopioverclock-reset-render.XXXXXX) || return 1
     awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" '
         function is_tuning_key(key) {
             key=tolower(key)
@@ -2209,7 +2270,13 @@ reset_stock_render_config() {
             }
             print raw
         }
-    ' "$source_file" > "$destination_file"
+    ' "$source_file" > "$rendered_file" || { rm -f -- "$rendered_file"; return 1; }
+    if (( had_managed == 1 )); then
+        canonicalize_global_sections "$rendered_file" "$destination_file" 1 || { rm -f -- "$rendered_file"; return 1; }
+    else
+        cp -- "$rendered_file" "$destination_file" || { rm -f -- "$rendered_file"; return 1; }
+    fi
+    rm -f -- "$rendered_file"
 }
 
 reset_stock_tryboot_kind() {
@@ -2691,7 +2758,8 @@ complete_validate_config() {
 }
 
 complete_render_config() {
-    local source_file=$1 destination_file=$2 cpu_mhz=$3 gpu_mhz=$4 gpu_key=$5 voltage_uv=$6
+    local source_file=$1 destination_file=$2 cpu_mhz=$3 gpu_mhz=$4 gpu_key=$5 voltage_uv=$6 rendered_file
+    rendered_file=$(mktemp /tmp/autopioverclock-complete-canonical.XXXXXX) || return 1
     awk -v begin="$CLOCK_MARKER_BEGIN" -v end="$CLOCK_MARKER_END" \
         -v cpu="$cpu_mhz" -v gpu="$gpu_mhz" -v gpu_key="$gpu_key" -v voltage="$voltage_uv" '
         function tuning_key(key) {
@@ -2731,12 +2799,15 @@ complete_render_config() {
             }
             print raw
         }
-    ' "$source_file" > "$destination_file"
+    ' "$source_file" > "$rendered_file" || { rm -f -- "$rendered_file"; return 1; }
+    canonicalize_global_sections "$rendered_file" "$destination_file" 1 || { rm -f -- "$rendered_file"; return 1; }
+    rm -f -- "$rendered_file"
 }
 
 complete_validate_sealed_config() {
     local config_file=$1 expected_cpu=$2 expected_gpu=$3 expected_gpu_key=$4 expected_voltage=$5
-    local line semantic trimmed lower key index match_count=0 voltage_count=0 cpu_count=0 gpu_count=0
+    local line semantic trimmed lower key section=all index match_count=0 voltage_count=0 cpu_count=0 gpu_count=0
+    local section_count=0 all_count=0 meaningful_non_all=0
     local -a lines=()
     [[ -f $config_file && ! -L $config_file && -r $config_file ]] || return 1
     while IFS= read -r line || [[ -n $line ]]; do
@@ -2746,12 +2817,23 @@ complete_validate_sealed_config() {
            $semantic != '# AUTOPIOVERCLOCK TRYBOOT COMPLETE: '* &&
            $semantic != '# AUTOPIOVERCLOCK-STOCK-DISABLED '* ]] || return 1
         trimmed=${semantic#"${semantic%%[![:space:]]*}"}
+        trimmed=${trimmed%"${trimmed##*[![:space:]]}"}
         if [[ -n $trimmed && $trimmed != \#* ]]; then
             lower=${trimmed,,}
+            if [[ $lower == \[*\] ]]; then
+                section=${lower#\[}
+                section=${section%\]}
+                section_count=$((section_count + 1))
+                [[ $section != all ]] || all_count=$((all_count + 1))
+                lines+=("$semantic")
+                continue
+            fi
+            [[ $section == all ]] || meaningful_non_all=1
             [[ ! $lower =~ ^include([[:space:]]|$) ]] || return 1
             if [[ $lower =~ ^([[:alnum:]_]+)[[:space:]]*= ]]; then
                 key=${BASH_REMATCH[1]}
                 if complete_tuning_key "$key"; then
+                    [[ $section == all ]] || return 1
                     case $semantic in
                         "over_voltage_delta=${expected_voltage}") voltage_count=$((voltage_count + 1)) ;;
                         "arm_freq=${expected_cpu}") cpu_count=$((cpu_count + 1)) ;;
@@ -2763,14 +2845,16 @@ complete_validate_sealed_config() {
         fi
         lines+=("$semantic")
     done < "$config_file"
-    for (( index=0; index+3<${#lines[@]}; index++ )); do
-        if [[ ${lines[index]} == '[all]' &&
-              ${lines[index+1]} == "over_voltage_delta=${expected_voltage}" &&
-              ${lines[index+2]} == "arm_freq=${expected_cpu}" &&
-              ${lines[index+3]} == "${expected_gpu_key}=${expected_gpu}" ]]; then
+    for (( index=0; index+2<${#lines[@]}; index++ )); do
+        if [[ ${lines[index]} == "over_voltage_delta=${expected_voltage}" &&
+              ${lines[index+1]} == "arm_freq=${expected_cpu}" &&
+              ${lines[index+2]} == "${expected_gpu_key}=${expected_gpu}" ]]; then
             match_count=$((match_count + 1))
         fi
     done
+    if (( meaningful_non_all == 0 )); then
+        (( section_count == 1 && all_count == 1 )) || return 1
+    fi
     (( match_count == 1 && voltage_count == 1 && cpu_count == 1 && gpu_count == 1 ))
 }
 

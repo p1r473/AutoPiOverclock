@@ -172,6 +172,30 @@ managed_block_valid() {
     ' "$source"
 }
 
+config_needs_global_header_at_eof() {
+    local config_file=$1
+    awk '
+        function normalized(value) {
+            sub(/\r$/, "", value)
+            sub(/^[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            return value
+        }
+        function section_header(value) {
+            value=normalized(value)
+            return length(value) >= 3 && substr(value, 1, 1) == "[" && substr(value, length(value), 1) == "]"
+        }
+        BEGIN {current="[all]"}
+        {
+            probe=normalized($0)
+            if (!section_header(probe)) next
+            current=tolower(probe)
+            if (current == "[all]") seen_all=1
+        }
+        END {exit !(!seen_all || current != "[all]")}
+    ' "$config_file"
+}
+
 render_boot_config() {
     local source=$1 destination=$2
     managed_block_valid "$source" "$WATCHDOG_BLOCK_BEGIN" "$WATCHDOG_BLOCK_END" || return 1
@@ -185,8 +209,11 @@ render_boot_config() {
         }
         {print}
     ' "$source" > "$destination" || return 1
-    printf '%s\n[all]\nkernel_watchdog_timeout=%s\n%s\n' \
-        "$WATCHDOG_BLOCK_BEGIN" "$KERNEL_TIMEOUT" "$WATCHDOG_BLOCK_END" >> "$destination"
+    printf '%s\n' "$WATCHDOG_BLOCK_BEGIN" >> "$destination" || return 1
+    if config_needs_global_header_at_eof "$destination"; then
+        printf '[all]\n' >> "$destination" || return 1
+    fi
+    printf 'kernel_watchdog_timeout=%s\n%s\n' "$KERNEL_TIMEOUT" "$WATCHDOG_BLOCK_END" >> "$destination"
 }
 
 render_cmdline() {

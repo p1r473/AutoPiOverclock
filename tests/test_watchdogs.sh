@@ -376,6 +376,29 @@ PLAN_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" 
 [[ $PLAN_OUTPUT == *$'APO_DATA\tWATCHDOG_REPAIR_OLD_HASH\t'* ]]
 [[ $PLAN_OUTPUT == *$'APO_DATA\tWATCHDOG_REPAIR_EXPECTED_HASH\t'* ]]
 
+DEBIAN_WATCHDOG_CONFIG="$TEMP_DIR/debian-watchdog-config.txt"
+DEBIAN_WATCHDOG_RENDERED="$TEMP_DIR/debian-watchdog-rendered.txt"
+cat > "$DEBIAN_WATCHDOG_CONFIG" <<'EOF'
+[all]
+dtparam=watchdog=on
+EOF
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" SOURCE="$DEBIAN_WATCHDOG_CONFIG" DESTINATION="$DEBIAN_WATCHDOG_RENDERED" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    render_watchdog_config "$SOURCE" "$DESTINATION" 60
+'
+[[ $(grep -c '^\[all\]$' "$DEBIAN_WATCHDOG_RENDERED") == 1 ]]
+grep -Fqx 'kernel_watchdog_timeout=60' "$DEBIAN_WATCHDOG_RENDERED"
+
+printf '%s\n' '[pi5]' 'dtparam=pciex1' > "$DEBIAN_WATCHDOG_CONFIG"
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" SOURCE="$DEBIAN_WATCHDOG_CONFIG" DESTINATION="$DEBIAN_WATCHDOG_RENDERED" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    render_watchdog_config "$SOURCE" "$DESTINATION" 60
+'
+grep -Fqx '[pi5]' "$DEBIAN_WATCHDOG_RENDERED"
+[[ $(grep -c '^\[all\]$' "$DEBIAN_WATCHDOG_RENDERED") == 1 ]]
+
 for PROFILE_NAME in debian batocera; do
     PROFILE_PATH="$ROOT/profiles/${PROFILE_NAME}.sh"
     PROFILE="$PROFILE_PATH" PROFILE_NAME="$PROFILE_NAME" REPO_ROOT="$ROOT" bash -c '

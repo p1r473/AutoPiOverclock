@@ -260,9 +260,9 @@ for worker_name in debian batocera; do
 done
 
 # Permanent rendering replaces only exact project-owned clock blocks and exact
-# stale recovery/watchdog-disable artifacts. It must not clean up user prose,
-# blank lines, section headers, reset-preserved settings, or the live managed
-# watchdog block by inference.
+# stale recovery/watchdog-disable artifacts. It preserves user prose, blank
+# lines, meaningful conditional section boundaries, reset-preserved settings,
+# and the live managed watchdog block while collapsing redundant global headers.
 for worker_name in debian batocera; do
     APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" \
         PRESERVE_ROOT="$TEMP_DIR/permanent-preserve-$worker_name" WORKER_NAME="$worker_name" bash -c '
@@ -305,13 +305,10 @@ v3d_freq=1125
 CONF
             cat > "$expected_config" <<CONF
 # Tron user header: preserve exactly
-[all]
 
 # AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
 # User explanation for the original overclock
-[all]
 # BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG
-[all]
 # AUTOPIOVERCLOCK-WATCHDOG-DISABLED kernel_watchdog_timeout=77
 kernel_watchdog_timeout=180
 # END AUTOPIOVERCLOCK MANAGED WATCHDOG
@@ -367,13 +364,11 @@ gpu_freq=1125
 CONF
             cat > "$expected_config" <<CONF
 # Debian user header: preserve exactly
-[all]
 # AUTOPIOVERCLOCK-STOCK-DISABLED arm_freq=2900
 # AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
 # User cooling note
 dtparam=fan_temp0=50000
 # BEGIN AUTOPIOVERCLOCK WATCHDOG
-[all]
 kernel_watchdog_timeout=60
 # END AUTOPIOVERCLOCK WATCHDOG
 

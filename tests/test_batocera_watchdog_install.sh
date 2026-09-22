@@ -41,10 +41,24 @@ EOF
 render_boot_config "$TEMP_DIR/config.txt" "$TEMP_DIR/config.rendered"
 grep -Fqx '# AUTOPIOVERCLOCK-WATCHDOG-DISABLED kernel_watchdog_timeout=0' "$TEMP_DIR/config.rendered"
 [[ $(grep -c '^kernel_watchdog_timeout=180$' "$TEMP_DIR/config.rendered") == 1 ]]
+[[ $(grep -c '^\[all\]$' "$TEMP_DIR/config.rendered") == 1 ]]
 grep -Fqx 'dtparam=watchdog' "$TEMP_DIR/config.rendered"
 grep -Fqx 'dtoverlay=vc4-kms-v3d' "$TEMP_DIR/config.rendered"
 render_boot_config "$TEMP_DIR/config.rendered" "$TEMP_DIR/config.rendered-again"
 cmp "$TEMP_DIR/config.rendered" "$TEMP_DIR/config.rendered-again"
+
+cat > "$TEMP_DIR/config.conditional" <<'EOF'
+[pi5]
+dtparam=pciex1
+EOF
+render_boot_config "$TEMP_DIR/config.conditional" "$TEMP_DIR/config.conditional-rendered"
+grep -Fqx '[pi5]' "$TEMP_DIR/config.conditional-rendered"
+grep -Fqx 'dtparam=pciex1' "$TEMP_DIR/config.conditional-rendered"
+[[ $(grep -c '^\[all\]$' "$TEMP_DIR/config.conditional-rendered") == 1 ]]
+
+printf '%s\n' 'dtparam=watchdog' > "$TEMP_DIR/config.implicit-global"
+render_boot_config "$TEMP_DIR/config.implicit-global" "$TEMP_DIR/config.implicit-global-rendered"
+[[ $(grep -c '^\[all\]$' "$TEMP_DIR/config.implicit-global-rendered") == 1 ]]
 
 printf '%s\n' "$WATCHDOG_BLOCK_BEGIN" 'kernel_watchdog_timeout=180' > "$TEMP_DIR/config.malformed"
 if render_boot_config "$TEMP_DIR/config.malformed" "$TEMP_DIR/config.should-not-render"; then
