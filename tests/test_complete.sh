@@ -251,7 +251,7 @@ test_worker_recomplete_transaction() {
         boot_mount_has_option() { [[ $1 == ro ]]; }
         APO_APPLY_BOOT_RW=0
 
-        canonicalize_global_sections "$test_boot_config" "$proposed" 1
+        canonicalize_completed_config "$test_boot_config" "$proposed"
         old_hash=$(sha256sum "$test_boot_config" | awk 'NR == 1 {print $1}')
         new_hash=$(sha256sum "$proposed" | awk 'NR == 1 {print $1}')
         cmd_render_recomplete 2900 1125 v3d_freq 0 maintenance-run "$old_hash" > "$rendered"
@@ -456,7 +456,10 @@ test_global_section_regressions() {
         echo 'Tron completion retained managed clock markers' >&2
         return 1
     fi
-    grep -Fqx '# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG' "$rendered"
+    if grep -Fq 'AUTOPIOVERCLOCK MANAGED WATCHDOG' "$rendered"; then
+        echo 'Tron completion retained managed watchdog markers' >&2
+        return 1
+    fi
     grep -Fqx 'kernel_watchdog_timeout=180' "$rendered"
     grep -Fqx 'arm_freq=2900' "$rendered"
     grep -Fqx 'v3d_freq=1125' "$rendered"
@@ -472,12 +475,16 @@ test_global_section_regressions() {
             echo 'strict completed-config validation accepted redundant global sections' >&2
             return 1
         fi
-        canonicalize_global_sections "$input" "$rendered" 1
+        canonicalize_completed_config "$input" "$rendered"
         complete_validate_sealed_config "$rendered" 2900 1125 v3d_freq 0
     )
     [[ $(grep -c '^\[all\]$' "$rendered") == 1 ]]
     if grep -Fqx '[Overclock]' "$rendered"; then
         echo 'repeat complete retained an empty section label' >&2
+        return 1
+    fi
+    if grep -Fq 'AUTOPIOVERCLOCK MANAGED WATCHDOG' "$rendered"; then
+        echo 'repeat complete retained managed watchdog markers' >&2
         return 1
     fi
     grep -Fqx 'kernel_watchdog_timeout=180' "$rendered"

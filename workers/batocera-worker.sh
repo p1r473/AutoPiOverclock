@@ -449,6 +449,29 @@ canonicalize_global_sections() {
     ' "$source_file" > "$destination_file"
 }
 
+canonicalize_completed_config() {
+    local source_file=$1 destination_file=$2 stripped_file
+    stripped_file=$(mktemp /tmp/autopioverclock-complete-comments.XXXXXX) || return 1
+    awk '
+        function normalized(value) {
+            sub(/\r$/, "", value)
+            sub(/^[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            return value
+        }
+        {
+            marker=normalized($0)
+            if (marker == "# BEGIN AUTOPIOVERCLOCK WATCHDOG" ||
+                marker == "# END AUTOPIOVERCLOCK WATCHDOG" ||
+                marker == "# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG" ||
+                marker == "# END AUTOPIOVERCLOCK MANAGED WATCHDOG") next
+            print
+        }
+    ' "$source_file" > "$stripped_file" || { rm -f -- "$stripped_file"; return 1; }
+    canonicalize_global_sections "$stripped_file" "$destination_file" 1 || { rm -f -- "$stripped_file"; return 1; }
+    rm -f -- "$stripped_file"
+}
+
 render_clock_config() {
     local source_file=$1 destination_file=$2 cpu_mhz=$3 gpu_mhz=$4 gpu_key=$5 voltage_uv=$6 run_id=$7
     local voltage_render_mode=${8:-explicit} stripped_file
@@ -2800,17 +2823,19 @@ complete_render_config() {
             print raw
         }
     ' "$source_file" > "$rendered_file" || { rm -f -- "$rendered_file"; return 1; }
-    canonicalize_global_sections "$rendered_file" "$destination_file" 1 || { rm -f -- "$rendered_file"; return 1; }
+    canonicalize_completed_config "$rendered_file" "$destination_file" || { rm -f -- "$rendered_file"; return 1; }
     rm -f -- "$rendered_file"
 }
 
 complete_validate_sealed_config() {
     local config_file=$1 expected_cpu=$2 expected_gpu=$3 expected_gpu_key=$4 expected_voltage=$5
     local require_canonical_sections=${6:-1}
+    local allow_project_watchdog_markers=${7:-0}
     local line semantic trimmed lower key section=all index match_count=0 voltage_count=0 cpu_count=0 gpu_count=0
     local section_count=0 all_count=0 meaningful_non_all=0
     local -a lines=()
     [[ $require_canonical_sections == 0 || $require_canonical_sections == 1 ]] || return 1
+    [[ $allow_project_watchdog_markers == 0 || $allow_project_watchdog_markers == 1 ]] || return 1
     [[ -f $config_file && ! -L $config_file && -r $config_file ]] || return 1
     while IFS= read -r line || [[ -n $line ]]; do
         semantic=${line%$'\r'}
@@ -2820,6 +2845,12 @@ complete_validate_sealed_config() {
            $semantic != '# AUTOPIOVERCLOCK-STOCK-DISABLED '* ]] || return 1
         trimmed=${semantic#"${semantic%%[![:space:]]*}"}
         trimmed=${trimmed%"${trimmed##*[![:space:]]}"}
+        if [[ $trimmed == '# BEGIN AUTOPIOVERCLOCK WATCHDOG' ||
+              $trimmed == '# END AUTOPIOVERCLOCK WATCHDOG' ||
+              $trimmed == '# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG' ||
+              $trimmed == '# END AUTOPIOVERCLOCK MANAGED WATCHDOG' ]]; then
+            (( allow_project_watchdog_markers == 1 )) || return 1
+        fi
         if [[ -n $trimmed && $trimmed != \#* ]]; then
             lower=${trimmed,,}
             if [[ $lower == \[*\] ]]; then
@@ -2861,7 +2892,7 @@ complete_validate_sealed_config() {
 }
 
 complete_validate_resealable_config() {
-    complete_validate_sealed_config "$1" "$2" "$3" "$4" "$5" 0
+    complete_validate_sealed_config "$1" "$2" "$3" "$4" "$5" 0 1
 }
 
 cmd_render_complete() {
@@ -2892,7 +2923,7 @@ cmd_render_recomplete() {
     [[ $current_hash == "$expected_hash" ]] || return 1
     complete_validate_resealable_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || return 1
     rendered_file=$(mktemp /tmp/autopioverclock-recomplete-render.XXXXXX) || return 1
-    if ! canonicalize_global_sections "$boot_config" "$rendered_file" 1 ||
+    if ! canonicalize_completed_config "$boot_config" "$rendered_file" ||
        ! complete_validate_sealed_config "$rendered_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv"; then
         rm -f -- "$rendered_file"
         return 1

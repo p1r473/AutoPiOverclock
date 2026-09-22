@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.97 - 2026-09-22
+
+- Removed AutoPiOverclock watchdog boundary comments during initial and repeat completion while preserving the validated native watchdog directive and timeout.
+- Made strict completed-config validation reject those project marker comments and retained a narrow resealable path so an older completed config can be cleaned safely.
+- Added Debian and Batocera regression coverage for marker-free completed output.
+
 ## 0.1.0-alpha.96 - 2026-09-22
 
 - Made repeat `complete TARGET` repair and verify an already completed boot config whose global section headers are not canonical, even after the original run artifacts were removed.
