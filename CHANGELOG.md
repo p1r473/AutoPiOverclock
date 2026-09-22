@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.96 - 2026-09-22
+
+- Made repeat `complete TARGET` repair and verify an already completed boot config whose global section headers are not canonical, even after the original run artifacts were removed.
+- Bound repeat completion to the sealed target identity, applied clocks, voltage, current schemas, watchdog readiness, normal boot, clear throttle state, exact before and after hashes, and byte-for-byte installed proposal before rebinding the durable ledger.
+- Added deterministic verified maintenance backups, immediate verified rollback on an install failure, retry-safe backup cleanup, and Debian and Batocera transaction tests including interrupted repeat completion.
+
 ## 0.1.0-alpha.95 - 2026-09-22
 
 - Canonicalized permanent Raspberry Pi boot-config sections after managed clock removal. Global-only configurations now contain exactly one `[all]` before the first active directive, while meaningful model or serial filters and the `[all]` resets they require remain intact.

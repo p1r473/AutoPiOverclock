@@ -175,7 +175,7 @@ apo_worker_capture_progress() {
 
 apo_worker_command_is_safe_to_retry() {
     case $1 in
-        health|plan-candidate|verify-tryboot|verify-stock-reset|reset-throttle-history|plan-watchdog-repair|plan-network-watchdog|render-permanent|render-complete|classify-kernel-log)
+        health|plan-candidate|verify-tryboot|verify-stock-reset|reset-throttle-history|plan-watchdog-repair|plan-network-watchdog|render-permanent|render-complete|render-recomplete|classify-kernel-log)
             return 0
             ;;
         *)

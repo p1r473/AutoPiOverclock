@@ -1788,6 +1788,7 @@ apo_cleanup_handler() {
     fi
     [[ -n ${APO_JSONL_FILE:-} && -f ${APO_JSONL_FILE:-} ]] && apo_finalize_json || true
     if [[ ${APO_WORKER_DEPLOYED:-0} == 1 && ${APO_HAVE_REMOTE_CONTEXT:-0} == 1 && $(apo_remote_tryboot_flag_once 2>/dev/null || true) != 00000001 ]]; then apo_profile_cleanup_worker || true; fi
+    if declare -F apo_complete_cleanup_maintenance_temps >/dev/null 2>&1; then apo_complete_cleanup_maintenance_temps || true; fi
     if declare -F apo_progress_clear_line >/dev/null 2>&1; then apo_progress_clear_line; fi
     exit "$exit_code"
 }

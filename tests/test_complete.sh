@@ -85,6 +85,36 @@ v3d_freq=1125
 EOF
 }
 
+write_tron_completed_config() {
+    local destination=$1
+    cat > "$destination" <<'EOF'
+arm_64bit=1
+kernel=boot/linux
+initramfs boot/initrd.lz4
+dtoverlay=vc4-kms-v3d,cma-512
+
+dtparam=krnbt=on
+[Overclock]
+
+[all]
+# Stable Tron overclock validated under combined CPU and GPU load
+temp_limit=80
+
+[all]
+
+[all]
+# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG
+[all]
+kernel_watchdog_timeout=180
+# END AUTOPIOVERCLOCK MANAGED WATCHDOG
+
+[all]
+over_voltage_delta=0
+arm_freq=2900
+v3d_freq=1125
+EOF
+}
+
 write_monkeebutt_managed_config() {
     local destination=$1
     cat > "$destination" <<'EOF'
@@ -194,6 +224,141 @@ test_worker_backup_collection() {
     )
 }
 
+test_worker_recomplete_transaction() {
+    local worker=$1 profile_dir=$2
+    local APO_WORKER_LIBRARY_ONLY=1
+    export APO_WORKER_LIBRARY_ONLY
+    (
+        local test_boot_config="${profile_dir}/config.txt"
+        local original="${profile_dir}/original.txt"
+        local proposed="${profile_dir}/canonical.txt"
+        local rendered="${profile_dir}/rendered.txt"
+        local result="${profile_dir}/result.txt"
+        local backup_root="${profile_dir}/backups"
+        local backup_file="${backup_root}/config-sealed-run-before-recomplete.txt"
+        local old_hash new_hash
+        mkdir -p -- "$profile_dir"
+        write_tron_completed_config "$test_boot_config"
+        cp -- "$test_boot_config" "$original"
+        source "$worker"
+        complete_boot_config() { printf '%s' "$test_boot_config"; }
+        complete_backup_root() { printf '%s' "$backup_root"; }
+        apply_tryboot_clear() { return 0; }
+        apply_install_traps() { :; }
+        apply_clear_traps() { :; }
+        remount_boot_rw() { APO_APPLY_BOOT_RW=1; return 0; }
+        apply_remount_boot_ro() { APO_APPLY_BOOT_RW=0; return 0; }
+        boot_mount_has_option() { [[ $1 == ro ]]; }
+        APO_APPLY_BOOT_RW=0
+
+        canonicalize_global_sections "$test_boot_config" "$proposed" 1
+        old_hash=$(sha256sum "$test_boot_config" | awk 'NR == 1 {print $1}')
+        new_hash=$(sha256sum "$proposed" | awk 'NR == 1 {print $1}')
+        cmd_render_recomplete 2900 1125 v3d_freq 0 maintenance-run "$old_hash" > "$rendered"
+        cmp -s -- "$proposed" "$rendered"
+
+        cmd_recomplete_permanent "$proposed" "$old_hash" "$new_hash" maintenance-run \
+            2900 1125 v3d_freq 0 sealed-run > "$result"
+        cmp -s -- "$proposed" "$test_boot_config"
+        cmp -s -- "$original" "$backup_file"
+        grep -Fq $'APO_DATA\tCOMPLETE_NEW_HASH' "$result"
+        grep -Fq $'APO_DATA\tCOMPLETE_BACKUP_FILE' "$result"
+        grep -Fq $'APO_DATA\tCOMPLETE_BACKUP_HASH' "$result"
+        grep -Fq 'APO_RESULT_CLASS=PASS' "$result"
+
+        cmd_recomplete_permanent "$proposed" "$new_hash" "$new_hash" second-maintenance-run \
+            2900 1125 v3d_freq 0 sealed-run > "$result"
+        grep -Fq $'APO_DATA\tCOMPLETE_BACKUP_FILE' "$result"
+        grep -Fq $'APO_DATA\tCOMPLETE_BACKUP_HASH' "$result"
+        grep -Fq "$(printf '%s' "$old_hash" | base64 | tr -d '\n')" "$result"
+        grep -Fq 'APO_RESULT_CLASS=PASS' "$result"
+
+        printf 'unexpected\n' > "$backup_file"
+        if cmd_recomplete_permanent "$proposed" "$new_hash" "$new_hash" rejected-maintenance-run \
+            2900 1125 v3d_freq 0 sealed-run > "$result"; then
+            echo 'repeat complete accepted a changed retained maintenance backup' >&2
+            return 1
+        fi
+        grep -Fq 'APO_RESULT_CLASS=APPLY_FAILURE' "$result"
+        cmp -s -- "$proposed" "$test_boot_config"
+    )
+}
+
+test_controller_reseal_backup_identity() (
+    local expected_hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    local backup_file remote_calls=0
+
+    APO_ROOT=$ROOT
+    source "$ROOT/lib/common.sh"
+    source "$ROOT/lib/complete.sh"
+    APO_PROFILE=debian
+    APO_RUN_ID=maintenance-run
+    backup_file=$(apo_complete_reseal_backup_path sealed-run)
+    apo_remote_root() {
+        remote_calls=$((remote_calls + 1))
+        return 0
+    }
+
+    apo_complete_remove_reseal_backup "$backup_file" "$expected_hash" sealed-run
+    (( remote_calls == 1 ))
+)
+
+test_reseal_ledger_identity() (
+    local ledger source_b64 reason_b64 record_count
+
+    APO_ROOT=$ROOT
+    source "$ROOT/lib/common.sh"
+    source "$ROOT/lib/state.sh"
+    source "$ROOT/lib/history.sh"
+    APO_TARGET_SLUG=tron
+    APO_REMOTE_TARGET=pi@tron
+    APO_PROFILE=debian
+    APO_GPU_KEY=v3d_freq
+    APO_TEST_VOLTAGE=0
+    APO_NORMAL_CPU=2900
+    APO_NORMAL_GPU=1125
+    APO_NORMAL_VOLTAGE=0
+    APO_BOOT_CONFIG=/boot/firmware/config.txt
+    APO_TRYBOOT_CONFIG=/boot/firmware/tryboot.txt
+    APO_OUTPUT_DIR="$TEST_ROOT/reseal-ledger/runs"
+    APO_HISTORY_DIR="$TEST_ROOT/reseal-ledger/history"
+    declare -Ag APO_DISCOVERY=(
+        [MODEL]='Raspberry Pi 5 Model B'
+        [COMPATIBLE]='raspberrypi,5-model-b'
+        [ARCH]=aarch64
+    )
+
+    source_b64=$(apo_history_encode_field final-endurance)
+    reason_b64=$(apo_history_encode_field 'A retained failure remains authoritative.')
+    apo_history_reset
+    apo_history_record_ledger 2026-09-22T01:00:00-0400 history-run 3000 1150 \
+        STABILITY_FAILURE PAIR "$source_b64" "$reason_b64" tron-history-run.state
+    APO_HISTORY_RENDER_BASELINE_CPU=2900
+    APO_HISTORY_RENDER_BASELINE_GPU=1125
+    APO_HISTORY_RENDER_BASELINE_VOLTAGE=0
+    APO_HISTORY_SEALED_RUN_ID=sealed-run
+    APO_HISTORY_SEALED_CPU=2900
+    APO_HISTORY_SEALED_GPU=1125
+    APO_HISTORY_SEALED_VOLTAGE=0
+    APO_HISTORY_SEALED_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    APO_HISTORY_SEALED_RUN_SCHEMA=$APO_CURRENT_RUN_SCHEMA
+    APO_HISTORY_SEALED_VALIDATION_SCHEMA=$APO_CURRENT_VALIDATION_SCHEMA
+    apo_history_rebuild_ledger
+    ledger=$APO_HISTORY_LEDGER_FILE
+    record_count=$(awk -F '\t' '$1 == "RECORD" {count++} END {print count+0}' "$ledger")
+
+    APO_RUN_ID=maintenance-run
+    APO_HISTORY_SEALED_HASH=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    apo_history_rebuild_ledger "$ledger"
+    APO_HISTORY_SCAN_BASELINE_CPU=2900
+    APO_HISTORY_SCAN_BASELINE_GPU=1125
+    APO_HISTORY_SCAN_BASELINE_VOLTAGE=0
+    apo_history_load_machine_ledger "$ledger" 0 0
+    [[ $APO_HISTORY_SEALED_RUN_ID == sealed-run ]]
+    [[ $APO_HISTORY_SEALED_HASH == bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]]
+    [[ $(awk -F '\t' '$1 == "RECORD" {count++} END {print count+0}' "$ledger") == "$record_count" ]]
+)
+
 test_worker_renderer() {
     local worker=$1 profile_dir=$2 input expected rendered invalid
     local APO_WORKER_LIBRARY_ONLY=1
@@ -265,7 +430,7 @@ test_worker_renderer() {
 }
 
 test_global_section_regressions() {
-    local worker=$1 profile_dir=$2 input rendered canonical_again
+    local worker=$1 profile_dir=$2 input rendered canonical_again invalid
     local APO_WORKER_LIBRARY_ONLY=1
     export APO_WORKER_LIBRARY_ONLY
     mkdir -p -- "$profile_dir"
@@ -295,6 +460,43 @@ test_global_section_regressions() {
     grep -Fqx 'arm_freq=2900' "$rendered"
     grep -Fqx 'v3d_freq=1125' "$rendered"
     cmp -s -- "$rendered" "$canonical_again"
+
+    input="${profile_dir}/tron-completed.txt"
+    rendered="${profile_dir}/tron-completed.rendered.txt"
+    write_tron_completed_config "$input"
+    (
+        source "$worker"
+        complete_validate_resealable_config "$input" 2900 1125 v3d_freq 0
+        if complete_validate_sealed_config "$input" 2900 1125 v3d_freq 0; then
+            echo 'strict completed-config validation accepted redundant global sections' >&2
+            return 1
+        fi
+        canonicalize_global_sections "$input" "$rendered" 1
+        complete_validate_sealed_config "$rendered" 2900 1125 v3d_freq 0
+    )
+    [[ $(grep -c '^\[all\]$' "$rendered") == 1 ]]
+    if grep -Fqx '[Overclock]' "$rendered"; then
+        echo 'repeat complete retained an empty section label' >&2
+        return 1
+    fi
+    grep -Fqx 'kernel_watchdog_timeout=180' "$rendered"
+    grep -Fqx 'arm_freq=2900' "$rendered"
+    grep -Fqx 'v3d_freq=1125' "$rendered"
+
+    invalid="${profile_dir}/invalid-reseal.txt"
+    cat > "$invalid" <<'EOF'
+[pi5]
+over_voltage_delta=0
+arm_freq=2900
+v3d_freq=1125
+EOF
+    if (
+        source "$worker"
+        complete_validate_resealable_config "$invalid" 2900 1125 v3d_freq 0
+    ); then
+        echo 'repeat complete accepted sealed clocks inside a conditional section' >&2
+        return 1
+    fi
 
     input="${profile_dir}/monkeebutt.txt"
     rendered="${profile_dir}/monkeebutt.rendered.txt"
@@ -336,6 +538,10 @@ test_global_section_regressions "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/deb
 test_global_section_regressions "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera-sections"
 test_worker_backup_collection "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian-backups"
 test_worker_backup_collection "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera-backups"
+test_worker_recomplete_transaction "$ROOT/workers/debian-worker.sh" "$TEST_ROOT/debian-recomplete"
+test_worker_recomplete_transaction "$ROOT/workers/batocera-worker.sh" "$TEST_ROOT/batocera-recomplete"
+test_controller_reseal_backup_identity
+test_reseal_ledger_identity
 
 # The public complete command owns the exclusive target lock before it reaches
 # retained-state collection. Stale controller-only RUNNING or PREPARING text is
