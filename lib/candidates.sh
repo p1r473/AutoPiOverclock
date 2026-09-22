@@ -3560,7 +3560,7 @@ apo_adopt_saved_normal_return_failure() {
     APO_LAST_REASON='Saved normal-return checkpoint evidence is malformed or cannot be bound to the affected gate.'
     case $phase in
         TRYBOOT_PROOF)
-            retry_context=baseline-safety-normal
+            retry_context='baseline-safety-normal'
             if (( pending == 1 )); then
                 if apo_normal_return_retry_schedule "$retry_context" baseline-safety-normal apo_baseline_retry_rewind_state; then return 0; else rc=$?; fi
             elif apo_transient_phase_retry_schedule "$retry_context" HARNESS_FAILURE "$replay_reason" 1 apo_baseline_retry_rewind_state; then
