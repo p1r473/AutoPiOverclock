@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.92 - 2026-09-21
+
+- Fixed completed retained-history isolation plans failing resume validation after permanent apply. The history-plan validator now checks saved candidate floors against the immutable pre-run baseline, or the retained applied source for a domain-only run, instead of the mutable normal clocks that apply replaces with the final result.
+- Added regression coverage for a completed applied isolation handoff whose GPU equals its exact saved ceiling.
+
 ## 0.1.0-alpha.91 - 2026-09-21
 
 - Fixed completed adaptive descending-search runs failing resume validation after permanent apply. The validator now reconstructs saved pass evidence from the immutable pre-run baseline, or the retained applied source for a domain-only run, instead of the mutable normal clocks that apply replaces with the final result.

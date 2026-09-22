@@ -222,6 +222,31 @@ fi
 [[ $(apo_state_get HISTORY_ISOLATION_HANDOFF_GPU '') == 1175 ]]
 [[ -z $(apo_state_get FINAL_BACKOFF_HISTORY '') ]]
 
+# Applying a completed isolation result changes the mutable normal clocks to
+# the handoff. Resume validation must still check the saved plan against the
+# immutable pre-run baseline, including a GPU handoff at its exact ceiling.
+(
+    seed_plan
+    apo_state_set CFG_CPU_MAX_EFFECTIVE 3075
+    apo_state_set HISTORY_ISOLATION_STAGE DONE
+    apo_state_set HISTORY_ISOLATION_ANCHOR_CPU 3075
+    apo_state_set HISTORY_ISOLATION_ANCHOR_GPU 1200
+    apo_state_set HISTORY_CPU_TRIAL_CPU 3050
+    apo_state_set HISTORY_CPU_TRIAL_GPU 1200
+    apo_state_set HISTORY_GPU_TRIAL_CPU 3075
+    apo_state_set HISTORY_GPU_TRIAL_GPU 1175
+    apo_state_set HISTORY_PAIR_TRIAL_CPU 3050
+    apo_state_set HISTORY_PAIR_TRIAL_GPU 1175
+    apo_state_set HISTORY_ISOLATION_HANDOFF_CPU 3050
+    apo_state_set HISTORY_ISOLATION_HANDOFF_GPU 1200
+    apo_state_set HISTORY_BASE_CPU_QUALIFIED_CLOCK 3075
+    APO_NORMAL_CPU=3050
+    APO_NORMAL_GPU=1200
+    apo_history_validate_plan_state
+    [[ $(apo_history_domain_candidate_floor_mhz CPU) == 2401 ]]
+    [[ $(apo_history_domain_candidate_floor_mhz GPU) == 961 ]]
+)
+
 # The first ordinary backoff replays from that persisted handoff, not SAFE_*.
 apo_state_set FINAL_BACKOFF_COUNT 1
 apo_state_set FINAL_BACKOFF_CPU 3050

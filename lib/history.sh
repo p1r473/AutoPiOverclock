@@ -1042,16 +1042,32 @@ apo_history_domain_resolution_mhz() {
 }
 
 apo_history_domain_candidate_floor_mhz() {
-    local floor
+    local baseline floor requested_floor=''
     case $1 in
         CPU)
-            floor=${APO_CPU_MIN:-$(( ${APO_NORMAL_CPU:-0} + 1 ))}
+            requested_floor=${APO_CPU_MIN:-}
+            if declare -F apo_refined_domain_baseline >/dev/null 2>&1; then
+                baseline=$(apo_refined_domain_baseline CPU) || return 1
+            else
+                baseline=${APO_NORMAL_CPU:-0}
+            fi
             ;;
         GPU)
-            floor=${APO_GPU_MIN:-$(( ${APO_NORMAL_GPU:-0} + 1 ))}
+            requested_floor=${APO_GPU_MIN:-}
+            if declare -F apo_refined_domain_baseline >/dev/null 2>&1; then
+                baseline=$(apo_refined_domain_baseline GPU) || return 1
+            else
+                baseline=${APO_NORMAL_GPU:-0}
+            fi
             ;;
         *) return 1 ;;
     esac
+    apo_is_uint "$baseline" || return 1
+    floor=$((baseline + 1))
+    if [[ -n $requested_floor ]]; then
+        apo_is_uint "$requested_floor" || return 1
+        (( requested_floor > floor )) && floor=$requested_floor
+    fi
     apo_is_uint "$floor" || return 1
     printf '%s' "$floor"
 }
