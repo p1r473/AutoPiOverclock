@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.94 - 2026-09-22
+
+- Fixed `status` and `summary` after successful `complete`. When disposable run state is gone, they now recognize the permanent sealed machine-ledger result only if its target identity, current schemas, hardware identity, profile, boot paths, GPU key, voltage, clocks, and permanent-config hash all match the live target.
+- Added strict negative coverage for changed config hashes, changed voltage, and malformed sealed ledgers. A mismatch remains `OVERCLOCKED / UNVERIFIED` and malformed evidence is never accepted.
+
 ## 0.1.0-alpha.93 - 2026-09-22
 
 - Fixed retained-history planning so clear CPU or GPU ceilings always constrain an automatically selected failed-pair anchor. A known hard ceiling can no longer be scheduled again merely because paired evidence also exists.

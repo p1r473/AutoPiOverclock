@@ -133,7 +133,7 @@ Every operational command requires a target such as `pi@hostname`.
 | `reset TARGET` | Backs up the boot config, removes tuning, reboots, and verifies stock clocks. | You want to return the Pi to stock; it preserves run history. |
 | `run TARGET [OPTIONS]` | Runs the expert interface with an optional strict configuration file. | Developing, supporting, or supplying an explicit custom plan. |
 | `resume TARGET [OPTIONS]` | Continues a selected saved run and recovers first when necessary. | A controller was interrupted or you deliberately want to repeat a saved checkpoint. |
-| `status TARGET` | Shows live clocks, quick health, tryboot/controller state, and a plain verdict. | You want a current snapshot without changing the run. |
+| `status TARGET` | Shows live clocks, quick health, tryboot/controller state, and a plain verdict. After `complete` deletes run state, an exact live match to the strict sealed ledger still reports `OVERCLOCKED / VALIDATED`. | You want a current snapshot without changing the run. |
 | `summary TARGET` | Explains the newest tuning decisions, boundaries, retries, result, and next action. | You want the story of what happened rather than raw logs. |
 | `recover TARGET` | Returns a selected run from temporary `tryboot` state to its protected permanent config. | A run stopped mid-candidate and the target needs safe normalization. |
 | `restore TARGET` | Restores a retained, fully validated applied config after an outside edit. | The boot config was manually changed and you want AutoPiOverclock's validated bytes back. |

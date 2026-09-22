@@ -7,6 +7,7 @@ source "$ROOT/lib/state.sh"
 source "$ROOT/lib/logging.sh"
 source "$ROOT/lib/ssh.sh"
 source "$ROOT/lib/classify.sh"
+source "$ROOT/lib/history.sh"
 source "$ROOT/lib/report.sh"
 
 TEMP_DIR=$(mktemp -d)
@@ -101,8 +102,15 @@ emit_data() {
 if [[ $* == *status-snapshot* ]]; then
     cat >/dev/null
     emit_data PROFILE debian
+    emit_data MODEL 'Raspberry Pi 5 Model B'
+    emit_data COMPATIBLE raspberrypi,5-model-b
+    emit_data ARCH aarch64
+    emit_data BOOT_CONFIG /boot/firmware/config.txt
+    emit_data TRYBOOT_CONFIG /boot/firmware/tryboot.txt
+    emit_data GPU_KEY v3d_freq
     emit_data CONFIG_CPU 3100
     emit_data CONFIG_GPU 1175
+    emit_data CONFIG_VOLTAGE 0
     emit_data MEASURED_CPU 3099
     emit_data MEASURED_GPU 1175
     emit_data PERMANENT_HASH "$FIXTURE_HASH"
@@ -149,6 +157,92 @@ grep -Fq 'qualification=2h per domain; final requirement=24h combined workload' 
 grep -Fq 'Final policy:   genuine failures restart from zero; proved network-watchdog reboots retain target-reported credit' <<< "$summary_output"
 grep -Fq 'Saved credit:   none' <<< "$summary_output"
 grep -Fq 'validated=1, duration=24h, clocks=CPU 3100 / GPU 1175 MHz' <<< "$summary_output"
+
+# Complete removes disposable state while retaining the strict sealed ledger.
+# Status must recover validation only when every live binding still matches.
+APO_HISTORY_DIR="$TEMP_DIR/history"
+APO_PROFILE=debian
+APO_GPU_KEY=v3d_freq
+APO_TEST_VOLTAGE=0
+APO_NORMAL_CPU=3100
+APO_NORMAL_GPU=1175
+APO_NORMAL_VOLTAGE=0
+APO_BOOT_CONFIG=/boot/firmware/config.txt
+APO_TRYBOOT_CONFIG=/boot/firmware/tryboot.txt
+APO_SWEEP_DOMAIN=all
+declare -Ag APO_DISCOVERY=(
+    [MODEL]='Raspberry Pi 5 Model B'
+    [COMPATIBLE]='raspberrypi,5-model-b'
+    [ARCH]=aarch64
+)
+apo_history_reset
+APO_HISTORY_RENDER_BASELINE_CPU=3100
+APO_HISTORY_RENDER_BASELINE_GPU=1175
+APO_HISTORY_RENDER_BASELINE_VOLTAGE=0
+APO_HISTORY_SEALED_RUN_ID=$TUNING_RUN
+APO_HISTORY_SEALED_CPU=3100
+APO_HISTORY_SEALED_GPU=1175
+APO_HISTORY_SEALED_VOLTAGE=0
+APO_HISTORY_SEALED_HASH=$fixture_hash
+APO_HISTORY_SEALED_RUN_SCHEMA=$APO_CURRENT_RUN_SCHEMA
+APO_HISTORY_SEALED_VALIDATION_SCHEMA=$APO_CURRENT_VALIDATION_SCHEMA
+apo_history_rebuild_ledger
+ledger=$APO_HISTORY_LEDGER_FILE
+ledger_hash_before=$(sha256sum "$ledger" | awk 'NR == 1 {print $1}')
+
+retained_output_dir=$APO_OUTPUT_DIR
+APO_OUTPUT_DIR="$TEMP_DIR/completed-runs"
+mkdir -p -- "$APO_OUTPUT_DIR"
+APO_STATE=()
+APO_STATE_FILE=''
+APO_HISTORY_SEALED_RUN_ID=parent-history-sentinel
+apo_status_find_validated_match
+[[ $APO_STATUS_VALIDATED_RUN_ID == "$TUNING_RUN" ]]
+[[ $APO_HISTORY_SEALED_RUN_ID == parent-history-sentinel ]]
+[[ $(sha256sum "$ledger" | awk 'NR == 1 {print $1}') == "$ledger_hash_before" ]]
+apo_status_evaluate
+[[ $APO_STATUS_VERDICT == 'OVERCLOCKED / VALIDATED' ]]
+grep -Fq "Validated run:  $TUNING_RUN" <<< "$(apo_print_status)"
+
+APO_STATUS_LIVE[PERMANENT_HASH]=$(printf 'b%.0s' {1..64})
+if apo_status_find_validated_match; then
+    echo 'sealed ledger accepted a live permanent-config hash mismatch' >&2
+    exit 1
+fi
+[[ -z $APO_STATUS_VALIDATED_RUN_ID ]]
+apo_status_evaluate
+[[ $APO_STATUS_VERDICT == 'OVERCLOCKED / UNVERIFIED' ]]
+APO_STATUS_LIVE[PERMANENT_HASH]=$fixture_hash
+
+APO_STATUS_LIVE[CONFIG_VOLTAGE]=50000
+if apo_status_find_validated_match; then
+    echo 'sealed ledger accepted a live voltage mismatch' >&2
+    exit 1
+fi
+[[ -z $APO_STATUS_VALIDATED_RUN_ID ]]
+APO_STATUS_LIVE[CONFIG_VOLTAGE]=0
+
+APO_STATUS_LIVE[MODEL]='Different hardware'
+if apo_status_find_validated_match; then
+    echo 'sealed ledger accepted a live hardware-model mismatch' >&2
+    exit 1
+fi
+[[ -z $APO_STATUS_VALIDATED_RUN_ID ]]
+APO_STATUS_LIVE[MODEL]='Raspberry Pi 5 Model B'
+
+cp -- "$ledger" "$ledger.valid"
+printf 'unexpected trailing data\n' >> "$ledger"
+if apo_status_find_validated_match; then
+    echo 'status accepted a malformed sealed ledger' >&2
+    exit 1
+fi
+[[ -z $APO_STATUS_VALIDATED_RUN_ID ]]
+mv -- "$ledger.valid" "$ledger"
+apo_status_find_validated_match
+[[ $APO_STATUS_VALIDATED_RUN_ID == "$TUNING_RUN" ]]
+APO_OUTPUT_DIR=$retained_output_dir
+apo_state_load "$TUNING_STATE"
+APO_STATE_FILE=$TUNING_STATE
 
 APO_REDACT=1
 redacted_summary=$(apo_print_summary)
@@ -236,6 +330,10 @@ for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh
     grep -Fq 'status-snapshot) cmd_status_snapshot "$@" ;;' "$worker"
     grep -Fq 'emit_data CONFIG_CPU' "$worker"
     grep -Fq 'emit_data CONFIG_GPU' "$worker"
+    grep -Fq 'emit_data CONFIG_VOLTAGE' "$worker"
+    grep -Fq 'emit_data MODEL' "$worker"
+    grep -Fq 'emit_data COMPATIBLE' "$worker"
+    grep -Fq 'emit_data ARCH' "$worker"
     grep -Fq 'emit_data TRYBOOT_FLAG' "$worker"
 done
 

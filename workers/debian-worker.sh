@@ -780,14 +780,19 @@ stress_ng_gpu_strategy() {
 # Read-only, compact live evidence for the controller-side status/summary
 # commands. This deliberately avoids dependency, watchdog, or boot mutation.
 cmd_status_snapshot() {
-    local boot_config tryboot_config gpu_key=v3d_freq config_cpu config_gpu measured_cpu measured_gpu
-    local permanent_hash tryboot_exists tryboot_type tryboot_hash tryboot_flag throttle recent temp boot_id uptime_seconds
+    local boot_config tryboot_config gpu_key=v3d_freq config_cpu config_gpu config_voltage measured_cpu measured_gpu
+    local model compatible arch permanent_hash tryboot_exists tryboot_type tryboot_hash tryboot_flag throttle recent temp boot_id uptime_seconds
     boot_config=$(find_boot_config) || { emit_result HARNESS_FAILURE 'The permanent boot config could not be located.'; return 1; }
     tryboot_config="$(dirname "$boot_config")/tryboot.txt"
     audit_permanent_tuning_config "$boot_config"
     inspect_tryboot_path "$tryboot_config" tryboot_exists tryboot_type tryboot_hash
+    model=$(tr -d '\000' < /proc/device-tree/model 2>/dev/null || true)
+    compatible=$(tr '\000' ',' < /proc/device-tree/compatible 2>/dev/null || true)
+    arch=$(uname -m 2>/dev/null || true)
     config_cpu=$(active_config_value arm_freq)
     config_gpu=$(active_config_value "$gpu_key")
+    config_voltage=$(active_config_value over_voltage_delta)
+    if [[ -z $config_voltage ]] && active_config_interface_ready; then config_voltage=0; fi
     measured_cpu=$(clock_mhz arm)
     measured_gpu=$(clock_mhz v3d)
     permanent_hash=$(permanent_config_snapshot_hash "$boot_config" || true)
@@ -806,11 +811,15 @@ cmd_status_snapshot() {
     uptime_seconds=$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || true)
 
     emit_data PROFILE debian
+    emit_data MODEL "$model"
+    emit_data COMPATIBLE "$compatible"
+    emit_data ARCH "$arch"
     emit_data BOOT_CONFIG "$boot_config"
     emit_data TRYBOOT_CONFIG "$tryboot_config"
     emit_data GPU_KEY "$gpu_key"
     emit_data CONFIG_CPU "$config_cpu"
     emit_data CONFIG_GPU "$config_gpu"
+    emit_data CONFIG_VOLTAGE "$config_voltage"
     emit_data MEASURED_CPU "$measured_cpu"
     emit_data MEASURED_GPU "$measured_gpu"
     emit_data PERMANENT_HASH "$permanent_hash"
@@ -826,7 +835,9 @@ cmd_status_snapshot() {
     emit_data BOOT_ID "$boot_id"
     emit_data UPTIME_SECONDS "$uptime_seconds"
 
-    [[ $config_cpu =~ ^[0-9]+$ && $config_gpu =~ ^[0-9]+$ && $permanent_hash =~ ^[0-9a-f]{64}$ ]] || {
+    [[ -n $model && -n $compatible && -n $arch &&
+       $config_cpu =~ ^[0-9]+$ && $config_gpu =~ ^[0-9]+$ && $config_voltage =~ ^-?[0-9]+$ &&
+       $permanent_hash =~ ^[0-9a-f]{64}$ ]] || {
         emit_result HARNESS_FAILURE 'The live clock/config snapshot is incomplete.'
         return 1
     }

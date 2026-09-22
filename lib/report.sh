@@ -164,8 +164,15 @@ apo_status_capture_live() {
         if (( remote_rc == 0 )) && [[ $APO_LAST_CLASS == PASS ]]; then
             apo_parse_data_file "$output_file" APO_STATUS_LIVE
             if [[ ${APO_STATUS_LIVE[PROFILE]:-} == "$profile" &&
+                  -n ${APO_STATUS_LIVE[MODEL]:-} &&
+                  -n ${APO_STATUS_LIVE[COMPATIBLE]:-} &&
+                  -n ${APO_STATUS_LIVE[ARCH]:-} &&
+                  ${APO_STATUS_LIVE[BOOT_CONFIG]:-} == /* &&
+                  ${APO_STATUS_LIVE[TRYBOOT_CONFIG]:-} == /* &&
+                  ( ${APO_STATUS_LIVE[GPU_KEY]:-} == gpu_freq || ${APO_STATUS_LIVE[GPU_KEY]:-} == v3d_freq ) &&
                   ${APO_STATUS_LIVE[CONFIG_CPU]:-} =~ ^[0-9]+$ &&
                   ${APO_STATUS_LIVE[CONFIG_GPU]:-} =~ ^[0-9]+$ &&
+                  ${APO_STATUS_LIVE[CONFIG_VOLTAGE]:-} =~ ^-?[0-9]+$ &&
                   ${APO_STATUS_LIVE[PERMANENT_HASH]:-} =~ ^[0-9a-f]{64}$ ]]; then
                 APO_STATUS_LIVE_STATE=AVAILABLE
                 rm -f -- "$output_file"
@@ -228,7 +235,37 @@ apo_status_find_validated_match() {
             APO_STATUS_VALIDATED_RUN_ID=${fields[RUN_ID]:-}
         fi
     done
-    [[ -n $APO_STATUS_VALIDATED_RUN_ID ]]
+    [[ -n $APO_STATUS_VALIDATED_RUN_ID ]] && return 0
+    apo_status_find_sealed_ledger_match
+}
+
+apo_status_find_sealed_ledger_match() {
+    local ledger_file sealed_run_id
+    [[ $APO_STATUS_LIVE_STATE == AVAILABLE ]] || return 1
+    ledger_file=$(apo_history_ledger_path) || return 1
+    [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || return 1
+
+    sealed_run_id=$(
+        apo_history_reset
+        apo_history_load_machine_ledger "$ledger_file" 0 1 || exit 1
+        [[ -n $APO_HISTORY_SEALED_RUN_ID &&
+           $APO_HISTORY_SEALED_RUN_SCHEMA == "$APO_CURRENT_RUN_SCHEMA" &&
+           $APO_HISTORY_SEALED_VALIDATION_SCHEMA == "$APO_CURRENT_VALIDATION_SCHEMA" &&
+           ${APO_HISTORY_LEDGER_META[PROFILE]:-} == "${APO_STATUS_LIVE[PROFILE]:-}" &&
+           ${APO_HISTORY_LEDGER_META[MODEL]:-} == "${APO_STATUS_LIVE[MODEL]:-}" &&
+           ${APO_HISTORY_LEDGER_META[COMPATIBLE]:-} == "${APO_STATUS_LIVE[COMPATIBLE]:-}" &&
+           ${APO_HISTORY_LEDGER_META[ARCH]:-} == "${APO_STATUS_LIVE[ARCH]:-}" &&
+           ${APO_HISTORY_LEDGER_META[GPU_KEY]:-} == "${APO_STATUS_LIVE[GPU_KEY]:-}" &&
+           ${APO_HISTORY_LEDGER_META[BOOT_CONFIG]:-} == "${APO_STATUS_LIVE[BOOT_CONFIG]:-}" &&
+           ${APO_HISTORY_LEDGER_META[TRYBOOT_CONFIG]:-} == "${APO_STATUS_LIVE[TRYBOOT_CONFIG]:-}" &&
+           $APO_HISTORY_SEALED_CPU == "${APO_STATUS_LIVE[CONFIG_CPU]:-}" &&
+           $APO_HISTORY_SEALED_GPU == "${APO_STATUS_LIVE[CONFIG_GPU]:-}" &&
+           $APO_HISTORY_SEALED_VOLTAGE == "${APO_STATUS_LIVE[CONFIG_VOLTAGE]:-}" &&
+           $APO_HISTORY_SEALED_HASH == "${APO_STATUS_LIVE[PERMANENT_HASH]:-}" ]] || exit 1
+        printf '%s' "$APO_HISTORY_SEALED_RUN_ID"
+    ) || return 1
+    apo_is_safe_run_id "$sealed_run_id" || return 1
+    APO_STATUS_VALIDATED_RUN_ID=$sealed_run_id
 }
 
 apo_status_evaluate() {
