@@ -264,6 +264,8 @@ no_state_summary=$(apo_print_summary)
 grep -Fq 'No retained tuning run was found for this target.' <<< "$no_state_summary"
 APO_STATE=()
 for state_key in "${!SAVED_OBSERVER_STATE[@]}"; do
+    # The key indexes an associative array, not an arithmetic array.
+    # shellcheck disable=SC2004
     APO_STATE[$state_key]=${SAVED_OBSERVER_STATE[$state_key]}
 done
 APO_STATE_FILE=$saved_state_file
