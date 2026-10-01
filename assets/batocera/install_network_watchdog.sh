@@ -23,6 +23,7 @@ readonly PERMANENT_SERVICE=/userdata/system/services/${PERMANENT_SERVICE_NAME}
 readonly PERMANENT_PID_FILE=/run/autopioverclock-watchdog.pid
 readonly BATOCERA_CONFIG=/userdata/system/batocera.conf
 readonly BACKUP_ROOT=/userdata/system/autopioverclock/backups
+readonly INSTALL_RECEIPT_NAME=install.receipt
 readonly PING_TIMEOUT=2
 readonly DEVICE_TIMEOUT=15
 readonly FEED_INTERVAL=5
@@ -39,6 +40,7 @@ emit_result() {
     printf 'APO_RESULT_REASON_B64=%s\n' "$(b64 "$2")"
 }
 valid_hash() { [[ ${1-} =~ ^[0-9a-f]{64}$ ]]; }
+valid_old_hash() { [[ ${1-} == absent ]] || valid_hash "${1-}"; }
 safe_run_id() { [[ ${1-} =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; }
 regular_file() { [[ -f $1 && ! -L $1 ]]; }
 file_hash() { sha256sum "$1" 2>/dev/null | awk 'NR == 1 {print $1}'; }
@@ -353,12 +355,85 @@ backup_for_run() {
     printf '%s' "${matches[0]}"
 }
 
+install_receipt_text() {
+    local run_id=$1 config_hash=$2 keeper_hash=$3 service_hash=$4 batocera_old_hash=$5 batocera_new_hash=$6
+    local mode=$7 old_keeper_hash=$8 old_service_hash=$9 old_config_hash=${10} old_enabled=${11} old_active=${12}
+    printf 'FORMAT=1\nPROVIDER=batocera-network-companion\nRUN_ID=%s\nCONFIG_SHA256=%s\nKEEPER_SHA256=%s\nSERVICE_SHA256=%s\nBATOCERA_OLD_SHA256=%s\nBATOCERA_NEW_SHA256=%s\nHARDWARE_MODE=%s\nOLD_KEEPER_SHA256=%s\nOLD_SERVICE_SHA256=%s\nOLD_CONFIG_SHA256=%s\nOLD_SERVICE_ENABLED=%s\nOLD_SERVICE_ACTIVE=%s' \
+        "$run_id" "$config_hash" "$keeper_hash" "$service_hash" "$batocera_old_hash" "$batocera_new_hash" \
+        "$mode" "$old_keeper_hash" "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active"
+}
+
+write_install_receipt() {
+    local backup_dir=$1 expected=$2 receipt temporary actual
+    receipt=$backup_dir/$INSTALL_RECEIPT_NAME
+    if [[ -e $receipt || -L $receipt ]]; then
+        regular_file "$receipt" || return 1
+        actual=$(<"$receipt")
+        [[ $actual == "$expected" ]]
+        return
+    fi
+    temporary=$(mktemp "$backup_dir/${INSTALL_RECEIPT_NAME}.new.XXXXXX") || return 1
+    printf '%s\n' "$expected" >"$temporary" && chmod 600 "$temporary" && sync "$temporary" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+    [[ ! -e $receipt && ! -L $receipt ]] || { rm -f -- "$temporary"; return 1; }
+    mv -- "$temporary" "$receipt" && sync "$receipt" && sync "$backup_dir" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+}
+
+receipt_value() {
+    local receipt=$1 wanted=$2
+    awk -F= -v wanted="$wanted" '
+        $1 == wanted {value=substr($0, index($0, "=")+1); count++}
+        END {if (count == 1 && value != "") print value; else exit 1}
+    ' "$receipt"
+}
+
+load_install_receipt() {
+    local receipt=$1 run_id=$2 config_hash=$3 keeper_hash=$4 service_hash=$5
+    local format provider receipt_run receipt_config receipt_keeper receipt_service line_count
+    regular_file "$receipt" || return 1
+    line_count=$(awk 'END {print NR}' "$receipt")
+    [[ $line_count == 14 ]] || return 1
+    format=$(receipt_value "$receipt" FORMAT) || return 1
+    provider=$(receipt_value "$receipt" PROVIDER) || return 1
+    receipt_run=$(receipt_value "$receipt" RUN_ID) || return 1
+    receipt_config=$(receipt_value "$receipt" CONFIG_SHA256) || return 1
+    receipt_keeper=$(receipt_value "$receipt" KEEPER_SHA256) || return 1
+    receipt_service=$(receipt_value "$receipt" SERVICE_SHA256) || return 1
+    RECEIPT_BATOCERA_OLD_HASH=$(receipt_value "$receipt" BATOCERA_OLD_SHA256) || return 1
+    RECEIPT_BATOCERA_NEW_HASH=$(receipt_value "$receipt" BATOCERA_NEW_SHA256) || return 1
+    RECEIPT_HARDWARE_MODE=$(receipt_value "$receipt" HARDWARE_MODE) || return 1
+    RECEIPT_OLD_KEEPER_HASH=$(receipt_value "$receipt" OLD_KEEPER_SHA256) || return 1
+    RECEIPT_OLD_SERVICE_HASH=$(receipt_value "$receipt" OLD_SERVICE_SHA256) || return 1
+    RECEIPT_OLD_CONFIG_HASH=$(receipt_value "$receipt" OLD_CONFIG_SHA256) || return 1
+    RECEIPT_OLD_ENABLED=$(receipt_value "$receipt" OLD_SERVICE_ENABLED) || return 1
+    RECEIPT_OLD_ACTIVE=$(receipt_value "$receipt" OLD_SERVICE_ACTIVE) || return 1
+    [[ $format == 1 && $provider == batocera-network-companion && $receipt_run == "$run_id" &&
+       $receipt_config == "$config_hash" && $receipt_keeper == "$keeper_hash" &&
+       $receipt_service == "$service_hash" && $RECEIPT_BATOCERA_OLD_HASH =~ ^[0-9a-f]{64}$ &&
+       $RECEIPT_BATOCERA_NEW_HASH =~ ^[0-9a-f]{64}$ &&
+       ( $RECEIPT_HARDWARE_MODE == self || $RECEIPT_HARDWARE_MODE == external ) &&
+       ( $RECEIPT_OLD_ENABLED == 0 || $RECEIPT_OLD_ENABLED == 1 ) &&
+       ( $RECEIPT_OLD_ACTIVE == 0 || $RECEIPT_OLD_ACTIVE == 1 ) ]] || return 1
+    if [[ $RECEIPT_OLD_ENABLED == 0 ]]; then
+        [[ $RECEIPT_OLD_KEEPER_HASH == absent && $RECEIPT_OLD_SERVICE_HASH == absent &&
+           $RECEIPT_OLD_CONFIG_HASH == absent && $RECEIPT_OLD_ACTIVE == 0 ]]
+    else
+        valid_hash "$RECEIPT_OLD_KEEPER_HASH" && valid_hash "$RECEIPT_OLD_SERVICE_HASH" &&
+            valid_hash "$RECEIPT_OLD_CONFIG_HASH"
+    fi
+}
+
 cmd_apply() {
     local keeper_source=${1:-} service_source=${2:-} run_id=${3:-} target=${4:-}
     local keeper_hash=${5:-} service_hash=${6:-} config_hash=${7:-} batocera_old_hash=${8:-} batocera_new_hash=${9:-}
     local mode=${10:-} old_keeper_hash=${11:-} old_service_hash=${12:-} old_config_hash=${13:-}
     local old_service_enabled=${14:-} old_service_active=${15:-}
-    local plan_dir backup_dir='' backup_rc failure_reason='' device owner rollback_provider=''
+    local plan_dir backup_dir='' backup_rc failure_reason='' device owner rollback_provider='' receipt_text
     safe_run_id "$run_id" && valid_ipv4 "$target" && valid_hash "$keeper_hash" && valid_hash "$service_hash" &&
         valid_hash "$config_hash" && valid_hash "$batocera_old_hash" && valid_hash "$batocera_new_hash" &&
         [[ $mode == self || $mode == external ]] && [[ $old_service_enabled =~ ^[01]$ && $old_service_active =~ ^[01]$ ]] &&
@@ -396,6 +471,12 @@ cmd_apply() {
           $(file_hash "$BATOCERA_CONFIG" || true) == "$batocera_new_hash" ]]; then
         regular_file "$backup_dir/batocera.conf" && [[ $(file_hash "$backup_dir/batocera.conf" || true) == "$batocera_old_hash" ]] || failure_reason='The Batocera network-watchdog backup is invalid.'
         [[ -n $failure_reason ]] || grep -Fqx "RUN_ID=$run_id" "$LIVE_CONFIG" || failure_reason='The installed Batocera network-watchdog belongs to another run.'
+        if [[ -z $failure_reason ]]; then
+            receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$keeper_hash" "$service_hash" \
+                "$batocera_old_hash" "$batocera_new_hash" "$mode" "$old_keeper_hash" "$old_service_hash" \
+                "$old_config_hash" "$old_service_enabled" "$old_service_active")
+            write_install_receipt "$backup_dir" "$receipt_text" || failure_reason='Could not preserve the reconciled Batocera watchdog installation receipt.'
+        fi
         if [[ -z $failure_reason && $mode == self && -x $PERMANENT_SERVICE ]]; then
             "$PERMANENT_SERVICE" stop >/dev/null 2>&1 || failure_reason='Could not stop the permanent Batocera watchdog during companion reconciliation.'
         fi
@@ -446,6 +527,12 @@ cmd_apply() {
         [[ -n $failure_reason ]] || chmod 700 "$backup_dir" "$LIVE_ROOT" || failure_reason='Could not secure Batocera network-watchdog directories.'
         [[ -n $failure_reason ]] || cp -- "$BATOCERA_CONFIG" "$backup_dir/batocera.conf" || failure_reason='Could not back up batocera.conf.'
         [[ -n $failure_reason || $(file_hash "$backup_dir/batocera.conf" || true) == "$batocera_old_hash" ]] || failure_reason='The batocera.conf backup hash is wrong.'
+    fi
+    if [[ -z $failure_reason ]]; then
+        receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$keeper_hash" "$service_hash" \
+            "$batocera_old_hash" "$batocera_new_hash" "$mode" "$old_keeper_hash" "$old_service_hash" \
+            "$old_config_hash" "$old_service_enabled" "$old_service_active")
+        write_install_receipt "$backup_dir" "$receipt_text" || failure_reason='Could not preserve the Batocera watchdog installation receipt.'
     fi
     [[ -n $failure_reason ]] || render_batocera_config "$BATOCERA_CONFIG" "$plan_dir/batocera.conf" || failure_reason='Could not render batocera.conf.'
     [[ -n $failure_reason || $(file_hash "$plan_dir/batocera.conf" || true) == "$batocera_new_hash" ]] || failure_reason='Rendered batocera.conf no longer matches its plan.'
@@ -528,7 +615,7 @@ cmd_cleanup() {
     local old_service_enabled=${12:-} old_service_active=${13:-} failure_reason='' cleanup_marker
     local current_config_hash current_keeper_hash current_service_hash current_batocera_hash
     local archived_config_hash archived_keeper_hash archived_service_hash expected_marker actual_marker ownership_config companion_batocera_backup
-    local device owner permanent_restored=0
+    local device owner companion_pid='' permanent_restored=0
     safe_run_id "$run_id" && [[ $backup_dir == "$BACKUP_ROOT"/network-watchdog-[0-9]*-${run_id}.* ]] &&
         [[ -d $backup_dir && ! -L $backup_dir ]] && valid_hash "$config_hash" && valid_hash "$keeper_hash" &&
         valid_hash "$service_hash" && valid_hash "$batocera_old_hash" && valid_hash "$batocera_new_hash" &&
@@ -618,11 +705,27 @@ cmd_cleanup() {
         emit_result RECOVERY_FAILURE 'Batocera network-watchdog cleanup lost its run ownership marker.'
         return 1
     }
+    if [[ -z $failure_reason && $current_service_hash == "$service_hash" ]]; then
+        if [[ -r $PID_FILE ]]; then
+            companion_pid=$(sed -n '1p' "$PID_FILE" 2>/dev/null || true)
+            pid_command_matches "$companion_pid" "$LIVE_KEEPER" "$LIVE_CONFIG" || companion_pid=''
+        fi
+        "$LIVE_SERVICE" stop || failure_reason='Could not stop the run-owned Batocera network-watchdog service.'
+    fi
+    if [[ -z $failure_reason && -n $companion_pid ]] &&
+        pid_command_matches "$companion_pid" "$LIVE_KEEPER" "$LIVE_CONFIG"; then
+        failure_reason='The run-owned Batocera network-watchdog process remained active after its service stopped.'
+    fi
+    if [[ -z $failure_reason && $current_service_hash == "$service_hash" ]] && service_active "$mode"; then
+        failure_reason='The run-owned Batocera network-watchdog service remained active after its stop completed.'
+    fi
+    if [[ -z $failure_reason && $mode == self && $current_service_hash == "$service_hash" ]]; then
+        device=$(watchdog_device_path || true)
+        owner=$([[ -n $device ]] && watchdog_owner_pid "$device" || true)
+        [[ -n $device && -z $owner ]] || failure_reason='The run-owned Batocera watchdog did not release exclusive hardware ownership.'
+    fi
     if [[ -z $failure_reason && $(file_hash "$BATOCERA_CONFIG" || true) == "$batocera_new_hash" ]]; then
         atomic_replace "$backup_dir/batocera.conf" "$BATOCERA_CONFIG" "$batocera_new_hash" "$batocera_old_hash" 644 || failure_reason='Could not restore the original batocera.conf.'
-    fi
-    if [[ -z $failure_reason && $current_service_hash == "$service_hash" ]]; then
-        "$LIVE_SERVICE" stop || failure_reason='Could not stop the run-owned Batocera network-watchdog service.'
     fi
     if [[ -z $failure_reason && $mode == self && $old_service_enabled == 1 ]]; then
         if permanent_service_active; then
@@ -674,6 +777,66 @@ cmd_cleanup() {
     emit_result PASS 'Run-owned Batocera network-watchdog companion removed; native hardware-watchdog state and durable evidence were retained.'
 }
 
+cmd_cleanup_owned() {
+    local run_id=${1:-} backup_dir=${2:-} config_hash=${3:-} keeper_hash=${4:-} service_hash=${5:-}
+    local receipt
+    local batocera_old_hash batocera_new_hash mode old_keeper_hash old_service_hash old_config_hash old_enabled old_active
+    receipt=$backup_dir/$INSTALL_RECEIPT_NAME
+    safe_run_id "$run_id" && [[ $backup_dir == "$BACKUP_ROOT"/network-watchdog-[0-9]*-${run_id}.* ]] &&
+        [[ -d $backup_dir && ! -L $backup_dir ]] && valid_hash "$config_hash" &&
+        valid_hash "$keeper_hash" && valid_hash "$service_hash" || {
+        emit_result RECOVERY_FAILURE 'Discovered Batocera network-watchdog cleanup evidence is malformed.'
+        return 1
+    }
+    [[ $(path_hash "$LIVE_CONFIG") == "$config_hash" && $(path_hash "$LIVE_KEEPER") == "$keeper_hash" &&
+       $(path_hash "$LIVE_SERVICE") == "$service_hash" ]] && grep -Fqx "RUN_ID=$run_id" "$LIVE_CONFIG" || {
+        emit_result RECOVERY_FAILURE 'Discovered Batocera network-watchdog ownership no longer matches the live files.'
+        return 1
+    }
+    if [[ -e $receipt || -L $receipt ]]; then
+        load_install_receipt "$receipt" "$run_id" "$config_hash" "$keeper_hash" "$service_hash" || {
+            emit_result RECOVERY_FAILURE 'The Batocera watchdog installation receipt is missing fields or does not match the live provider.'
+            return 1
+        }
+        batocera_old_hash=$RECEIPT_BATOCERA_OLD_HASH
+        batocera_new_hash=$RECEIPT_BATOCERA_NEW_HASH
+        mode=$RECEIPT_HARDWARE_MODE
+        old_keeper_hash=$RECEIPT_OLD_KEEPER_HASH
+        old_service_hash=$RECEIPT_OLD_SERVICE_HASH
+        old_config_hash=$RECEIPT_OLD_CONFIG_HASH
+        old_enabled=$RECEIPT_OLD_ENABLED
+        old_active=$RECEIPT_OLD_ACTIVE
+    else
+        regular_file "$backup_dir/batocera.conf" || {
+            emit_result RECOVERY_FAILURE 'The state-independent Batocera cleanup lacks its original service-registration backup.'
+            return 1
+        }
+        if service_registered "$backup_dir/batocera.conf" "$PERMANENT_SERVICE_NAME"; then
+            emit_result RECOVERY_FAILURE 'The state-independent Batocera cleanup requires an installation receipt to restore the permanent watchdog activation state.'
+            return 1
+        fi
+        batocera_old_hash=$(file_hash "$backup_dir/batocera.conf" || true)
+        batocera_new_hash=$(file_hash "$BATOCERA_CONFIG" || true)
+        valid_hash "$batocera_old_hash" && valid_hash "$batocera_new_hash" || {
+            emit_result RECOVERY_FAILURE 'The state-independent Batocera service-registration hashes are invalid.'
+            return 1
+        }
+        if config_value "$LIVE_CONFIG" DEVICE_TIMEOUT_SECONDS >/dev/null 2>&1; then mode=self; else mode=external; fi
+        old_keeper_hash=absent
+        old_service_hash=absent
+        old_config_hash=absent
+        old_enabled=0
+        old_active=0
+    fi
+    if [[ $mode == self && $old_enabled != 1 ]]; then
+        emit_result RECOVERY_FAILURE 'Reset will not remove the sole Batocera hardware-watchdog owner without a verified permanent watchdog to restore.'
+        return 1
+    fi
+    cmd_cleanup "$run_id" "$backup_dir" "$config_hash" "$keeper_hash" "$service_hash" \
+        "$batocera_old_hash" "$batocera_new_hash" "$mode" "$old_keeper_hash" "$old_service_hash" \
+        "$old_config_hash" "$old_enabled" "$old_active"
+}
+
 main() {
     local action=${1:-}
     shift || true
@@ -681,8 +844,9 @@ main() {
         plan) [[ $# == 4 ]] || return 2; cmd_plan "$@" ;;
         apply) [[ $# == 15 ]] || return 2; cmd_apply "$@" ;;
         cleanup) [[ $# == 13 ]] || return 2; cmd_cleanup "$@" ;;
+        cleanup-owned) [[ $# == 5 ]] || return 2; cmd_cleanup_owned "$@" ;;
         *) emit_result PREFLIGHT_FAILURE 'Unknown Batocera network-watchdog installer command.'; return 2 ;;
     esac
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

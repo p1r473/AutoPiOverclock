@@ -416,6 +416,57 @@ apo_profile_cleanup_run_watchdog() {
     apo_event network-watchdog-cleanup PASS '' 'Removed only the run-owned Batocera network-watchdog companion and retained native watchdogs and durable evidence.'
 }
 
+apo_profile_cleanup_discovered_watchdog() {
+    local kind=${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-}
+    local installing_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+    local backup=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-}
+    local config_hash=${APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]:-}
+    local keeper_hash=${APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]:-}
+    local service_hash=${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]:-}
+    local protected_hash=${APO_DISCOVERY[PERMANENT_HASH]:-}
+    local installer=${APO_ROOT}/assets/batocera/install_network_watchdog.sh
+    local remote_installer=${APO_REMOTE_WORK_DIR}/reset-network-watchdog-cleanup.sh
+    [[ -n $installing_run ]] || return 0
+    [[ $kind == batocera-network-companion ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON="Reset found a run-owned Batocera watchdog provider with an unsupported kind: ${kind:-missing}."
+        return 1
+    }
+    [[ $installing_run =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && -n $backup &&
+       $config_hash =~ ^[0-9a-f]{64}$ && $keeper_hash =~ ^[0-9a-f]{64}$ &&
+       $service_hash =~ ^[0-9a-f]{64}$ && $protected_hash =~ ^[0-9a-f]{64}$ ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Reset found incomplete target-side Batocera watchdog ownership evidence.'
+        return 1
+    }
+    apo_remote_upload_root "$installer" "$remote_installer" || return 1
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS CLEANING
+    apo_state_save
+    apo_run_worker_capture reset-network-watchdog-cleanup cleanup-owned-network-watchdog-companion \
+        "$remote_installer" "$installing_run" "$backup" "$config_hash" "$keeper_hash" "$service_hash" || return 1
+    apo_discovery_capture || return 1
+    [[ ${APO_DISCOVERY[PROFILE]:-} == batocera && ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" &&
+       -z ${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-} &&
+       -z ${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-} &&
+       ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-} != batocera-network-companion ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Reset removed the Batocera companion, but post-cleanup discovery did not preserve the permanent config and watchdog ownership boundary.'
+        return 1
+    }
+    apo_profile_watchdogs_ready || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Reset removed the Batocera companion, but the permanent or external hardware watchdog was not healthy afterward.'
+        return 1
+    }
+    apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_KIND "$kind"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS REMOVED
+    apo_state_save
+    apo_event reset-network-watchdog-cleanup PASS '' \
+        "Removed the AutoPiOverclock-owned Batocera companion from run $installing_run and verified the permanent or external hardware watchdog remained healthy."
+}
+
 apo_profile_repair_watchdogs() {
     local expected="PREPARE-WATCHDOGS ${APO_TARGET_SLUG}" old_boot_id new_boot_id
     local local_asset_dir="${APO_ROOT}/assets/batocera" remote_asset_dir="${APO_REMOTE_WORK_DIR}/watchdog-assets"

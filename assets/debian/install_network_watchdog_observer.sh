@@ -12,6 +12,7 @@ readonly SERVICE_NAME=autopioverclock-network-watchdog-observer.service
 readonly NATIVE_SERVICE=watchdog.service
 readonly BACKUP_ROOT=/var/lib/autopioverclock/backups
 readonly PING_TIMEOUT=2
+readonly INSTALL_RECEIPT_NAME=install.receipt
 
 NATIVE_CONFIG=''
 NATIVE_BINARY=''
@@ -296,6 +297,68 @@ write_cleanup_marker() {
     }
 }
 
+install_receipt_text() {
+    local run_id=$1 config_hash=$2 observer_hash=$3 service_hash=$4
+    local old_observer_hash=$5 old_service_hash=$6 old_config_hash=$7 old_enabled=$8 old_active=$9
+    printf 'FORMAT=1\nPROVIDER=debian-watchdog-observer\nRUN_ID=%s\nCONFIG_SHA256=%s\nOBSERVER_SHA256=%s\nSERVICE_SHA256=%s\nOLD_OBSERVER_SHA256=%s\nOLD_SERVICE_SHA256=%s\nOLD_CONFIG_SHA256=%s\nOLD_SERVICE_ENABLED=%s\nOLD_SERVICE_ACTIVE=%s' \
+        "$run_id" "$config_hash" "$observer_hash" "$service_hash" "$old_observer_hash" \
+        "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active"
+}
+
+write_install_receipt() {
+    local backup_dir=$1 expected=$2 receipt temporary actual
+    receipt=$backup_dir/$INSTALL_RECEIPT_NAME
+    if [[ -e $receipt || -L $receipt ]]; then
+        regular_file "$receipt" || return 1
+        actual=$(<"$receipt")
+        [[ $actual == "$expected" ]]
+        return
+    fi
+    temporary=$(mktemp "$backup_dir/${INSTALL_RECEIPT_NAME}.new.XXXXXX") || return 1
+    printf '%s\n' "$expected" >"$temporary" && chmod 600 "$temporary" && sync "$temporary" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+    [[ ! -e $receipt && ! -L $receipt ]] || { rm -f -- "$temporary"; return 1; }
+    mv -- "$temporary" "$receipt" && sync "$receipt" && sync "$backup_dir" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+}
+
+receipt_value() {
+    local receipt=$1 wanted=$2
+    awk -F= -v wanted="$wanted" '
+        $1 == wanted {value=substr($0, index($0, "=")+1); count++}
+        END {if (count == 1 && value != "") print value; else exit 1}
+    ' "$receipt"
+}
+
+load_install_receipt() {
+    local receipt=$1 run_id=$2 config_hash=$3 observer_hash=$4 service_hash=$5
+    local format provider receipt_run receipt_config receipt_observer receipt_service line_count
+    regular_file "$receipt" || return 1
+    line_count=$(awk 'END {print NR}' "$receipt")
+    [[ $line_count == 11 ]] || return 1
+    format=$(receipt_value "$receipt" FORMAT) || return 1
+    provider=$(receipt_value "$receipt" PROVIDER) || return 1
+    receipt_run=$(receipt_value "$receipt" RUN_ID) || return 1
+    receipt_config=$(receipt_value "$receipt" CONFIG_SHA256) || return 1
+    receipt_observer=$(receipt_value "$receipt" OBSERVER_SHA256) || return 1
+    receipt_service=$(receipt_value "$receipt" SERVICE_SHA256) || return 1
+    RECEIPT_OLD_KEEPER_HASH=$(receipt_value "$receipt" OLD_OBSERVER_SHA256) || return 1
+    RECEIPT_OLD_SERVICE_HASH=$(receipt_value "$receipt" OLD_SERVICE_SHA256) || return 1
+    RECEIPT_OLD_CONFIG_HASH=$(receipt_value "$receipt" OLD_CONFIG_SHA256) || return 1
+    RECEIPT_OLD_ENABLED=$(receipt_value "$receipt" OLD_SERVICE_ENABLED) || return 1
+    RECEIPT_OLD_ACTIVE=$(receipt_value "$receipt" OLD_SERVICE_ACTIVE) || return 1
+    [[ $format == 1 && $provider == debian-watchdog-observer && $receipt_run == "$run_id" &&
+       $receipt_config == "$config_hash" && $receipt_observer == "$observer_hash" &&
+       $receipt_service == "$service_hash" ]] || return 1
+    valid_old_hash "$RECEIPT_OLD_KEEPER_HASH" && valid_old_hash "$RECEIPT_OLD_SERVICE_HASH" &&
+        valid_old_hash "$RECEIPT_OLD_CONFIG_HASH" && valid_bit "$RECEIPT_OLD_ENABLED" &&
+        valid_bit "$RECEIPT_OLD_ACTIVE"
+}
+
 backup_for_run() {
     local run_id=$1 candidate
     local -a matches=()
@@ -315,7 +378,7 @@ cmd_apply() {
     local observer_hash=${5:-} service_hash=${6:-} config_hash=${7:-}
     local old_observer_hash=${8:-} old_service_hash=${9:-} old_config_hash=${10:-}
     local old_enabled=${11:-} old_active=${12:-} temporary_config backup_dir='' backup_rc
-    local current_observer_hash current_service_hash current_config_hash failure_reason=''
+    local current_observer_hash current_service_hash current_config_hash failure_reason='' receipt_text
     preflight "$observer_source" "$service_source" "$run_id" || {
         emit_result PREFLIGHT_FAILURE 'Debian watchdog observer apply preflight failed.'
         return 1
@@ -361,6 +424,11 @@ cmd_apply() {
           $current_service_hash == "$service_hash" && $current_config_hash == "$config_hash" ]]; then
         [[ -n $backup_dir ]] || failure_reason='Installed watchdog-observer files exist without their run backup.'
         [[ -n $failure_reason ]] || grep -Fqx "INSTALL_RUN_ID=$run_id" "$LIVE_CONFIG" || failure_reason='Installed watchdog-observer ownership does not match this run.'
+        if [[ -z $failure_reason ]]; then
+            receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$observer_hash" "$service_hash" \
+                "$old_observer_hash" "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active")
+            write_install_receipt "$backup_dir" "$receipt_text" || failure_reason='Could not preserve the reconciled watchdog observer installation receipt.'
+        fi
         [[ -n $failure_reason ]] || systemctl daemon-reload || failure_reason='systemd daemon-reload failed during watchdog-observer reconciliation.'
         [[ -n $failure_reason ]] || systemctl enable "$SERVICE_NAME" || failure_reason='Could not enable the reconciled watchdog observer.'
         [[ -n $failure_reason ]] || systemctl restart "$SERVICE_NAME" || failure_reason='Could not restart the reconciled watchdog observer.'
@@ -397,6 +465,11 @@ cmd_apply() {
         [[ -n $failure_reason ]] || backup_path "$LIVE_OBSERVER" "$backup_dir/observer.py" "$old_observer_hash" || failure_reason='Could not verify the observer backup boundary.'
         [[ -n $failure_reason ]] || backup_path "$LIVE_SERVICE" "$backup_dir/service" "$old_service_hash" || failure_reason='Could not verify the observer-service backup boundary.'
         [[ -n $failure_reason ]] || backup_path "$LIVE_CONFIG" "$backup_dir/observer.conf" "$old_config_hash" || failure_reason='Could not verify the observer-config backup boundary.'
+    fi
+    if [[ -z $failure_reason ]]; then
+        receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$observer_hash" "$service_hash" \
+            "$old_observer_hash" "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active")
+        write_install_receipt "$backup_dir" "$receipt_text" || failure_reason='Could not preserve the watchdog observer installation receipt.'
     fi
     [[ -n $failure_reason ]] || atomic_install "$temporary_config" "$LIVE_CONFIG" 600 "$config_hash" "$old_config_hash" || failure_reason='Could not install the watchdog observer config.'
     [[ -n $failure_reason ]] || atomic_install "$observer_source" "$LIVE_OBSERVER" 755 "$observer_hash" "$old_observer_hash" || failure_reason='Could not install the watchdog observer.'
@@ -491,6 +564,9 @@ cmd_cleanup() {
     }
     if [[ $current_service_hash == "$service_hash" ]]; then
         systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || failure_reason='Could not stop the run-owned watchdog observer.'
+        if [[ -z $failure_reason ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            failure_reason='The run-owned watchdog observer remained active after its stop request.'
+        fi
     fi
     [[ -n $failure_reason ]] || restore_path "$backup_dir/observer.py" "$LIVE_OBSERVER" "$old_observer_hash" "$observer_hash" 755 || failure_reason='Could not restore the prior observer path.'
     [[ -n $failure_reason ]] || restore_path "$backup_dir/service" "$LIVE_SERVICE" "$old_service_hash" "$service_hash" 644 || failure_reason='Could not restore the prior observer service path.'
@@ -498,11 +574,64 @@ cmd_cleanup() {
     [[ -n $failure_reason ]] || systemctl daemon-reload || failure_reason='systemd daemon-reload failed after observer cleanup.'
     if [[ -z $failure_reason && $old_enabled == 1 ]]; then systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || failure_reason='Could not restore the prior observer enablement.'; fi
     if [[ -z $failure_reason && $old_active == 1 ]]; then systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || failure_reason='Could not restore the prior observer activation.'; fi
+    if [[ -z $failure_reason && $old_enabled == 1 ]] && ! systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The prior observer enablement was not restored.'; fi
+    if [[ -z $failure_reason && $old_enabled == 0 ]] && systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The removed observer remained enabled.'; fi
+    if [[ -z $failure_reason && $old_active == 1 ]] && ! systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The prior observer activation was not restored.'; fi
+    if [[ -z $failure_reason && $old_active == 0 ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The removed observer remained active.'; fi
     if [[ -n $failure_reason ]]; then
         emit_result RECOVERY_FAILURE "$failure_reason"
         return 1
     fi
     emit_result PASS 'Run-owned Debian watchdog observer removed; native watchdog configuration and evidence were retained.'
+}
+
+cmd_cleanup_owned() {
+    local run_id=${1:-} backup_dir=${2:-} config_hash=${3:-} observer_hash=${4:-} service_hash=${5:-}
+    local receipt
+    local old_observer_hash old_service_hash old_config_hash old_enabled old_active
+    receipt=$backup_dir/$INSTALL_RECEIPT_NAME
+    safe_run_id "$run_id" && [[ $backup_dir == "$BACKUP_ROOT"/network-watchdog-observer-[0-9]*-${run_id}.* ]] &&
+        [[ -d $backup_dir && ! -L $backup_dir ]] && valid_hash "$config_hash" &&
+        valid_hash "$observer_hash" && valid_hash "$service_hash" || {
+        emit_result RECOVERY_FAILURE 'Discovered Debian watchdog observer cleanup evidence is malformed.'
+        return 1
+    }
+    [[ $(path_hash "$LIVE_CONFIG") == "$config_hash" && $(path_hash "$LIVE_OBSERVER") == "$observer_hash" &&
+       $(path_hash "$LIVE_SERVICE") == "$service_hash" ]] && grep -Fqx "INSTALL_RUN_ID=$run_id" "$LIVE_CONFIG" || {
+        emit_result RECOVERY_FAILURE 'Discovered Debian watchdog observer ownership no longer matches the live files.'
+        return 1
+    }
+    if [[ -e $receipt || -L $receipt ]]; then
+        load_install_receipt "$receipt" "$run_id" "$config_hash" "$observer_hash" "$service_hash" || {
+            emit_result RECOVERY_FAILURE 'The Debian watchdog observer installation receipt is missing fields or does not match the live provider.'
+            return 1
+        }
+        old_observer_hash=$RECEIPT_OLD_KEEPER_HASH
+        old_service_hash=$RECEIPT_OLD_SERVICE_HASH
+        old_config_hash=$RECEIPT_OLD_CONFIG_HASH
+        old_enabled=$RECEIPT_OLD_ENABLED
+        old_active=$RECEIPT_OLD_ACTIVE
+    else
+        for receipt in "$backup_dir/observer.py.absent" "$backup_dir/service.absent" "$backup_dir/observer.conf.absent"; do
+            [[ -f $receipt && ! -L $receipt && ! -s $receipt ]] || {
+                emit_result RECOVERY_FAILURE 'The state-independent observer cleanup lacks a complete installation receipt or an exact absent-path backup.'
+                return 1
+            }
+        done
+        [[ ! -e $backup_dir/observer.py && ! -L $backup_dir/observer.py &&
+           ! -e $backup_dir/service && ! -L $backup_dir/service &&
+           ! -e $backup_dir/observer.conf && ! -L $backup_dir/observer.conf ]] || {
+            emit_result RECOVERY_FAILURE 'The absent-path observer backup conflicts with retained prior file content.'
+            return 1
+        }
+        old_observer_hash=absent
+        old_service_hash=absent
+        old_config_hash=absent
+        old_enabled=0
+        old_active=0
+    fi
+    cmd_cleanup "$run_id" "$backup_dir" "$config_hash" "$observer_hash" "$service_hash" \
+        "$old_observer_hash" "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active"
 }
 
 main() {
@@ -512,6 +641,7 @@ main() {
         plan) cmd_plan "$@" ;;
         apply) cmd_apply "$@" ;;
         cleanup) cmd_cleanup "$@" ;;
+        cleanup-owned) cmd_cleanup_owned "$@" ;;
         *) emit_result PREFLIGHT_FAILURE 'Unknown Debian watchdog observer installer command.'; return 2 ;;
     esac
 }

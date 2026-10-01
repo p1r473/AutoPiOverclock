@@ -337,6 +337,9 @@ done
         [TRYBOOT_HASH]=unavailable
         [ROOT_SOURCE]=/dev/mmcblk0p2
         [BOOT_SOURCE]=/dev/mmcblk0p1
+        [NETWORK_WATCHDOG_KIND]=debian-watchdog-observer
+        [NETWORK_WATCHDOG_INSTALL_RUN_ID]=older-fixture-run
+        [NETWORK_WATCHDOG_INSTALL_BACKUP]=/var/lib/autopioverclock/backups/network-watchdog-observer-fixture
     )
     declare -Ag APO_WORKER_DATA=()
     declare -ag RESET_ACTIONS=() RESET_EVENTS=()
@@ -366,6 +369,21 @@ done
     apo_deploy_worker() { RESET_ACTIONS+=(deploy-worker); }
     apo_discovery_capture() { RESET_ACTIONS+=(discovery); }
     apo_validate_pi5() { RESET_ACTIONS+=(validate-pi5); }
+    apo_profile_cleanup_discovered_watchdog() {
+        RESET_ACTIONS+=(cleanup-discovered-watchdog)
+        APO_DISCOVERY[NETWORK_WATCHDOG_KIND]=''
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]=''
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]=''
+    }
+    apo_profile_watchdogs_ready() { RESET_ACTIONS+=(watchdog-ready); }
+    apo_profile_watchdog_description() { printf fixture-watchdog-ready; }
+    action_index() {
+        local wanted=$1 index
+        for index in "${!RESET_ACTIONS[@]}"; do
+            [[ ${RESET_ACTIONS[$index]} == "$wanted" ]] && { printf "%s" "$index"; return 0; }
+        done
+        return 1
+    }
     apo_remote_boot_id() { printf boot-before; }
     apo_post_reboot_handshake() { [[ $1 == boot-before && $2 == 30 && $3 == stock-reset ]]; RESET_ACTIONS+=(post-reboot-handshake); APO_REBOOT_BOOT_ID=boot-after; APO_REBOOT_HANDSHAKE_STAGE='complete'; }
     apo_remote_worker() { RESET_ACTIONS+=("remote-worker:$2"); return 0; }
@@ -407,6 +425,12 @@ done
     [[ ${APO_STATE[RESET_OLD_HASH]} == "$RESET_OLD_HASH_FIXTURE" && ${APO_STATE[RESET_NEW_HASH]} == "$RESET_NEW_HASH_FIXTURE" ]] || fail 'reset fixture did not bind old/new hashes'
     [[ ${APO_STATE[NORMAL_CPU]} == 2400 && ${APO_STATE[NORMAL_GPU]} == 960 && ${APO_STATE[NORMAL_VOLTAGE]} == 0 ]] || fail 'reset fixture retained stale pre-reset clocks'
     [[ " ${RESET_ACTIONS[*]} " == *' worker:reset-stock '* ]] || fail 'reset fixture skipped reset-stock'
+    [[ " ${RESET_ACTIONS[*]} " == *' cleanup-discovered-watchdog '* ]] || fail 'reset fixture skipped the discovered run-owned watchdog cleanup'
+    CLEANUP_INDEX=$(action_index cleanup-discovered-watchdog) || fail 'reset did not record the watchdog cleanup ordering point'
+    WATCHDOG_INDEX=$(action_index watchdog-ready) || fail 'reset did not record the watchdog readiness ordering point'
+    RESET_WORKER_INDEX=$(action_index worker:reset-stock) || fail 'reset did not record the permanent-config mutation ordering point'
+    (( CLEANUP_INDEX < RESET_WORKER_INDEX )) || fail 'reset mutated the permanent config before cleaning the discovered run-owned watchdog'
+    (( WATCHDOG_INDEX < RESET_WORKER_INDEX )) || fail 'reset mutated the permanent config before proving the hardware watchdog ready'
     [[ " ${RESET_ACTIONS[*]} " == *' remote-worker:reboot-stock-reset '* ]] || fail 'reset fixture skipped permanent reboot'
     [[ " ${RESET_ACTIONS[*]} " == *' post-reboot-handshake '* ]] || fail 'reset fixture skipped post-reboot worker restoration'
     [[ ${APO_STATE[LAST_BOOT_ID]} == boot-after && ${APO_STATE[NORMAL_BOOT_ID]} == boot-after ]] || fail 'reset fixture skipped changed-boot proof'
@@ -418,6 +442,101 @@ done
     [[ ${FINAL_RESET_EVENT,,} == *preserv* && ${FINAL_RESET_EVENT,,} == *log* && ${FINAL_RESET_EVENT,,} == *saved*run* ]] ||
         fail 'reset PASS event did not state that logs/saved runs were preserved'
 )
+
+# A temporary-watchdog cleanup failure must stop reset before any permanent
+# clock mutation. A stock/permanent watchdog has no installation run ID and is
+# therefore a strict no-op in this cleanup phase.
+CLEANUP_FAILURE_AUDIT="$TEST_ROOT/reset-watchdog-cleanup-failure"
+set +e
+APO_ROOT="$ROOT" CLEANUP_FAILURE_AUDIT="$CLEANUP_FAILURE_AUDIT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/lib/reset.sh"
+    declare -Ag APO_STATE=() APO_DISCOVERY=(
+        [NETWORK_WATCHDOG_INSTALL_RUN_ID]=older-run
+    )
+    APO_EXIT_RECOVERY=24
+    APO_LAST_REASON=
+    apo_state_set() { APO_STATE[$1]=${2-}; }
+    apo_state_save() { printf "state:%s\n" "${APO_STATE[RESET_STATUS]:-}" >> "$CLEANUP_FAILURE_AUDIT"; }
+    apo_event() { printf "event:%s\n" "$1" >> "$CLEANUP_FAILURE_AUDIT"; }
+    apo_profile_cleanup_discovered_watchdog() {
+        printf "cleanup\n" >> "$CLEANUP_FAILURE_AUDIT"
+        APO_LAST_REASON="fixture ownership mismatch"
+        return 1
+    }
+    apo_die() {
+        printf "die:%s\n" "$1" >> "$CLEANUP_FAILURE_AUDIT"
+        exit "$2"
+    }
+    apo_reset_cleanup_owned_watchdog
+    printf "clock-mutation\n" >> "$CLEANUP_FAILURE_AUDIT"
+' >/dev/null 2>&1
+CLEANUP_FAILURE_RC=$?
+set -e
+(( CLEANUP_FAILURE_RC == 24 )) || fail 'watchdog cleanup failure returned the wrong reset status'
+grep -Fqx cleanup "$CLEANUP_FAILURE_AUDIT" || fail 'watchdog cleanup failure fixture did not attempt cleanup'
+grep -Fq 'No clock reset was attempted.' "$CLEANUP_FAILURE_AUDIT" || fail 'watchdog cleanup failure did not report the clock-mutation boundary'
+if grep -Fqx clock-mutation "$CLEANUP_FAILURE_AUDIT"; then
+    fail 'reset continued to a clock mutation after watchdog cleanup failed'
+fi
+
+APO_ROOT="$ROOT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/lib/reset.sh"
+    declare -Ag APO_DISCOVERY=([NETWORK_WATCHDOG_INSTALL_RUN_ID]="")
+    apo_profile_cleanup_discovered_watchdog() { exit 91; }
+    apo_reset_cleanup_owned_watchdog
+' || fail 'reset attempted to remove a stock or permanent watchdog without a run-owned provider'
+
+MISSING_OWNER_AUDIT="$TEST_ROOT/reset-watchdog-missing-owner"
+set +e
+APO_ROOT="$ROOT" MISSING_OWNER_AUDIT="$MISSING_OWNER_AUDIT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/lib/reset.sh"
+    declare -Ag APO_DISCOVERY=(
+        [NETWORK_WATCHDOG_KIND]=debian-watchdog-observer
+        [NETWORK_WATCHDOG_INSTALL_RUN_ID]=""
+    )
+    APO_EXIT_RECOVERY=24
+    apo_die() {
+        printf "%s\n" "$1" > "$MISSING_OWNER_AUDIT"
+        exit "$2"
+    }
+    apo_profile_cleanup_discovered_watchdog() { exit 91; }
+    apo_reset_cleanup_owned_watchdog
+    printf "clock-mutation\n" >> "$MISSING_OWNER_AUDIT"
+' >/dev/null 2>&1
+MISSING_OWNER_RC=$?
+set -e
+(( MISSING_OWNER_RC == 24 )) || fail 'temporary watchdog without an installing run ID returned the wrong reset status'
+grep -Fq 'without its installing run ID' "$MISSING_OWNER_AUDIT" || fail 'temporary watchdog without an installing run ID did not fail closed'
+if grep -Fqx clock-mutation "$MISSING_OWNER_AUDIT"; then
+    fail 'reset continued after finding a temporary watchdog without an installing run ID'
+fi
+
+WATCHDOG_NOT_READY_AUDIT="$TEST_ROOT/reset-watchdog-not-ready"
+set +e
+APO_ROOT="$ROOT" WATCHDOG_NOT_READY_AUDIT="$WATCHDOG_NOT_READY_AUDIT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/lib/reset.sh"
+    APO_EXIT_RECOVERY=24
+    apo_profile_watchdogs_ready() { return 1; }
+    apo_profile_watchdog_description() { printf fixture-not-ready; }
+    apo_die() {
+        printf "%s\n" "$1" > "$WATCHDOG_NOT_READY_AUDIT"
+        exit "$2"
+    }
+    apo_reset_verify_watchdog_ready
+    printf "clock-mutation\n" >> "$WATCHDOG_NOT_READY_AUDIT"
+' >/dev/null 2>&1
+WATCHDOG_NOT_READY_RC=$?
+set -e
+(( WATCHDOG_NOT_READY_RC == 24 )) || fail 'unready stock watchdog returned the wrong reset status'
+grep -Fq 'fixture-not-ready' "$WATCHDOG_NOT_READY_AUDIT" || fail 'unready stock watchdog did not report its profile state'
+grep -Fq 'No clock reset was attempted.' "$WATCHDOG_NOT_READY_AUDIT" || fail 'unready stock watchdog did not report the clock-mutation boundary'
+if grep -Fqx clock-mutation "$WATCHDOG_NOT_READY_AUDIT"; then
+    fail 'reset continued after the stock hardware watchdog failed its pre-mutation proof'
+fi
 
 # Public prepare reuses the same protected reset transaction when a first-time
 # target has explicit permanent tuning. Clean stock and completed-ledger

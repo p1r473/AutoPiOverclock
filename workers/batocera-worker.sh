@@ -3715,6 +3715,15 @@ cmd_cleanup_network_watchdog_companion() {
     "$installer" cleanup "${@:2}"
 }
 
+cmd_cleanup_owned_network_watchdog_companion() {
+    local installer=${1:-}
+    batocera_network_companion_installer_ready "$installer" || {
+        emit_result RECOVERY_FAILURE 'The uploaded Batocera state-independent watchdog cleanup installer is missing or unsafe.'
+        return 1
+    }
+    "$installer" cleanup-owned "${@:2}"
+}
+
 cmd_prove_network_watchdog_reboot() {
     local expected_old_boot=${1:-} expected_new_boot=${2:-} expected_target=${3:-}
     local expected_config_hash=${4:-} expected_keeper_hash=${5:-} expected_service_hash=${6:-}
@@ -3928,6 +3937,7 @@ main() {
         plan-network-watchdog-companion) cmd_plan_network_watchdog_companion "$@" ;;
         install-network-watchdog-companion) run_with_mutation_lock "network-watchdog-companion-${4:-}" PREFLIGHT_FAILURE cmd_install_network_watchdog_companion "$@" ;;
         cleanup-network-watchdog-companion) run_with_mutation_lock "network-watchdog-companion-cleanup-${2:-}" RECOVERY_FAILURE cmd_cleanup_network_watchdog_companion "$@" ;;
+        cleanup-owned-network-watchdog-companion) run_with_mutation_lock "network-watchdog-companion-cleanup-${2:-}" RECOVERY_FAILURE cmd_cleanup_owned_network_watchdog_companion "$@" ;;
         prove-network-watchdog-reboot) cmd_prove_network_watchdog_reboot "$@" ;;
         classify-kernel-log) cmd_classify_kernel_log "$@" ;;
         *) emit_result HARNESS_FAILURE "Unknown worker command: $command_name"; return 2 ;;

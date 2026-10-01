@@ -11,6 +11,7 @@ readonly LIVE_SERVICE=/etc/systemd/system/autopioverclock-network-watchdog.servi
 readonly SERVICE_NAME=autopioverclock-network-watchdog.service
 readonly BACKUP_ROOT=/var/lib/autopioverclock/backups
 readonly PING_TIMEOUT=2
+readonly INSTALL_RECEIPT_NAME=install.receipt
 readonly CHECK_INTERVAL=10
 readonly STARTUP_GRACE=180
 readonly FAILURE_WINDOW=180
@@ -239,6 +240,68 @@ write_cleanup_marker() {
     }
 }
 
+install_receipt_text() {
+    local run_id=$1 config_hash=$2 keeper_hash=$3 service_hash=$4
+    local old_keeper_hash=$5 old_service_hash=$6 old_config_hash=$7 old_enabled=$8 old_active=$9
+    printf 'FORMAT=1\nPROVIDER=debian-systemd-companion\nRUN_ID=%s\nCONFIG_SHA256=%s\nKEEPER_SHA256=%s\nSERVICE_SHA256=%s\nOLD_KEEPER_SHA256=%s\nOLD_SERVICE_SHA256=%s\nOLD_CONFIG_SHA256=%s\nOLD_SERVICE_ENABLED=%s\nOLD_SERVICE_ACTIVE=%s' \
+        "$run_id" "$config_hash" "$keeper_hash" "$service_hash" "$old_keeper_hash" \
+        "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active"
+}
+
+write_install_receipt() {
+    local backup_dir=$1 expected=$2 receipt temporary actual
+    receipt=$backup_dir/$INSTALL_RECEIPT_NAME
+    if [[ -e $receipt || -L $receipt ]]; then
+        regular_file "$receipt" || return 1
+        actual=$(<"$receipt")
+        [[ $actual == "$expected" ]]
+        return
+    fi
+    temporary=$(mktemp "$backup_dir/${INSTALL_RECEIPT_NAME}.new.XXXXXX") || return 1
+    printf '%s\n' "$expected" >"$temporary" && chmod 600 "$temporary" && sync "$temporary" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+    [[ ! -e $receipt && ! -L $receipt ]] || { rm -f -- "$temporary"; return 1; }
+    mv -- "$temporary" "$receipt" && sync "$receipt" && sync "$backup_dir" || {
+        rm -f -- "$temporary"
+        return 1
+    }
+}
+
+receipt_value() {
+    local receipt=$1 wanted=$2
+    awk -F= -v wanted="$wanted" '
+        $1 == wanted {value=substr($0, index($0, "=")+1); count++}
+        END {if (count == 1 && value != "") print value; else exit 1}
+    ' "$receipt"
+}
+
+load_install_receipt() {
+    local receipt=$1 run_id=$2 config_hash=$3 keeper_hash=$4 service_hash=$5
+    local format provider receipt_run receipt_config receipt_keeper receipt_service line_count
+    regular_file "$receipt" || return 1
+    line_count=$(awk 'END {print NR}' "$receipt")
+    [[ $line_count == 11 ]] || return 1
+    format=$(receipt_value "$receipt" FORMAT) || return 1
+    provider=$(receipt_value "$receipt" PROVIDER) || return 1
+    receipt_run=$(receipt_value "$receipt" RUN_ID) || return 1
+    receipt_config=$(receipt_value "$receipt" CONFIG_SHA256) || return 1
+    receipt_keeper=$(receipt_value "$receipt" KEEPER_SHA256) || return 1
+    receipt_service=$(receipt_value "$receipt" SERVICE_SHA256) || return 1
+    RECEIPT_OLD_KEEPER_HASH=$(receipt_value "$receipt" OLD_KEEPER_SHA256) || return 1
+    RECEIPT_OLD_SERVICE_HASH=$(receipt_value "$receipt" OLD_SERVICE_SHA256) || return 1
+    RECEIPT_OLD_CONFIG_HASH=$(receipt_value "$receipt" OLD_CONFIG_SHA256) || return 1
+    RECEIPT_OLD_ENABLED=$(receipt_value "$receipt" OLD_SERVICE_ENABLED) || return 1
+    RECEIPT_OLD_ACTIVE=$(receipt_value "$receipt" OLD_SERVICE_ACTIVE) || return 1
+    [[ $format == 1 && $provider == debian-systemd-companion && $receipt_run == "$run_id" &&
+       $receipt_config == "$config_hash" && $receipt_keeper == "$keeper_hash" &&
+       $receipt_service == "$service_hash" ]] || return 1
+    valid_old_hash "$RECEIPT_OLD_KEEPER_HASH" && valid_old_hash "$RECEIPT_OLD_SERVICE_HASH" &&
+        valid_old_hash "$RECEIPT_OLD_CONFIG_HASH" && valid_bit "$RECEIPT_OLD_ENABLED" &&
+        valid_bit "$RECEIPT_OLD_ACTIVE"
+}
+
 backup_for_run() {
     local run_id=$1 candidate
     local -a matches=()
@@ -258,7 +321,7 @@ cmd_apply() {
     local keeper_hash=${5:-} service_hash=${6:-} config_hash=${7:-}
     local old_keeper_hash=${8:-} old_service_hash=${9:-} old_config_hash=${10:-}
     local old_enabled=${11:-} old_active=${12:-}
-    local temporary_config backup_dir='' backup_rc current_keeper_hash current_service_hash current_config_hash failure_reason=''
+    local temporary_config backup_dir='' backup_rc current_keeper_hash current_service_hash current_config_hash failure_reason='' receipt_text
     preflight "$keeper_source" "$service_source" "$run_id" || {
         emit_result PREFLIGHT_FAILURE 'Debian network-watchdog apply preflight failed.'
         return 1
@@ -305,6 +368,11 @@ cmd_apply() {
           $current_service_hash == "$service_hash" && $current_config_hash == "$config_hash" ]]; then
         [[ -n $backup_dir ]] || failure_reason='Installed network-watchdog files exist without their run backup.'
         [[ -n $failure_reason ]] || grep -Fqx "RUN_ID=$run_id" "$LIVE_CONFIG" || failure_reason='Installed network-watchdog ownership does not match this run.'
+        if [[ -z $failure_reason ]]; then
+            receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$keeper_hash" "$service_hash" \
+                "$old_keeper_hash" "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active")
+            write_install_receipt "$backup_dir" "$receipt_text" || failure_reason='Could not preserve the reconciled network-watchdog installation receipt.'
+        fi
         [[ -n $failure_reason ]] || systemctl daemon-reload || failure_reason='systemd daemon-reload failed during network-watchdog reconciliation.'
         [[ -n $failure_reason ]] || systemctl enable "$SERVICE_NAME" || failure_reason='Could not enable the reconciled network-watchdog service.'
         [[ -n $failure_reason ]] || systemctl restart "$SERVICE_NAME" || failure_reason='Could not restart the reconciled network-watchdog service.'
@@ -339,6 +407,11 @@ cmd_apply() {
         [[ -n $failure_reason ]] || backup_path "$LIVE_KEEPER" "$backup_dir/keeper.py" "$old_keeper_hash" || failure_reason='Could not verify the keeper backup boundary.'
         [[ -n $failure_reason ]] || backup_path "$LIVE_SERVICE" "$backup_dir/service" "$old_service_hash" || failure_reason='Could not verify the service backup boundary.'
         [[ -n $failure_reason ]] || backup_path "$LIVE_CONFIG" "$backup_dir/watchdog.conf" "$old_config_hash" || failure_reason='Could not verify the config backup boundary.'
+    fi
+    if [[ -z $failure_reason ]]; then
+        receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$keeper_hash" "$service_hash" \
+            "$old_keeper_hash" "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active")
+        write_install_receipt "$backup_dir" "$receipt_text" || failure_reason='Could not preserve the network-watchdog installation receipt.'
     fi
     [[ -n $failure_reason ]] || atomic_install "$temporary_config" "$LIVE_CONFIG" 600 "$config_hash" "$old_config_hash" || failure_reason='Could not install the network-watchdog config.'
     [[ -n $failure_reason ]] || atomic_install "$keeper_source" "$LIVE_KEEPER" 755 "$keeper_hash" "$old_keeper_hash" || failure_reason='Could not install the network-watchdog keeper.'
@@ -431,6 +504,9 @@ cmd_cleanup() {
     }
     if [[ $current_service_hash == "$service_hash" ]]; then
         systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || failure_reason='Could not stop the run-owned network watchdog.'
+        if [[ -z $failure_reason ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            failure_reason='The run-owned network watchdog remained active after its stop request.'
+        fi
     fi
     [[ -n $failure_reason ]] || restore_path "$backup_dir/keeper.py" "$LIVE_KEEPER" "$old_keeper_hash" "$keeper_hash" 755 || failure_reason='Could not restore the prior keeper path.'
     [[ -n $failure_reason ]] || restore_path "$backup_dir/service" "$LIVE_SERVICE" "$old_service_hash" "$service_hash" 644 || failure_reason='Could not restore the prior service path.'
@@ -438,11 +514,64 @@ cmd_cleanup() {
     [[ -n $failure_reason ]] || systemctl daemon-reload || failure_reason='systemd daemon-reload failed after network-watchdog cleanup.'
     if [[ -z $failure_reason && $old_enabled == 1 ]]; then systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || failure_reason='Could not restore prior service enablement.'; fi
     if [[ -z $failure_reason && $old_active == 1 ]]; then systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || failure_reason='Could not restore prior service activation.'; fi
+    if [[ -z $failure_reason && $old_enabled == 1 ]] && ! systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The prior network-watchdog enablement was not restored.'; fi
+    if [[ -z $failure_reason && $old_enabled == 0 ]] && systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The removed network watchdog remained enabled.'; fi
+    if [[ -z $failure_reason && $old_active == 1 ]] && ! systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The prior network-watchdog activation was not restored.'; fi
+    if [[ -z $failure_reason && $old_active == 0 ]] && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then failure_reason='The removed network watchdog remained active.'; fi
     if [[ -n $failure_reason ]]; then
         emit_result RECOVERY_FAILURE "$failure_reason"
         return 1
     fi
     emit_result PASS 'Run-owned Debian network-watchdog companion removed; durable evidence was retained.'
+}
+
+cmd_cleanup_owned() {
+    local run_id=${1:-} backup_dir=${2:-} config_hash=${3:-} keeper_hash=${4:-} service_hash=${5:-}
+    local receipt
+    local old_keeper_hash old_service_hash old_config_hash old_enabled old_active
+    receipt=$backup_dir/$INSTALL_RECEIPT_NAME
+    safe_run_id "$run_id" && [[ $backup_dir == "$BACKUP_ROOT"/network-watchdog-[0-9]*-${run_id}.* ]] &&
+        [[ -d $backup_dir && ! -L $backup_dir ]] && valid_hash "$config_hash" &&
+        valid_hash "$keeper_hash" && valid_hash "$service_hash" || {
+        emit_result RECOVERY_FAILURE 'Discovered Debian network-watchdog cleanup evidence is malformed.'
+        return 1
+    }
+    [[ $(path_hash "$LIVE_CONFIG") == "$config_hash" && $(path_hash "$LIVE_KEEPER") == "$keeper_hash" &&
+       $(path_hash "$LIVE_SERVICE") == "$service_hash" ]] && grep -Fqx "RUN_ID=$run_id" "$LIVE_CONFIG" || {
+        emit_result RECOVERY_FAILURE 'Discovered Debian network-watchdog ownership no longer matches the live files.'
+        return 1
+    }
+    if [[ -e $receipt || -L $receipt ]]; then
+        load_install_receipt "$receipt" "$run_id" "$config_hash" "$keeper_hash" "$service_hash" || {
+            emit_result RECOVERY_FAILURE 'The Debian network-watchdog installation receipt is missing fields or does not match the live provider.'
+            return 1
+        }
+        old_keeper_hash=$RECEIPT_OLD_KEEPER_HASH
+        old_service_hash=$RECEIPT_OLD_SERVICE_HASH
+        old_config_hash=$RECEIPT_OLD_CONFIG_HASH
+        old_enabled=$RECEIPT_OLD_ENABLED
+        old_active=$RECEIPT_OLD_ACTIVE
+    else
+        for receipt in "$backup_dir/keeper.py.absent" "$backup_dir/service.absent" "$backup_dir/watchdog.conf.absent"; do
+            [[ -f $receipt && ! -L $receipt && ! -s $receipt ]] || {
+                emit_result RECOVERY_FAILURE 'The state-independent watchdog cleanup lacks a complete installation receipt or an exact absent-path backup.'
+                return 1
+            }
+        done
+        [[ ! -e $backup_dir/keeper.py && ! -L $backup_dir/keeper.py &&
+           ! -e $backup_dir/service && ! -L $backup_dir/service &&
+           ! -e $backup_dir/watchdog.conf && ! -L $backup_dir/watchdog.conf ]] || {
+            emit_result RECOVERY_FAILURE 'The absent-path watchdog backup conflicts with retained prior file content.'
+            return 1
+        }
+        old_keeper_hash=absent
+        old_service_hash=absent
+        old_config_hash=absent
+        old_enabled=0
+        old_active=0
+    fi
+    cmd_cleanup "$run_id" "$backup_dir" "$config_hash" "$keeper_hash" "$service_hash" \
+        "$old_keeper_hash" "$old_service_hash" "$old_config_hash" "$old_enabled" "$old_active"
 }
 
 main() {
@@ -452,6 +581,7 @@ main() {
         plan) cmd_plan "$@" ;;
         apply) cmd_apply "$@" ;;
         cleanup) cmd_cleanup "$@" ;;
+        cleanup-owned) cmd_cleanup_owned "$@" ;;
         *) emit_result PREFLIGHT_FAILURE 'Unknown Debian network-watchdog installer command.'; return 2 ;;
     esac
 }

@@ -755,6 +755,193 @@ PROFILE="$ROOT/profiles/debian.sh" DETECT="$ROOT/lib/detect.sh" REPO_ROOT="$ROOT
     [[ $APO_LAST_CLASS == PREFLIGHT_FAILURE ]]
 '
 
+# Reset cleanup must leave permanent watchdogs alone, remove only a strictly
+# identified temporary provider, and verify that the permanent/native watchdog
+# state survived before the stock-clock transaction may begin.
+PROFILE="$ROOT/profiles/debian.sh" REPO_ROOT="$ROOT" bash -c '
+    set -Eeuo pipefail
+    APO_ROOT=$REPO_ROOT
+    APO_RUN_ID=reset-fixture
+    HASH_A=$(printf "a%.0s" {1..64})
+    HASH_B=$(printf "b%.0s" {1..64})
+    HASH_C=$(printf "c%.0s" {1..64})
+    HASH_D=$(printf "d%.0s" {1..64})
+    declare -A APO_DISCOVERY=() TEST_STATE=()
+    source "$PROFILE"
+
+    apo_state_set() { TEST_STATE[$1]=${2-}; }
+    apo_state_save() { :; }
+    apo_event() { LAST_EVENT="$1|$2|${4-}"; }
+    apo_remote_upload_root() {
+        [[ -r $1 && $2 == /tmp/autopioverclock-reset-fixture/reset-network-watchdog-*cleanup.sh ]]
+        CALLS+=" upload"
+    }
+    apo_run_worker_capture() {
+        [[ $1 == reset-network-watchdog-cleanup && $2 == cleanup-owned-network-watchdog &&
+           $4 == older-run && $5 == /fixture/backup && $6 == "$HASH_B" &&
+           $7 == "$HASH_C" && $8 == "$HASH_D" ]]
+        CALLS+=" cleanup"
+    }
+    apo_discovery_capture() {
+        CALLS+=" discover"
+        APO_DISCOVERY[NETWORK_WATCHDOG_KIND]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]=0
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]=
+        if [[ ${DRIFT_NATIVE:-0} == 1 ]]; then APO_DISCOVERY[KERNEL_WATCHDOG_TIMEOUT]=61; fi
+    }
+    set_fixture() {
+        local kind=${1-} install_run=${2-}
+        CALLS=
+        LAST_EVENT=
+        DRIFT_NATIVE=0
+        TEST_STATE=()
+        APO_LAST_CLASS=
+        APO_LAST_REASON=
+        APO_DISCOVERY=(
+            [PROFILE]=debian
+            [PERMANENT_HASH]=$HASH_A
+            [BOOT_WATCHDOG_TIMEOUT]=30
+            [KERNEL_WATCHDOG_TIMEOUT]=60
+            [RUNTIME_WATCHDOG]=1min
+            [WATCHDOG_DEVICE]=/dev/watchdog0
+            [WATCHDOG_RUNTIME_TIMEOUT]=60
+            [WATCHDOG_OWNER]="pid=1;comm=systemd;fd=10"
+            [NATIVE_NETWORK_WATCHDOG_PRESENT]=0
+            [NATIVE_NETWORK_WATCHDOG_READY]=0
+            [NATIVE_NETWORK_WATCHDOG_TARGET]=
+            [NATIVE_WATCHDOG_SERVICE_ACTIVE]=0
+            [NATIVE_WATCHDOG_CONFIG_INSPECTED]=1
+            [NETWORK_WATCHDOG_KIND]=$kind
+            [NETWORK_WATCHDOG_TARGET]=192.0.2.1
+            [NETWORK_WATCHDOG_CONFIG_HASH]=$HASH_B
+            [NETWORK_WATCHDOG_KEEPER_HASH]=$HASH_C
+            [NETWORK_WATCHDOG_SERVICE_HASH]=$HASH_D
+            [NETWORK_WATCHDOG_SERVICE_ACTIVE]=1
+            [NETWORK_WATCHDOG_INSTALL_RUN_ID]=$install_run
+            [NETWORK_WATCHDOG_INSTALL_BACKUP]=/fixture/backup
+        )
+        if [[ $kind == debian-watchdog-observer ]]; then
+            APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_PRESENT]=1
+            APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_READY]=1
+            APO_DISCOVERY[NATIVE_NETWORK_WATCHDOG_TARGET]=192.0.2.1
+            APO_DISCOVERY[NATIVE_WATCHDOG_SERVICE_ACTIVE]=1
+        fi
+    }
+
+    set_fixture "" ""
+    apo_profile_cleanup_discovered_watchdog
+    [[ -z $CALLS ]]
+
+    for kind in debian-watchdog-observer debian-systemd-companion; do
+        set_fixture "$kind" older-run
+        apo_profile_cleanup_discovered_watchdog
+        [[ $CALLS == " upload cleanup discover" ]]
+        [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_STATUS]} == REMOVED ]]
+        [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_KIND]} == "$kind" ]]
+        [[ $LAST_EVENT == reset-network-watchdog-cleanup\|PASS\|* ]]
+        [[ ${APO_DISCOVERY[PERMANENT_HASH]} == "$HASH_A" ]]
+        [[ ${APO_DISCOVERY[WATCHDOG_OWNER]} == "pid=1;comm=systemd;fd=10" ]]
+    done
+
+    set_fixture debian-watchdog-observer older-run
+    DRIFT_NATIVE=1
+    if apo_profile_cleanup_discovered_watchdog; then
+        printf "Debian reset cleanup accepted native watchdog drift\n" >&2
+        exit 1
+    fi
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE && $APO_LAST_REASON == *"native watchdog state exactly"* ]]
+'
+
+PROFILE="$ROOT/profiles/batocera.sh" REPO_ROOT="$ROOT" bash -c '
+    set -Eeuo pipefail
+    APO_ROOT=$REPO_ROOT
+    APO_RUN_ID=reset-fixture
+    HASH_A=$(printf "a%.0s" {1..64})
+    HASH_B=$(printf "b%.0s" {1..64})
+    HASH_C=$(printf "c%.0s" {1..64})
+    HASH_D=$(printf "d%.0s" {1..64})
+    declare -A APO_DISCOVERY=() TEST_STATE=()
+    source "$PROFILE"
+
+    apo_is_uint() { [[ ${1-} =~ ^[0-9]+$ ]]; }
+    apo_state_set() { TEST_STATE[$1]=${2-}; }
+    apo_state_save() { :; }
+    apo_event() { LAST_EVENT="$1|$2|${4-}"; }
+    apo_remote_upload_root() {
+        [[ $1 == "$REPO_ROOT/assets/batocera/install_network_watchdog.sh" &&
+           $2 == /userdata/system/autopioverclock/runs/reset-fixture/reset-network-watchdog-cleanup.sh ]]
+        CALLS+=" upload"
+    }
+    apo_run_worker_capture() {
+        [[ $1 == reset-network-watchdog-cleanup && $2 == cleanup-owned-network-watchdog-companion &&
+           $4 == older-run && $5 == /fixture/backup && $6 == "$HASH_B" &&
+           $7 == "$HASH_C" && $8 == "$HASH_D" ]]
+        CALLS+=" cleanup"
+    }
+    apo_discovery_capture() {
+        CALLS+=" discover"
+        APO_DISCOVERY[NETWORK_WATCHDOG_KIND]=$POST_KIND
+        APO_DISCOVERY[NETWORK_WATCHDOG_TARGET]=${POST_TARGET:-}
+        APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_ACTIVE]=${POST_ACTIVE:-0}
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]=
+        APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]=
+    }
+    set_fixture() {
+        local kind=$1 install_run=${2-}
+        CALLS=
+        LAST_EVENT=
+        TEST_STATE=()
+        APO_LAST_CLASS=
+        APO_LAST_REASON=
+        POST_KIND=batocera-hardware-keeper
+        POST_TARGET=192.0.2.1
+        POST_ACTIVE=1
+        APO_DISCOVERY=(
+            [PROFILE]=batocera
+            [PERMANENT_HASH]=$HASH_A
+            [BOOT_WATCHDOG_TIMEOUT]=30
+            [KERNEL_WATCHDOG_TIMEOUT]=180
+            [WATCHDOG_DEVICE]=/dev/watchdog0
+            [WATCHDOG_RUNTIME_TIMEOUT]=15
+            [WATCHDOG_OWNER]="pid=2350;comm=python3;fd=3"
+            [NETWORK_WATCHDOG_KIND]=$kind
+            [NETWORK_WATCHDOG_TARGET]=192.0.2.1
+            [NETWORK_WATCHDOG_CONFIG_HASH]=$HASH_B
+            [NETWORK_WATCHDOG_KEEPER_HASH]=$HASH_C
+            [NETWORK_WATCHDOG_SERVICE_HASH]=$HASH_D
+            [NETWORK_WATCHDOG_SERVICE_ACTIVE]=1
+            [NETWORK_WATCHDOG_INSTALL_RUN_ID]=$install_run
+            [NETWORK_WATCHDOG_INSTALL_BACKUP]=/fixture/backup
+        )
+    }
+
+    set_fixture batocera-hardware-keeper ""
+    apo_profile_cleanup_discovered_watchdog
+    [[ -z $CALLS ]]
+
+    set_fixture batocera-network-companion older-run
+    apo_profile_cleanup_discovered_watchdog
+    [[ $CALLS == " upload cleanup discover" ]]
+    [[ ${TEST_STATE[NETWORK_WATCHDOG_INSTALL_STATUS]} == REMOVED ]]
+    [[ $LAST_EVENT == reset-network-watchdog-cleanup\|PASS\|* ]]
+    [[ ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]} == batocera-hardware-keeper ]]
+
+    set_fixture batocera-network-companion older-run
+    POST_KIND=
+    POST_TARGET=
+    POST_ACTIVE=0
+    APO_DISCOVERY[WATCHDOG_OWNER]="pid=99;comm=external-watchdog;fd=4"
+    apo_profile_cleanup_discovered_watchdog
+    [[ $CALLS == " upload cleanup discover" ]]
+    [[ -z ${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]} ]]
+    [[ ${APO_DISCOVERY[WATCHDOG_OWNER]} == "pid=99;comm=external-watchdog;fd=4" ]]
+'
+
 # Reboot proof owns one bounded retry loop. Each attempt must use the ordinary
 # worker capture path so a structured nonzero result remains available for
 # classification, and retry notices must not look like additional failures.
@@ -1491,10 +1678,11 @@ APO_CLI_LIBRARY_ONLY=1 APO_ROOT="$ROOT" bash -c '
 '
 
 for INSTALLER_SPEC in \
-    'install_network_watchdog_observer.sh OBSERVER_SHA256' \
-    'install_network_watchdog.sh KEEPER_SHA256'; do
-    read -r INSTALLER_NAME COMPONENT_KEY <<<"$INSTALLER_SPEC"
+    'install_network_watchdog_observer.sh OBSERVER_SHA256 OLD_OBSERVER_SHA256 debian-watchdog-observer' \
+    'install_network_watchdog.sh KEEPER_SHA256 OLD_KEEPER_SHA256 debian-systemd-companion'; do
+    read -r INSTALLER_NAME COMPONENT_KEY OLD_COMPONENT_KEY PROVIDER <<<"$INSTALLER_SPEC"
     INSTALLER="$ROOT/assets/debian/$INSTALLER_NAME" COMPONENT_KEY="$COMPONENT_KEY" \
+        OLD_COMPONENT_KEY="$OLD_COMPONENT_KEY" PROVIDER="$PROVIDER" \
         MARKER_ROOT="$TEMP_DIR/marker-$INSTALLER_NAME" bash -c '
         set -Eeuo pipefail
         source "$INSTALLER"
@@ -1531,8 +1719,73 @@ for INSTALLER_SPEC in \
             exit 1
         fi
         [[ -f $marker ]]
+
+        receipt_dir=$MARKER_ROOT/receipt
+        mkdir -p "$receipt_dir"
+        old_service_hash=$(printf "e%.0s" {1..64})
+        old_config_hash=$(printf "f%.0s" {1..64})
+        receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$new_component_hash" "$service_hash" \
+            absent "$old_service_hash" "$old_config_hash" 1 0)
+        write_install_receipt "$receipt_dir" "$receipt_text"
+        receipt=$receipt_dir/install.receipt
+        [[ -f $receipt && ! -L $receipt && $(<"$receipt") == "$receipt_text" ]]
+        load_install_receipt "$receipt" "$run_id" "$config_hash" "$new_component_hash" "$service_hash"
+        [[ $RECEIPT_OLD_KEEPER_HASH == absent && $RECEIPT_OLD_SERVICE_HASH == "$old_service_hash" &&
+           $RECEIPT_OLD_CONFIG_HASH == "$old_config_hash" && $RECEIPT_OLD_ENABLED == 1 &&
+           $RECEIPT_OLD_ACTIVE == 0 ]]
+        sed -i "s/^PROVIDER=$PROVIDER$/PROVIDER=foreign/" "$receipt"
+        if load_install_receipt "$receipt" "$run_id" "$config_hash" "$new_component_hash" "$service_hash"; then
+            printf "tampered install receipt was accepted by %s\n" "$INSTALLER_NAME" >&2
+            exit 1
+        fi
     '
 done
+
+INSTALLER="$ROOT/assets/batocera/install_network_watchdog.sh" \
+    RECEIPT_ROOT="$TEMP_DIR/batocera-install-receipt" bash -c '
+    set -Eeuo pipefail
+    source "$INSTALLER"
+    mkdir -p "$RECEIPT_ROOT"
+    run_id=batocera-receipt-fixture
+    config_hash=$(printf "a%.0s" {1..64})
+    keeper_hash=$(printf "b%.0s" {1..64})
+    service_hash=$(printf "c%.0s" {1..64})
+    batocera_old_hash=$(printf "d%.0s" {1..64})
+    batocera_new_hash=$(printf "e%.0s" {1..64})
+    old_keeper_hash=$(printf "f%.0s" {1..64})
+    old_service_hash=$(printf "1%.0s" {1..64})
+    old_config_hash=$(printf "2%.0s" {1..64})
+    receipt_text=$(install_receipt_text "$run_id" "$config_hash" "$keeper_hash" "$service_hash" \
+        "$batocera_old_hash" "$batocera_new_hash" self "$old_keeper_hash" "$old_service_hash" \
+        "$old_config_hash" 1 1)
+    write_install_receipt "$RECEIPT_ROOT" "$receipt_text"
+    receipt=$RECEIPT_ROOT/install.receipt
+    [[ -f $receipt && ! -L $receipt && $(<"$receipt") == "$receipt_text" ]]
+    load_install_receipt "$receipt" "$run_id" "$config_hash" "$keeper_hash" "$service_hash"
+    [[ $RECEIPT_BATOCERA_OLD_HASH == "$batocera_old_hash" &&
+       $RECEIPT_BATOCERA_NEW_HASH == "$batocera_new_hash" &&
+       $RECEIPT_HARDWARE_MODE == self && $RECEIPT_OLD_KEEPER_HASH == "$old_keeper_hash" &&
+       $RECEIPT_OLD_SERVICE_HASH == "$old_service_hash" &&
+       $RECEIPT_OLD_CONFIG_HASH == "$old_config_hash" &&
+       $RECEIPT_OLD_ENABLED == 1 && $RECEIPT_OLD_ACTIVE == 1 ]]
+    sed -i "s/^PROVIDER=batocera-network-companion$/PROVIDER=foreign/" "$receipt"
+    if load_install_receipt "$receipt" "$run_id" "$config_hash" "$keeper_hash" "$service_hash"; then
+        printf "tampered Batocera install receipt was accepted\n" >&2
+        exit 1
+    fi
+'
+
+grep -q 'cleanup-owned-network-watchdog)' "$ROOT/workers/debian-worker.sh"
+grep -q 'cleanup-owned-network-watchdog-companion)' "$ROOT/workers/batocera-worker.sh"
+grep -q 'apo_profile_cleanup_discovered_watchdog' "$ROOT/profiles/debian.sh"
+grep -q 'apo_profile_cleanup_discovered_watchdog' "$ROOT/profiles/batocera.sh"
+grep -q 'apo_reset_cleanup_owned_watchdog' "$ROOT/lib/reset.sh"
+grep -q 'Reset will not remove the sole Batocera hardware-watchdog owner' "$ROOT/assets/batocera/install_network_watchdog.sh"
+BATOCERA_CLEANUP_STOP_LINE=$(awk '/^cmd_cleanup\(\)/ {inside=1} inside && /"\$LIVE_SERVICE" stop/ {print NR; exit}' "$ROOT/assets/batocera/install_network_watchdog.sh")
+BATOCERA_CONFIG_RESTORE_LINE=$(awk '/^cmd_cleanup\(\)/ {inside=1} inside && /atomic_replace "\$backup_dir\/batocera[.]conf"/ {print NR; exit}' "$ROOT/assets/batocera/install_network_watchdog.sh")
+[[ $BATOCERA_CLEANUP_STOP_LINE =~ ^[0-9]+$ && $BATOCERA_CONFIG_RESTORE_LINE =~ ^[0-9]+$ &&
+   $BATOCERA_CLEANUP_STOP_LINE -lt $BATOCERA_CONFIG_RESTORE_LINE ]]
+grep -q 'network-watchdog process remained active after its service stopped' "$ROOT/assets/batocera/install_network_watchdog.sh"
 
 grep -q 'WATCHDOG_RUNTIME_TIMEOUT' "$ROOT/lib/detect.sh"
 grep -q 'NETWORK_WATCHDOG_SERVICE_ACTIVE' "$ROOT/lib/detect.sh"

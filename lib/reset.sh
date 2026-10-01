@@ -44,6 +44,41 @@ apo_reset_store_discovery() {
     apo_state_save
 }
 
+apo_reset_cleanup_owned_watchdog() {
+    local kind=${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-}
+    local installing_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+    case $kind in
+        debian-watchdog-observer|debian-systemd-companion|batocera-network-companion)
+            [[ -n $installing_run ]] || {
+                apo_die "Reset found the temporary watchdog provider $kind without its installing run ID. No clock reset was attempted." "$APO_EXIT_RECOVERY"
+            }
+            ;;
+    esac
+    [[ -n $installing_run ]] || return 0
+    declare -F apo_profile_cleanup_discovered_watchdog >/dev/null 2>&1 || {
+        apo_die "Reset found an AutoPiOverclock-owned watchdog provider from run $installing_run, but this target profile cannot remove it from target-side ownership evidence." "$APO_EXIT_RECOVERY"
+    }
+    apo_state_set RESET_STATUS CLEANING_WATCHDOG
+    apo_state_set SUBPHASE CLEANING_RUN_WATCHDOG
+    apo_state_set MUTATIONS_STARTED 1
+    apo_state_save
+    apo_event reset-network-watchdog-cleanup INFO '' \
+        "Removing the strictly verified AutoPiOverclock-owned watchdog provider from run $installing_run before stock reset."
+    if ! apo_profile_cleanup_discovered_watchdog; then
+        apo_die "Reset could not safely remove the AutoPiOverclock-owned watchdog provider from run $installing_run: ${APO_LAST_REASON:-unknown cleanup failure}. No clock reset was attempted." "$APO_EXIT_RECOVERY"
+    fi
+    apo_reset_store_discovery
+}
+
+apo_reset_verify_watchdog_ready() {
+    declare -F apo_profile_watchdogs_ready >/dev/null 2>&1 || {
+        apo_die 'Reset cannot verify the target hardware-watchdog recovery chain for this profile. No clock reset was attempted.' "$APO_EXIT_RECOVERY"
+    }
+    apo_profile_watchdogs_ready || {
+        apo_die "Reset requires the existing hardware-watchdog recovery chain to be healthy before changing clocks. $(apo_profile_watchdog_description 2>/dev/null || true) No clock reset was attempted." "$APO_EXIT_RECOVERY"
+    }
+}
+
 apo_reset_validation_fail() {
     local failure_reason=$1 failure_class=$2 exit_code=$3 prepare_backup=''
     if [[ ${APO_AUTO_PREPARE:-0} == 1 ]]; then
@@ -242,6 +277,8 @@ apo_reset_stock() {
         apo_die 'Profile probe and reset discovery disagree.' "$APO_EXIT_PREFLIGHT"
     apo_validate_pi5
     apo_reset_store_discovery
+    apo_reset_cleanup_owned_watchdog
+    apo_reset_verify_watchdog_ready
     discovered_hash=$APO_PERMANENT_CONFIG_HASH
     old_boot_id=$(apo_remote_boot_id || true)
     [[ -n $old_boot_id ]] || apo_die 'Could not record the pre-reset boot ID.' "$APO_EXIT_PREFLIGHT"

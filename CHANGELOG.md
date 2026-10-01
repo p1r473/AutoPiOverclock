@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.105 - 2026-10-01
+
+- Made explicit `reset TARGET` remove a strictly verified run-owned network-watchdog observer or temporary companion before changing the permanent clock configuration, even when its original controller run state is gone.
+- Added durable installation receipts for Debian observers, Debian fallback companions, and Batocera temporary companions so cleanup can restore exact prior files and service activation state. Existing target ownership hashes, backup boundaries, and resumable cleanup markers remain mandatory.
+- Preserved native Debian watchdog configuration, repair commands, service state, device ownership, and timeouts exactly. Permanent Batocera watchdogs remain untouched, and a temporary Batocera hardware owner is stopped and proved inactive before configuration restoration, then removed only when a verified permanent or external hardware watchdog remains healthy.
+- Added regression coverage for Debian native and fallback paths, Batocera permanent and temporary paths, native-state drift, tampered receipts, cleanup ordering, and cleanup failure before clock mutation.
+
 ## 0.1.0-alpha.104 - 2026-10-01
 
 - Added active Debian graphical GPU validation through a transient Cage session on a dedicated virtual terminal. Each bounded segment renders fullscreen on the saved connector and mode, proves the hardware V3D renderer, requires a positive glmark2 score and machine-readable success result, and restores the previously active terminal.

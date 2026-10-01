@@ -3533,6 +3533,20 @@ cmd_cleanup_network_watchdog() {
     "$installer" cleanup "${@:2}"
 }
 
+cmd_cleanup_owned_network_watchdog() {
+    local installer=${1:-} run_id=${2:-} marker
+    if [[ $installer == *observer* ]]; then
+        marker='AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER'
+    else
+        marker='AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG'
+    fi
+    debian_network_watchdog_installer_ready "$installer" "$run_id" "$marker" || {
+        emit_result RECOVERY_FAILURE 'The uploaded Debian state-independent watchdog cleanup installer is missing or unsafe.'
+        return 1
+    }
+    "$installer" cleanup-owned "${@:2}"
+}
+
 cmd_prove_network_watchdog_reboot() {
     local expected_old_boot=${1:-} expected_new_boot=${2:-} expected_target=${3:-}
     local expected_config_hash=${4:-} expected_keeper_hash=${5:-} expected_service_hash=${6:-}
@@ -3728,6 +3742,7 @@ main() {
         plan-network-watchdog-observer) cmd_plan_network_watchdog_observer "$@" ;;
         install-network-watchdog-observer) run_with_mutation_lock "network-watchdog-observer-${4:-}" PREFLIGHT_FAILURE cmd_install_network_watchdog_observer "$@" ;;
         cleanup-network-watchdog) run_with_mutation_lock "network-watchdog-cleanup-${2:-}" RECOVERY_FAILURE cmd_cleanup_network_watchdog "$@" ;;
+        cleanup-owned-network-watchdog) run_with_mutation_lock "network-watchdog-cleanup-${2:-}" RECOVERY_FAILURE cmd_cleanup_owned_network_watchdog "$@" ;;
         prove-network-watchdog-reboot) cmd_prove_network_watchdog_reboot "$@" ;;
         classify-kernel-log) cmd_classify_kernel_log "$@" ;;
         *) emit_result HARNESS_FAILURE "Unknown worker command: $command_name"; return 2 ;;

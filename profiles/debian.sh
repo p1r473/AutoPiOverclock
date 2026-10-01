@@ -653,4 +653,68 @@ apo_profile_cleanup_run_watchdog() {
     apo_event network-watchdog-cleanup PASS '' 'Removed only the run-owned Debian watchdog proof component and retained native watchdogs and durable evidence.'
 }
 
+apo_profile_cleanup_discovered_watchdog() {
+    local kind=${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-}
+    local installing_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
+    local backup=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-}
+    local config_hash=${APO_DISCOVERY[NETWORK_WATCHDOG_CONFIG_HASH]:-}
+    local keeper_hash=${APO_DISCOVERY[NETWORK_WATCHDOG_KEEPER_HASH]:-}
+    local service_hash=${APO_DISCOVERY[NETWORK_WATCHDOG_SERVICE_HASH]:-}
+    local protected_hash=${APO_DISCOVERY[PERMANENT_HASH]:-}
+    local installer remote_installer native_before native_after key
+    local -a native_keys=(
+        BOOT_WATCHDOG_TIMEOUT KERNEL_WATCHDOG_TIMEOUT RUNTIME_WATCHDOG WATCHDOG_DEVICE
+        WATCHDOG_RUNTIME_TIMEOUT WATCHDOG_OWNER NATIVE_NETWORK_WATCHDOG_PRESENT
+        NATIVE_NETWORK_WATCHDOG_READY NATIVE_NETWORK_WATCHDOG_TARGET
+        NATIVE_WATCHDOG_SERVICE_ACTIVE NATIVE_WATCHDOG_CONFIG_INSPECTED
+    )
+    [[ -n $installing_run ]] || return 0
+    case $kind in
+        debian-watchdog-observer)
+            installer=${APO_ROOT}/assets/debian/install_network_watchdog_observer.sh
+            remote_installer=${APO_REMOTE_WORK_DIR}/reset-network-watchdog-observer-cleanup.sh
+            ;;
+        debian-systemd-companion)
+            installer=${APO_ROOT}/assets/debian/install_network_watchdog.sh
+            remote_installer=${APO_REMOTE_WORK_DIR}/reset-network-watchdog-cleanup.sh
+            ;;
+        *)
+            APO_LAST_CLASS=RECOVERY_FAILURE
+            APO_LAST_REASON="Reset found a run-owned Debian watchdog provider with an unsupported kind: ${kind:-missing}."
+            return 1
+            ;;
+    esac
+    [[ $installing_run =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && -n $backup &&
+       $config_hash =~ ^[0-9a-f]{64}$ && $keeper_hash =~ ^[0-9a-f]{64}$ &&
+       $service_hash =~ ^[0-9a-f]{64}$ && $protected_hash =~ ^[0-9a-f]{64}$ ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Reset found incomplete target-side Debian watchdog ownership evidence.'
+        return 1
+    }
+    native_before=''
+    for key in "${native_keys[@]}"; do native_before+="${key}=${APO_DISCOVERY[$key]:-}"$'\n'; done
+    apo_remote_upload_root "$installer" "$remote_installer" || return 1
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS CLEANING
+    apo_state_save
+    apo_run_worker_capture reset-network-watchdog-cleanup cleanup-owned-network-watchdog \
+        "$remote_installer" "$installing_run" "$backup" "$config_hash" "$keeper_hash" "$service_hash" || return 1
+    apo_discovery_capture || return 1
+    native_after=''
+    for key in "${native_keys[@]}"; do native_after+="${key}=${APO_DISCOVERY[$key]:-}"$'\n'; done
+    [[ ${APO_DISCOVERY[PROFILE]:-} == debian && ${APO_DISCOVERY[PERMANENT_HASH]:-} == "$protected_hash" &&
+       -z ${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-} &&
+       -z ${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_BACKUP]:-} && $native_after == "$native_before" ]] || {
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON='Reset removed the Debian proof provider, but post-cleanup discovery did not preserve the permanent config and native watchdog state exactly.'
+        return 1
+    }
+    apo_state_set NETWORK_WATCHDOG_INSTALLED_BY_RUN 0
+    apo_state_set NETWORK_WATCHDOG_INSTALL_KIND "$kind"
+    apo_state_set NETWORK_WATCHDOG_INSTALL_BACKUP ''
+    apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS REMOVED
+    apo_state_save
+    apo_event reset-network-watchdog-cleanup PASS '' \
+        "Removed the AutoPiOverclock-owned Debian watchdog proof provider from run $installing_run; the native watchdog configuration, repair command, service, and permanent boot config remained unchanged."
+}
+
 apo_profile_cleanup_worker() { apo_remote_root "rm -rf $(apo_sh_quote "$APO_REMOTE_WORK_DIR")" >/dev/null 2>&1 || true; }
