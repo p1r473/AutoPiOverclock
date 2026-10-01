@@ -1,0 +1,13 @@
+Oct 01 03:08:54 Harbormaster kernel: sysfs: cannot create duplicate filename '/class/gpio/gpiochip625'
+Oct 01 03:08:54 Harbormaster kernel: CPU: 3 UID: 0 PID: 106 Comm: kworker/u16:3 Not tainted 6.18.50+rpt-rpi-2712 #1 Debian 1:6.18.50-1+rpt1
+Oct 01 03:08:54 Harbormaster kernel: Workqueue: async async_run_entry_fn
+Oct 01 03:08:54 Harbormaster kernel: Call trace:
+Oct 01 03:08:54 Harbormaster kernel:  show_stack+0x20/0x38
+Oct 01 03:08:54 Harbormaster kernel:  dump_stack_lvl+0x80/0xb8
+Oct 01 03:08:54 Harbormaster kernel:  sysfs_warn_dup+0x64/0x80
+Oct 01 03:08:54 Harbormaster kernel:  sysfs_do_create_link_sd+0x138/0x140
+Oct 01 03:08:54 Harbormaster kernel:  gpiochip_sysfs_register+0x70/0x100
+Oct 01 03:08:54 Harbormaster kernel:  attiny_i2c_probe+0x1f8/0x2a0 [rpi_panel_attiny_regulator]
+Oct 01 03:08:54 Harbormaster kernel: gpiochip_add_data_with_key: GPIOs 625..626 (7inch-touchscreen-p) failed to register, -17
+Oct 01 03:08:54 Harbormaster kernel: rpi_touchscreen_attiny 11-0045: Failed to create gpiochip: -17
+Oct 01 03:08:54 Harbormaster kernel: rpi_touchscreen_attiny 11-0045: probe with driver rpi_touchscreen_attiny failed with error -17

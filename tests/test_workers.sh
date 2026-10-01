@@ -717,6 +717,32 @@ printf '%s\n' 'kernel: rcu: Hierarchical RCU implementation.' > "$TEMP_DIR/kerne
 for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do
     KERNEL_BENIGN_OUTPUT=$("$worker" classify-kernel-log "$TEMP_DIR/kernel-benign-rcu.log" 2>&1)
     [[ $KERNEL_BENIGN_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+
+    KERNEL_BENIGN_OUTPUT=$("$worker" classify-kernel-log "$FIXTURES/benign-rpi-touchscreen-gpio-trace.log" 2>&1)
+    [[ $KERNEL_BENIGN_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+done
+
+cat > "$TEMP_DIR/kernel-fatal-with-context.log" <<'KERNEL_CONTEXT'
+kernel: context-before-one
+kernel: context-before-two
+kernel: Kernel panic - not syncing: fixture panic
+kernel: Call trace:
+kernel: fixture_frame_one+0x10/0x20
+kernel: fixture_frame_two+0x10/0x20
+kernel: context-after
+KERNEL_CONTEXT
+for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do
+    set +e
+    KERNEL_CONTEXT_OUTPUT=$("$worker" classify-kernel-log "$TEMP_DIR/kernel-fatal-with-context.log" 2>&1)
+    KERNEL_CONTEXT_RC=$?
+    set -e
+    [[ $KERNEL_CONTEXT_RC -ne 0 ]]
+    [[ $KERNEL_CONTEXT_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+    [[ $KERNEL_CONTEXT_OUTPUT == *'context-before-one'* ]]
+    [[ $KERNEL_CONTEXT_OUTPUT == *'Call trace:'* ]]
+    [[ $KERNEL_CONTEXT_OUTPUT == *'fixture_frame_two'* ]]
+    [[ $KERNEL_CONTEXT_OUTPUT == *'context-after'* ]]
+    (( $(printf '%s\n' "$KERNEL_CONTEXT_OUTPUT" | wc -l) <= 84 ))
 done
 
 APO_WORKER_LIBRARY_ONLY=1 source "$ROOT/workers/batocera-worker.sh"

@@ -3,7 +3,7 @@
 set -u -o pipefail
 umask 077
 
-ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Internal error[[:space:]]*:|Unable to handle kernel|RCU.*(detected|self-detected).*stall|kthread starved for|kthread timer wakeup.*happen|hung[_ -]?task|task[[:space:]].*blocked for more than[[:space:]]+[0-9]+[[:space:]]+seconds|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs (error|warning)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|Call trace|watchdog:.*lockup'
+ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Internal error[[:space:]]*:|Unable to handle kernel|RCU.*(detected|self-detected).*stall|kthread starved for|kthread timer wakeup.*happen|hung[_ -]?task|task[[:space:]].*blocked for more than[[:space:]]+[0-9]+[[:space:]]+seconds|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs (error|warning)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|watchdog:.*lockup'
 USB_RESET_PATTERN='usb [0-9.-]+: reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)?[[:space:]]*USB device|reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)[[:space:]]+USB device'
 CLOCK_MARKER_BEGIN='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS'
 CLOCK_MARKER_END='# END AUTOPIOVERCLOCK MANAGED CLOCKS'
@@ -287,12 +287,17 @@ kernel_log() {
 
 root_source() { findmnt -n -o SOURCE / 2>/dev/null || mount | awk '$3=="/"{print $1; exit}'; }
 
+kernel_error_context() {
+    # A stack trace is supporting context, not proof by itself. Preserve bounded
+    # context only when a primary stability signature or USB reset is present.
+    grep -Ei -B 5 -A 30 -e "$ERROR_PATTERN" -e "$USB_RESET_PATTERN" |
+        sed '/^--$/d' |
+        tail -n 80 || true
+}
+
 kernel_error_lines() {
-    local start_line=${1:-1} log_text common_errors usb_errors
-    log_text=$(kernel_log | tail -n "+${start_line}")
-    common_errors=$(printf '%s\n' "$log_text" | grep -Ei "$ERROR_PATTERN" || true)
-    usb_errors=$(printf '%s\n' "$log_text" | grep -Ei "$USB_RESET_PATTERN" || true)
-    printf '%s\n%s\n' "$common_errors" "$usb_errors" | awk 'NF && !seen[$0]++'
+    local start_line=${1:-1}
+    kernel_log | tail -n "+${start_line}" | kernel_error_context || true
 }
 
 current_temp() { vcgencmd measure_temp 2>/dev/null | sed -n 's/.*=\([0-9.]*\).*/\1/p'; }
@@ -1258,7 +1263,7 @@ cmd_health() {
     temp=$(current_temp)
     [[ -n $temp ]] || { emit_result HARNESS_FAILURE "Temperature unavailable in $context."; return 1; }
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling in $context." "$temp"; return 1; }
-    errors=$(kernel_error_lines 1 | tail -40 || true)
+    errors=$(kernel_error_lines 1 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "Current-boot kernel, power, GPU, USB, storage, or filesystem error in $context." "$temp"; return 1; fi
     test_file=/tmp/autopioverclock-write-test-$$
     printf test > "$test_file" && sync "$test_file" && rm -f "$test_file" || { emit_result STABILITY_FAILURE "Filesystem write test failed in $context." "$temp"; return 1; }
@@ -1285,7 +1290,7 @@ cmd_health() {
     temp=$(current_temp)
     [[ -n $temp ]] || { emit_result HARNESS_FAILURE "Temperature unavailable after application readiness in $context."; return 1; }
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling while application readiness was settling in $context." "$temp"; return 1; }
-    errors=$(kernel_error_lines 1 | tail -40 || true)
+    errors=$(kernel_error_lines 1 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "A kernel, power, GPU, USB, storage, or filesystem error appeared while application readiness was settling in $context." "$temp"; return 1; fi
     printf 'ACTIVE_CPU=%s\nACTIVE_GPU=%s\nACTIVE_VOLTAGE=%s\n%s\n' "$active_cpu" "$active_gpu" "$active_voltage" "$throttle"
     printf 'WATCHDOG_EEPROM=%s WATCHDOG_KERNEL=%s WATCHDOG_DEVICE=%s WATCHDOG_RUNTIME_TIMEOUT=%s WATCHDOG_OWNER=%s\n' \
@@ -3509,11 +3514,10 @@ cmd_prove_network_watchdog_reboot() {
 }
 
 cmd_classify_kernel_log() {
-    local log_file=$1 common_errors usb_errors
+    local log_file=$1 errors
     [[ -r $log_file ]] || { emit_result HARNESS_FAILURE "Kernel-log fixture is unreadable: $log_file"; return 1; }
-    common_errors=$(grep -Ei "$ERROR_PATTERN" "$log_file" || true)
-    usb_errors=$(grep -Ei "$USB_RESET_PATTERN" "$log_file" || true)
-    if [[ -n $common_errors || -n $usb_errors ]]; then printf '%s\n%s\n' "$common_errors" "$usb_errors" | awk 'NF && !seen[$0]++'; emit_result STABILITY_FAILURE 'Kernel-log fixture contains a kernel, power, GPU, USB, storage, or filesystem failure.'; return 1; fi
+    errors=$(kernel_error_context < "$log_file")
+    if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE 'Kernel-log fixture contains a kernel, power, GPU, USB, storage, or filesystem failure.'; return 1; fi
     emit_result PASS 'Kernel-log fixture is clean.'
 }
 

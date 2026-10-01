@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.103 - 2026-10-01
+
+- Stopped treating a standalone kernel `Call trace` line as proof of overclock instability. Genuine primary kernel, power, GPU, USB, storage, and filesystem signatures remain fatal.
+- Preserved up to 80 lines of bounded context around a genuine primary signature so failure logs retain the cause and its stack without flooding the controller.
+- Added regression coverage for the Raspberry Pi touchscreen duplicate-GPIO trace observed on Harbormaster and for contextual capture around a genuine fatal signature.
+
 ## 0.1.0-alpha.102 - 2026-10-01
 
 - Made successful first-time `prepare` atomically refresh a structurally valid empty, unsealed failure ledger after verified stock normalization. Any retained failure record, sealed applied floor, malformed ledger, unsafe path, or current evidence-bearing state still fails closed.

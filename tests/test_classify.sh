@@ -45,6 +45,10 @@ done < "$FIXTURES/kernel-fatal-signatures.log"
 printf '%s\n' 'kernel: rcu: Hierarchical RCU implementation.' > "$TEMP_DIR/kernel-benign-rcu.log"
 apo_classify_output "$TEMP_DIR/kernel-benign-rcu.log" kernel
 [[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+apo_classify_output "$FIXTURES/benign-rpi-touchscreen-gpio-trace.log" kernel
+[[ $APO_LAST_CLASS == HARNESS_FAILURE ]]
+[[ $APO_LAST_REASON == 'The worker failed without a structured result.' ]]
+[[ $APO_LAST_RESULT_STRUCTURED == 0 ]]
 apo_classify_output "$FIXTURES/black-null-display.log" display
 [[ $APO_LAST_CLASS == BOOT_FAILURE ]]
 apo_classify_output "$FIXTURES/missing-audio.log" audio
