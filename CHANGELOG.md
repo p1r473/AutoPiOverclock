@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.104 - 2026-10-01
+
+- Added active Debian graphical GPU validation through a transient Cage session on a dedicated virtual terminal. Each bounded segment renders fullscreen on the saved connector and mode, proves the hardware V3D renderer, requires a positive glmark2 score and machine-readable success result, and restores the previously active terminal.
+- Kept Debian headless GPU validation on its existing stress-ng V3D render-node route and made `prepare` install Cage and glmark2 Wayland only when graphical GPU validation is required.
+- Classified the exact Raspberry Pi touchscreen duplicate-GPIO probe collision as a harness failure so it cannot create a false CPU or GPU stability boundary.
+- Added regression coverage for graphical dependency routing, result validation, rotating workloads, exact display-probe evidence, and repeated graphical stress segments.
+
 ## 0.1.0-alpha.103 - 2026-10-01
 
 - Stopped treating a standalone kernel `Call trace` line as proof of overclock instability. Genuine primary kernel, power, GPU, USB, storage, and filesystem signatures remain fatal.

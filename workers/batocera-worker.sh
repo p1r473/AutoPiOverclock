@@ -5,6 +5,7 @@ umask 077
 
 ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Internal error[[:space:]]*:|Unable to handle kernel|RCU.*(detected|self-detected).*stall|kthread starved for|kthread timer wakeup.*happen|hung[_ -]?task|task[[:space:]].*blocked for more than[[:space:]]+[0-9]+[[:space:]]+seconds|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs (error|warning)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|watchdog:.*lockup'
 USB_RESET_PATTERN='usb [0-9.-]+: reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)?[[:space:]]*USB device|reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)[[:space:]]+USB device'
+GRAPHICAL_PROBE_FAILURE_PATTERN='gpiochip_add_data_with_key: GPIOs [0-9]+[.][.][0-9]+ [(]7inch-touchscreen-p[)] failed to register, -17|rpi_touchscreen_attiny.*(Failed to create gpiochip: -17|probe with driver .* failed with error -17)'
 CLOCK_MARKER_BEGIN='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS'
 CLOCK_MARKER_END='# END AUTOPIOVERCLOCK MANAGED CLOCKS'
 CANDIDATE_FAN_COMMENT='# AUTOPIOVERCLOCK CANDIDATE COOLING: PI PWM FAN 100 PERCENT'
@@ -287,6 +288,14 @@ kernel_error_context() {
 kernel_error_lines() {
     local start_line=${1:-1}
     kernel_log | tail -n "+${start_line}" | kernel_error_context || true
+}
+
+graphical_probe_failure_lines() {
+    local start_line=${1:-1}
+    kernel_log | tail -n "+${start_line}" |
+        grep -Ei -B 5 -A 20 -e "$GRAPHICAL_PROBE_FAILURE_PATTERN" |
+        sed '/^--$/d' |
+        tail -n 60 || true
 }
 
 current_temp() { vcgencmd measure_temp 2>/dev/null | sed -n 's/.*=\([0-9.]*\).*/\1/p'; }
@@ -1408,7 +1417,7 @@ cmd_health() {
     local expected_cpu=$1 expected_gpu=$2 gpu_key=$3 expected_voltage=$4 max_temp=$5 mode=$6 baseline=$7
     local required_processes=$8 required_services=$9 audio_match=${10} expected_hash=${11} context=${12}
     local throttle_baseline=${13:-throttled=0x0} audio_baseline=${14:-} fan_policy=${15:-normal}
-    local boot_config=/boot/config.txt active_cpu active_gpu active_voltage throttle temp errors permanent_hash test_file
+    local boot_config=/boot/config.txt active_cpu active_gpu active_voltage throttle temp errors graphical_errors permanent_hash test_file
     permanent_hash=$(sha256sum "$boot_config" | awk '{print $1}')
     [[ -z $expected_hash || $permanent_hash == "$expected_hash" ]] || { emit_result RECOVERY_FAILURE "Permanent config hash changed during $context."; return 1; }
     active_cpu=$(active_config_value arm_freq)
@@ -1439,6 +1448,8 @@ cmd_health() {
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling in $context." "$temp"; return 1; }
     errors=$(kernel_error_lines 1 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "Current-boot kernel, power, GPU, USB, storage, or filesystem error in $context." "$temp"; return 1; fi
+    graphical_errors=$([[ $mode == graphical ]] && graphical_probe_failure_lines 1 || true)
+    if [[ -n $graphical_errors ]]; then printf '%s\n' "$graphical_errors"; emit_result HARNESS_FAILURE "Required touchscreen/display hardware probe failed in $context; this is not overclock stability evidence." "$temp"; return 1; fi
     mkdir -p "$PERSISTENT_ROOT"
     test_file="$PERSISTENT_ROOT/.write-test-$$"
     printf test > "$test_file" && sync "$test_file" && rm -f "$test_file" || { emit_result STABILITY_FAILURE "Persistent filesystem write test failed in $context." "$temp"; return 1; }
@@ -1470,6 +1481,8 @@ cmd_health() {
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling while application readiness was settling in $context." "$temp"; return 1; }
     errors=$(kernel_error_lines 1 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "A kernel, power, GPU, USB, storage, or filesystem error appeared while application readiness was settling in $context." "$temp"; return 1; fi
+    graphical_errors=$([[ $mode == graphical ]] && graphical_probe_failure_lines 1 || true)
+    if [[ -n $graphical_errors ]]; then printf '%s\n' "$graphical_errors"; emit_result HARNESS_FAILURE "Required touchscreen/display hardware probe failed while application readiness was settling in $context; this is not overclock stability evidence." "$temp"; return 1; fi
     printf 'ACTIVE_CPU=%s\nACTIVE_GPU=%s\nACTIVE_VOLTAGE=%s\n%s\n' "$active_cpu" "$active_gpu" "$active_voltage" "$throttle"
     printf 'WATCHDOG_EEPROM=%s WATCHDOG_KERNEL=%s WATCHDOG_DEVICE=%s WATCHDOG_RUNTIME_TIMEOUT=%s WATCHDOG_OWNER=%s\n' \
         "$WATCHDOG_LAST_BOOT_TIMEOUT" "$WATCHDOG_LAST_KERNEL_TIMEOUT" "$WATCHDOG_LAST_DEVICE" "$WATCHDOG_LAST_RUNTIME_TIMEOUT" "$WATCHDOG_LAST_OWNER"
@@ -1976,7 +1989,7 @@ launch_batocera_gpu_segment() {
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=$4 baseline=$5 io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
     local cpu_output gpu_output launcher_file
-    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle kernel_lines new_errors
+    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle kernel_lines new_errors graphical_errors
     local cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' glmark_binary glmark_data library_dirs gpu_stack
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 cpu_dead=0 gpu_dead=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
@@ -2132,7 +2145,16 @@ cmd_stress() {
             if [[ $stress_kind == cpu || $stress_kind == combined ]]; then [[ $arm_sample =~ ^[0-9]+$ ]] && (( arm_sample + clock_tolerance >= expected_cpu )) && cpu_clock_seen=1; fi
             if [[ $stress_kind == gpu || $stress_kind == combined ]]; then [[ $gpu_sample =~ ^[0-9]+$ ]] && (( gpu_sample + clock_tolerance >= expected_gpu )) && gpu_clock_seen=1; fi
             new_errors=$(kernel_error_lines "$((kernel_lines + 1))" || true)
-            if [[ -n $new_errors ]]; then printf '%s\n' "$new_errors"; failure_class=STABILITY_FAILURE; failure_reason='A new kernel, power, GPU, USB, storage, or filesystem error appeared during stress.'; fi
+            graphical_errors=$([[ $mode == graphical ]] && graphical_probe_failure_lines "$((kernel_lines + 1))" || true)
+            if [[ -n $new_errors ]]; then
+                printf '%s\n' "$new_errors"
+                failure_class=STABILITY_FAILURE
+                failure_reason='A new kernel, power, GPU, USB, storage, or filesystem error appeared during stress.'
+            elif [[ -n $graphical_errors ]]; then
+                printf '%s\n' "$graphical_errors"
+                failure_class=HARNESS_FAILURE
+                failure_reason='Required touchscreen/display hardware probe failed during stress; this is not overclock stability evidence.'
+            fi
             if [[ $fan_policy == candidate-max ]]; then
                 if candidate_fan_max_ready; then fan_status=$FAN_PWM_LAST_STATUS
                 else failure_class=HARNESS_FAILURE; failure_reason="Candidate fan max-speed proof failed during stress: ${FAN_PWM_LAST_REASON:-unknown fan telemetry failure}"; fi

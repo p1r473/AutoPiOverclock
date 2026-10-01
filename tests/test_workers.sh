@@ -609,9 +609,15 @@ mkdir -p "$TEMP_DIR/debian-dri" \
     "$TEMP_DIR/debian-drm-class/renderD129/device"
 : > "$TEMP_DIR/debian-dri/renderD128"
 : > "$TEMP_DIR/debian-dri/renderD129"
+ln -s /dev/null "$TEMP_DIR/debian-dri/card0"
+ln -s /dev/null "$TEMP_DIR/debian-dri/card2"
 printf 'DRIVER=virtio_gpu\n' > "$TEMP_DIR/debian-drm-class/renderD128/device/uevent"
 printf 'DRIVER=v3d\n' > "$TEMP_DIR/debian-drm-class/renderD129/device/uevent"
 [[ $(v3d_render_node "$TEMP_DIR/debian-dri" "$TEMP_DIR/debian-drm-class") == "$TEMP_DIR/debian-dri/renderD129" ]]
+[[ $(display_drm_device_from_baseline 'connector=card0-DSI-1;mode=800x480;enabled=enabled' "$TEMP_DIR/debian-dri") == "$TEMP_DIR/debian-dri/card0" ]]
+[[ $(display_drm_device_from_baseline 'connector=card2-HDMI-A-1;mode=1920x1080;enabled=enabled' "$TEMP_DIR/debian-dri") == "$TEMP_DIR/debian-dri/card2" ]]
+if display_drm_device_from_baseline 'connector=DSI-1;mode=800x480;enabled=enabled' "$TEMP_DIR/debian-dri" >/dev/null; then exit 1; fi
+if display_drm_device_from_baseline 'connector=card7-DSI-1;mode=800x480;enabled=enabled' "$TEMP_DIR/debian-dri" >/dev/null; then exit 1; fi
 PATH="$TEMP_DIR/stress-ng-bin:$PATH"
 export MOCK_STRESS_NG_OPTION=--gpu MOCK_STRESS_NG_SECOND_OPTION=--gpu-devnode
 [[ $(stress_ng_gpu_strategy "$TEMP_DIR/debian-dri/renderD129" "$TEMP_DIR/debian-dri") == explicit-v3d-device ]]
@@ -629,6 +635,35 @@ if v3d_render_node "$TEMP_DIR/debian-dri" "$TEMP_DIR/debian-drm-class" >/dev/nul
     echo 'Debian V3D render-node discovery accepted a non-V3D node' >&2
     exit 1
 fi
+
+# Debian graphical GPU proof is bound to the saved connector and mode, a
+# hardware V3D renderer, the requested benchmark duration, a positive score,
+# and glmark2's machine-readable success result.
+cat > "$TEMP_DIR/debian-graphical-pass.log" <<'DEBIAN_GRAPHICAL_LOG'
+00:00:00.046 [INFO] GL renderer: V3D 7.1.7.0
+00:00:00.072 [INFO] Found connector 'DSI-1'
+00:00:00.072 [INFO] 'DSI-1' connected
+00:00:00.083 [INFO] connector DSI-1: Modesetting with 800x480 @ 60.029 Hz
+    GL_RENDERER:    V3D 7.1.7.0
+    Surface Size:   800x480 fullscreen
+[terrain] duration=5: FPS: 94 FrameTime: 10.673 ms
+                                  glmark2 Score: 93
+DEBIAN_GRAPHICAL_LOG
+printf '%s\n' '"[terrain] duration=5","94","10.673","Success"' > "$TEMP_DIR/debian-graphical-pass.csv"
+graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-pass.log" "$TEMP_DIR/debian-graphical-pass.csv" card0-DSI-1 800x480 5
+sed "s/DSI-1/HDMI-A-1/g" "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-hdmi.log"
+graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-hdmi.log" "$TEMP_DIR/debian-graphical-pass.csv" card2-HDMI-A-1 800x480 5
+sed 's/V3D 7.1.7.0/llvmpipe/g' "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-software.log"
+if graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-software.log" "$TEMP_DIR/debian-graphical-pass.csv" card0-DSI-1 800x480 5; then exit 1; fi
+if graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-pass.log" "$TEMP_DIR/debian-graphical-pass.csv" card0-HDMI-A-1 800x480 5; then exit 1; fi
+if graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-pass.log" "$TEMP_DIR/debian-graphical-pass.csv" card0-DSI-1 1920x1080 5; then exit 1; fi
+printf '%s\n' '"[terrain] duration=5","0","0.000","Failed"' > "$TEMP_DIR/debian-graphical-fail.csv"
+if graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-pass.log" "$TEMP_DIR/debian-graphical-fail.csv" card0-DSI-1 800x480 5; then exit 1; fi
+[[ $(graphical_gpu_benchmark 1 17) == terrain:duration=17 ]]
+[[ $(graphical_gpu_benchmark 2 17) == shading:shading=phong:num-lights=8:model=horse:duration=17 ]]
+[[ $(graphical_gpu_benchmark 3 17) == bump:bump-render=height:duration=17 ]]
+[[ $(graphical_gpu_benchmark 4 17) == conditionals:fragment-steps=5:vertex-steps=5:duration=17 ]]
+[[ $(graphical_gpu_benchmark 5 17) == terrain:duration=17 ]]
 
 (
     printf '[pi4]\narm_freq=9999\n' > "$TEMP_DIR/inactive-config.txt"
@@ -720,6 +755,46 @@ for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh
 
     KERNEL_BENIGN_OUTPUT=$("$worker" classify-kernel-log "$FIXTURES/benign-rpi-touchscreen-gpio-trace.log" 2>&1)
     [[ $KERNEL_BENIGN_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+
+    GRAPHICAL_PROBE_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$worker" GRAPHICAL_FIXTURE="$FIXTURES/benign-rpi-touchscreen-gpio-trace.log" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        kernel_log() { cat "$GRAPHICAL_FIXTURE"; }
+        graphical_probe_failure_lines 1
+    ')
+    [[ $GRAPHICAL_PROBE_OUTPUT == *'7inch-touchscreen-p'* ]]
+    [[ $GRAPHICAL_PROBE_OUTPUT == *'rpi_touchscreen_attiny 11-0045'* ]]
+done
+
+# A known display-probe collision is harness evidence only when there is no
+# independent fatal kernel signature. Real stability evidence must retain
+# precedence when both appear in the same health window.
+for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do
+    set +e
+    MIXED_GRAPHICAL_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$worker" bash -c '
+        set -u -o pipefail
+        source "$WORKER"
+        find_boot_config() { printf /dev/null; }
+        sha256sum() { printf "fixture-hash  %s\n" "$1"; }
+        active_config_value() {
+            case $1 in
+                arm_freq) printf 2400 ;;
+                v3d_freq) printf 800 ;;
+                over_voltage_delta) printf 0 ;;
+            esac
+        }
+        watchdog_health_ready() { return 0; }
+        current_throttle() { printf "throttled=0x0"; }
+        current_temp() { printf 50; }
+        kernel_error_lines() { printf "kernel: Kernel panic - not syncing: mixed fixture\n"; }
+        graphical_probe_failure_lines() { printf "kernel: 7inch-touchscreen-p failed to register, -17\n"; }
+        cmd_health 2400 800 v3d_freq 0 75 graphical "connector=card0-DSI-1;mode=800x480;enabled=enabled" "" "" "" "" mixed-graphical throttled=0x0 "" normal
+    ' 2>&1)
+    MIXED_GRAPHICAL_RC=$?
+    set -e
+    [[ $MIXED_GRAPHICAL_RC -ne 0 ]]
+    [[ $MIXED_GRAPHICAL_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+    [[ $MIXED_GRAPHICAL_OUTPUT != *'APO_RESULT_CLASS=HARNESS_FAILURE'* ]]
 done
 
 cat > "$TEMP_DIR/kernel-fatal-with-context.log" <<'KERNEL_CONTEXT'
@@ -965,6 +1040,68 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
         exit 1
     fi
 )
+
+# Debian graphical runs require the dedicated onscreen Cage route. Headless
+# runs continue to require the stress-ng V3D route and do not accept graphical
+# dependencies as a substitute.
+(
+    APO_ROOT=$ROOT
+    APO_RUN_ID='fixture-run'
+    source "$ROOT/lib/common.sh"
+    source "$ROOT/profiles/debian.sh"
+    # shellcheck disable=SC2030
+    declare -Ag APO_DISCOVERY=(
+        [CPU_STRESS_AVAILABLE]=1 [STRESS_NG_GPU_AVAILABLE]=1
+        [DEBIAN_GRAPHICAL_GPU_AVAILABLE]=1 [DEBIAN_GRAPHICAL_GPU_STRATEGY]=cage-wayland-onscreen
+    )
+    # shellcheck disable=SC2030
+    APO_REQUIRE_GPU_STRESS=1
+    # shellcheck disable=SC2030
+    APO_MODE_EFFECTIVE=graphical
+    apo_profile_dependencies_ready
+    APO_DISCOVERY[DEBIAN_GRAPHICAL_GPU_AVAILABLE]=0
+    if apo_profile_dependencies_ready; then
+        echo 'Debian graphical dependency preflight accepted no onscreen GPU route' >&2
+        exit 1
+    fi
+    APO_MODE_EFFECTIVE=headless
+    apo_profile_dependencies_ready
+    APO_DISCOVERY[STRESS_NG_GPU_AVAILABLE]=0
+    APO_DISCOVERY[DEBIAN_GRAPHICAL_GPU_AVAILABLE]=1
+    if apo_profile_dependencies_ready; then
+        echo 'Debian headless dependency preflight accepted only an onscreen GPU route' >&2
+        exit 1
+    fi
+)
+
+DEBIAN_INSTALL_CAPTURE="$TEMP_DIR/debian-install-command"
+APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
+    set -Eeuo pipefail
+    APO_RUN_ID=fixture-run
+    source "$APO_ROOT/lib/common.sh"
+    source "$APO_ROOT/profiles/debian.sh"
+    apo_event() { :; }
+    apo_progress_before_output() { :; }
+    apo_remote_root() { printf "%s\n" "$1" > "$INSTALL_CAPTURE"; }
+    APO_REQUIRE_GPU_STRESS=1
+    APO_MODE_EFFECTIVE=graphical
+    apo_profile_install_dependencies
+'
+grep -Fq 'apt-get install -y --no-install-recommends stress-ng cage glmark2-es2-wayland' "$DEBIAN_INSTALL_CAPTURE"
+APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
+    set -Eeuo pipefail
+    APO_RUN_ID=fixture-run
+    source "$APO_ROOT/lib/common.sh"
+    source "$APO_ROOT/profiles/debian.sh"
+    apo_event() { :; }
+    apo_progress_before_output() { :; }
+    apo_remote_root() { printf "%s\n" "$1" > "$INSTALL_CAPTURE"; }
+    APO_REQUIRE_GPU_STRESS=1
+    APO_MODE_EFFECTIVE=headless
+    apo_profile_install_dependencies
+'
+grep -Fq 'apt-get install -y --no-install-recommends stress-ng' "$DEBIAN_INSTALL_CAPTURE"
+if grep -Eq 'cage|glmark2' "$DEBIAN_INSTALL_CAPTURE"; then exit 1; fi
 
 # The controller-side cache gate verifies the complete archive before reuse,
 # and the generated target installer must preserve the prior live payload if a
@@ -1349,6 +1486,60 @@ for WORKER_NAME in debian batocera; do
     (( SECOND_SEGMENT_DURATION <= 10 ))
     [[ $SEGMENT_OUTPUT == *'elapsed=20/20s'* ]]
 done
+
+# The Debian graphical supervisor must use and relaunch only the touchscreen
+# route across segment boundaries. It must not silently fall back to the
+# headless stress-ng GPU launcher.
+DEBIAN_GRAPHICAL_SEGMENT_DIR="$TEMP_DIR/debian-graphical-segments"
+mkdir -p "$DEBIAN_GRAPHICAL_SEGMENT_DIR"
+: > "$DEBIAN_GRAPHICAL_SEGMENT_DIR/cpu-durations"
+: > "$DEBIAN_GRAPHICAL_SEGMENT_DIR/gpu-durations"
+DEBIAN_GRAPHICAL_SEGMENT_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" SEGMENT_DIR="$DEBIAN_GRAPHICAL_SEGMENT_DIR" bash -c '
+    set -u -o pipefail
+    source "$WORKER"
+    stress_segment_limit() { printf 10; }
+    current_temp() { printf 50; }
+    current_throttle() { printf "throttled=0x0"; }
+    clock_mhz() { case $1 in arm) printf 2400 ;; *) printf 800 ;; esac; }
+    kernel_log() { :; }
+    kernel_error_lines() { :; }
+    graphical_probe_failure_lines() { :; }
+    v3d_render_node() { printf /dev/dri/renderD128; }
+    debian_graphical_gpu_strategy() { printf cage-wayland-onscreen; }
+    check_display() { return 0; }
+    stress-ng() { :; }
+    stress_ng_has_gpu() { echo "headless-gpu-probe-called" >&2; return 1; }
+    launch_debian_gpu_segment() { echo "headless-gpu-launcher-called" >&2; return 1; }
+    launch_debian_cpu_segment() {
+        local segment_duration=$1 output_file=$2 segment_number=$3 marker
+        printf "%s\n" "$segment_duration" >> "$SEGMENT_DIR/cpu-durations"
+        marker="$SEGMENT_DIR/cpu-${segment_number}.done"
+        (while [[ ! -e $marker ]]; do command /bin/sleep 0.01; done; printf "CPU segment output\n" >> "$output_file") &
+        stress_cpu_pid=$!
+    }
+    launch_debian_graphical_gpu_segment() {
+        local segment_duration=$1 output_file=$2 segment_number=$3 baseline=$4 marker
+        [[ $baseline == "connector=card0-DSI-1;mode=800x480;enabled=enabled" ]]
+        printf "%s\n" "$segment_duration" >> "$SEGMENT_DIR/gpu-durations"
+        marker="$SEGMENT_DIR/gpu-${segment_number}.done"
+        (while [[ ! -e $marker ]]; do command /bin/sleep 0.01; done; printf "GPU_GRAPHICAL_SEGMENT_PASS=%s\n" "$segment_number" >> "$output_file") &
+        stress_gpu_pid=$!
+    }
+    fixture_tick=0
+    sleep() {
+        fixture_tick=$((fixture_tick + 1))
+        : > "$SEGMENT_DIR/cpu-${fixture_tick}.done"
+        : > "$SEGMENT_DIR/gpu-${fixture_tick}.done"
+        command /bin/sleep 0.1
+        SECONDS=$((SECONDS + 10))
+    }
+    SECONDS=0
+    cmd_stress combined 20 75 graphical "connector=card0-DSI-1;mode=800x480;enabled=enabled" 0 2400 800 throttled=0x0 60
+' 2>&1)
+[[ $DEBIAN_GRAPHICAL_SEGMENT_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+[[ $DEBIAN_GRAPHICAL_SEGMENT_OUTPUT != *'headless-gpu-'* ]]
+[[ $(wc -l < "$DEBIAN_GRAPHICAL_SEGMENT_DIR/gpu-durations") -eq 2 ]]
+cmp "$DEBIAN_GRAPHICAL_SEGMENT_DIR/cpu-durations" "$DEBIAN_GRAPHICAL_SEGMENT_DIR/gpu-durations"
 
 # A poll that wakes after the hard deadline fails closed even when the child
 # died between polls; its completion time cannot be proven to precede the

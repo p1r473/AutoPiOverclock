@@ -10,13 +10,25 @@ APO_BOOT_SETTLE_SECONDS=15
 
 apo_profile_dependencies_ready() {
     [[ ${APO_DISCOVERY[CPU_STRESS_AVAILABLE]:-0} == 1 ]] || return 1
-    (( APO_REQUIRE_GPU_STRESS == 0 )) || [[ ${APO_DISCOVERY[GPU_STRESS_AVAILABLE]:-0} == 1 ]]
+    (( APO_REQUIRE_GPU_STRESS == 0 )) || {
+        if [[ ${APO_MODE_EFFECTIVE:-headless} == graphical ]]; then
+            [[ ${APO_DISCOVERY[DEBIAN_GRAPHICAL_GPU_AVAILABLE]:-0} == 1 &&
+               ${APO_DISCOVERY[DEBIAN_GRAPHICAL_GPU_STRATEGY]:-} == cage-wayland-onscreen ]]
+        else
+            [[ ${APO_DISCOVERY[STRESS_NG_GPU_AVAILABLE]:-0} == 1 ]]
+        fi
+    }
 }
 
 apo_profile_install_dependencies() {
-    apo_event dependencies INFO '' 'Installing Debian stress dependency: stress-ng'
+    local packages=stress-ng description=stress-ng
+    if (( APO_REQUIRE_GPU_STRESS == 1 )) && [[ ${APO_MODE_EFFECTIVE:-headless} == graphical ]]; then
+        packages='stress-ng cage glmark2-es2-wayland'
+        description='stress-ng, Cage, and glmark2 Wayland for onscreen GPU validation'
+    fi
+    apo_event dependencies INFO '' "Installing Debian stress dependencies: $description"
     if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
-    apo_remote_root 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y --no-install-recommends stress-ng'
+    apo_remote_root "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y --no-install-recommends $packages"
 }
 
 apo_profile_hardware_watchdogs_ready() {

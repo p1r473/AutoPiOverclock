@@ -5,6 +5,7 @@ umask 077
 
 ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Internal error[[:space:]]*:|Unable to handle kernel|RCU.*(detected|self-detected).*stall|kthread starved for|kthread timer wakeup.*happen|hung[_ -]?task|task[[:space:]].*blocked for more than[[:space:]]+[0-9]+[[:space:]]+seconds|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs (error|warning)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|watchdog:.*lockup'
 USB_RESET_PATTERN='usb [0-9.-]+: reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)?[[:space:]]*USB device|reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)[[:space:]]+USB device'
+GRAPHICAL_PROBE_FAILURE_PATTERN='gpiochip_add_data_with_key: GPIOs [0-9]+[.][.][0-9]+ [(]7inch-touchscreen-p[)] failed to register, -17|rpi_touchscreen_attiny.*(Failed to create gpiochip: -17|probe with driver .* failed with error -17)'
 CLOCK_MARKER_BEGIN='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS'
 CLOCK_MARKER_END='# END AUTOPIOVERCLOCK MANAGED CLOCKS'
 CANDIDATE_FAN_COMMENT='# AUTOPIOVERCLOCK CANDIDATE COOLING: PI PWM FAN 100 PERCENT'
@@ -298,6 +299,14 @@ kernel_error_context() {
 kernel_error_lines() {
     local start_line=${1:-1}
     kernel_log | tail -n "+${start_line}" | kernel_error_context || true
+}
+
+graphical_probe_failure_lines() {
+    local start_line=${1:-1}
+    kernel_log | tail -n "+${start_line}" |
+        grep -Ei -B 5 -A 20 -e "$GRAPHICAL_PROBE_FAILURE_PATTERN" |
+        sed '/^--$/d' |
+        tail -n 60 || true
 }
 
 current_temp() { vcgencmd measure_temp 2>/dev/null | sed -n 's/.*=\([0-9.]*\).*/\1/p'; }
@@ -892,6 +901,30 @@ stress_ng_gpu_strategy() {
     return 1
 }
 
+display_drm_device_from_baseline() {
+    local baseline=$1 dri_root=${2:-/dev/dri} connector_name card_name
+    connector_name=$(sed -n 's/.*connector=\([^;]*\).*/\1/p' <<< "$baseline")
+    [[ $connector_name =~ ^(card[0-9]+)- ]] || return 1
+    card_name=${BASH_REMATCH[1]}
+    [[ -c $dri_root/$card_name ]] || return 1
+    printf '%s/%s' "$dri_root" "$card_name"
+}
+
+debian_graphical_gpu_strategy() {
+    local baseline=$1 display_device
+    [[ -n $baseline ]] || return 1
+    display_device=$(display_drm_device_from_baseline "$baseline" || true)
+    [[ -n $display_device ]] || return 1
+    command -v cage >/dev/null 2>&1 || return 1
+    command -v glmark2-es2-wayland >/dev/null 2>&1 || return 1
+    command -v openvt >/dev/null 2>&1 || return 1
+    command -v chvt >/dev/null 2>&1 || return 1
+    command -v fgconsole >/dev/null 2>&1 || return 1
+    [[ -d /usr/share/glmark2 && -r /usr/share/glmark2 ]] || return 1
+    [[ -n $(v3d_render_node || true) ]] || return 1
+    printf 'cage-wayland-onscreen'
+}
+
 # Read-only, compact live evidence for the controller-side status/summary
 # commands. This deliberately avoids dependency, watchdog, or boot mutation.
 cmd_status_snapshot() {
@@ -963,6 +996,7 @@ cmd_discover() {
     local boot_config tryboot_config boot_mount model compatible os_id os_version gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
     local boot_watchdog kernel_watchdog runtime_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source display_baseline display_present audio_baseline permanent_hash
     local stress_ng_binary stress_ng_gpu_available stress_ng_gpu_strategy_value render_node tryboot_exists tryboot_type tryboot_hash
+    local glmark_wayland_binary glmark_data cage_binary display_drm_device graphical_gpu_strategy_value graphical_gpu_available=0
     local network_root=/var/lib/autopioverclock/network-watchdog network_config network_keeper network_service
     local observer_config observer_keeper observer_service
     local network_kind='' network_target='' network_config_hash='' network_keeper_hash='' network_service_hash='' network_service_active=0
@@ -1014,6 +1048,12 @@ cmd_discover() {
     render_node=$(v3d_render_node || true)
     stress_ng_gpu_strategy_value=$([[ -n $stress_ng_binary && -n $render_node ]] && stress_ng_gpu_strategy "$render_node" || true)
     stress_ng_gpu_available=$([[ -n $stress_ng_gpu_strategy_value ]] && printf 1 || printf 0)
+    glmark_wayland_binary=$(command -v glmark2-es2-wayland 2>/dev/null || true)
+    glmark_data=$([[ -d /usr/share/glmark2 && -r /usr/share/glmark2 ]] && printf /usr/share/glmark2 || true)
+    cage_binary=$(command -v cage 2>/dev/null || true)
+    display_drm_device=$(display_drm_device_from_baseline "$display_baseline" || true)
+    graphical_gpu_strategy_value=$(debian_graphical_gpu_strategy "$display_baseline" || true)
+    [[ -z $graphical_gpu_strategy_value ]] || graphical_gpu_available=1
     fan_pwm_snapshot >/dev/null 2>&1 || true
     observer_config=$network_root/observer.conf
     observer_keeper=/usr/local/lib/autopioverclock/network-watchdog-observer.py
@@ -1106,11 +1146,17 @@ cmd_discover() {
     emit_data AUDIO_BASELINE "$audio_baseline"
     emit_data DISPLAY_CONNECTED "$([[ -n $display_baseline ]] && printf 1 || printf 0)"
     emit_data CPU_STRESS_AVAILABLE "$([[ -n $stress_ng_binary ]] && printf 1 || printf 0)"
-    emit_data GPU_STRESS_AVAILABLE "$([[ $stress_ng_gpu_available == 1 && -n $render_node ]] && printf 1 || printf 0)"
+    emit_data GPU_STRESS_AVAILABLE "$([[ $stress_ng_gpu_available == 1 || $graphical_gpu_available == 1 ]] && printf 1 || printf 0)"
     emit_data STRESS_NG_BINARY "$stress_ng_binary"
     emit_data STRESS_NG_GPU_AVAILABLE "$stress_ng_gpu_available"
     emit_data STRESS_NG_GPU_STRATEGY "$stress_ng_gpu_strategy_value"
     emit_data DRM_RENDER_NODE "$render_node"
+    emit_data GLMARK_WAYLAND_BINARY "$glmark_wayland_binary"
+    emit_data GLMARK_DATA "$glmark_data"
+    emit_data CAGE_BINARY "$cage_binary"
+    emit_data DISPLAY_DRM_DEVICE "$display_drm_device"
+    emit_data DEBIAN_GRAPHICAL_GPU_AVAILABLE "$graphical_gpu_available"
+    emit_data DEBIAN_GRAPHICAL_GPU_STRATEGY "$graphical_gpu_strategy_value"
     emit_data FAN_PWM_STATUS "$FAN_PWM_LAST_STATUS"
     emit_data PERMANENT_HASH "$permanent_hash"
     emit_data STORAGE_LAYOUT "root=${root_device};boot=${boot_source}"
@@ -1233,7 +1279,7 @@ cmd_health() {
     local expected_cpu=$1 expected_gpu=$2 gpu_key=$3 expected_voltage=$4 max_temp=$5 mode=$6 baseline=$7
     local required_processes=$8 required_services=$9 audio_match=${10} expected_hash=${11} context=${12}
     local throttle_baseline=${13:-throttled=0x0} audio_baseline=${14:-} fan_policy=${15:-normal}
-    local boot_config active_cpu active_gpu active_voltage throttle temp errors permanent_hash test_file
+    local boot_config active_cpu active_gpu active_voltage throttle temp errors graphical_errors permanent_hash test_file
     boot_config=$(find_boot_config) || { emit_result PREFLIGHT_FAILURE 'Boot config is missing.'; return 1; }
     permanent_hash=$(sha256sum "$boot_config" | awk '{print $1}')
     [[ -z $expected_hash || $permanent_hash == "$expected_hash" ]] || { emit_result RECOVERY_FAILURE "Permanent config hash changed during $context."; return 1; }
@@ -1265,6 +1311,8 @@ cmd_health() {
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling in $context." "$temp"; return 1; }
     errors=$(kernel_error_lines 1 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "Current-boot kernel, power, GPU, USB, storage, or filesystem error in $context." "$temp"; return 1; fi
+    graphical_errors=$([[ $mode == graphical ]] && graphical_probe_failure_lines 1 || true)
+    if [[ -n $graphical_errors ]]; then printf '%s\n' "$graphical_errors"; emit_result HARNESS_FAILURE "Required touchscreen/display hardware probe failed in $context; this is not overclock stability evidence." "$temp"; return 1; fi
     test_file=/tmp/autopioverclock-write-test-$$
     printf test > "$test_file" && sync "$test_file" && rm -f "$test_file" || { emit_result STABILITY_FAILURE "Filesystem write test failed in $context." "$temp"; return 1; }
     if ! wait_application_health "$mode" "$baseline" "$required_processes" "$required_services" "$audio_match" "$audio_baseline"; then
@@ -1292,6 +1340,8 @@ cmd_health() {
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling while application readiness was settling in $context." "$temp"; return 1; }
     errors=$(kernel_error_lines 1 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "A kernel, power, GPU, USB, storage, or filesystem error appeared while application readiness was settling in $context." "$temp"; return 1; fi
+    graphical_errors=$([[ $mode == graphical ]] && graphical_probe_failure_lines 1 || true)
+    if [[ -n $graphical_errors ]]; then printf '%s\n' "$graphical_errors"; emit_result HARNESS_FAILURE "Required touchscreen/display hardware probe failed while application readiness was settling in $context; this is not overclock stability evidence." "$temp"; return 1; fi
     printf 'ACTIVE_CPU=%s\nACTIVE_GPU=%s\nACTIVE_VOLTAGE=%s\n%s\n' "$active_cpu" "$active_gpu" "$active_voltage" "$throttle"
     printf 'WATCHDOG_EEPROM=%s WATCHDOG_KERNEL=%s WATCHDOG_DEVICE=%s WATCHDOG_RUNTIME_TIMEOUT=%s WATCHDOG_OWNER=%s\n' \
         "$WATCHDOG_LAST_BOOT_TIMEOUT" "$WATCHDOG_LAST_KERNEL_TIMEOUT" "$WATCHDOG_LAST_DEVICE" "$WATCHDOG_LAST_RUNTIME_TIMEOUT" "$WATCHDOG_LAST_OWNER"
@@ -1573,9 +1623,111 @@ launch_debian_gpu_segment() {
     stress_gpu_pid=$!
 }
 
+graphical_stress_vt() { printf '8'; }
+
+graphical_gpu_benchmark() {
+    local segment_number=$1 segment_duration=$2
+    case $(( (segment_number - 1) % 4 )) in
+        0) printf 'terrain:duration=%s' "$segment_duration" ;;
+        1) printf 'shading:shading=phong:num-lights=8:model=horse:duration=%s' "$segment_duration" ;;
+        2) printf 'bump:bump-render=height:duration=%s' "$segment_duration" ;;
+        3) printf 'conditionals:fragment-steps=5:vertex-steps=5:duration=%s' "$segment_duration" ;;
+    esac
+}
+
+graphical_gpu_log_has_success() {
+    local log_file=$1 result_file=$2 connector_name=$3 expected_mode=$4 segment_duration=$5
+    local connector_short=${connector_name#*-}
+    [[ -r $log_file && -r $result_file && -n $connector_short && -n $expected_mode ]] || return 1
+    grep -Eq 'GL renderer:[[:space:]]*V3D' "$log_file" || return 1
+    grep -Eq 'GL_RENDERER:[[:space:]]*V3D' "$log_file" || return 1
+    grep -Fq "Found connector '$connector_short'" "$log_file" || return 1
+    grep -Fq "'$connector_short' connected" "$log_file" || return 1
+    grep -Eq "Modesetting with ${expected_mode//x/[x]}[[:space:]]+@" "$log_file" || return 1
+    grep -Eq "\[[^]]+\][[:space:]]+duration=${segment_duration}([.:]|[[:space:]])" "$log_file" || return 1
+    grep -Eq 'glmark2 Score:[[:space:]]*[1-9][0-9]*' "$log_file" || return 1
+    grep -Fq '"Success"' "$result_file"
+}
+
+launch_debian_graphical_gpu_segment() {
+    local segment_duration=$1 output_file=$2 segment_number=$3 baseline=$4
+    local connector_name expected_mode display_device cage_binary glmark_binary benchmark vt
+    local runtime_dir log_file result_file
+    connector_name=$(sed -n 's/.*connector=\([^;]*\).*/\1/p' <<< "$baseline")
+    expected_mode=$(sed -n 's/.*mode=\([^;]*\).*/\1/p' <<< "$baseline")
+    display_device=$(display_drm_device_from_baseline "$baseline" || true)
+    cage_binary=$(command -v cage 2>/dev/null || true)
+    glmark_binary=$(command -v glmark2-es2-wayland 2>/dev/null || true)
+    benchmark=$(graphical_gpu_benchmark "$segment_number" "$segment_duration" || true)
+    vt=$(graphical_stress_vt || true)
+    [[ -n $connector_name && -n $expected_mode && -n $display_device && -n $cage_binary && -n $glmark_binary && -n $benchmark ]] || return 1
+    [[ $vt =~ ^[0-9]+$ ]] && (( vt >= 8 && vt <= 63 )) || return 1
+    [[ -d /usr/share/glmark2 && -r /usr/share/glmark2 ]] || return 1
+    runtime_dir="$stress_work_dir/wayland-${segment_number}"
+    log_file="$stress_work_dir/glmark-${segment_number}.log"
+    result_file="$stress_work_dir/glmark-${segment_number}.csv"
+    mkdir -m 700 -- "$runtime_dir" || return 1
+    : > "$log_file" || return 1
+    : > "$result_file" || return 1
+    printf '%s\n' "--- GPU onscreen segment ${segment_number}: ${segment_duration}s ---" >> "$output_file"
+    (
+        original_vt=$(fgconsole 2>/dev/null || true)
+        [[ $original_vt =~ ^[0-9]+$ ]] || { printf '%s\n' 'GPU_HARNESS_FAILURE=active-vt-unavailable'; exit 70; }
+        restore_graphical_vt() { chvt "$original_vt" >/dev/null 2>&1 || true; }
+        trap 'restore_graphical_vt' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
+        printf '%s\n' 'GPU_STRESS_STRATEGY=cage-wayland-onscreen'
+        segment_start=$SECONDS
+        set +e
+        openvt -c "$vt" -s -w -- \
+            bash -c 'log_file=$1; shift; exec "$@" >"$log_file" 2>&1' _ "$log_file" \
+            env -u DISPLAY -u WAYLAND_DISPLAY \
+                XDG_RUNTIME_DIR="$runtime_dir" \
+                WLR_BACKENDS=drm \
+                WLR_DRM_DEVICES="$display_device" \
+                WLR_RENDERER=gles2 \
+                WLR_NO_HARDWARE_CURSORS=1 \
+                "$cage_binary" -s -d -- \
+                "$glmark_binary" \
+                    --fullscreen \
+                    --annotate \
+                    --data-path /usr/share/glmark2 \
+                    --benchmark "$benchmark" \
+                    --results-file "$result_file"
+        launcher_rc=$?
+        set -e
+        segment_elapsed=$((SECONDS - segment_start))
+        restore_rc=0
+        chvt "$original_vt" >/dev/null 2>&1 || restore_rc=$?
+        trap - EXIT INT TERM HUP
+        grep -E "GL renderer:|Found connector|'[^']+' connected|Modesetting with|GL_VENDOR:|GL_RENDERER:|Surface Size:|^\[[^]]+\]|glmark2 Score:|\[ERROR\]|Error:|failed" "$log_file" || true
+        printf 'GPU_ONSCREEN_RESULTS='; tr '\n' ';' < "$result_file"; printf '\n'
+        printf 'GPU_ONSCREEN_LAUNCHER_RC=%s GPU_ONSCREEN_ELAPSED=%s GPU_ONSCREEN_VT=%s GPU_ONSCREEN_DEVICE=%s\n' \
+            "$launcher_rc" "$segment_elapsed" "$vt" "$display_device"
+        if (( restore_rc != 0 )); then
+            printf 'GPU_HARNESS_FAILURE=vt-restore-rc-%s\n' "$restore_rc"
+            exit 70
+        fi
+        if (( launcher_rc != 0 )); then
+            grep -Eq 'GL_RENDERER:[[:space:]]*V3D' "$log_file" || printf 'GPU_HARNESS_FAILURE=graphical-launcher-rc-%s\n' "$launcher_rc"
+            exit "$launcher_rc"
+        fi
+        if (( segment_elapsed < segment_duration )) ||
+           ! graphical_gpu_log_has_success "$log_file" "$result_file" "$connector_name" "$expected_mode" "$segment_duration" ||
+           ! check_display "$baseline"; then
+            printf '%s\n' 'GPU_HARNESS_FAILURE=onscreen-render-proof-incomplete'
+            exit 70
+        fi
+        printf 'GPU_GRAPHICAL_SEGMENT_PASS=%s\n' "$segment_number"
+    ) >>"$output_file" 2>&1 &
+    stress_gpu_pid=$!
+}
+
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
-    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors
+    local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors graphical_errors
     local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 cpu_dead=0 gpu_dead=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
@@ -1613,14 +1765,21 @@ cmd_stress() {
     esac
     case $stress_kind in
         gpu|combined)
-            stress_ng_has_gpu || { emit_result HARNESS_FAILURE 'Installed stress-ng does not provide the GPU stressor.'; return 1; }
             render_node=$(v3d_render_node || true)
             [[ -n $render_node ]] || { emit_result HARNESS_FAILURE 'No V3D DRM render node is available.'; return 1; }
-            gpu_strategy=$(stress_ng_gpu_strategy "$render_node" || true)
-            case $gpu_strategy in explicit-v3d-device|single-v3d-default) ;; *) emit_result HARNESS_FAILURE 'The installed stress-ng cannot select the V3D node and more than one DRM render node exists.'; return 1 ;; esac
             gpu_segment_duration=$(stress_segment_duration "$duration") || { emit_result HARNESS_FAILURE 'Could not derive a safe GPU stress segment.'; return 1; }
             gpu_segment_number=1
-            launch_debian_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$render_node" "$gpu_strategy" || { emit_result HARNESS_FAILURE 'Could not launch the GPU stress segment.'; return 1; }
+            if [[ $mode == graphical ]]; then
+                gpu_strategy=$(debian_graphical_gpu_strategy "$baseline" || true)
+                [[ $gpu_strategy == cage-wayland-onscreen ]] || { emit_result HARNESS_FAILURE 'The saved display cannot provide the required Cage Wayland V3D onscreen workload.'; return 1; }
+                check_display "$baseline" || { emit_result HARNESS_FAILURE 'The saved display baseline is unavailable before GPU stress.'; return 1; }
+                launch_debian_graphical_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$baseline" || { emit_result HARNESS_FAILURE 'Could not launch the onscreen GPU stress segment.'; return 1; }
+            else
+                stress_ng_has_gpu || { emit_result HARNESS_FAILURE 'Installed stress-ng does not provide the GPU stressor.'; return 1; }
+                gpu_strategy=$(stress_ng_gpu_strategy "$render_node" || true)
+                case $gpu_strategy in explicit-v3d-device|single-v3d-default) ;; *) emit_result HARNESS_FAILURE 'The installed stress-ng cannot select the V3D node and more than one DRM render node exists.'; return 1 ;; esac
+                launch_debian_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$render_node" "$gpu_strategy" || { emit_result HARNESS_FAILURE 'Could not launch the GPU stress segment.'; return 1; }
+            fi
             gpu_segment_end=$((start_seconds + gpu_segment_duration))
             ;;
     esac
@@ -1679,7 +1838,7 @@ cmd_stress() {
                 elif (( cpu_rc != 0 && gpu_rc == 0 )); then
                     failure_class=STABILITY_FAILURE; failure_reason="CPU stress exited early with rc=$cpu_rc."
                 elif (( cpu_rc == 0 && gpu_rc != 0 )); then
-                    if grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
+                    if grep -Eqi 'GPU_HARNESS_FAILURE=|unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
                     failure_reason="GPU stress exited early with rc=$gpu_rc."
                 else
                     failure_class=STABILITY_FAILURE; failure_reason="CPU and GPU stress exited early with rc=$cpu_rc/$gpu_rc."
@@ -1688,7 +1847,7 @@ cmd_stress() {
                 failure_class=$([[ $cpu_rc -eq 0 ]] && printf HARNESS_FAILURE || printf STABILITY_FAILURE)
                 failure_reason="CPU stress exited early with rc=$cpu_rc."
             else
-                if (( gpu_rc == 0 )) || grep -Eqi 'unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
+                if (( gpu_rc == 0 )) || grep -Eqi 'GPU_HARNESS_FAILURE=|unrecognized option|invalid option|not found|No such file' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
                 failure_reason="GPU stress exited early with rc=$gpu_rc."
             fi
             break
@@ -1704,7 +1863,11 @@ cmd_stress() {
             remaining=$((expected_end - now_seconds))
             gpu_segment_duration=$(stress_segment_duration "$remaining") || { failure_class=HARNESS_FAILURE; failure_reason='Could not derive the next GPU stress segment.'; break; }
             gpu_segment_number=$((gpu_segment_number + 1))
-            launch_debian_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$render_node" "$gpu_strategy" || { failure_class=HARNESS_FAILURE; failure_reason='Could not launch the next GPU stress segment.'; break; }
+            if [[ $gpu_strategy == cage-wayland-onscreen ]]; then
+                launch_debian_graphical_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$baseline" || { failure_class=HARNESS_FAILURE; failure_reason='Could not launch the next onscreen GPU stress segment.'; break; }
+            else
+                launch_debian_gpu_segment "$gpu_segment_duration" "$gpu_output" "$gpu_segment_number" "$render_node" "$gpu_strategy" || { failure_class=HARNESS_FAILURE; failure_reason='Could not launch the next GPU stress segment.'; break; }
+            fi
             gpu_segment_end=$((now_seconds + gpu_segment_duration)); gpu_alive=1
         fi
         if (( cpu_alive == 0 && gpu_alive == 0 )); then workloads_complete=1; fi
@@ -1725,7 +1888,16 @@ cmd_stress() {
             if [[ $stress_kind == cpu || $stress_kind == combined ]]; then [[ $arm_sample =~ ^[0-9]+$ ]] && (( arm_sample + clock_tolerance >= expected_cpu )) && cpu_clock_seen=1; fi
             if [[ $stress_kind == gpu || $stress_kind == combined ]]; then [[ $gpu_sample =~ ^[0-9]+$ ]] && (( gpu_sample + clock_tolerance >= expected_gpu )) && gpu_clock_seen=1; fi
             new_errors=$(kernel_error_lines "$((kernel_lines + 1))" || true)
-            if [[ -n $new_errors ]]; then printf '%s\n' "$new_errors"; failure_class=STABILITY_FAILURE; failure_reason='A new kernel, power, GPU, USB, storage, or filesystem error appeared during stress.'; fi
+            graphical_errors=$([[ $mode == graphical ]] && graphical_probe_failure_lines "$((kernel_lines + 1))" || true)
+            if [[ -n $new_errors ]]; then
+                printf '%s\n' "$new_errors"
+                failure_class=STABILITY_FAILURE
+                failure_reason='A new kernel, power, GPU, USB, storage, or filesystem error appeared during stress.'
+            elif [[ -n $graphical_errors ]]; then
+                printf '%s\n' "$graphical_errors"
+                failure_class=HARNESS_FAILURE
+                failure_reason='Required touchscreen/display hardware probe failed during stress; this is not overclock stability evidence.'
+            fi
             if [[ $fan_policy == candidate-max ]]; then
                 if candidate_fan_max_ready; then fan_status=$FAN_PWM_LAST_STATUS
                 else failure_class=HARNESS_FAILURE; failure_reason="Candidate fan max-speed proof failed during stress: ${FAN_PWM_LAST_REASON:-unknown fan telemetry failure}"; fi
@@ -1752,7 +1924,10 @@ cmd_stress() {
     printf 'CPU_RC=%s GPU_RC=%s IO_RC=%s\n' "$cpu_rc" "$gpu_rc" "$io_rc"
     printf '%s\n' "$(current_throttle)"
     vcgencmd measure_clock arm 2>/dev/null || true; vcgencmd measure_clock v3d 2>/dev/null || true; vcgencmd pmic_read_adc EXT5V_V 2>/dev/null || true
-    if [[ -z $failure_class && ( $cpu_rc -ne 0 || $gpu_rc -ne 0 ) ]]; then failure_class=STABILITY_FAILURE; failure_reason="Stress process returned nonzero (CPU=$cpu_rc GPU=$gpu_rc)."; fi
+    if [[ -z $failure_class && ( $cpu_rc -ne 0 || $gpu_rc -ne 0 ) ]]; then
+        if (( gpu_rc != 0 )) && grep -Eqi 'GPU_HARNESS_FAILURE=' "$gpu_output"; then failure_class=HARNESS_FAILURE; else failure_class=STABILITY_FAILURE; fi
+        failure_reason="Stress process returned nonzero (CPU=$cpu_rc GPU=$gpu_rc)."
+    fi
     if [[ -z $failure_class && ( $stress_kind == cpu || $stress_kind == combined ) && $cpu_clock_seen -ne 1 ]]; then failure_class=STABILITY_FAILURE; failure_reason="Requested CPU clock ${expected_cpu}MHz was never observed within ${clock_tolerance}MHz under load."; fi
     if [[ -z $failure_class && ( $stress_kind == gpu || $stress_kind == combined ) && $gpu_clock_seen -ne 1 ]]; then failure_class=STABILITY_FAILURE; failure_reason="Requested GPU clock ${expected_gpu}MHz was never observed within ${clock_tolerance}MHz under load."; fi
     if [[ -z $failure_class ]]; then
