@@ -11,7 +11,7 @@ autopioverclock reset TARGET
 
 Run every command on the separate Linux controller. The controller may be any supported Linux computer; it does not need to be a Raspberry Pi. Debian/Ubuntu with GNU tools is the tested controller path, and building the Batocera graphical payload requires an ARM64 Debian-family controller. `TARGET` always names a different Raspberry Pi target and may be a hostname, IP address, `username@host`, or `username@IP`. Self-hosted tuning is rejected by comparing the local and remote running-kernel boot IDs because a target crash or reboot would also terminate the controller and remove independent recovery observation. If the username is omitted, the controller uses its current `id -un` username. AutoPiOverclock never guesses, prompts for, or remembers a target, so separate terminal tabs cannot silently redirect one another.
 
-The transport does not read `~/.ssh/config`. Use a real hostname or IP plus an explicit `username@` when needed; pass `--identity-file FILE` or `--ssh-port PORT` for a nondefault key or port.
+The transport does not read `~/.ssh/config`. Use a real hostname or IP plus an explicit `username@` when needed; pass `--identity-file FILE` or `--ssh-port PORT` for a nondefault key or port. Initial preflight makes one bounded SSH attempt and prints the complete OpenSSH failure diagnostic immediately. It does not enter the reboot/recovery polling loop for a host-key mismatch, rejected key, DNS failure, or unavailable initial target.
 
 | Controller command | Complete behavior | When to use it |
 |---|---|---|

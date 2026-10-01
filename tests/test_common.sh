@@ -218,13 +218,51 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
 # and accepts a distinct target.
 (
     APO_REMOTE_TARGET=root@target
+    PREFLIGHT_CONNECT_MARKER=$(mktemp)
+    PREFLIGHT_WAIT_MARKER=$(mktemp)
+    PREFLIGHT_ERROR=$(mktemp)
+    trap 'rm -f "$PREFLIGHT_CONNECT_MARKER" "$PREFLIGHT_WAIT_MARKER" "$PREFLIGHT_ERROR"' EXIT
+    apo_ssh_exec() {
+        [[ $1 == true ]]
+        printf x >> "$PREFLIGHT_CONNECT_MARKER"
+        printf '%s\n' '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@' \
+            '@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @' \
+            'Host key verification failed.' >&2
+        return 255
+    }
+    apo_wait_for_ssh() { printf x >> "$PREFLIGHT_WAIT_MARKER"; return 1; }
+    preflight_rc=0
+    if (apo_ssh_preflight) 2> "$PREFLIGHT_ERROR"; then
+        echo 'failed SSH preflight unexpectedly succeeded' >&2
+        exit 1
+    else
+        preflight_rc=$?
+    fi
+    [[ $preflight_rc == "$APO_EXIT_PREFLIGHT" ]]
+    [[ $(wc -c < "$PREFLIGHT_CONNECT_MARKER") == 1 ]]
+    [[ ! -s $PREFLIGHT_WAIT_MARKER ]]
+    grep -Fq 'Noninteractive SSH preflight failed for root@target (ssh exit 255).' "$PREFLIGHT_ERROR"
+    grep -Fq 'WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!' "$PREFLIGHT_ERROR"
+    grep -Fq 'Host key verification failed.' "$PREFLIGHT_ERROR"
+    grep -Fq 'SSH with -F /dev/null' "$PREFLIGHT_ERROR"
+    grep -Fq -- '--identity-file FILE' "$PREFLIGHT_ERROR"
+    grep -Fq 'known_hosts' "$PREFLIGHT_ERROR"
+)
+(
+    APO_REMOTE_TARGET=root@target
     APO_PREFLIGHT_SSH_TIMEOUT_SECONDS=300
     PREFLIGHT_READ_MARKER=$(mktemp)
-    trap 'rm -f "$PREFLIGHT_READ_MARKER"' EXIT
-    apo_wait_for_ssh() { [[ $1 == 300 && $2 == preflight-connect ]]; }
+    PREFLIGHT_CONNECT_MARKER=$(mktemp)
+    trap 'rm -f "$PREFLIGHT_READ_MARKER" "$PREFLIGHT_CONNECT_MARKER"' EXIT
+    apo_ssh_exec() { [[ $1 == true ]]; printf x >> "$PREFLIGHT_CONNECT_MARKER"; }
+    apo_wait_for_ssh() { return 99; }
     apo_local_boot_id_once() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
-    apo_remote_boot_id() { printf 'fedcba98-7654-3210-fedc-ba9876543210'; }
+    apo_remote_boot_id() {
+        [[ $APO_TRANSIENT_READ_ATTEMPTS == 1 && $APO_TRANSIENT_READ_DELAY_SECONDS == 0 ]]
+        printf 'fedcba98-7654-3210-fedc-ba9876543210'
+    }
     apo_ssh_read() {
+        [[ $APO_TRANSIENT_READ_ATTEMPTS == 1 && $APO_TRANSIENT_READ_DELAY_SECONDS == 0 ]]
         printf x >> "$PREFLIGHT_READ_MARKER"
         case $1 in
             'id -u') printf 0 ;;
@@ -234,6 +272,7 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     }
     apo_ssh_preflight
     [[ $APO_REMOTE_IS_ROOT == 1 ]]
+    [[ $(wc -c < "$PREFLIGHT_CONNECT_MARKER") == 1 ]]
     [[ $(wc -c < "$PREFLIGHT_READ_MARKER") == 2 ]]
 )
 (
@@ -242,7 +281,7 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     PREFLIGHT_READ_MARKER=$(mktemp)
     PREFLIGHT_ERROR=$(mktemp)
     trap 'rm -f "$PREFLIGHT_READ_MARKER" "$PREFLIGHT_ERROR"' EXIT
-    apo_wait_for_ssh() { :; }
+    apo_ssh_exec() { [[ $1 == true ]]; }
     apo_local_boot_id_once() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
     apo_remote_boot_id() { printf '01234567-89AB-CDEF-0123-456789ABCDEF'; }
     apo_ssh_read() { printf called > "$PREFLIGHT_READ_MARKER"; return 1; }
@@ -263,7 +302,7 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     PREFLIGHT_READ_MARKER=$(mktemp)
     PREFLIGHT_ERROR=$(mktemp)
     trap 'rm -f "$PREFLIGHT_READ_MARKER" "$PREFLIGHT_ERROR"' EXIT
-    apo_wait_for_ssh() { :; }
+    apo_ssh_exec() { [[ $1 == true ]]; }
     apo_local_boot_id_once() { return 1; }
     apo_remote_boot_id() { printf 'fedcba98-7654-3210-fedc-ba9876543210'; }
     apo_ssh_read() { printf called > "$PREFLIGHT_READ_MARKER"; return 1; }
@@ -284,7 +323,7 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     PREFLIGHT_READ_MARKER=$(mktemp)
     PREFLIGHT_ERROR=$(mktemp)
     trap 'rm -f "$PREFLIGHT_READ_MARKER" "$PREFLIGHT_ERROR"' EXIT
-    apo_wait_for_ssh() { :; }
+    apo_ssh_exec() { [[ $1 == true ]]; }
     apo_local_boot_id_once() { printf '01234567-89ab-cdef-0123-456789abcdef'; }
     apo_remote_boot_id() { return 1; }
     apo_ssh_read() { printf called > "$PREFLIGHT_READ_MARKER"; return 1; }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.98 - 2026-09-30
+
+- Made initial SSH preflight fail after one bounded attempt instead of silently retrying for five minutes.
+- Included the complete bounded OpenSSH diagnostic and explicit `-F /dev/null`, `--identity-file`, `--ssh-port`, and `known_hosts` guidance for host-key, authentication, DNS, and connection failures.
+- Kept extended reconnect monitoring unchanged for operations that already own recoverable reboot or target-job state, with regression coverage proving initial preflight never enters that loop.
+
 ## 0.1.0-alpha.97 - 2026-09-22
 
 - Removed AutoPiOverclock watchdog boundary comments during initial and repeat completion while preserving the validated native watchdog directive and timeout.

@@ -190,10 +190,30 @@ apo_require_separate_controller() {
         apo_die 'Controller and target are the same running Linux system. Use a separate Linux controller to operate on the Raspberry Pi target.' "$APO_EXIT_PREFLIGHT"
 }
 
+apo_ssh_preflight_connect() {
+    local ssh_diagnostic='' ssh_rc
+    if ssh_diagnostic=$(apo_ssh_exec true 2>&1); then
+        return 0
+    else
+        ssh_rc=$?
+    fi
+
+    ssh_diagnostic=${ssh_diagnostic//$'\r'/}
+    if (( ${#ssh_diagnostic} > 4096 )); then
+        ssh_diagnostic="${ssh_diagnostic:0:4096}"$'\n''[SSH diagnostic truncated]'
+    fi
+    [[ -n $ssh_diagnostic ]] || ssh_diagnostic="ssh exited with code $ssh_rc without diagnostic output."
+
+    apo_die "Noninteractive SSH preflight failed for $APO_REMOTE_TARGET (ssh exit $ssh_rc).
+OpenSSH diagnostic:
+$ssh_diagnostic
+AutoPiOverclock invokes SSH with -F /dev/null, so ~/.ssh/config is ignored. Use an explicit target plus --identity-file FILE and --ssh-port PORT when needed, and repair the matching known_hosts entry if the host key changed." "$APO_EXIT_PREFLIGHT"
+}
+
 apo_ssh_preflight() {
     local uid has_bash sudo_ready
-    apo_wait_for_ssh "$APO_PREFLIGHT_SSH_TIMEOUT_SECONDS" preflight-connect ||
-        apo_die "Noninteractive SSH failed for $APO_REMOTE_TARGET. Configure key authentication and run prepare again." "$APO_EXIT_PREFLIGHT"
+    local APO_TRANSIENT_READ_ATTEMPTS=1 APO_TRANSIENT_READ_DELAY_SECONDS=0
+    apo_ssh_preflight_connect
     apo_require_separate_controller
     uid=$(apo_ssh_read 'id -u') || apo_die "Could not determine remote UID after $APO_TRANSIENT_READ_ATTEMPTS attempts." "$APO_EXIT_PREFLIGHT"
     has_bash=$(apo_ssh_read 'command -v bash >/dev/null 2>&1 && printf yes || printf no' || true)
