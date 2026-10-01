@@ -1398,8 +1398,7 @@ BATOCERA_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 TEST_ROOT="$TEMP_DIR" WORKER="$ROOT/
 ' 2>&1)
 [[ $BATOCERA_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
 
-set +e
-WATCHDOG_CONTROLLER_OUTPUT=$(APO_ROOT="$ROOT" bash -c '
+if WATCHDOG_CONTROLLER_OUTPUT=$(APO_ROOT="$ROOT" bash -c '
     set -Eeuo pipefail
     source "$APO_ROOT/lib/common.sh"
     source "$APO_ROOT/lib/detect.sh"
@@ -1417,9 +1416,11 @@ WATCHDOG_CONTROLLER_OUTPUT=$(APO_ROOT="$ROOT" bash -c '
     apo_profile_repair_watchdogs() { printf "unexpected-watchdog-mutation\n"; return 1; }
 
     apo_watchdog_preflight
-' 2>&1)
-WATCHDOG_CONTROLLER_RC=$?
-set -e
+' 2>&1); then
+    WATCHDOG_CONTROLLER_RC=0
+else
+    WATCHDOG_CONTROLLER_RC=$?
+fi
 [[ $WATCHDOG_CONTROLLER_RC -eq 20 ]]
 [[ $WATCHDOG_CONTROLLER_OUTPUT == *'run-owned network watcher only after the platform hardware watchdog is safe'* ]]
 [[ $WATCHDOG_CONTROLLER_OUTPUT != *'unexpected-watchdog-mutation'* ]]

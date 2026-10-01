@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.101 - 2026-10-01
+
+- Captured and asserted intentional warning and fail-closed diagnostics inside their regression tests instead of printing them as apparent live failures. The expected return codes and safety assertions are unchanged.
+
 ## 0.1.0-alpha.100 - 2026-10-01
 
 - Removed development-era state fallbacks. Resume now requires the current normal-return retry tuple, current retained-history scheduler fields, and every current immutable plan field.

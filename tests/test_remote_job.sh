@@ -237,22 +237,26 @@ fi
     # Each child-status fixture intentionally owns a subshell-local log.
     # shellcheck disable=SC2030
     APO_LOG_FILE=$TEMP_DIR/token-child-status.log
+    TOKEN_CHILD_STATUS_OUTPUT=$TEMP_DIR/token-child-status.stderr
     EXPECTED_TOKEN=$(printf 'a%.0s' {1..64})
     od() { printf '%s\n' "$EXPECTED_TOKEN"; return 23; }
-    observed_token=$(apo_remote_job_token)
+    observed_token=$(apo_remote_job_token 2> "$TOKEN_CHILD_STATUS_OUTPUT")
     [[ $observed_token == "$EXPECTED_TOKEN" ]]
     grep -Fq 'remote-job-child-status: operation=token-od rc=23 output_valid=1 reconciled=1' "$APO_LOG_FILE"
+    grep -Fq 'remote-job-child-status: operation=token-od rc=23 output_valid=1 reconciled=1' "$TOKEN_CHILD_STATUS_OUTPUT"
 )
 (
     source "$ROOT/lib/remote_job.sh"
     # Each child-status fixture intentionally owns a subshell-local log.
     # shellcheck disable=SC2030
     APO_LOG_FILE=$TEMP_DIR/hash-child-status.log
+    HASH_CHILD_STATUS_OUTPUT=$TEMP_DIR/hash-child-status.stderr
     EXPECTED_HASH=$(printf 'b%.0s' {1..64})
     sha256sum() { printf '%s  %s\n' "$EXPECTED_HASH" "${*: -1}"; return 23; }
-    observed_hash=$(apo_remote_job_spec_hash fixture-phase stress combined 60)
+    observed_hash=$(apo_remote_job_spec_hash fixture-phase stress combined 60 2> "$HASH_CHILD_STATUS_OUTPUT")
     [[ $observed_hash == "$EXPECTED_HASH" ]]
     grep -Fq 'remote-job-child-status: operation=spec-sha256 rc=23 output_valid=1 reconciled=1' "$APO_LOG_FILE"
+    grep -Fq 'remote-job-child-status: operation=spec-sha256 rc=23 output_valid=1 reconciled=1' "$HASH_CHILD_STATUS_OUTPUT"
 )
 
 # The follow transport runs for the complete target stress duration. It must
@@ -397,11 +401,14 @@ fi
         apo_remote_job_clear_state
     }
 
-    apo_run_remote_stress_capture "$TEST_PHASE" stress "$CONTROLLER_OUTPUT" 2500 1
+    CONTROLLER_CHILD_STATUS_OUTPUT=$TEMP_DIR/controller-child-status.stderr
+    apo_run_remote_stress_capture "$TEST_PHASE" stress "$CONTROLLER_OUTPUT" 2500 1 \
+        2> "$CONTROLLER_CHILD_STATUS_OUTPUT"
     [[ $(<"$START_COUNT_FILE") == 4 ]]
     [[ $(<"$FOLLOW_COUNT_FILE") == 2 ]]
     [[ ${TEST_STATE[REMOTE_STRESS_STATUS]} == IDLE ]]
     grep -Fq 'remote-job-child-status: operation=detached-start rc=23 output_valid=1 reconciled=1' "$APO_LOG_FILE"
+    grep -Fq 'remote-job-child-status: operation=detached-start rc=23 output_valid=1 reconciled=1' "$CONTROLLER_CHILD_STATUS_OUTPUT"
 )
 
 # Only a workload telemetry sample can populate confirmed elapsed time. A

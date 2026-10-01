@@ -74,6 +74,7 @@ apo_state_load "$FIRST_STATE"
 # If rename performs the commit but its observed status disagrees, exact
 # byte-for-byte destination verification reconciles it without a second move.
 FALSE_RENAME_CALLS=$TEMP_DIR/false-rename-calls
+FALSE_RENAME_OUTPUT=$TEMP_DIR/false-rename-output
 : > "$FALSE_RENAME_CALLS"
 mv() {
     printf 'attempt\n' >> "$FALSE_RENAME_CALLS"
@@ -81,9 +82,10 @@ mv() {
     return 75
 }
 apo_state_set RENAME_RECONCILE committed
-apo_state_save
+apo_state_save 2> "$FALSE_RENAME_OUTPUT"
 unset -f mv
 [[ $(wc -l < "$FALSE_RENAME_CALLS") == 1 ]]
+[[ $(grep -c 'state-checkpoint-io: stage=commit-rename attempt=1/3 rc=75' "$FALSE_RENAME_OUTPUT") == 1 ]]
 grep -Fq $'RENAME_RECONCILE\tY29tbWl0dGVk' "$FIRST_STATE"
 
 # A persistent pre-commit sync failure leaves the prior checkpoint unchanged,
@@ -118,7 +120,9 @@ apo_state_load "$FIRST_STATE"
 
 SENTINEL="$TEMP_DIR/fixture-target-old-run.log"
 printf keep > "$SENTINEL"
-apo_event test INFO '' 'event one'
+EVENT_OUTPUT=$TEMP_DIR/event-output
+apo_event test INFO '' 'event one' > "$EVENT_OUTPUT" 2>&1
+grep -Fq '[INFO] test: event one' "$EVENT_OUTPUT"
 FIRST_CANDIDATE_LOG=$(apo_candidate_log_file candidate)
 : > "$FIRST_CANDIDATE_LOG"
 SECOND_CANDIDATE_LOG=$(apo_candidate_log_file candidate)

@@ -164,10 +164,13 @@ apo_remote_worker() {
     if (( $(wc -c < "$WORKER_ATTEMPT_FILE") == 1 )); then return 1; fi
     return 0
 }
-apo_run_worker_capture reconcile-clear-tryboot clear-tryboot fixture-arguments
+RECONCILE_TRANSPORT_OUTPUT=$TEMP_DIR/reconcile-transport.stderr
+apo_run_worker_capture reconcile-clear-tryboot clear-tryboot fixture-arguments \
+    2> "$RECONCILE_TRANSPORT_OUTPUT"
 [[ $(wc -c < "$WORKER_ATTEMPT_FILE") == 2 ]]
 [[ $APO_LAST_CLASS == PASS ]]
 grep -Fq 'worker-transport-status: phase=reconcile-clear-tryboot command=clear-tryboot remote_rc=1 capture=progress-coprocess pipeline_statuses=producer=1 consumer=0 lastpipe_preexisting=not-used controller_exit_signal=none' "$APO_LOG_FILE"
+grep -Fq 'worker-transport-status: phase=reconcile-clear-tryboot command=clear-tryboot remote_rc=1 capture=progress-coprocess pipeline_statuses=producer=1 consumer=0 lastpipe_preexisting=not-used controller_exit_signal=none' "$RECONCILE_TRANSPORT_OUTPUT"
 
 # Duplicate structured trailers are ambiguous and can never authorize replay
 # of a target mutation, even when the last trailer says PASS.
