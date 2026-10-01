@@ -138,12 +138,12 @@ apo_config_require_stock_auto_baseline() {
     apo_config_stock_auto_baseline_ready "$cpu_mhz" "$gpu_mhz" "$voltage_uv" "$provenance" "$evidence" && return 0
     if [[ $provenance != verified-default || $evidence != none ]]; then
         if [[ ${APO_PUBLIC_COMMAND:-} == overclock ]]; then
-            apo_die "The target is not at a clean stock boot configuration. Run autopioverclock reset ${APO_RAW_TARGET}, then run autopioverclock overclock ${APO_RAW_TARGET}. Audit details: ${provenance:-missing}; evidence: ${evidence:-missing}." "$APO_EXIT_PREFLIGHT"
+            apo_die "The target is not at a prepared stock boot configuration. Run autopioverclock prepare ${APO_RAW_TARGET}; public prepare will preserve a verified backup, normalize first-time explicit tuning controls, reboot, and prove stock before overclock. Audit details: ${provenance:-missing}; evidence: ${evidence:-missing}." "$APO_EXIT_PREFLIGHT"
         fi
         apo_die "Configuration-free auto mode requires either a clean stock root-config snapshot or an exact completed-result binding from the retained failures ledger: audit=${provenance:-missing}, evidence=${evidence:-missing}; discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV. Remove or separately preserve and review arm_boost, force_turbo, initial_turbo, core_freq_fixed, every *_freq or *_freq_min assignment, every over_voltage* assignment, and any include directive, then reboot normally and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
     fi
     if [[ ${APO_PUBLIC_COMMAND:-} == overclock ]]; then
-        apo_die "The target is not running stock Raspberry Pi 5 clocks (CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV). Run autopioverclock reset ${APO_RAW_TARGET}, then run autopioverclock overclock ${APO_RAW_TARGET}." "$APO_EXIT_PREFLIGHT"
+        apo_die "The target is not running the prepared Raspberry Pi 5 baseline (CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV). Run autopioverclock prepare ${APO_RAW_TARGET}; public prepare will preserve a verified backup, normalize first-time explicit tuning controls, reboot, and prove stock before overclock." "$APO_EXIT_PREFLIGHT"
     fi
     apo_die "Configuration-free auto mode requires either a verified stock Raspberry Pi 5 baseline or the exact validated applied floor from the retained failures ledger before testing any higher overclock: discovered CPU=${cpu_mhz}MHz, V3D=${gpu_mhz}MHz, voltage-delta=${voltage_uv}uV. Restore and review the permanent boot configuration, or restore the matching failures ledger, reboot normally, and repeat prepare. AutoPiOverclock will not rewrite permanent clocks to manufacture a baseline." "$APO_EXIT_PREFLIGHT"
 }

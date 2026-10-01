@@ -189,7 +189,7 @@ Usage:
   autopioverclock version
 
 Commands:
-  prepare    Install workload dependencies and verify the existing recovery chain
+  prepare    Install dependencies, verify recovery, and prove a usable baseline
   overclock  Start a fresh history-guided tune, validate, and apply operation
   test       Stability-test one exact CPU/GPU pair, then return to normal clocks
   reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
@@ -1532,14 +1532,18 @@ apo_start_new_run() {
             "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"; then
             apo_state_phase COMPLETE HOST_READY PASS
             apo_summary_line "HOST READY: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
+            if [[ $(apo_state_get PREPARE_BASELINE_STATUS NOT_NEEDED) == VERIFIED ]]; then
+                apo_summary_line "First-time stock normalization: VERIFIED; backup=$(apo_state_get PREPARE_BASELINE_BACKUP unavailable)"
+            fi
             apo_summary_line "Next: autopioverclock overclock $APO_RAW_TARGET"
-            apo_event prepare PASS '' 'Required workload dependencies are installed and the existing watchdog recovery chain is verified. The stock host is ready to overclock.'
+            apo_event prepare PASS '' 'Required workload dependencies, watchdog recovery, and a stock or completed-ledger baseline are verified. The host is ready to overclock.'
+        elif [[ ${APO_AUTO_PREPARE:-0} == 1 && $APO_DRY_RUN == 1 ]]; then
+            apo_state_phase COMPLETE WOULD_NORMALIZE PASS
+            apo_summary_line "WOULD NORMALIZE: public prepare would preserve a verified backup, disable explicit first-time tuning controls, reboot once, and require stock proof before reporting HOST READY."
+            apo_summary_line "Current baseline: CPU=${APO_NORMAL_CPU} GPU=${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}; audit=$APO_PERMANENT_TUNING_PROVENANCE evidence=$APO_PERMANENT_TUNING_EVIDENCE"
+            apo_event prepare PASS '' 'Read-only preparation completed. A live public prepare would normalize the explicit first-time tuning baseline to verified stock before allowing overclock.'
         else
-            apo_state_phase COMPLETE HOST_PREPARED PASS
-            apo_summary_line 'HOST PREPARED: dependencies and watchdog recovery are ready; explicit clocks are currently active.'
-            apo_summary_line "Fresh full search: autopioverclock reset $APO_RAW_TARGET"
-            apo_summary_line "Extend a retained applied result without resetting: autopioverclock overclock $APO_RAW_TARGET --cpu-only or --gpu-only"
-            apo_event prepare PASS '' 'Required workload dependencies are installed and the existing watchdog recovery chain is verified. Reset only before a fresh full search; a retained applied result can continue with --cpu-only or --gpu-only without resetting.'
+            apo_die 'Preparation ended without proving a stock or completed-ledger baseline; no overclock is authorized.' "$APO_EXIT_PREFLIGHT"
         fi
         return 0
     fi

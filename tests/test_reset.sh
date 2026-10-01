@@ -169,6 +169,7 @@ for worker_file in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-work
         printf '%s\n' \
             '[pi4]' \
             'dtoverlay=vc4-kms-v3d' \
+            'kernel_watchdog_timeout=60' \
             'arm_freq=3000' \
             'v3d_freq_min = 600' \
             'over_voltage_delta=50000' \
@@ -184,6 +185,7 @@ for worker_file in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-work
         reset_stock_validate_config "$source_config" || fail "$(basename "$worker_file") rejected a regular reset fixture"
         reset_stock_render_config "$source_config" "$rendered_config" || fail "$(basename "$worker_file") could not render stock config"
         grep -Fqx 'dtoverlay=vc4-kms-v3d' "$rendered_config" || fail "$(basename "$worker_file") dropped an unrelated config line"
+        grep -Fqx 'kernel_watchdog_timeout=60' "$rendered_config" || fail "$(basename "$worker_file") changed the native watchdog timeout"
         grep -Fqx '# AUTOPIOVERCLOCK-STOCK-DISABLED arm_freq=3000' "$rendered_config" || fail "$(basename "$worker_file") did not preserve arm_freq"
         grep -Fqx '# AUTOPIOVERCLOCK-STOCK-DISABLED v3d_freq_min = 600' "$rendered_config" || fail "$(basename "$worker_file") did not preserve v3d_freq_min"
         grep -Fqx '# AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000' "$rendered_config" || fail "$(basename "$worker_file") did not preserve voltage"
@@ -309,6 +311,7 @@ done
 # Controller-only orchestration fixture: prove the reset is standalone,
 # noninteractive, binds required worker metadata, reboots, verifies, and ends
 # in the exact stock-verified state with a preservation/backup PASS event.
+# shellcheck disable=SC2030,SC2031
 (
     # shellcheck source=lib/reset.sh
     source "$ROOT/lib/reset.sh"
@@ -415,6 +418,205 @@ done
     [[ ${FINAL_RESET_EVENT,,} == *preserv* && ${FINAL_RESET_EVENT,,} == *log* && ${FINAL_RESET_EVENT,,} == *saved*run* ]] ||
         fail 'reset PASS event did not state that logs/saved runs were preserved'
 )
+
+# Public prepare reuses the same protected reset transaction when a first-time
+# target has explicit permanent tuning. Clean stock and completed-ledger
+# baselines must remain no-op paths.
+# shellcheck disable=SC2030,SC2031
+(
+    APO_ROOT=$ROOT
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=lib/config.sh
+    source "$ROOT/lib/config.sh"
+    # shellcheck source=lib/detect.sh
+    source "$ROOT/lib/detect.sh"
+    # shellcheck source=lib/reset.sh
+    source "$ROOT/lib/reset.sh"
+    declare -Ag APO_STATE=() APO_WORKER_DATA=() APO_DISCOVERY=() APO_CFG=([VOLTAGE_DELTA_UV]=0)
+    declare -ag PREPARE_ACTIONS=() PREPARE_EVENTS=()
+    PREPARE_OLD_HASH=$(printf 'a%.0s' {1..64})
+    PREPARE_NEW_HASH=$(printf 'b%.0s' {1..64})
+    PREPARE_LEDGER_HASH=$(printf 'c%.0s' {1..64})
+    PREPARE_BACKUP=/var/lib/autopioverclock/backups/config-prepare-fixture.txt
+    APO_AUTO_PREPARE=1
+    APO_DRY_RUN=0
+    APO_PROFILE=debian
+    APO_RUN_ID=prepare-fixture-run
+    APO_BOOT_CONFIG=/boot/firmware/config.txt
+    APO_TRYBOOT_CONFIG=/boot/firmware/tryboot.txt
+    APO_GPU_KEY=v3d_freq
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=960
+    APO_NORMAL_VOLTAGE=50000
+    APO_PERMANENT_TUNING_PROVENANCE=explicit-override
+    APO_PERMANENT_TUNING_EVIDENCE=over_voltage_delta,arm_freq
+    APO_PERMANENT_CONFIG_HASH=$PREPARE_OLD_HASH
+    APO_REMOTE_WORKER=/tmp/prepare-worker
+    APO_BOOT_TIMEOUT=30
+    APO_BOOT_SETTLE_SECONDS=0
+    APO_LAST_CLASS=PASS
+    APO_LAST_REASON='fixture pass'
+    APO_LAST_WORKER_LOG=''
+    APO_DISCOVERY_FILE="$TEST_ROOT/prepare-dry-discovery.txt"
+
+    apo_state_set() { APO_STATE[$1]=${2-}; }
+    apo_state_get() { printf '%s' "${APO_STATE[$1]:-${2-}}"; }
+    apo_state_save() { PREPARE_ACTIONS+=(state-save); }
+    apo_event() { PREPARE_EVENTS+=("$1|$2|${3-}|${4-}"); }
+    apo_summary_line() { :; }
+    apo_remote_boot_id() { printf prepare-boot-before; }
+    apo_post_reboot_handshake() {
+        [[ $1 == prepare-boot-before && $2 == 30 && $3 == prepare-stock-normalization ]]
+        PREPARE_ACTIONS+=(post-reboot-handshake)
+        APO_REBOOT_BOOT_ID=prepare-boot-after
+        APO_REBOOT_HANDSHAKE_STAGE=complete
+    }
+    apo_remote_worker() { PREPARE_ACTIONS+=("remote-worker:$2"); return 0; }
+    apo_run_worker_capture() {
+        PREPARE_ACTIONS+=("worker:$2")
+        APO_LAST_WORKER_LOG=$2
+        APO_LAST_CLASS=PASS
+        APO_LAST_REASON='fixture pass'
+        return 0
+    }
+    apo_parse_data_file() {
+        case $APO_LAST_WORKER_LOG in
+            reset-stock)
+                APO_WORKER_DATA=(
+                    [RESET_BACKUP]="$PREPARE_BACKUP"
+                    [RESET_TRYBOOT_BACKUP]=''
+                    [RESET_OLD_HASH]="$PREPARE_OLD_HASH"
+                    [RESET_NEW_HASH]="$PREPARE_NEW_HASH"
+                    [RESET_DISABLED_KEYS]='over_voltage_delta,arm_freq'
+                )
+                ;;
+            verify-stock-reset)
+                APO_WORKER_DATA=(
+                    [RESET_NEW_HASH]="$PREPARE_NEW_HASH"
+                    [RESET_ACTIVE_CPU]=2400
+                    [RESET_ACTIVE_GPU]=960
+                    [RESET_ACTIVE_VOLTAGE]=0
+                )
+                ;;
+        esac
+    }
+    apo_class_exit_code() { printf 1; }
+    apo_die() { fail "unexpected prepare normalization abort: $1"; }
+    sleep() { :; }
+
+    apo_prepare_stock_baseline
+    [[ ${APO_STATE[PREPARE_BASELINE_STATUS]} == VERIFIED ]] || fail 'prepare normalization did not finish VERIFIED'
+    [[ ${APO_STATE[PREPARE_BASELINE_OLD_HASH]} == "$PREPARE_OLD_HASH" && ${APO_STATE[PREPARE_BASELINE_NEW_HASH]} == "$PREPARE_NEW_HASH" ]] ||
+        fail 'prepare normalization did not bind its old/new hashes'
+    [[ ${APO_STATE[PREPARE_BASELINE_BACKUP]} == "$PREPARE_BACKUP" ]] || fail 'prepare normalization did not retain its backup path'
+    [[ ${APO_STATE[PREPARE_BASELINE_DISABLED_KEYS]} == over_voltage_delta,arm_freq ]] || fail 'prepare normalization did not retain its disabled keys'
+    [[ ${APO_STATE[PREPARE_BASELINE_OLD_BOOT_ID]} == prepare-boot-before && ${APO_STATE[PREPARE_BASELINE_NEW_BOOT_ID]} == prepare-boot-after ]] ||
+        fail 'prepare normalization did not prove a changed boot ID'
+    [[ " ${PREPARE_ACTIONS[*]} " == *' worker:reset-stock '* && " ${PREPARE_ACTIONS[*]} " == *' worker:verify-stock-reset '* ]] ||
+        fail 'prepare normalization skipped reset or verification workers'
+    [[ " ${PREPARE_ACTIONS[*]} " == *' remote-worker:reboot-stock-reset '* ]] || fail 'prepare normalization skipped its stock reboot'
+    [[ ${PREPARE_EVENTS[-1]} == prepare-stock-normalization\|PASS\|* ]] || fail 'prepare normalization did not emit PASS'
+
+    PREPARE_ACTIONS=()
+    APO_STATE=()
+    APO_NORMAL_VOLTAGE=0
+    APO_PERMANENT_TUNING_PROVENANCE=verified-default
+    APO_PERMANENT_TUNING_EVIDENCE=none
+    APO_PERMANENT_CONFIG_HASH=$PREPARE_NEW_HASH
+    apo_prepare_stock_baseline
+    [[ ${APO_STATE[PREPARE_BASELINE_STATUS]} == NOT_NEEDED ]] || fail 'clean-stock prepare did not select NOT_NEEDED'
+    [[ " ${PREPARE_ACTIONS[*]} " != *' worker:'* && " ${PREPARE_ACTIONS[*]} " != *' remote-worker:'* ]] || fail 'clean-stock prepare mutated the target'
+
+    PREPARE_ACTIONS=()
+    APO_STATE=()
+    APO_NORMAL_CPU=3050
+    APO_NORMAL_GPU=1200
+    APO_NORMAL_VOLTAGE=0
+    APO_PERMANENT_TUNING_PROVENANCE=verified-completed-ledger
+    APO_PERMANENT_TUNING_EVIDENCE="failure-ledger-v2:$PREPARE_LEDGER_HASH"
+    apo_prepare_stock_baseline
+    [[ ${APO_STATE[PREPARE_BASELINE_STATUS]} == NOT_NEEDED ]] || fail 'completed-ledger prepare did not select NOT_NEEDED'
+    [[ " ${PREPARE_ACTIONS[*]} " != *' worker:'* && " ${PREPARE_ACTIONS[*]} " != *' remote-worker:'* ]] || fail 'completed-ledger prepare reset the applied baseline'
+
+    PREPARE_ACTIONS=()
+    APO_STATE=()
+    APO_DRY_RUN=1
+    APO_PERMANENT_TUNING_PROVENANCE=explicit-override
+    APO_PERMANENT_TUNING_EVIDENCE=over_voltage_delta,arm_freq
+    apo_prepare_stock_baseline
+    [[ ${#APO_STATE[@]} == 0 && ${#PREPARE_ACTIONS[@]} == 0 ]] || fail 'dry-run prepare normalization changed state or invoked a worker'
+
+    PREPARE_ACTIONS=()
+    APO_STATE=()
+    APO_PROFILE=''
+    apo_ssh_preflight() { PREPARE_ACTIONS+=(read:ssh-preflight); }
+    apo_probe_profile() { printf debian; }
+    apo_load_profile() { PREPARE_ACTIONS+=(read:profile); }
+    apo_deploy_worker() { PREPARE_ACTIONS+=(mutation:deploy-worker); }
+    apo_normalize_initial_boot() { PREPARE_ACTIONS+=(read:initial-boot); }
+    apo_refresh_preparation_discovery() {
+        PREPARE_ACTIONS+=(read:discovery)
+        APO_MODE_EFFECTIVE=headless
+        APO_BOOT_CONFIG=/boot/firmware/config.txt
+        APO_TRYBOOT_CONFIG=/boot/firmware/tryboot.txt
+        APO_INITIAL_TRYBOOT_EXISTS=0
+        APO_INITIAL_TRYBOOT_TYPE=absent
+        APO_INITIAL_TRYBOOT_HASH=unavailable
+        APO_GPU_KEY=v3d_freq
+        APO_NORMAL_CPU=2400
+        APO_NORMAL_GPU=960
+        APO_NORMAL_VOLTAGE=50000
+        APO_PERMANENT_TUNING_PROVENANCE=explicit-override
+        APO_PERMANENT_TUNING_EVIDENCE=over_voltage_delta,arm_freq
+        APO_THROTTLE_BASELINE=throttled=0x0
+        APO_THROTTLE_RECENT_SUPPORTED=1
+        APO_PERMANENT_CONFIG_HASH=$PREPARE_OLD_HASH
+        APO_STORAGE_LAYOUT='root=/dev/mmcblk0p2;boot=/dev/mmcblk0p1'
+        APO_DISPLAY_BASELINE=''
+        APO_AUDIO_BASELINE=''
+        APO_TEST_VOLTAGE=0
+        APO_REQUIRE_GPU_STRESS=0
+    }
+    apo_validate_preparation_runtime() { PREPARE_ACTIONS+=(read:runtime); }
+    apo_dependency_preflight() { PREPARE_ACTIONS+=(read:dependencies); }
+    apo_watchdog_preflight() { PREPARE_ACTIONS+=(read:watchdog); }
+    apo_store_discovery_state() { PREPARE_ACTIONS+=(local:discovery-state); }
+    apo_dependency_description() { printf fixture; }
+
+    apo_prepare_target
+    [[ ${APO_STATE[PREPARE_BASELINE_STATUS]} == WOULD_NORMALIZE ]] || fail 'public prepare dry-run did not report WOULD_NORMALIZE'
+    [[ " ${PREPARE_ACTIONS[*]} " != *' mutation:'* ]] || fail 'public prepare dry-run reached a target mutation path'
+    [[ " ${PREPARE_ACTIONS[*]} " == *' read:dependencies '* && " ${PREPARE_ACTIONS[*]} " == *' read:watchdog '* ]] ||
+        fail 'public prepare dry-run skipped prerequisite inspection'
+)
+
+PREPARE_FAILURE_AUDIT="$TEST_ROOT/prepare-failure-audit"
+set +e
+APO_ROOT="$ROOT" PREPARE_FAILURE_AUDIT="$PREPARE_FAILURE_AUDIT" bash -c '
+    set -Eeuo pipefail
+    source "$APO_ROOT/lib/common.sh"
+    source "$APO_ROOT/lib/reset.sh"
+    declare -Ag APO_STATE=(
+        [PREPARE_BASELINE_STATUS]=VERIFYING
+        [PREPARE_BASELINE_BACKUP]=/var/lib/autopioverclock/backups/config-prepare-failure.txt
+    )
+    APO_AUTO_PREPARE=1
+    apo_state_set() { APO_STATE[$1]=${2-}; }
+    apo_state_get() { printf "%s" "${APO_STATE[$1]:-${2-}}"; }
+    apo_state_save() {
+        printf "%s|%s|%s\n" \
+            "${APO_STATE[PREPARE_BASELINE_STATUS]:-}" \
+            "${APO_STATE[PREPARE_BASELINE_FAILURE_CLASS]:-}" \
+            "${APO_STATE[PREPARE_BASELINE_FAILURE_REASON]:-}" > "$PREPARE_FAILURE_AUDIT"
+    }
+    apo_reset_validation_fail "Post-reset verification fixture failed." RECOVERY_FAILURE "$APO_EXIT_RECOVERY"
+' >/dev/null 2>&1
+PREPARE_FAILURE_RC=$?
+set -e
+(( PREPARE_FAILURE_RC == 24 )) || fail 'prepare normalization validation failure returned the wrong status'
+grep -Fqx 'FAILED|RECOVERY_FAILURE|Post-reset verification fixture failed. Backup: /var/lib/autopioverclock/backups/config-prepare-failure.txt.' "$PREPARE_FAILURE_AUDIT" ||
+    fail 'prepare normalization validation failure was not durably classified with its backup path'
 
 grep -Fq "ORIGIN_COMMAND '') == reset" "$ROOT/autopioverclock" || fail 'saved reset audits are not rejected by tuning-state commands'
 

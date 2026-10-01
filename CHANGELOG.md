@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.99 - 2026-09-30
+
+- Made public `prepare TARGET` finish first-time baseline preparation instead of returning success while explicit permanent clock or voltage controls still block `overclock`.
+- Reused the protected stock-reset transaction to preserve a verified backup, disable first-time tuning controls, reboot once, prove the changed boot and stock tuple, rediscover the target, and recheck dependency and watchdog readiness.
+- Kept completed-ledger baselines unchanged, kept advanced commands unchanged, and made `prepare --dry-run` report the normalization it would perform without writing or rebooting.
+- Removed the obsolete successful `prepare` result that directed users to run a separate reset. An unproved baseline now fails closed.
+
 ## 0.1.0-alpha.98 - 2026-09-30
 
 - Made initial SSH preflight fail after one bounded attempt instead of silently retrying for five minutes.

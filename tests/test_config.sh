@@ -316,6 +316,25 @@ expect_auto_stock_rejection ambiguous-provenance 2400 800 0 ambiguous unreadable
 expect_auto_stock_rejection missing-provenance 2400 800 0 missing missing
 expect_auto_stock_rejection inconsistent-provenance 2400 800 0 verified-default arm_freq
 
+PUBLIC_PREPARE_REJECTION="$TEMP_DIR/public-prepare-rejection.out"
+set +e
+(
+    APO_COMMAND=run
+    APO_PUBLIC_COMMAND=overclock
+    APO_RAW_TARGET=root@fixture-target
+    APO_DRY_RUN=0
+    APO_CONFIG_FILE=''
+    APO_MODE_REQUESTED=auto
+    apo_config_load_for_new_run
+    resolve_discovered_auto_plan debian 2400 960 50000 explicit-override over_voltage_delta,arm_freq
+) >"$PUBLIC_PREPARE_REJECTION" 2>&1
+PUBLIC_PREPARE_REJECTION_RC=$?
+set -e
+(( PUBLIC_PREPARE_REJECTION_RC == APO_EXIT_PREFLIGHT )) || fail 'public overclock baseline rejection returned the wrong status'
+grep -Fq 'Run autopioverclock prepare root@fixture-target' "$PUBLIC_PREPARE_REJECTION" || fail 'public overclock rejection did not direct the user to prepare'
+grep -Fq 'preserve a verified backup' "$PUBLIC_PREPARE_REJECTION" || fail 'public overclock rejection did not explain prepare normalization safety'
+! grep -Fq 'autopioverclock reset root@fixture-target' "$PUBLIC_PREPARE_REJECTION" || fail 'public overclock rejection still required a separate reset'
+
 [[ $(apo_config_auto_ladder 3150 100 3200 600) == 3200 ]]
 [[ $(apo_config_auto_ladder 1190 50 1200 200) == 1200 ]]
 [[ $(apo_config_auto_ladder 2400 100 3175 600) == '2500,2600,2700,2800,2900,3000,3100,3175' ]]

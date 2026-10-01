@@ -223,6 +223,12 @@ for normal_command in prepare overclock complete reset; do
     grep -Fq "$documented_pattern" "$ROOT/docs/cli.md"
 done
 
+if grep -Fq 'Reset only before a fresh full search' "$ROOT/autopioverclock" ||
+   grep -Fq 'Fresh full search: autopioverclock reset' "$ROOT/autopioverclock"; then
+    echo 'prepare still directs users to a separate reset instead of proving its own baseline' >&2
+    exit 1
+fi
+
 grep -Fq 'The controller and target must be different machines.' "$ROOT/README.md"
 for required_heading in \
     '## Supported targets' \

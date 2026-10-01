@@ -866,13 +866,7 @@ apo_finalize_discovered_config() {
     apo_summary_line "GPU candidates: ${APO_CFG[GPU_CANDIDATES]:-none}"
 }
 
-apo_prepare_target() {
-    apo_ssh_preflight
-    APO_PROFILE=$(apo_probe_profile)
-    apo_load_profile "$APO_PROFILE"
-    if (( APO_DRY_RUN == 0 )); then apo_deploy_worker; fi
-    APO_HAVE_REMOTE_CONTEXT=1
-    apo_normalize_initial_boot
+apo_refresh_preparation_discovery() {
     apo_discovery_capture
     [[ ${APO_DISCOVERY[PROFILE]:-} == "$APO_PROFILE" ]] || apo_die 'Profile probe and worker discovery disagree.' "$APO_EXIT_PREFLIGHT"
     apo_validate_pi5
@@ -880,7 +874,10 @@ apo_prepare_target() {
     apo_retry_graphical_audio_baseline
     apo_context_from_discovery
     apo_finalize_discovered_config
-    local throttle=${APO_DISCOVERY[THROTTLED]:-} temp=${APO_DISCOVERY[TEMP]:-} baseline_boot_id audio_summary
+}
+
+apo_validate_preparation_runtime() {
+    local throttle=${APO_DISCOVERY[THROTTLED]:-} temp=${APO_DISCOVERY[TEMP]:-} baseline_boot_id
     apo_throttle_reading_valid "$throttle" || apo_die "Power/throttle telemetry is malformed: ${throttle:-missing}" "$APO_EXIT_PREFLIGHT"
     apo_throttle_active_bits_clear "$throttle" || apo_die "Current power/throttle conditions are active at preflight: $throttle" "$APO_EXIT_PREFLIGHT"
     APO_THROTTLE_BASELINE=$throttle
@@ -896,9 +893,40 @@ apo_prepare_target() {
     apo_state_save
     [[ -n $temp ]] || apo_die 'Temperature telemetry is unavailable.' "$APO_EXIT_PREFLIGHT"
     awk -v t="$temp" -v m="${APO_CFG[MAX_TEMP_C]}" 'BEGIN{exit !(t<m)}' || apo_die "Starting temperature ${temp}C is not below ${APO_CFG[MAX_TEMP_C]}C." "$APO_EXIT_PREFLIGHT"
+}
+
+apo_prepare_target() {
+    apo_ssh_preflight
+    APO_PROFILE=$(apo_probe_profile)
+    apo_load_profile "$APO_PROFILE"
+    if (( APO_DRY_RUN == 0 )); then apo_deploy_worker; fi
+    APO_HAVE_REMOTE_CONTEXT=1
+    apo_normalize_initial_boot
+    apo_refresh_preparation_discovery
+    apo_validate_preparation_runtime
     apo_dependency_preflight
     apo_watchdog_preflight
+    if [[ ${APO_AUTO_PREPARE:-0} == 1 ]]; then
+        if apo_config_stock_auto_baseline_ready "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" \
+            "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"; then
+            apo_state_set PREPARE_BASELINE_STATUS NOT_NEEDED
+            apo_state_save
+        elif (( APO_DRY_RUN == 1 )); then
+            apo_state_set PREPARE_BASELINE_STATUS WOULD_NORMALIZE
+            apo_state_save
+        else
+            apo_prepare_stock_baseline
+            apo_refresh_preparation_discovery
+            apo_validate_preparation_runtime
+            apo_dependency_preflight
+            apo_watchdog_preflight
+            apo_config_stock_auto_baseline_ready "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" \
+                "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE" ||
+                apo_die 'First-time preparation completed stock normalization, but fresh discovery did not prove a usable stock or completed-ledger baseline.' "$APO_EXIT_RECOVERY"
+        fi
+    fi
     apo_store_discovery_state
+    local audio_summary
     audio_summary=${APO_AUDIO_BASELINE:-not-captured}
     {
         printf 'Profile=%s\nMode=%s\nModel=%s\nOS=%s %s\nBootConfig=%s\nTrybootConfig=%s\nTrybootExists=%s\nTrybootType=%s\nTrybootHash=%s\nGPUKey=%s\nNormalCPU=%s\nNormalGPU=%s\nNormalVoltage=%s\nNormalVoltageSource=%s\nPermanentThrottleBaseline=%s\nRecentThrottle=%s\nRecentThrottleResetSupported=%s\nPermanentHash=%s\nStorage=%s\nDisplayBaseline=%s\nAudioBaseline=%s\n' \

@@ -44,6 +44,16 @@ apo_reset_store_discovery() {
     apo_state_save
 }
 
+apo_reset_validation_fail() {
+    local failure_reason=$1 failure_class=$2 exit_code=$3 prepare_backup=''
+    if [[ ${APO_AUTO_PREPARE:-0} == 1 ]]; then
+        prepare_backup=$(apo_state_get PREPARE_BASELINE_BACKUP '')
+        [[ -z $prepare_backup ]] || failure_reason="$failure_reason Backup: $prepare_backup."
+        apo_prepare_baseline_fail "$failure_class" "$failure_reason"
+    fi
+    apo_die "$failure_reason" "$exit_code"
+}
+
 apo_reset_validate_verification() {
     local expected_hash=$1 verified_hash verified_cpu verified_gpu verified_voltage
     apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
@@ -52,9 +62,9 @@ apo_reset_validate_verification() {
     verified_gpu=${APO_WORKER_DATA[RESET_ACTIVE_GPU]:-}
     verified_voltage=${APO_WORKER_DATA[RESET_ACTIVE_VOLTAGE]:-}
     [[ $verified_hash == "$expected_hash" ]] ||
-        apo_die 'Post-reset verification did not bind the expected permanent-config hash.' "$APO_EXIT_RECOVERY"
+        apo_reset_validation_fail 'Post-reset verification did not bind the expected permanent-config hash.' RECOVERY_FAILURE "$APO_EXIT_RECOVERY"
     [[ $verified_cpu == 2400 && ( $verified_gpu == 800 || $verified_gpu == 960 ) && $verified_voltage == 0 ]] ||
-        apo_die 'Post-reset verification returned an invalid stock clock/voltage tuple.' "$APO_EXIT_RECOVERY"
+        apo_reset_validation_fail 'Post-reset verification returned an invalid stock clock/voltage tuple.' RECOVERY_FAILURE "$APO_EXIT_RECOVERY"
     APO_NORMAL_CPU=$verified_cpu
     APO_NORMAL_GPU=$verified_gpu
     APO_NORMAL_VOLTAGE=$verified_voltage
@@ -72,7 +82,7 @@ apo_reset_validate_metadata() {
 
     for reset_key in RESET_BACKUP RESET_OLD_HASH RESET_NEW_HASH RESET_DISABLED_KEYS; do
         [[ ${APO_WORKER_DATA[$reset_key]+present} == present ]] ||
-            apo_die "reset-stock omitted required metadata: $reset_key" "$APO_EXIT_HARNESS"
+            apo_reset_validation_fail "reset-stock omitted required metadata: $reset_key" HARNESS_FAILURE "$APO_EXIT_HARNESS"
     done
     reset_backup=${APO_WORKER_DATA[RESET_BACKUP]}
     reset_tryboot_backup=${APO_WORKER_DATA[RESET_TRYBOOT_BACKUP]:-}
@@ -80,11 +90,11 @@ apo_reset_validate_metadata() {
     reset_new_hash=${APO_WORKER_DATA[RESET_NEW_HASH]}
     reset_disabled_keys=${APO_WORKER_DATA[RESET_DISABLED_KEYS]}
 
-    [[ -n $reset_backup ]] || apo_die 'reset-stock returned an empty backup path.' "$APO_EXIT_HARNESS"
+    [[ -n $reset_backup ]] || apo_reset_validation_fail 'reset-stock returned an empty backup path.' HARNESS_FAILURE "$APO_EXIT_HARNESS"
     [[ $reset_old_hash =~ ^[0-9a-f]{64}$ && $reset_old_hash == "$discovered_hash" ]] ||
-        apo_die 'reset-stock old-hash evidence does not match the discovery checkpoint.' "$APO_EXIT_RECOVERY"
+        apo_reset_validation_fail 'reset-stock old-hash evidence does not match the discovery checkpoint.' RECOVERY_FAILURE "$APO_EXIT_RECOVERY"
     [[ $reset_new_hash =~ ^[0-9a-f]{64}$ ]] ||
-        apo_die 'reset-stock returned an invalid new permanent-config hash.' "$APO_EXIT_HARNESS"
+        apo_reset_validation_fail 'reset-stock returned an invalid new permanent-config hash.' HARNESS_FAILURE "$APO_EXIT_HARNESS"
 
     apo_state_set RESET_BACKUP "$reset_backup"
     apo_state_set RESET_TRYBOOT_BACKUP "$reset_tryboot_backup"
@@ -102,6 +112,97 @@ apo_reset_validate_metadata() {
     apo_summary_line "Original permanent hash: $reset_old_hash"
     apo_summary_line "Stock-reset permanent hash: $reset_new_hash"
     apo_summary_line "Disabled keys: ${reset_disabled_keys:-none}"
+}
+
+apo_prepare_baseline_fail() {
+    local failure_class=${1:-HARNESS_FAILURE} failure_reason=${2:-'First-time baseline normalization failed.'}
+    apo_state_set PREPARE_BASELINE_STATUS FAILED
+    apo_state_set PREPARE_BASELINE_FAILURE_CLASS "$failure_class"
+    apo_state_set PREPARE_BASELINE_FAILURE_REASON "$failure_reason"
+    apo_state_save
+    apo_die "$failure_reason" "$(apo_class_exit_code "$failure_class")"
+}
+
+apo_prepare_stock_baseline() {
+    local discovered_hash old_boot_id new_boot_id reset_backup
+
+    [[ ${APO_AUTO_PREPARE:-0} == 1 && ${APO_DRY_RUN:-0} == 0 ]] || return 0
+    if apo_config_stock_auto_baseline_ready "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" \
+        "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"; then
+        apo_state_set PREPARE_BASELINE_STATUS NOT_NEEDED
+        apo_state_save
+        return 0
+    fi
+
+    discovered_hash=$APO_PERMANENT_CONFIG_HASH
+    [[ $discovered_hash =~ ^[0-9a-f]{64}$ ]] ||
+        apo_prepare_baseline_fail PREFLIGHT_FAILURE 'First-time preparation cannot normalize an invalid permanent-config hash.'
+    old_boot_id=$(apo_remote_boot_id || true)
+    [[ -n $old_boot_id ]] ||
+        apo_prepare_baseline_fail PREFLIGHT_FAILURE 'First-time preparation could not record the boot ID before stock normalization.'
+
+    apo_state_set PREPARE_BASELINE_STATUS PLANNED
+    apo_state_set PREPARE_BASELINE_OLD_HASH "$discovered_hash"
+    apo_state_set PREPARE_BASELINE_NEW_HASH ''
+    apo_state_set PREPARE_BASELINE_BACKUP ''
+    apo_state_set PREPARE_BASELINE_DISABLED_KEYS ''
+    apo_state_set PREPARE_BASELINE_OLD_BOOT_ID "$old_boot_id"
+    apo_state_set PREPARE_BASELINE_NEW_BOOT_ID ''
+    apo_state_set PREPARE_BASELINE_PROFILE "$APO_PROFILE"
+    apo_state_set PREPARE_BASELINE_BOOT_CONFIG "$APO_BOOT_CONFIG"
+    apo_state_set PREPARE_BASELINE_TRYBOOT_CONFIG "$APO_TRYBOOT_CONFIG"
+    apo_state_set PREPARE_BASELINE_GPU_KEY "$APO_GPU_KEY"
+    apo_state_set PREPARE_BASELINE_CPU "$APO_NORMAL_CPU"
+    apo_state_set PREPARE_BASELINE_GPU "$APO_NORMAL_GPU"
+    apo_state_set PREPARE_BASELINE_VOLTAGE "$APO_NORMAL_VOLTAGE"
+    apo_state_set PREPARE_BASELINE_PROVENANCE "$APO_PERMANENT_TUNING_PROVENANCE"
+    apo_state_set PREPARE_BASELINE_EVIDENCE "$APO_PERMANENT_TUNING_EVIDENCE"
+    apo_state_set PREPARE_BASELINE_FAILURE_CLASS ''
+    apo_state_set PREPARE_BASELINE_FAILURE_REASON ''
+    apo_state_set MUTATIONS_STARTED 1
+    apo_state_save
+    apo_event prepare-stock-normalization INFO '' "Backing up and disabling first-time permanent tuning controls before a verified stock reboot (audit=$APO_PERMANENT_TUNING_PROVENANCE evidence=$APO_PERMANENT_TUNING_EVIDENCE)."
+
+    if ! apo_run_worker_capture prepare-stock-normalization reset-stock "$discovered_hash" "$APO_RUN_ID"; then
+        apo_prepare_baseline_fail "${APO_LAST_CLASS:-HARNESS_FAILURE}" "${APO_LAST_REASON:-The first-time stock-normalization worker failed without a reason.}"
+    fi
+    apo_parse_data_file "$APO_LAST_WORKER_LOG" APO_WORKER_DATA
+    apo_reset_validate_metadata "$discovered_hash"
+    reset_backup=$(apo_state_get RESET_BACKUP '')
+    apo_state_set PREPARE_BASELINE_STATUS STAGED
+    apo_state_set PREPARE_BASELINE_NEW_HASH "$APO_PERMANENT_CONFIG_HASH"
+    apo_state_set PREPARE_BASELINE_BACKUP "$reset_backup"
+    apo_state_set PREPARE_BASELINE_DISABLED_KEYS "$(apo_state_get RESET_DISABLED_KEYS '')"
+    apo_state_save
+
+    apo_state_set PREPARE_BASELINE_STATUS REBOOTING
+    apo_state_set SUBPHASE PREPARE_BASELINE_REBOOTING
+    apo_state_save
+    apo_event prepare-stock-reboot INFO '' 'Rebooting once to activate the backed-up stock baseline required by first-time preparation.'
+    apo_remote_worker "$APO_REMOTE_WORKER" reboot-stock-reset "$APO_PERMANENT_CONFIG_HASH" >/dev/null 2>&1 || true
+    if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" prepare-stock-normalization; then
+        if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
+            apo_prepare_baseline_fail RECOVERY_FAILURE "The stock-normalization reboot returned, but verification could not continue: $APO_LAST_REASON Backup: ${reset_backup:-unavailable}."
+        fi
+        apo_prepare_baseline_fail RECOVERY_FAILURE "The stock-normalization reboot did not return with a new boot ID within ${APO_BOOT_TIMEOUT}s. Backup: ${reset_backup:-unavailable}."
+    fi
+    new_boot_id=$APO_REBOOT_BOOT_ID
+    apo_state_set PREPARE_BASELINE_NEW_BOOT_ID "$new_boot_id"
+    apo_state_set LAST_BOOT_ID "$new_boot_id"
+    apo_state_set NORMAL_BOOT_ID "$new_boot_id"
+    apo_state_set PREPARE_BASELINE_STATUS VERIFYING
+    apo_state_set SUBPHASE PREPARE_BASELINE_VERIFYING
+    apo_state_save
+    sleep "$APO_BOOT_SETTLE_SECONDS"
+
+    if ! apo_run_worker_capture prepare-stock-verification verify-stock-reset "$APO_PERMANENT_CONFIG_HASH"; then
+        apo_prepare_baseline_fail "${APO_LAST_CLASS:-RECOVERY_FAILURE}" "${APO_LAST_REASON:-Post-reboot stock verification failed.} Backup: ${reset_backup:-unavailable}."
+    fi
+    apo_reset_validate_verification "$APO_PERMANENT_CONFIG_HASH"
+    apo_state_set PREPARE_BASELINE_STATUS VERIFIED
+    apo_state_set SUBPHASE PREPARE_BASELINE_VERIFIED
+    apo_state_save
+    apo_event prepare-stock-normalization PASS '' "First-time permanent tuning controls were backed up, disabled, rebooted, and verified at stock settings. Backup: $reset_backup."
 }
 
 apo_reset_stock() {
