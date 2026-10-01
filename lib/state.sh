@@ -752,7 +752,6 @@ apo_state_initialize() {
     apo_state_set MANUAL_TEST "${APO_MANUAL_TEST:-0}"
     apo_state_set MANUAL_CPU "${APO_MANUAL_CPU:-}"
     apo_state_set MANUAL_GPU "${APO_MANUAL_GPU:-}"
-    apo_state_set MANUAL_MINUTES "${APO_MANUAL_MINUTES:-}"
     apo_state_set MANUAL_DURATION_S "${APO_MANUAL_DURATION_S:-}"
     apo_state_set MANUAL_TEST_STATUS "$([[ ${APO_MANUAL_TEST:-0} == 1 ]] && printf READY || printf NOT_REQUESTED)"
     apo_state_set PROGRESS_ACTIVE_SECONDS 0

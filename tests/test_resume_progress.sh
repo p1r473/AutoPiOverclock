@@ -64,6 +64,37 @@ apo_class_is_edge_failure() { [[ $1 == BOOT_FAILURE || $1 == STABILITY_FAILURE ]
 
 source "$ROOT/lib/candidates.sh"
 
+seed_empty_final_backoff_fields() {
+    local key
+    for key in FINAL_BACKOFF_CPU FINAL_BACKOFF_GPU FINAL_BACKOFF_HISTORY FINAL_BACKOFF_LAST_STAGE \
+               FINAL_BACKOFF_LAST_CLASS FINAL_BACKOFF_LAST_REASON FINAL_BACKOFF_ANCHOR_CPU \
+               FINAL_BACKOFF_ANCHOR_GPU FINAL_BACKOFF_TRIAL FINAL_BACKOFF_ANCHOR_CPU_QUALIFIED_CLOCK; do
+        apo_state_set "$key" ''
+    done
+    apo_state_set FINAL_BACKOFF_COUNT 0
+}
+
+seed_empty_qualification_fields() {
+    local key
+    for key in CPU_QUALIFICATION_TARGET CPU_QUALIFIED_CLOCK CPU_QUALIFICATION_HISTORY \
+               CPU_QUALIFICATION_LAST_CLASS CPU_QUALIFICATION_LAST_REASON GPU_QUALIFICATION_CPU \
+               GPU_QUALIFICATION_TARGET GPU_QUALIFIED_CPU GPU_QUALIFIED_CLOCK \
+               RECOVERY_WAIT_CONTEXT RECOVERY_WAIT_STARTED_AT TRANSIENT_RETRY_CONTEXT; do
+        apo_state_set "$key" ''
+    done
+    apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
+    apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
+    apo_state_set RECOVERY_WAIT_STATUS IDLE
+    apo_state_set RECOVERY_WAIT_TIMEOUTS 0
+    apo_state_set TRANSIENT_RETRY_COUNT 0
+}
+
+seed_idle_normal_return_fields() {
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+    apo_state_set NORMAL_RETURN_RETRY_REASON ''
+}
+
 seed_valid_guarded_auto_floor_plan() {
     APO_AUTO_GENERATED_CANDIDATES=1
     APO_EDGE_CPU_24H=0
@@ -127,7 +158,7 @@ seed_valid_guarded_auto_floor_plan() {
     apo_state_set RECOVERY_WAIT_CONTEXT ''
     apo_state_set RECOVERY_WAIT_STARTED_AT ''
     apo_state_set RECOVERY_WAIT_TIMEOUTS 0
-    apo_final_initialize_backoff_state
+    seed_empty_final_backoff_fields
 }
 
 # Only a Batocera graphical smoke failure that explicitly reports failed
@@ -464,14 +495,13 @@ apo_return_normal() {
 }
 apo_run_stress() { ACTIONS+=("stress:$1:$3"); }
 
-# Exact retained alpha.48 shape: exit-trap recovery already cleared ownership,
-# but FAILED/RECOVERY_FAILURE remained at GPU qualification NORMAL_2. Resume
-# adopts it as harness uncertainty, preserves all clocks/boundaries, and saves
-# BOOT_2 plus retry 1/5 in one atomic checkpoint.
-seed_alpha48_normal_return_failure() {
+# Current normal-return replay requires the durable pending tuple. The exact
+# marker drives one atomic retry/rewind and is consumed once.
+seed_current_normal_return_failure() {
     APO_STATE=()
     apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
-    apo_state_set APP_VERSION 0.1.0-alpha.48
+    seed_idle_normal_return_fields
+    apo_state_set APP_VERSION "$APO_VERSION"
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
     apo_state_set ORIGIN_COMMAND overclock
     apo_state_set STATUS FAILED
@@ -489,8 +519,9 @@ seed_alpha48_normal_return_failure() {
     apo_state_set GPU_FAILURE_BOUNDARY 1150
     apo_state_set CFG_FINAL_DURATION_S 259200
     apo_state_set FAILURE_CLASS RECOVERY_FAILURE
-    apo_state_set FAILURE_REASON 'Normal recovery reboot did not return to SSH.'
+    apo_state_set FAILURE_REASON 'The bounded fallback reboot did not complete before controller exit.'
     apo_state_set APPLY_STATUS NOT_APPLIED
+    apo_state_set TRYBOOT_CONFIG /boot/tryboot.txt
     apo_state_set TRYBOOT_EXPECTED 0
     apo_state_set TRYBOOT_FILE_MAY_EXIST 0
     apo_state_set TRYBOOT_OWNED_HASH ''
@@ -499,9 +530,12 @@ seed_alpha48_normal_return_failure() {
     apo_state_set TRYBOOT_QUARANTINE_PATH ''
     apo_state_set TRANSIENT_RETRY_CONTEXT ''
     apo_state_set TRANSIENT_RETRY_COUNT 0
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 1
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
+    apo_state_set NORMAL_RETURN_RETRY_REASON 'The verified stalled tryboot requires complete-gate replay after normal recovery.'
 }
 
-seed_alpha48_normal_return_failure
+seed_current_normal_return_failure
 SAVE_COUNT=0
 apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"
 apo_adopt_saved_normal_return_failure
@@ -514,32 +548,23 @@ apo_adopt_saved_normal_return_failure
 [[ $(apo_state_get CFG_FINAL_DURATION_S) == 259200 ]]
 [[ $(apo_state_get STATUS) == RUNNING ]]
 [[ -z $(apo_state_get FAILURE_CLASS '') && -z $(apo_state_get FAILURE_REASON '') ]]
+[[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 0 ]]
+[[ -z $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') && -z $(apo_state_get NORMAL_RETURN_RETRY_REASON '') ]]
 [[ $(apo_state_get CANDIDATE_CPU) == 2975 && $(apo_state_get CANDIDATE_GPU) == 1125 ]]
 [[ $(apo_state_get RECOMMENDED_CPU) == 2975 && $(apo_state_get RECOMMENDED_GPU) == 1125 ]]
 [[ $(apo_state_get CPU_FAILURE_BOUNDARY) == 3000 && $(apo_state_get GPU_FAILURE_BOUNDARY) == 1150 ]]
 
-# A failed controller process can retain pre-fallback intent instead of the
-# legacy alpha.48 reason. After resume has fully normalized the target, that
-# exact marker drives the same atomic retry/rewind and is consumed once.
-seed_alpha48_normal_return_failure
-apo_state_set TRYBOOT_CONFIG /boot/tryboot.txt
-apo_state_set FAILURE_REASON 'The bounded fallback reboot did not complete before controller exit.'
-apo_state_set NORMAL_RETURN_RETRY_PENDING 1
-apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
-apo_state_set NORMAL_RETURN_RETRY_REASON 'The verified stalled tryboot requires complete-gate replay after normal recovery.'
-SAVE_COUNT=0
-apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"
-apo_adopt_saved_normal_return_failure
-[[ $SAVE_COUNT == 1 ]]
-[[ $(apo_state_get CANDIDATE_STAGE) == BOOT_2 ]]
-[[ $(apo_state_get TRANSIENT_RETRY_CONTEXT) == gpu-qualification-2975_gpu-1125-normal-2 ]]
-[[ $(apo_state_get TRANSIENT_RETRY_COUNT) == 1 ]]
-[[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING) == 0 ]]
-[[ -z $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') && -z $(apo_state_get NORMAL_RETURN_RETRY_REASON '') ]]
+# Text-only recovery failures are obsolete and cannot be adopted without the
+# durable current checkpoint fields.
+seed_current_normal_return_failure
+apo_state_set FAILURE_REASON 'Normal recovery reboot did not return to SSH.'
+unset 'APO_STATE[NORMAL_RETURN_RETRY_PENDING]' 'APO_STATE[NORMAL_RETURN_RETRY_SOURCE]' 'APO_STATE[NORMAL_RETURN_RETRY_REASON]'
+if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
+if apo_adopt_saved_normal_return_failure; then exit 1; fi
 
-# The same gate stops after all five persisted retries; exhaustion does not
-# rewrite the candidate checkpoint or lower either clock.
-seed_alpha48_normal_return_failure
+# The same current gate stops after all five persisted retries. Exhaustion does
+# not rewrite the candidate checkpoint or lower either clock.
+seed_current_normal_return_failure
 apo_state_set TRANSIENT_RETRY_CONTEXT gpu-qualification-2975_gpu-1125-normal-2
 apo_state_set TRANSIENT_RETRY_COUNT 5
 SAVE_COUNT=0
@@ -555,30 +580,31 @@ fi
 [[ $(apo_state_get CANDIDATE_CPU) == 2975 && $(apo_state_get CANDIDATE_GPU) == 1125 ]]
 [[ $(apo_state_get CPU_FAILURE_BOUNDARY) == 3000 && $(apo_state_get GPU_FAILURE_BOUNDARY) == 1150 ]]
 
-# Adoption is exact: a different reason/schema or any uncleared ownership is
-# still recovery uncertainty and is never converted into an automatic replay.
-seed_alpha48_normal_return_failure
-apo_state_set FAILURE_REASON 'Permanent config hash is unavailable after normal recovery.'
-if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
-if apo_adopt_saved_normal_return_failure; then exit 1; fi
-[[ $(apo_state_get STATUS) == FAILED && $(apo_state_get CANDIDATE_STAGE) == NORMAL_2 ]]
-
-seed_alpha48_normal_return_failure
+# Adoption remains exact: a non-current schema, missing tuple field, or partial
+# tryboot ownership remains recovery uncertainty and cannot become a replay.
+seed_current_normal_return_failure
 apo_state_set RUN_SCHEMA 9
 if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
 if apo_adopt_saved_normal_return_failure; then exit 1; fi
 
-seed_alpha48_normal_return_failure
+seed_current_normal_return_failure
+unset 'APO_STATE[NORMAL_RETURN_RETRY_REASON]'
+if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
+if apo_validate_normal_return_retry_state; then exit 1; fi
+
+seed_current_normal_return_failure
 apo_state_set TRYBOOT_FILE_MAY_EXIST 1
 apo_state_set TRYBOOT_OWNED_HASH "$(printf 'a%.0s' {1..64})"
 if apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA"; then exit 1; fi
 if apo_adopt_saved_normal_return_failure; then exit 1; fi
 
-# The durable pending-replay tuple is optional for older schema-10 states. A
-# pending intent is checkpoint-bound and permits only the three real recovery
-# snapshots: live tryboot, normal boot before owned cleanup, or fully cleared.
-seed_alpha48_normal_return_failure
-apo_state_set TRYBOOT_CONFIG /boot/tryboot.txt
+# The current durable tuple is always present. Pending intent permits only the
+# three real recovery snapshots: live tryboot, normal boot before owned cleanup,
+# or fully cleared ownership.
+seed_current_normal_return_failure
+apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+apo_state_set NORMAL_RETURN_RETRY_REASON ''
 apo_validate_normal_return_retry_state
 apo_state_set NORMAL_RETURN_RETRY_PENDING 1
 apo_state_set NORMAL_RETURN_RETRY_SOURCE gpu-qualification-2975_gpu-1125-normal-2
@@ -618,7 +644,6 @@ apo_state_set TRYBOOT_RESERVATION_HASH ''
 apo_state_set TRYBOOT_OWNERSHIP_TOKEN ''
 apo_state_set TRYBOOT_QUARANTINE_PATH ''
 apo_validate_normal_return_retry_state
-apo_state_set TRYBOOT_FILE_MAY_EXIST 0
 apo_state_set NORMAL_RETURN_RETRY_PENDING 0
 if apo_validate_normal_return_retry_state; then exit 1; fi
 
@@ -859,6 +884,7 @@ APO_FINAL_DURATION_S=86400
 APO_CFG[FINAL_DURATION_S]=86400
 APO_DURATION_POLICY=custom
 apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+seed_idle_normal_return_fields
 apo_state_set RUN_ID 20260831-131319-1111111111111111
 apo_state_set ORIGIN_COMMAND overclock
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
@@ -1008,6 +1034,7 @@ APO_STATE=()
 seed_valid_guarded_auto_floor_plan
 APO_EDGE_ORDER='floor-first'
 apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+seed_idle_normal_return_fields
 apo_state_set ORIGIN_COMMAND overclock
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
 apo_state_set APPLY_STATUS NOT_APPLIED
@@ -1149,6 +1176,7 @@ apo_state_set PHASE FINAL_VALIDATION
 apo_state_set SUBPHASE ENDURANCE
 apo_state_set FINAL_STAGE ENDURANCE
 apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+seed_idle_normal_return_fields
 apo_state_set ORIGIN_COMMAND overclock
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
 apo_state_set APPLY_STATUS NOT_APPLIED
@@ -1221,6 +1249,7 @@ APO_CFG[GPU_CANDIDATES]=1150
 APO_CFG[BACKOFF_STEPS]=0
 APO_CFG[VOLTAGE_DELTA_UV]=existing
 apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+seed_idle_normal_return_fields
 apo_state_set ORIGIN_COMMAND overclock
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
 apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
@@ -1325,6 +1354,7 @@ apo_state_set STATUS INTERRUPTED
 apo_state_set FAILURE_CLASS ''
 apo_state_set FAILURE_REASON ''
 apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+seed_idle_normal_return_fields
 apo_state_set ORIGIN_COMMAND overclock
 apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
 apo_state_set APPLY_STATUS NOT_APPLIED
@@ -1444,6 +1474,7 @@ seed_adaptive_reverse_resume_plan() {
     APO_CFG[BACKOFF_STEPS]=0
     APO_CFG[VOLTAGE_DELTA_UV]=existing
     apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    seed_idle_normal_return_fields
     apo_state_set ORIGIN_COMMAND overclock
     apo_state_set CFG_AUTO_GENERATED_CANDIDATES 1
     apo_state_set CFG_SELECTION_POLICY adaptive-refined-v1
@@ -1490,8 +1521,8 @@ seed_adaptive_reverse_resume_plan() {
     apo_state_set GPU_GUARD_TARGET ''
     apo_state_set GPU_GUARD_VERIFIED 0
     apo_state_set SAFE_GPU ''
-    apo_final_initialize_backoff_state
-    apo_initialize_current_qualification_state
+    seed_empty_final_backoff_fields
+    seed_empty_qualification_fields
 }
 
 assert_adaptive_reverse_resume_valid() {

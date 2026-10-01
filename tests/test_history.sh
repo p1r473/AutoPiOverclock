@@ -512,9 +512,28 @@ if apo_history_pair_is_forbidden 2975 1200; then
     exit 1
 fi
 
-# Plan validation accepts old schema-10 states with no history fields and a
-# valid one-domain-at-a-time plan, but rejects a trial inside the frontier.
+# Current-schema plan validation requires every persisted scheduler field and
+# accepts an explicit NONE plan. A planned trial inside a frontier is rejected.
 APO_STATE=()
+apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+if apo_history_validate_plan_state; then
+    printf 'history plan accepted missing current-schema scheduler fields\n' >&2
+    exit 1
+fi
+for key in HISTORY_ISOLATION_STAGE HISTORY_CPU_FAILURE_BOUNDARY HISTORY_GPU_FAILURE_BOUNDARY \
+           HISTORY_PAIR_FRONTIERS HISTORY_PROVENANCE HISTORY_LEDGER_FILE HISTORY_SCANNED_STATES \
+           HISTORY_ACCEPTED_STATES HISTORY_EVIDENCE_COUNT HISTORY_ISOLATION_ANCHOR_CPU \
+           HISTORY_ISOLATION_ANCHOR_GPU HISTORY_CPU_TRIAL_CPU HISTORY_CPU_TRIAL_GPU \
+           HISTORY_GPU_TRIAL_CPU HISTORY_GPU_TRIAL_GPU HISTORY_PAIR_TRIAL_CPU \
+           HISTORY_PAIR_TRIAL_GPU HISTORY_BASE_CPU_QUALIFIED_CLOCK \
+           HISTORY_CPU_TRIAL_QUALIFIED_CLOCK HISTORY_ISOLATION_HANDOFF_CPU \
+           HISTORY_ISOLATION_HANDOFF_GPU HISTORY_ISOLATION_HISTORY HISTORY_FAILURE_EVENTS; do
+    apo_state_set "$key" ''
+done
+apo_state_set HISTORY_ISOLATION_STAGE NONE
+apo_state_set HISTORY_SCANNED_STATES 0
+apo_state_set HISTORY_ACCEPTED_STATES 0
+apo_state_set HISTORY_EVIDENCE_COUNT 0
 apo_history_validate_plan_state
 apo_state_set HISTORY_ISOLATION_STAGE PLANNED
 apo_state_set HISTORY_PAIR_FRONTIERS '3000/1200'

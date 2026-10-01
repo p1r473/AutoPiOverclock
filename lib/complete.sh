@@ -304,16 +304,7 @@ apo_complete_attach_cleanup_artifacts() {
     APO_DISCOVERY_FILE="${APO_RUN_PREFIX}-discovery.txt"
 }
 
-apo_complete_reseal_backup_path() {
-    local run_id=$1
-    case ${APO_PROFILE:-} in
-        debian) printf '/var/lib/autopioverclock/backups/config-%s-before-recomplete.txt' "$run_id" ;;
-        batocera) printf '/userdata/system/autopioverclock/backups/config-%s-before-recomplete.txt' "$run_id" ;;
-        *) return 1 ;;
-    esac
-}
-
-apo_complete_validate_reseal_discovery() {
+apo_complete_validate_sealed_discovery() {
     local expected_hash=$1 recent_throttle tryboot_flag
     [[ ${APO_DISCOVERY[PROFILE]:-} == "${APO_HISTORY_LEDGER_META[PROFILE]}" &&
        ${APO_DISCOVERY[MODEL]:-} == "${APO_HISTORY_LEDGER_META[MODEL]}" &&
@@ -346,88 +337,8 @@ apo_complete_validate_reseal_discovery() {
         apo_die 'Repeat complete found that the permanent hardware-watchdog chain is not ready.' "$APO_EXIT_APPLY"
 }
 
-apo_complete_capture_reseal_discovery() {
-    local expected_hash=$1
-    APO_DISCOVERY=()
-    apo_discovery_capture
-    apo_complete_validate_reseal_discovery "$expected_hash"
-}
-
-apo_complete_show_reseal_plan() {
-    local diff_file=$1 current_file=$2 proposed_file=$3 current_hash=$4 proposed_hash=$5 diff_rc
-    if diff -u --label current-config.txt --label canonical-config.txt "$current_file" "$proposed_file" > "$diff_file"; then
-        diff_rc=0
-    else
-        diff_rc=$?
-    fi
-    (( diff_rc == 0 || diff_rc == 1 )) ||
-        apo_die 'Repeat complete could not generate the permanent-config diff.' "$APO_EXIT_APPLY"
-    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
-    printf '\n===== EXACT REPEAT-COMPLETE CONFIG DIFF =====\n' >&2
-    if (( diff_rc == 0 )); then
-        printf '(Permanent config is already in canonical completed form.)\n' >&2
-    else
-        cat "$diff_file" >&2
-    fi
-    printf '================================================\n' >&2
-    printf 'Current config hash:  %s\n' "$current_hash" >&2
-    printf 'Canonical config hash: %s\n' "$proposed_hash" >&2
-    printf 'Sealed ledger hash:    %s\n\n' "$APO_HISTORY_SEALED_HASH" >&2
-}
-
-apo_complete_capture_reseal_mutation() {
-    local output_file=$1 remote_file=$2 old_hash=$3 new_hash=$4 remote_rc
-    if apo_remote_worker "$APO_REMOTE_WORKER" recomplete-permanent \
-        "$remote_file" "$old_hash" "$new_hash" "$APO_RUN_ID" \
-        "$APO_HISTORY_SEALED_CPU" "$APO_HISTORY_SEALED_GPU" \
-        "${APO_HISTORY_LEDGER_META[GPU_KEY]}" "$APO_HISTORY_SEALED_VOLTAGE" \
-        "$APO_HISTORY_SEALED_RUN_ID" > "$output_file" 2>&1; then
-        remote_rc=0
-    else
-        remote_rc=$?
-    fi
-    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
-    cat "$output_file" >&2
-    apo_classify_output "$output_file" repeat-complete-config
-    (( remote_rc == 0 && APO_LAST_RESULT_COMPLETE == 1 )) && [[ $APO_LAST_CLASS == PASS ]] ||
-        apo_die "Repeat complete could not install the canonical config: ${APO_LAST_REASON:-unstructured worker failure}" "$APO_EXIT_APPLY"
-    apo_parse_data_file "$output_file" APO_WORKER_DATA
-    [[ ${APO_WORKER_DATA[COMPLETE_NEW_HASH]:-} == "$new_hash" ]] ||
-        apo_die 'Repeat-complete worker returned a config hash that differs from the transaction.' "$APO_EXIT_APPLY"
-}
-
-apo_complete_remove_reseal_backup() {
-    local backup_file=$1 expected_hash=$2 backup_id=$3 backup_dir remote_command attempt
-    [[ -n $backup_file ]] || return 0
-    apo_complete_valid_hash "$expected_hash" ||
-        apo_die 'Repeat complete received an invalid maintenance-backup hash.' "$APO_EXIT_INTERNAL"
-    apo_is_safe_run_id "$backup_id" ||
-        apo_die 'Repeat complete received an invalid maintenance-backup ID.' "$APO_EXIT_INTERNAL"
-    [[ $backup_file == "$(apo_complete_reseal_backup_path "$backup_id")" ]] ||
-        apo_die 'Repeat-complete worker reported an unexpected backup path.' "$APO_EXIT_INTERNAL"
-    backup_dir=${backup_file%/*}
-    remote_command="backup_file=$(apo_sh_quote "$backup_file")"$'\n'
-    remote_command+="backup_dir=$(apo_sh_quote "$backup_dir")"$'\n'
-    remote_command+="expected_hash=$(apo_sh_quote "$expected_hash")"$'\n'
-    remote_command+=$'if [ -e "$backup_file" ] || [ -L "$backup_file" ]; then\n'
-    remote_command+=$'    [ -f "$backup_file" ] && [ ! -L "$backup_file" ]\n'
-    remote_command+=$'    actual_hash=$(sha256sum "$backup_file" | awk '\''NR == 1 {print $1}'\'')\n'
-    remote_command+=$'    [ "$actual_hash" = "$expected_hash" ]\n'
-    remote_command+=$'    rm -f -- "$backup_file"\n'
-    remote_command+=$'    sync "$backup_dir"\n'
-    remote_command+=$'fi\n'
-    for attempt in 1 2 3; do
-        if apo_remote_root "$remote_command"; then return 0; fi
-    done
-    apo_die 'Repeat complete succeeded, but its exact verified maintenance backup could not be removed.' "$APO_EXIT_RECOVERY"
-}
-
-apo_complete_recanonicalize_sealed_config() {
-    local ledger_file=$1 maintenance_id current_file proposed_file diff_file result_file verify_file log_file
-    local current_hash proposed_hash latest_hash expected_confirmation remote_proposed backup_file backup_hash expected_backup
-    local baseline_cpu=$APO_HISTORY_LEDGER_BASELINE_CPU baseline_gpu=$APO_HISTORY_LEDGER_BASELINE_GPU
-    local baseline_voltage=$APO_HISTORY_LEDGER_BASELINE_VOLTAGE sealed_run_id=$APO_HISTORY_SEALED_RUN_ID expected_record_count
-
+apo_complete_verify_sealed_config() {
+    local maintenance_id verify_file log_file current_hash
     maintenance_id=$(apo_new_run_id) || apo_die 'Repeat complete could not allocate a maintenance transaction ID.' "$APO_EXIT_INTERNAL"
     apo_is_safe_run_id "$maintenance_id" ||
         apo_die 'Repeat complete allocated an invalid maintenance transaction ID.' "$APO_EXIT_INTERNAL"
@@ -445,10 +356,6 @@ apo_complete_recanonicalize_sealed_config() {
     apo_deploy_worker
     APO_HAVE_REMOTE_CONTEXT=1
 
-    apo_complete_make_maintenance_temp current_file current || apo_die 'Repeat complete could not create its current-config file.' "$APO_EXIT_INTERNAL"
-    apo_complete_make_maintenance_temp proposed_file proposed || apo_die 'Repeat complete could not create its proposed-config file.' "$APO_EXIT_INTERNAL"
-    apo_complete_make_maintenance_temp diff_file diff || apo_die 'Repeat complete could not create its diff file.' "$APO_EXIT_INTERNAL"
-    apo_complete_make_maintenance_temp result_file result || apo_die 'Repeat complete could not create its result file.' "$APO_EXIT_INTERNAL"
     apo_complete_make_maintenance_temp verify_file verify || apo_die 'Repeat complete could not create its verification file.' "$APO_EXIT_INTERNAL"
     apo_complete_make_maintenance_temp log_file log || apo_die 'Repeat complete could not create its diagnostic log.' "$APO_EXIT_INTERNAL"
     APO_DISCOVERY_FILE=$verify_file
@@ -458,90 +365,11 @@ apo_complete_recanonicalize_sealed_config() {
     current_hash=${APO_DISCOVERY[PERMANENT_HASH]:-}
     apo_complete_valid_hash "$current_hash" ||
         apo_die 'Repeat complete could not read a valid live permanent-config hash.' "$APO_EXIT_APPLY"
-    apo_complete_validate_reseal_discovery "$current_hash"
-    apo_remote_root_read_file "$current_file" "cat $(apo_sh_quote "$APO_BOOT_CONFIG")" ||
-        apo_die 'Repeat complete could not capture the current permanent config.' "$APO_EXIT_APPLY"
-    [[ $(sha256sum "$current_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true) == "$current_hash" ]] ||
-        apo_die 'Permanent config changed while repeat complete was capturing it.' "$APO_EXIT_APPLY"
-    apo_remote_worker_read_file "$proposed_file" "$APO_REMOTE_WORKER" render-recomplete \
-        "$APO_HISTORY_SEALED_CPU" "$APO_HISTORY_SEALED_GPU" "$APO_GPU_KEY" \
-        "$APO_HISTORY_SEALED_VOLTAGE" "$APO_RUN_ID" "$current_hash" ||
-        apo_die 'The live permanent config is not a structurally safe completed config for the sealed clocks.' "$APO_EXIT_APPLY"
-    [[ -s $proposed_file ]] || apo_die 'Repeat complete rendered an empty canonical config.' "$APO_EXIT_INTERNAL"
-    proposed_hash=$(sha256sum "$proposed_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-    apo_complete_valid_hash "$proposed_hash" ||
-        apo_die 'Repeat complete could not hash the canonical config.' "$APO_EXIT_INTERNAL"
-
-    if [[ $current_hash == "$proposed_hash" && $current_hash == "$APO_HISTORY_SEALED_HASH" ]]; then
-        printf 'Permanent config and sealed ledger are already canonical for %s.\n' "$APO_REMOTE_TARGET"
-        return 0
-    fi
-
-    apo_complete_show_reseal_plan "$diff_file" "$current_file" "$proposed_file" "$current_hash" "$proposed_hash"
-    expected_confirmation="COMPLETE ${APO_TARGET_SLUG} ${APO_HISTORY_SEALED_RUN_ID}"
-    apo_confirm_exact 'Repeat complete will canonicalize the displayed permanent config when needed and rebind the durable ledger only after exact live identity, clocks, voltage, watchdog, tryboot, hash, and power-state validation.' "$expected_confirmation" ||
-        apo_die 'Repeat complete was not confirmed.' "$APO_EXIT_USAGE"
-
-    latest_hash=$(apo_current_permanent_hash || true)
-    [[ $latest_hash == "$current_hash" ]] ||
-        apo_die 'Permanent config changed at the repeat-complete mutation boundary.' "$APO_EXIT_APPLY"
-    remote_proposed="${APO_REMOTE_WORK_DIR}/recomplete-${APO_RUN_ID}.txt"
-    apo_remote_upload_root "$proposed_file" "$remote_proposed" ||
-        apo_die 'Repeat complete could not upload the canonical config.' "$APO_EXIT_APPLY"
-    apo_complete_capture_reseal_mutation "$result_file" "$remote_proposed" "$current_hash" "$proposed_hash"
-    backup_file=${APO_WORKER_DATA[COMPLETE_BACKUP_FILE]:-}
-    backup_hash=${APO_WORKER_DATA[COMPLETE_BACKUP_HASH]:-}
-    if [[ -n $backup_file ]]; then
-        apo_complete_valid_hash "$backup_hash" ||
-            apo_die 'Repeat-complete worker returned an invalid maintenance-backup hash.' "$APO_EXIT_INTERNAL"
-        expected_backup=$(apo_complete_reseal_backup_path "$sealed_run_id") ||
-            apo_die 'Repeat complete could not resolve its expected backup path.' "$APO_EXIT_INTERNAL"
-        [[ $backup_file == "$expected_backup" ]] ||
-            apo_die 'Repeat-complete worker reported an unexpected backup path.' "$APO_EXIT_INTERNAL"
-        if [[ $current_hash != "$proposed_hash" ]]; then
-            [[ $backup_hash == "$current_hash" ]] ||
-                apo_die 'Repeat-complete worker returned a backup that differs from the pre-mutation config.' "$APO_EXIT_INTERNAL"
-        fi
-    else
-        [[ -z $backup_hash ]] ||
-            apo_die 'Repeat-complete worker returned a maintenance-backup hash without a path.' "$APO_EXIT_INTERNAL"
-        [[ $current_hash == "$proposed_hash" ]] ||
-            apo_die 'Repeat-complete worker did not return the required pre-mutation backup.' "$APO_EXIT_INTERNAL"
-    fi
-
-    latest_hash=$(apo_current_permanent_hash || true)
-    [[ $latest_hash == "$proposed_hash" ]] ||
-        apo_die 'Canonical permanent config did not retain its verified hash.' "$APO_EXIT_APPLY"
-    apo_complete_capture_reseal_discovery "$proposed_hash"
-    apo_remote_root_read_file "$verify_file" "cat $(apo_sh_quote "$APO_BOOT_CONFIG")" ||
-        apo_die 'Repeat complete could not recapture the installed canonical config.' "$APO_EXIT_APPLY"
-    cmp -s -- "$proposed_file" "$verify_file" ||
-        apo_die 'Installed canonical config bytes differ from the verified proposal.' "$APO_EXIT_APPLY"
-
-    expected_record_count=${#APO_HISTORY_LEDGER_RECORDS[@]}
-    APO_HISTORY_RENDER_BASELINE_CPU=$baseline_cpu
-    APO_HISTORY_RENDER_BASELINE_GPU=$baseline_gpu
-    APO_HISTORY_RENDER_BASELINE_VOLTAGE=$baseline_voltage
-    APO_HISTORY_SEALED_HASH=$proposed_hash
-    apo_history_rebuild_ledger "$ledger_file" ||
-        apo_die 'Repeat complete installed the canonical config, but could not atomically rebind the durable ledger. Rerun complete to finish the safe rebind.' "$APO_EXIT_INTERNAL"
-    APO_HISTORY_SCAN_BASELINE_CPU=$baseline_cpu
-    APO_HISTORY_SCAN_BASELINE_GPU=$baseline_gpu
-    APO_HISTORY_SCAN_BASELINE_VOLTAGE=$baseline_voltage
-    apo_history_load_machine_ledger "$ledger_file" 0 0 ||
-        apo_die 'Repeat complete could not revalidate the rebound durable ledger.' "$APO_EXIT_INTERNAL"
-    [[ $APO_HISTORY_SEALED_HASH == "$proposed_hash" &&
-       $APO_HISTORY_SEALED_RUN_ID == "$sealed_run_id" &&
-       $(awk -F '\t' '$1 == "RECORD" {count++} END {print count+0}' "$ledger_file") == "$expected_record_count" ]] ||
-        apo_die 'Repeat complete found that the rebound ledger changed sealed identity or retained record count.' "$APO_EXIT_INTERNAL"
-    APO_HISTORY_RENDER_BASELINE_CPU=''
-    APO_HISTORY_RENDER_BASELINE_GPU=''
-    APO_HISTORY_RENDER_BASELINE_VOLTAGE=''
-    APO_HISTORY_SCAN_BASELINE_CPU=''
-    APO_HISTORY_SCAN_BASELINE_GPU=''
-    APO_HISTORY_SCAN_BASELINE_VOLTAGE=''
-    apo_complete_remove_reseal_backup "$backup_file" "$backup_hash" "$sealed_run_id"
-    printf 'Repeat complete verified canonical config and rebound durable history for %s.\n' "$APO_REMOTE_TARGET"
+    [[ $current_hash == "$APO_HISTORY_SEALED_HASH" ]] ||
+        apo_die 'Repeat complete found that the live permanent config does not exactly match the sealed ledger hash.' "$APO_EXIT_APPLY"
+    apo_complete_validate_sealed_discovery "$APO_HISTORY_SEALED_HASH"
+    apo_complete_remove_current_remote_work_dir
+    printf 'Repeat complete verified the exact sealed permanent config and durable history for %s.\n' "$APO_REMOTE_TARGET"
 }
 
 apo_complete_try_sealed_cleanup() {
@@ -558,7 +386,7 @@ apo_complete_try_sealed_cleanup() {
        $APO_HISTORY_SEALED_RUN_SCHEMA == "$APO_CURRENT_RUN_SCHEMA" &&
        $APO_HISTORY_SEALED_VALIDATION_SCHEMA == "$APO_CURRENT_VALIDATION_SCHEMA" ]] || return 1
     apo_complete_collect_sealed_cleanup_runs || return 1
-    apo_complete_recanonicalize_sealed_config "$ledger_file"
+    apo_complete_verify_sealed_config
 
     if (( ${#APO_COMPLETE_RUN_IDS[@]} == 0 )); then
         printf 'Complete finished for %s. No target runs remain; canonical config and durable history are verified at %s.\n' \

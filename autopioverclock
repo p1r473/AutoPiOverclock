@@ -102,7 +102,6 @@ APO_CONTROLLER_ERROR_LOGGED=0
 APO_MANUAL_TEST=0
 APO_MANUAL_CPU=''
 APO_MANUAL_GPU=''
-APO_MANUAL_MINUTES=''
 APO_MANUAL_DURATION_S=''
 APO_MANUAL_OPTION_SEEN=0
 APO_MANUAL_CPU_OPTION_SEEN=0
@@ -461,7 +460,6 @@ apo_parse_cli() {
         apo_validate_uint_range "$APO_MANUAL_GPU" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" ||
             apo_die "--gpu must be ${APO_GPU_CLOCK_MIN_MHZ}-${APO_GPU_CLOCK_MAX_MHZ} MHz." "$APO_EXIT_USAGE"
         APO_MANUAL_DURATION_S=$APO_FINAL_DURATION_S
-        APO_MANUAL_MINUTES=$((APO_MANUAL_DURATION_S / 60))
         (( APO_CONFIG_OPTION_SEEN == 0 )) || apo_die 'test TARGET uses its exact --cpu/--gpu/duration plan; --config is not valid.' "$APO_EXIT_USAGE"
         (( APO_MODE_OPTION_SEEN == 0 )) || apo_die 'test TARGET chooses graphical or headless mode automatically.' "$APO_EXIT_USAGE"
         (( APO_RUN_ID_OPTION_SEEN == 0 )) || apo_die '--run-id is not valid with test TARGET; repeat the same test command to continue it.' "$APO_EXIT_USAGE"

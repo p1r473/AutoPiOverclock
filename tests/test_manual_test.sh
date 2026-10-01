@@ -11,7 +11,6 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 APO_MANUAL_TEST=1
 APO_MANUAL_CPU=3100
 APO_MANUAL_GPU=1150
-APO_MANUAL_MINUTES=90
 APO_MANUAL_DURATION_S=5400
 APO_COMMAND=run
 APO_CONFIG_FILE=''
@@ -32,18 +31,16 @@ apo_config_store_in_state
 [[ ${APO_STATE[CFG_MANUAL_TEST]} == 1 ]]
 [[ ${APO_STATE[CFG_MANUAL_CPU]} == 3100 ]]
 [[ ${APO_STATE[CFG_MANUAL_GPU]} == 1150 ]]
-[[ ${APO_STATE[CFG_MANUAL_MINUTES]} == 90 ]]
 [[ ${APO_STATE[CFG_MANUAL_DURATION_S]} == 5400 ]]
 
 APO_MANUAL_TEST=0
 APO_MANUAL_CPU=''
 APO_MANUAL_GPU=''
-APO_MANUAL_MINUTES=''
 APO_MANUAL_DURATION_S=''
 apo_config_restore_from_state
 [[ $APO_MANUAL_TEST == 1 ]]
 [[ $APO_MANUAL_CPU == 3100 && $APO_MANUAL_GPU == 1150 ]]
-[[ $APO_MANUAL_MINUTES == 90 && $APO_MANUAL_DURATION_S == 5400 ]]
+[[ $APO_MANUAL_DURATION_S == 5400 ]]
 
 APO_RUN_ID=manual-fixture
 apo_write_effective_config "$TEMP_DIR/manual.conf"
@@ -51,7 +48,6 @@ grep -Fq '# manual_stability_test=CPU:3100MHz GPU:1150MHz duration:5400s; never 
 
 # A retained seven-day exact test remains valid after the former policy ceiling
 # becomes only a portable numeric limit.
-APO_MANUAL_MINUTES=10080
 APO_MANUAL_DURATION_S=604800
 apo_config_load_for_new_run
 [[ ${APO_CFG[CANDIDATE_DURATION_S]} == 604800 ]]
@@ -59,11 +55,9 @@ apo_config_validate
 APO_STATE=()
 apo_config_store_in_state
 APO_MANUAL_TEST=0
-APO_MANUAL_MINUTES=''
 APO_MANUAL_DURATION_S=''
 apo_config_restore_from_state
-[[ $APO_MANUAL_MINUTES == 10080 && $APO_MANUAL_DURATION_S == 604800 ]]
-APO_MANUAL_MINUTES=90
+[[ $APO_MANUAL_DURATION_S == 604800 ]]
 APO_MANUAL_DURATION_S=5400
 
 APO_STATE=()

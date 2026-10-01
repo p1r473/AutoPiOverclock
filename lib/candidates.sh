@@ -683,7 +683,6 @@ apo_run_manual_test() {
     apo_state_set MANUAL_TEST_STATUS RUNNING
     apo_state_set MANUAL_CPU "$APO_MANUAL_CPU"
     apo_state_set MANUAL_GPU "$APO_MANUAL_GPU"
-    apo_state_set MANUAL_MINUTES "$APO_MANUAL_MINUTES"
     apo_state_set MANUAL_DURATION_S "$APO_MANUAL_DURATION_S"
     apo_state_save
     apo_event manual-test INFO '' "Testing exact clocks CPU=$APO_MANUAL_CPU GPU=$APO_MANUAL_GPU for $APO_MANUAL_DURATION_S seconds; normal recovery and configured boot cycles remain mandatory."
@@ -1592,6 +1591,14 @@ apo_normal_return_retry_expected_source() {
 apo_validate_normal_return_retry_state() {
     local pending source reason expected_source expected_tryboot file_may_exist
     local owned_hash reservation_hash ownership_token quarantine_path tryboot_config ownership_complete=0 ownership_clear=0
+    if [[ -n ${APO_CURRENT_RUN_SCHEMA:-} && $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]]; then
+        [[ -v APO_STATE[NORMAL_RETURN_RETRY_PENDING] &&
+           -v APO_STATE[NORMAL_RETURN_RETRY_SOURCE] &&
+           -v APO_STATE[NORMAL_RETURN_RETRY_REASON] ]] || {
+            APO_AUTO_VALIDATION_REASON='Saved normal-return replay state is missing required current-schema fields'
+            return 1
+        }
+    fi
     pending=$(apo_state_get NORMAL_RETURN_RETRY_PENDING 0)
     source=$(apo_state_get NORMAL_RETURN_RETRY_SOURCE '')
     reason=$(apo_state_get NORMAL_RETURN_RETRY_REASON '')
@@ -3426,62 +3433,25 @@ apo_saved_transient_failure_is_retryable() {
 }
 
 apo_saved_normal_return_failure_is_retryable() {
-    local run_schema=${1:-$APO_CURRENT_RUN_SCHEMA} phase candidate_stage final_stage
+    local run_schema=${1:-$APO_CURRENT_RUN_SCHEMA}
     [[ $(apo_state_get RUN_SCHEMA '') == "$run_schema" && $run_schema == "$APO_CURRENT_RUN_SCHEMA" &&
        $(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0) == 1 &&
        $(apo_state_get ORIGIN_COMMAND '') == overclock &&
        $(apo_state_get STATUS '') == FAILED &&
        $(apo_state_get FAILURE_CLASS '') == RECOVERY_FAILURE &&
        -n $(apo_state_get FAILURE_REASON '') &&
-       $(apo_state_get APPLY_STATUS NOT_APPLIED) != APPLIED ]] || return 1
-    if [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 ]]; then
-        apo_validate_normal_return_retry_state
-        return
-    fi
-    [[ $(apo_state_get FAILURE_REASON '') == 'Normal recovery reboot did not return to SSH.' &&
-       $(apo_state_get TRYBOOT_EXPECTED 0) == 0 &&
-       $(apo_state_get TRYBOOT_FILE_MAY_EXIST 0) == 0 &&
-       -z $(apo_state_get TRYBOOT_OWNED_HASH '') &&
-       -z $(apo_state_get TRYBOOT_RESERVATION_HASH '') &&
-       -z $(apo_state_get TRYBOOT_OWNERSHIP_TOKEN '') &&
-       -z $(apo_state_get TRYBOOT_QUARANTINE_PATH '') ]] || return 1
-    phase=$(apo_state_get PHASE '')
-    candidate_stage=$(apo_state_get CANDIDATE_STAGE '')
-    final_stage=$(apo_state_get FINAL_STAGE '')
-    case $phase in
-        TRYBOOT_PROOF)
-            # Baseline replay does not have a safe retry point here.
-            return 1
-            ;;
-        CPU_SWEEP|GPU_SWEEP|CPU_QUALIFICATION|GPU_QUALIFICATION)
-            case $candidate_stage in
-                FINAL_NORMAL) return 0 ;;
-                NORMAL_*) [[ $candidate_stage =~ ^NORMAL_([1-9][0-9]*)$ ]] ;;
-                *) return 1 ;;
-            esac
-            ;;
-        FINAL_VALIDATION)
-            case $final_stage in
-                RETURN_NORMAL) return 0 ;;
-                NORMAL_*) [[ $final_stage =~ ^NORMAL_([1-9][0-9]*)$ ]] ;;
-                *) return 1 ;;
-            esac
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+       $(apo_state_get APPLY_STATUS NOT_APPLIED) != APPLIED &&
+       $(apo_state_get NORMAL_RETURN_RETRY_PENDING '') == 1 ]] || return 1
+    apo_validate_normal_return_retry_state
 }
 
 apo_adopt_saved_normal_return_failure() {
-    local phase candidate_stage final_stage retry_context replay_reason rc pending
+    local phase candidate_stage final_stage retry_context rc
     local label cpu_mhz gpu_mhz normal_number
     apo_saved_normal_return_failure_is_retryable "$APO_CURRENT_RUN_SCHEMA" || return 1
     phase=$(apo_state_get PHASE '')
     candidate_stage=$(apo_state_get CANDIDATE_STAGE '')
     final_stage=$(apo_state_get FINAL_STAGE '')
-    pending=$(apo_state_get NORMAL_RETURN_RETRY_PENDING 0)
-    replay_reason='The saved run stopped after its normal-return request did not yield a new boot. Resume fully re-proved protected normal config, clocks, clear tryboot state, watchdogs, and health; the complete affected gate will be replayed without lowering clocks.'
     # Structural rejection below must never leak the PASS produced by
     # resume-initial health as the saved failure class.
     APO_LAST_CLASS=RECOVERY_FAILURE
@@ -3489,13 +3459,7 @@ apo_adopt_saved_normal_return_failure() {
     case $phase in
         TRYBOOT_PROOF)
             retry_context='baseline-safety-normal'
-            if (( pending == 1 )); then
-                if apo_normal_return_retry_schedule "$retry_context" baseline-safety-normal apo_baseline_retry_rewind_state; then return 0; else rc=$?; fi
-            elif apo_transient_phase_retry_schedule "$retry_context" HARNESS_FAILURE "$replay_reason" 1 apo_baseline_retry_rewind_state; then
-                return 0
-            else
-                rc=$?
-            fi
+            if apo_normal_return_retry_schedule "$retry_context" baseline-safety-normal apo_baseline_retry_rewind_state; then return 0; else rc=$?; fi
             ;;
         CPU_SWEEP|GPU_SWEEP|CPU_QUALIFICATION|GPU_QUALIFICATION)
             label=$(apo_state_get CANDIDATE_LABEL '')
@@ -3504,26 +3468,12 @@ apo_adopt_saved_normal_return_failure() {
             [[ -n $label && $cpu_mhz =~ ^[0-9]+$ && $gpu_mhz =~ ^[0-9]+$ ]] || return 1
             if [[ $candidate_stage == FINAL_NORMAL ]]; then
                 retry_context="${label}-final-normal"
-                if (( pending == 1 )); then
-                    if apo_normal_return_retry_schedule "$retry_context" "$retry_context" apo_candidate_retry_rewind_state "$label" "$cpu_mhz" "$gpu_mhz" STRESS_BOOT; then return 0; else rc=$?; fi
-                elif apo_transient_phase_retry_schedule "$retry_context" HARNESS_FAILURE "$replay_reason" 1 \
-                    apo_candidate_retry_rewind_state "$label" "$cpu_mhz" "$gpu_mhz" STRESS_BOOT; then
-                    return 0
-                else
-                    rc=$?
-                fi
+                if apo_normal_return_retry_schedule "$retry_context" "$retry_context" apo_candidate_retry_rewind_state "$label" "$cpu_mhz" "$gpu_mhz" STRESS_BOOT; then return 0; else rc=$?; fi
             else
                 [[ $candidate_stage =~ ^NORMAL_([1-9][0-9]*)$ ]] || return 1
                 normal_number=$((10#${BASH_REMATCH[1]}))
                 retry_context="${label}-normal-${normal_number}"
-                if (( pending == 1 )); then
-                    if apo_normal_return_retry_schedule "$retry_context" "$retry_context" apo_candidate_retry_rewind_state "$label" "$cpu_mhz" "$gpu_mhz" "BOOT_${normal_number}"; then return 0; else rc=$?; fi
-                elif apo_transient_phase_retry_schedule "$retry_context" HARNESS_FAILURE "$replay_reason" 1 \
-                    apo_candidate_retry_rewind_state "$label" "$cpu_mhz" "$gpu_mhz" "BOOT_${normal_number}"; then
-                    return 0
-                else
-                    rc=$?
-                fi
+                if apo_normal_return_retry_schedule "$retry_context" "$retry_context" apo_candidate_retry_rewind_state "$label" "$cpu_mhz" "$gpu_mhz" "BOOT_${normal_number}"; then return 0; else rc=$?; fi
             fi
             ;;
         FINAL_VALIDATION)
@@ -3531,48 +3481,14 @@ apo_adopt_saved_normal_return_failure() {
             gpu_mhz=$(apo_state_get FINAL_TARGET_GPU '')
             [[ $cpu_mhz =~ ^[0-9]+$ && $gpu_mhz =~ ^[0-9]+$ ]] || return 1
             retry_context=final-complete-recovery
-            if (( pending == 1 )); then
-                if apo_normal_return_retry_schedule "$retry_context" "$(apo_normal_return_retry_expected_source)" apo_final_retry_rewind_state "$cpu_mhz" "$gpu_mhz"; then return 0; else rc=$?; fi
-            elif apo_transient_phase_retry_schedule "$retry_context" HARNESS_FAILURE "$replay_reason" 1 \
-                apo_final_retry_rewind_state "$cpu_mhz" "$gpu_mhz"; then
-                return 0
-            else
-                rc=$?
-            fi
+            if apo_normal_return_retry_schedule "$retry_context" "$(apo_normal_return_retry_expected_source)" apo_final_retry_rewind_state "$cpu_mhz" "$gpu_mhz"; then return 0; else rc=$?; fi
             ;;
     esac
-    APO_LAST_CLASS=HARNESS_FAILURE
     if (( rc == 1 )); then
-        APO_LAST_REASON="$replay_reason Automatic recovery exhausted $APO_TRANSIENT_PHASE_RETRY_MAX bounded retries of this complete gate."
-    else
+        APO_LAST_CLASS=RECOVERY_FAILURE
         APO_LAST_REASON='Saved normal-return recovery evidence could not be atomically rewound for retry.'
     fi
     return 1
-}
-
-apo_final_initialize_backoff_state() {
-    local key
-    for key in FINAL_BACKOFF_CPU FINAL_BACKOFF_GPU FINAL_BACKOFF_HISTORY FINAL_BACKOFF_LAST_STAGE \
-               FINAL_BACKOFF_LAST_CLASS FINAL_BACKOFF_LAST_REASON FINAL_BACKOFF_ANCHOR_CPU \
-               FINAL_BACKOFF_ANCHOR_GPU FINAL_BACKOFF_TRIAL FINAL_BACKOFF_ANCHOR_CPU_QUALIFIED_CLOCK; do
-        [[ -v APO_STATE[$key] ]] || apo_state_set "$key" ''
-    done
-    [[ -v APO_STATE[FINAL_BACKOFF_COUNT] ]] || apo_state_set FINAL_BACKOFF_COUNT 0
-}
-
-apo_initialize_current_qualification_state() {
-    local key
-    for key in CPU_QUALIFICATION_TARGET CPU_QUALIFIED_CLOCK CPU_QUALIFICATION_HISTORY \
-               CPU_QUALIFICATION_LAST_CLASS CPU_QUALIFICATION_LAST_REASON GPU_QUALIFICATION_CPU \
-               GPU_QUALIFICATION_TARGET GPU_QUALIFIED_CPU GPU_QUALIFIED_CLOCK \
-               RECOVERY_WAIT_CONTEXT RECOVERY_WAIT_STARTED_AT TRANSIENT_RETRY_CONTEXT; do
-        [[ -v APO_STATE[$key] ]] || apo_state_set "$key" ''
-    done
-    [[ -v APO_STATE[CPU_QUALIFICATION_STATUS] ]] || apo_state_set CPU_QUALIFICATION_STATUS NOT_STARTED
-    [[ -v APO_STATE[GPU_QUALIFICATION_STATUS] ]] || apo_state_set GPU_QUALIFICATION_STATUS NOT_STARTED
-    [[ -v APO_STATE[RECOVERY_WAIT_STATUS] ]] || apo_state_set RECOVERY_WAIT_STATUS IDLE
-    [[ -v APO_STATE[RECOVERY_WAIT_TIMEOUTS] ]] || apo_state_set RECOVERY_WAIT_TIMEOUTS 0
-    [[ -v APO_STATE[TRANSIENT_RETRY_COUNT] ]] || apo_state_set TRANSIENT_RETRY_COUNT 0
 }
 
 apo_restart_clear_final_sequence() {

@@ -44,7 +44,7 @@ apo_write_effective_config "$TEMP_DIR/effective.conf"
 grep -Fxq 'cpu_candidates_mhz=2700,2800,2900' "$TEMP_DIR/effective.conf"
 grep -Fxq 'telemetry_interval_seconds=7' "$TEMP_DIR/effective.conf"
 grep -Fxq 'frontend_process=daemon_one' "$TEMP_DIR/effective.conf"
-if grep -Eq '^(CPU_CANDIDATES|REQUIRED_PROCESSES|EXTRA_PING_TARGET|HEALTH_HOOK)=' "$TEMP_DIR/effective.conf"; then
+if grep -Eq '^(CPU_CANDIDATES|REQUIRED_PROCESSES)=' "$TEMP_DIR/effective.conf"; then
     echo 'an internal configuration key leaked into the public effective config' >&2
     exit 1
 fi
@@ -196,8 +196,8 @@ resolve_discovered_auto_plan debian 2400 960 0
 )
 
 # A crash before PREPARE persisted its plan remains inspectable and reaches the
-# dedicated safe-resume refusal. Once tuning has begun, the same missing plan
-# is corrupt current-schema state and must fail closed.
+# dedicated safe-resume refusal. Once tuning has begun, every current plan field
+# is mandatory and missing state must fail closed.
 (
     APO_STATE=()
     apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
@@ -222,14 +222,22 @@ if (
     echo 'current-schema tuning state without an immutable duration plan was accepted' >&2
     exit 1
 fi
-
-# States created before the fan-policy key default safely to maximum cooling.
-APO_MAX_FAN=0
-(
+if (
     APO_STATE=()
+    apo_config_defaults
+    APO_QUALIFICATION_DURATION_S=$APO_DEFAULT_QUALIFICATION_DURATION_S
+    APO_EDGE_DURATION_S=$APO_DEFAULT_EDGE_DURATION_S
+    APO_DURATION_POLICY=default
+    apo_config_store_in_state
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
+    apo_state_set ORIGIN_COMMAND overclock
+    apo_state_set PHASE CPU_SWEEP
+    unset 'APO_STATE[CFG_MAX_FAN]'
     apo_config_restore_from_state
-    [[ $APO_MAX_FAN == 1 ]]
-)
+) >/dev/null 2>&1; then
+    echo 'current-schema tuning state accepted a missing required plan field' >&2
+    exit 1
+fi
 
 source "$ROOT/lib/health.sh"
 APO_STATE=()
@@ -841,7 +849,7 @@ if (apo_config_defaults; printf 'UNKNOWN_KEY=value\n' > "$TEMP_DIR/bad.conf"; ap
     echo 'unknown configuration key was accepted' >&2
     exit 1
 fi
-for removed_key in CPU_CANDIDATES REQUIRED_PROCESSES EXTRA_PING_TARGET HEALTH_HOOK; do
+for removed_key in CPU_CANDIDATES REQUIRED_PROCESSES; do
     if (apo_config_defaults; printf '%s=value\n' "$removed_key" > "$TEMP_DIR/removed.conf"; apo_config_read_file "$TEMP_DIR/removed.conf") >/dev/null 2>&1; then
         echo "removed or uppercase configuration key was accepted: $removed_key" >&2
         exit 1

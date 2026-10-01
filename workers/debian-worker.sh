@@ -1226,7 +1226,8 @@ emit_application_health_failure() {
 
 cmd_health() {
     local expected_cpu=$1 expected_gpu=$2 gpu_key=$3 expected_voltage=$4 max_temp=$5 mode=$6 baseline=$7
-    local required_processes=$8 required_services=$9 audio_match=${10} extra_ping=${11} health_hook=${12} expected_hash=${13} context=${14} throttle_baseline=${15:-throttled=0x0} audio_baseline=${16:-} fan_policy=${17:-normal}
+    local required_processes=$8 required_services=$9 audio_match=${10} expected_hash=${11} context=${12}
+    local throttle_baseline=${13:-throttled=0x0} audio_baseline=${14:-} fan_policy=${15:-normal}
     local boot_config active_cpu active_gpu active_voltage throttle temp errors permanent_hash test_file
     boot_config=$(find_boot_config) || { emit_result PREFLIGHT_FAILURE 'Boot config is missing.'; return 1; }
     permanent_hash=$(sha256sum "$boot_config" | awk '{print $1}')
@@ -1261,7 +1262,6 @@ cmd_health() {
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "Current-boot kernel, power, GPU, USB, storage, or filesystem error in $context." "$temp"; return 1; fi
     test_file=/tmp/autopioverclock-write-test-$$
     printf test > "$test_file" && sync "$test_file" && rm -f "$test_file" || { emit_result STABILITY_FAILURE "Filesystem write test failed in $context." "$temp"; return 1; }
-    if [[ -n $extra_ping ]]; then ping -c 2 -W 2 "$extra_ping" >/dev/null 2>&1 || { emit_result BOOT_FAILURE "Configured ping target is unreachable in $context." "$temp"; return 1; }; fi
     if ! wait_application_health "$mode" "$baseline" "$required_processes" "$required_services" "$audio_match" "$audio_baseline"; then
         emit_application_health_failure "$context" "$temp" "$audio_baseline"
         return 1
@@ -1287,11 +1287,6 @@ cmd_health() {
     awk -v t="$temp" -v m="$max_temp" 'BEGIN{exit !(t<m)}' || { emit_result STABILITY_FAILURE "Temperature ${temp}C reached the ${max_temp}C ceiling while application readiness was settling in $context." "$temp"; return 1; }
     errors=$(kernel_error_lines 1 | tail -40 || true)
     if [[ -n $errors ]]; then printf '%s\n' "$errors"; emit_result STABILITY_FAILURE "A kernel, power, GPU, USB, storage, or filesystem error appeared while application readiness was settling in $context." "$temp"; return 1; fi
-    if [[ -n $health_hook ]]; then
-        [[ -x $health_hook ]] || { emit_result HARNESS_FAILURE "Health hook is not executable: $health_hook" "$temp"; return 1; }
-        command -v timeout >/dev/null 2>&1 || { emit_result HARNESS_FAILURE 'A health hook was configured but timeout is unavailable.' "$temp"; return 1; }
-        timeout 60 "$health_hook" || { emit_result BOOT_FAILURE "Health hook failed or exceeded 60 seconds in $context." "$temp"; return 1; }
-    fi
     printf 'ACTIVE_CPU=%s\nACTIVE_GPU=%s\nACTIVE_VOLTAGE=%s\n%s\n' "$active_cpu" "$active_gpu" "$active_voltage" "$throttle"
     printf 'WATCHDOG_EEPROM=%s WATCHDOG_KERNEL=%s WATCHDOG_DEVICE=%s WATCHDOG_RUNTIME_TIMEOUT=%s WATCHDOG_OWNER=%s\n' \
         "$WATCHDOG_LAST_BOOT_TIMEOUT" "$WATCHDOG_LAST_KERNEL_TIMEOUT" "$WATCHDOG_LAST_DEVICE" "$WATCHDOG_LAST_RUNTIME_TIMEOUT" "$WATCHDOG_LAST_OWNER"
@@ -2435,10 +2430,6 @@ complete_validate_sealed_config() {
     (( match_count == 1 && voltage_count == 1 && cpu_count == 1 && gpu_count == 1 ))
 }
 
-complete_validate_resealable_config() {
-    complete_validate_sealed_config "$1" "$2" "$3" "$4" "$5" 0 1
-}
-
 cmd_render_complete() {
     local cpu_mhz=$1 gpu_mhz=$2 gpu_key=$3 voltage_uv=$4 run_id=$5 expected_hash=$6
     local boot_config current_hash rendered_file
@@ -2450,25 +2441,6 @@ cmd_render_complete() {
     complete_validate_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" "$run_id" || return 1
     rendered_file=$(mktemp /tmp/autopioverclock-complete-render.XXXXXX) || return 1
     if ! complete_render_config "$boot_config" "$rendered_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" ||
-       ! complete_validate_sealed_config "$rendered_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv"; then
-        rm -f -- "$rendered_file"
-        return 1
-    fi
-    cat -- "$rendered_file"
-    rm -f -- "$rendered_file"
-}
-
-cmd_render_recomplete() {
-    local cpu_mhz=$1 gpu_mhz=$2 gpu_key=$3 voltage_uv=$4 run_id=$5 expected_hash=$6
-    local boot_config current_hash rendered_file
-    valid_sha256 "$expected_hash" && complete_safe_id "$run_id" || return 1
-    boot_config=$(complete_boot_config) || return 1
-    apply_tryboot_clear "$boot_config" || return 1
-    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-    [[ $current_hash == "$expected_hash" ]] || return 1
-    complete_validate_resealable_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || return 1
-    rendered_file=$(mktemp /tmp/autopioverclock-recomplete-render.XXXXXX) || return 1
-    if ! canonicalize_completed_config "$boot_config" "$rendered_file" ||
        ! complete_validate_sealed_config "$rendered_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv"; then
         rm -f -- "$rendered_file"
         return 1
@@ -2537,95 +2509,9 @@ cmd_complete_permanent() {
     emit_result PASS 'Permanent config was simplified without changing the applied clock values.'
 }
 
-cmd_recomplete_permanent() {
-    local uploaded_file=$1 expected_old_hash=$2 expected_new_hash=$3 run_id=$4
-    local cpu_mhz=$5 gpu_mhz=$6 gpu_key=$7 voltage_uv=$8
-    local backup_id=$9 boot_config current_hash proposed_hash backup_dir backup_file backup_hash
-    local install_ok=0 rollback_ok=0
-    valid_sha256 "$expected_old_hash" && valid_sha256 "$expected_new_hash" &&
-        complete_safe_id "$run_id" && complete_safe_id "$backup_id" || {
-        emit_result APPLY_FAILURE 'Repeat complete received malformed transaction evidence.'
-        return 1
-    }
-    boot_config=$(complete_boot_config) || { emit_result APPLY_FAILURE 'Boot config is missing for repeat complete.'; return 1; }
-    apply_tryboot_clear "$boot_config" || { emit_result APPLY_FAILURE 'Repeat complete requires normal boot with no tryboot evidence.'; return 1; }
-    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-    backup_dir=$(complete_backup_root) || { emit_result APPLY_FAILURE 'Could not resolve repeat-complete backup directory.'; return 1; }
-    backup_file="${backup_dir}/config-${backup_id}-before-recomplete.txt"
-    backup_hash=$(sha256sum "$backup_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-    if [[ $current_hash == "$expected_new_hash" ]]; then
-        complete_validate_sealed_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || {
-            emit_result APPLY_FAILURE 'The current completed hash does not have the expected canonical structure.'
-            return 1
-        }
-        if [[ -e $backup_file || -L $backup_file ]]; then
-            [[ -f $backup_file && ! -L $backup_file ]] && valid_sha256 "$backup_hash" &&
-                complete_validate_resealable_config "$backup_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || {
-                emit_result APPLY_FAILURE 'Repeat complete found an unexpected retained maintenance backup.'
-                return 1
-            }
-            emit_data COMPLETE_BACKUP_FILE "$backup_file"
-            emit_data COMPLETE_BACKUP_HASH "$backup_hash"
-        fi
-        emit_data COMPLETE_NEW_HASH "$expected_new_hash"
-        emit_result PASS 'Permanent config already has the verified canonical completed form.'
-        return 0
-    fi
-    [[ $current_hash == "$expected_old_hash" ]] || { emit_result APPLY_FAILURE 'Permanent config changed before repeat complete.'; return 1; }
-    complete_validate_resealable_config "$boot_config" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || {
-        emit_result APPLY_FAILURE 'Current permanent config is not a safe completed config for the sealed clocks.'
-        return 1
-    }
-    [[ -f $uploaded_file && ! -L $uploaded_file ]] || { emit_result APPLY_FAILURE 'Uploaded canonical config is unsafe.'; return 1; }
-    proposed_hash=$(sha256sum "$uploaded_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-    [[ $proposed_hash == "$expected_new_hash" ]] || { emit_result APPLY_FAILURE 'Uploaded canonical config hash does not match the transaction.'; return 1; }
-    complete_validate_sealed_config "$uploaded_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || {
-        emit_result APPLY_FAILURE 'Uploaded config does not have the expected canonical completed structure.'
-        return 1
-    }
-    mkdir -p -- "$backup_dir" || { emit_result APPLY_FAILURE 'Could not create repeat-complete backup directory.'; return 1; }
-    [[ -d $backup_dir && ! -L $backup_dir ]] || { emit_result APPLY_FAILURE 'Repeat-complete backup directory is unsafe.'; return 1; }
-    if [[ $backup_hash != "$expected_old_hash" ]]; then
-        [[ ! -e $backup_file && ! -L $backup_file ]] || { emit_result APPLY_FAILURE 'Unexpected repeat-complete backup already exists.'; return 1; }
-        atomic_replace_verified "$boot_config" "$backup_file" "$expected_old_hash" recomplete-backup || {
-            emit_result APPLY_FAILURE 'Could not create the verified repeat-complete backup.'
-            return 1
-        }
-        backup_hash=$expected_old_hash
-    fi
-    complete_validate_resealable_config "$backup_file" "$cpu_mhz" "$gpu_mhz" "$gpu_key" "$voltage_uv" || {
-        emit_result APPLY_FAILURE 'Repeat-complete backup does not preserve the verified completed clocks.'
-        return 1
-    }
-    if ! chmod --reference="$boot_config" "$uploaded_file" 2>/dev/null && ! chmod 644 "$uploaded_file"; then
-        emit_result APPLY_FAILURE 'Could not preserve canonical-config permissions.'
-        return 1
-    fi
-    apply_tryboot_clear "$boot_config" || { emit_result APPLY_FAILURE 'Tryboot evidence appeared at the repeat-complete mutation boundary.'; return 1; }
-    current_hash=$(sha256sum "$boot_config" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-    [[ $current_hash == "$expected_old_hash" ]] || { emit_result APPLY_FAILURE 'Permanent config changed at the repeat-complete mutation boundary.'; return 1; }
-    if atomic_replace_verified "$uploaded_file" "$boot_config" "$expected_new_hash" recomplete; then install_ok=1; fi
-    if (( install_ok == 0 )); then
-        atomic_replace_verified "$backup_file" "$boot_config" "$expected_old_hash" recomplete-restore && rollback_ok=1
-    fi
-    if (( install_ok == 0 )); then
-        if (( rollback_ok == 1 )); then
-            emit_result APPLY_FAILURE 'Could not install the canonical config; the verified prior config was restored.'
-        else
-            emit_result APPLY_FAILURE 'Could not install the canonical config and verified restoration failed.'
-        fi
-        return 1
-    fi
-    emit_data COMPLETE_NEW_HASH "$expected_new_hash"
-    emit_data COMPLETE_BACKUP_FILE "$backup_file"
-    emit_data COMPLETE_BACKUP_HASH "$backup_hash"
-    emit_result PASS 'Permanent config section headers were canonicalized without changing the applied clock values.'
-}
-
 complete_worker_dir() { cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P; }
 complete_run_dir() { printf '/tmp/autopioverclock-%s' "$1"; }
 complete_backup_root() { printf '/var/lib/autopioverclock/backups'; }
-complete_boot_config() { find_boot_config; }
 
 complete_supervisor_identity_matches() {
     local pid=$1 root=$2 helper_path index candidate
@@ -3649,13 +3535,11 @@ main() {
         reset-throttle-history) cmd_reset_throttle_history "$@" ;;
         render-permanent) cmd_render_permanent "$@" ;;
         render-complete) cmd_render_complete "$@" ;;
-        render-recomplete) cmd_render_recomplete "$@" ;;
         reset-stock) run_with_mutation_lock "reset-${2:-}" APPLY_FAILURE cmd_reset_stock "$@" ;;
         reboot-stock-reset) run_with_mutation_lock "reset-reboot-${BASHPID}" RECOVERY_FAILURE cmd_reboot_stock_reset "$@" ;;
         verify-stock-reset) run_with_mutation_lock "reset-verify-${BASHPID}" RECOVERY_FAILURE cmd_verify_stock_reset "$@" ;;
         apply-permanent) run_with_mutation_lock "apply-${4:-}" APPLY_FAILURE cmd_apply_permanent "$@" ;;
         complete-permanent) run_with_mutation_lock "complete-${4:-}" APPLY_FAILURE cmd_complete_permanent "$@" ;;
-        recomplete-permanent) run_with_mutation_lock "recomplete-${4:-}" APPLY_FAILURE cmd_recomplete_permanent "$@" ;;
         cleanup-complete-artifacts) run_with_mutation_lock "complete-cleanup-${3:-}" RECOVERY_FAILURE cmd_cleanup_complete_artifacts "$@" ;;
         restore-backup) run_with_mutation_lock "restore-${2:-}" APPLY_FAILURE cmd_restore_backup "$@" ;;
         plan-watchdog-repair) cmd_plan_watchdog_repair "$@" ;;

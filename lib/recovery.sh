@@ -14,10 +14,9 @@ APO_TRANSIENT_PHASE_RETRY_MAX=5
 apo_transient_worker_failure_is_retryable() {
     local failure_class=$1 failure_reason=$2 result_structured=${3:-0}
     [[ $failure_class == HARNESS_FAILURE && -n $failure_reason ]] || return 1
-    # A structured harness diagnosis is never promoted to a clock boundary,
-    # but a complete verified normal recovery makes its exact gate safe to
-    # repeat. Saved state predating this decision has no structured-result bit,
-    # so only the two known clean-early-exit reasons are adopted on resume.
+    # A complete structured harness diagnosis is retryable. An unstructured
+    # capture is retryable only for exact transport or clean early-exit reasons,
+    # so a current checkpoint cannot promote arbitrary failure text to a retry.
     [[ $result_structured == 1 ]] && return 0
     [[ $result_structured == 0 ]] || return 1
     case $failure_reason in

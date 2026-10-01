@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.100 - 2026-10-01
+
+- Removed development-era state fallbacks. Resume now requires the current normal-return retry tuple, current retained-history scheduler fields, and every current immutable plan field.
+- Removed the duplicate manual-minute state representation and retained only the canonical duration in seconds.
+- Removed the unused extra-ping and health-hook worker interface, dead controller initializers, and obsolete repeat-completion repair commands.
+- Made repeat `complete TARGET` strictly read-only for the permanent config and sealed ledger. It now requires an exact sealed config-hash match and fails closed on drift instead of rewriting or rebinding evidence.
+- Updated regression coverage and documentation to describe only the current state and completion contracts.
+
 ## 0.1.0-alpha.99 - 2026-09-30
 
 - Made public `prepare TARGET` finish first-time baseline preparation instead of returning success while explicit permanent clock or voltage controls still block `overclock`.

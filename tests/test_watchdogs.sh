@@ -1394,7 +1394,7 @@ BATOCERA_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 TEST_ROOT="$TEMP_DIR" WORKER="$ROOT/
     current_throttle() { printf throttled=0x0; }
     current_temp() { printf 40; }
     kernel_error_lines() { :; }
-    cmd_health 2400 800 v3d_freq 0 75 headless "" "" "" fixture-audio-sink "" "" fixture-hash audio-fixture throttled=0x0
+    cmd_health 2400 800 v3d_freq 0 75 headless "" "" "" fixture-audio-sink fixture-hash audio-fixture throttled=0x0
 ' 2>&1)
 [[ $BATOCERA_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
 

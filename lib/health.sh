@@ -74,8 +74,8 @@ apo_health_check() {
     apo_run_worker_capture "$context" health \
         "$expected_cpu" "$expected_gpu" "$APO_GPU_KEY" "$expected_voltage" "${APO_CFG[MAX_TEMP_C]}" \
         "$APO_MODE_EFFECTIVE" "$APO_DISPLAY_BASELINE" "${APO_CFG[REQUIRED_PROCESSES]}" "${APO_CFG[REQUIRED_SERVICES]}" \
-        "${APO_CFG[AUDIO_SINK_MATCH]}" "${APO_CFG[EXTRA_PING_TARGET]}" "${APO_CFG[HEALTH_HOOK]}" \
-        "$APO_PERMANENT_CONFIG_HASH" "$context" "$APO_THROTTLE_RUNTIME_BASELINE" "$APO_AUDIO_BASELINE" "$fan_policy"
+        "${APO_CFG[AUDIO_SINK_MATCH]}" "$APO_PERMANENT_CONFIG_HASH" "$context" \
+        "$APO_THROTTLE_RUNTIME_BASELINE" "$APO_AUDIO_BASELINE" "$fan_policy"
 }
 
 apo_run_stress() {

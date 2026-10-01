@@ -734,6 +734,7 @@ apo_history_emit_loaded_evidence() {
 
 # Run all parsing, restore, validation, identity checks, and extraction in
 # a subshell so a retained file cannot alter the new run's controller state.
+# shellcheck disable=SC2030,SC2031
 apo_history_screen_validate_emit_file() (
     local source_file=$1 basename run_id origin schema read_only auto_generated edge_status edge_class
     local post_floor_final post_floor_final_stage
@@ -741,7 +742,7 @@ apo_history_screen_validate_emit_file() (
     local expected_test_voltage=${APO_TEST_VOLTAGE:-}
     local expected_baseline_cpu expected_baseline_gpu expected_baseline_voltage
     local expected_model expected_compatible expected_arch state_key
-    local -A schema_fields=() metadata=() evidence=() loaded_state=()
+    local -A schema_fields=() metadata=() evidence=() loaded_state=() APO_STATE=()
 
     expected_model=$(apo_history_expected_discovery_value DISC_MODEL)
     expected_compatible=$(apo_history_expected_discovery_value DISC_COMPATIBLE)
@@ -847,13 +848,10 @@ apo_history_screen_validate_emit_file() (
     [[ $basename == "${APO_TARGET_SLUG}-${run_id}.state" ]] || return 1
     [[ $(apo_history_state_value loaded_state TARGET_SLUG '') == "$APO_TARGET_SLUG" ]] || return 1
 
-    APO_STATE=()
     # Both arrays are associative; ShellCheck otherwise treats their keys as
     # arithmetic expressions.
     # shellcheck disable=SC2004
     for state_key in "${!loaded_state[@]}"; do APO_STATE[$state_key]=${loaded_state[$state_key]}; done
-    # This assignment is intentionally isolated by the surrounding subshell.
-    # shellcheck disable=SC2030
     APO_STATE_FILE=$source_file
     apo_history_validate_loaded_state || return 1
     apo_history_loaded_state_is_compatible \
@@ -1264,12 +1262,32 @@ apo_history_validate_plan_pair() {
 # Validate the independently persisted current history-isolation scheduler
 # plan. A cleared current plan is represented explicitly as NONE.
 apo_history_validate_plan_state() {
+    local key
     local stage frontiers anchor_cpu anchor_gpu cpu_trial_cpu cpu_trial_gpu
     local gpu_trial_cpu gpu_trial_gpu pair_trial_cpu pair_trial_gpu handoff_cpu handoff_gpu cpu_floor gpu_floor
     local cpu_max gpu_max base_cpu handoff_valid=0
     APO_HISTORY_VALIDATION_REASON=''
     APO_HISTORY_ERROR=''
-    stage=$(apo_state_get HISTORY_ISOLATION_STAGE NONE)
+    if [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]]; then
+        for key in HISTORY_ISOLATION_STAGE HISTORY_CPU_FAILURE_BOUNDARY HISTORY_GPU_FAILURE_BOUNDARY \
+                   HISTORY_PAIR_FRONTIERS HISTORY_PROVENANCE HISTORY_LEDGER_FILE HISTORY_SCANNED_STATES \
+                   HISTORY_ACCEPTED_STATES HISTORY_EVIDENCE_COUNT HISTORY_ISOLATION_ANCHOR_CPU \
+                   HISTORY_ISOLATION_ANCHOR_GPU HISTORY_CPU_TRIAL_CPU HISTORY_CPU_TRIAL_GPU \
+                   HISTORY_GPU_TRIAL_CPU HISTORY_GPU_TRIAL_GPU HISTORY_PAIR_TRIAL_CPU \
+                   HISTORY_PAIR_TRIAL_GPU HISTORY_BASE_CPU_QUALIFIED_CLOCK \
+                   HISTORY_CPU_TRIAL_QUALIFIED_CLOCK HISTORY_ISOLATION_HANDOFF_CPU \
+                   HISTORY_ISOLATION_HANDOFF_GPU HISTORY_ISOLATION_HISTORY HISTORY_FAILURE_EVENTS; do
+            # The history screener's same-named local array is isolated inside
+            # its subshell and cannot affect this controller state.
+            # shellcheck disable=SC2031
+            if [[ ! -v APO_STATE[$key] ]]; then
+                APO_HISTORY_VALIDATION_REASON="Current-schema state is missing required retained-history field $key."
+                APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON
+                return 1
+            fi
+        done
+    fi
+    stage=$(apo_state_get HISTORY_ISOLATION_STAGE '')
     apo_history_validate_isolation_stage "$stage" || {
         APO_HISTORY_VALIDATION_REASON="Unknown history isolation stage: $stage"
         APO_HISTORY_ERROR=$APO_HISTORY_VALIDATION_REASON

@@ -1108,6 +1108,9 @@ ROOT="$ROOT" REPAIR_STATE="$REPAIR_STATE" PARTIAL_DIR="$PARTIAL_DIR" STORED_TARG
     apo_state_set WATCHDOG_REPAIR_STATUS MUTATING
     apo_state_set WATCHDOG_REPAIR_OLD_HASH aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     apo_state_set WATCHDOG_REPAIR_EXPECTED_HASH bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE ""
+    apo_state_set NORMAL_RETURN_RETRY_REASON ""
     apo_state_save
 '
 if "$ROOT/autopioverclock" resume example-host --output-dir "$PARTIAL_DIR" --run-id repair >"$PARTIAL_DIR/repair-resume.out" 2>&1; then

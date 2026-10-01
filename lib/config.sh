@@ -82,9 +82,6 @@ apo_config_defaults() {
     APO_CFG[REQUIRED_PROCESSES]=''
     APO_CFG[REQUIRED_SERVICES]=''
     APO_CFG[AUDIO_SINK_MATCH]=''
-    # Internal compatibility values, not accepted public configuration keys.
-    APO_CFG[EXTRA_PING_TARGET]=''
-    APO_CFG[HEALTH_HOOK]=''
 }
 
 apo_config_duration_policy() {
@@ -446,7 +443,6 @@ apo_config_store_in_state() {
     apo_state_set CFG_MANUAL_TEST "${APO_MANUAL_TEST:-0}"
     apo_state_set CFG_MANUAL_CPU "${APO_MANUAL_CPU:-}"
     apo_state_set CFG_MANUAL_GPU "${APO_MANUAL_GPU:-}"
-    apo_state_set CFG_MANUAL_MINUTES "${APO_MANUAL_MINUTES:-}"
     apo_state_set CFG_MANUAL_DURATION_S "${APO_MANUAL_DURATION_S:-}"
 }
 
@@ -463,6 +459,24 @@ apo_config_state_requires_duration_plan() {
     [[ -n $phase && $phase != PREPARE ]]
 }
 
+apo_config_require_current_plan_fields() {
+    local key config_key internal_key
+    for config_key in "${APO_ALLOWED_CONFIG_KEYS[@]}"; do
+        internal_key=$(apo_config_internal_key "$config_key") || return 1
+        key="CFG_${internal_key}"
+        [[ -v APO_STATE[$key] ]] || apo_die "Current-schema state is missing required plan field $key." "$APO_EXIT_INTERNAL"
+    done
+    for key in CFG_AUTO_GENERATED_CANDIDATES CFG_SWEEP_DOMAIN CFG_SELECTION_POLICY \
+               CFG_CPU_MIN CFG_GPU_MIN CFG_CPU_MAX CFG_GPU_MAX CFG_CPU_MAX_REQUESTED \
+               CFG_GPU_MAX_REQUESTED CFG_CPU_RESOLUTION_MHZ CFG_GPU_RESOLUTION_MHZ \
+               CFG_CPU_SEARCH_DIRECTION CFG_GPU_SEARCH_DIRECTION CFG_USE_HISTORY \
+               CFG_EDGE_CPU_24H CFG_EDGE_ORDER CFG_QUALIFICATION_DURATION_S \
+               CFG_EDGE_DURATION_S CFG_DURATION_POLICY CFG_MAX_FAN CFG_MANUAL_TEST \
+               CFG_MANUAL_CPU CFG_MANUAL_GPU CFG_MANUAL_DURATION_S; do
+        [[ -v APO_STATE[$key] ]] || apo_die "Current-schema state is missing required plan field $key." "$APO_EXIT_INTERNAL"
+    done
+}
+
 apo_config_restore_from_state() {
     local config_key internal_key run_schema phase
     apo_config_defaults
@@ -470,15 +484,13 @@ apo_config_restore_from_state() {
     phase=$(apo_state_get PHASE '')
     [[ -z $run_schema || $run_schema == "$APO_CURRENT_RUN_SCHEMA" ]] ||
         apo_die 'Saved run schema is not current.' "$APO_EXIT_INTERNAL"
+    if apo_config_state_requires_duration_plan; then
+        apo_config_require_current_plan_fields
+    fi
     for config_key in "${APO_ALLOWED_CONFIG_KEYS[@]}"; do
         internal_key=$(apo_config_internal_key "$config_key")
         APO_CFG[$internal_key]=$(apo_state_get "CFG_${internal_key}" "${APO_CFG[$internal_key]}")
     done
-    if apo_config_state_requires_duration_plan; then
-        [[ -v APO_STATE[CFG_QUALIFICATION_DURATION_S] && -v APO_STATE[CFG_FINAL_DURATION_S] &&
-           -v APO_STATE[CFG_EDGE_DURATION_S] && -v APO_STATE[CFG_DURATION_POLICY] ]] ||
-            apo_die 'Current-schema state is missing its immutable duration plan.' "$APO_EXIT_INTERNAL"
-    fi
     APO_AUTO_GENERATED_CANDIDATES=$(apo_state_get CFG_AUTO_GENERATED_CANDIDATES 0)
     [[ $APO_AUTO_GENERATED_CANDIDATES == 0 || $APO_AUTO_GENERATED_CANDIDATES == 1 ]] ||
         apo_die 'Saved automatic-candidate marker is malformed.' "$APO_EXIT_INTERNAL"
@@ -491,11 +503,6 @@ apo_config_restore_from_state() {
     fi
     [[ $APO_SELECTION_POLICY == adaptive-refined-v1 ]] ||
         apo_die 'Saved automatic selection policy is not current.' "$APO_EXIT_INTERNAL"
-    if (( APO_AUTO_GENERATED_CANDIDATES == 1 )) && apo_config_state_requires_duration_plan; then
-        [[ -v APO_STATE[CFG_CPU_RESOLUTION_MHZ] && -v APO_STATE[CFG_GPU_RESOLUTION_MHZ] &&
-           -v APO_STATE[CFG_CPU_SEARCH_DIRECTION] && -v APO_STATE[CFG_GPU_SEARCH_DIRECTION] ]] ||
-            apo_die 'Saved adaptive search state is missing its immutable per-domain resolution or direction.' "$APO_EXIT_INTERNAL"
-    fi
     APO_CPU_MIN=$(apo_state_get CFG_CPU_MIN '')
     APO_GPU_MIN=$(apo_state_get CFG_GPU_MIN '')
     APO_CPU_MAX=$(apo_state_get CFG_CPU_MAX '')
@@ -624,19 +631,14 @@ apo_config_restore_from_state() {
         apo_die 'Saved manual-test marker is malformed.' "$APO_EXIT_INTERNAL"
     APO_MANUAL_CPU=$(apo_state_get CFG_MANUAL_CPU '')
     APO_MANUAL_GPU=$(apo_state_get CFG_MANUAL_GPU '')
-    APO_MANUAL_MINUTES=$(apo_state_get CFG_MANUAL_MINUTES '')
     APO_MANUAL_DURATION_S=$(apo_state_get CFG_MANUAL_DURATION_S '')
     if (( APO_MANUAL_TEST == 1 )); then
         apo_validate_uint_range "$APO_MANUAL_CPU" "$APO_CPU_CLOCK_MIN_MHZ" "$APO_CPU_CLOCK_MAX_MHZ" ||
             apo_die 'Saved manual CPU clock is malformed.' "$APO_EXIT_INTERNAL"
         apo_validate_uint_range "$APO_MANUAL_GPU" "$APO_GPU_CLOCK_MIN_MHZ" "$APO_GPU_CLOCK_MAX_MHZ" ||
             apo_die 'Saved manual GPU clock is malformed.' "$APO_EXIT_INTERNAL"
-        apo_validate_uint_range "$APO_MANUAL_MINUTES" 1 "$((APO_MAX_TUNING_DURATION_S / 60))" ||
-            apo_die 'Saved manual duration is malformed.' "$APO_EXIT_INTERNAL"
         apo_validate_uint_range "$APO_MANUAL_DURATION_S" 60 "$APO_MAX_TUNING_DURATION_S" ||
             apo_die 'Saved manual duration seconds are malformed.' "$APO_EXIT_INTERNAL"
-        [[ $APO_MANUAL_DURATION_S == $((APO_MANUAL_MINUTES * 60)) ]] ||
-            apo_die 'Saved manual duration fields disagree.' "$APO_EXIT_INTERNAL"
     fi
     apo_config_validate
     apo_config_validate_duration_plan

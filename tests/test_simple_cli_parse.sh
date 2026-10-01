@@ -298,7 +298,7 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --final-hours 2
     apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 2 --no-max-fan
     [[ $APO_COMMAND == run && $APO_ORIGIN_COMMAND == test && $APO_PUBLIC_COMMAND == test ]]
     [[ $APO_MANUAL_TEST == 1 && $APO_MANUAL_CPU == 3100 && $APO_MANUAL_GPU == 1150 ]]
-    [[ $APO_MANUAL_MINUTES == 120 && $APO_MANUAL_DURATION_S == 7200 ]]
+    [[ $APO_MANUAL_DURATION_S == 7200 ]]
     [[ $APO_ASSUME_YES == 1 && $APO_AUTO_APPLY == 0 && $APO_MAX_FAN == 0 ]]
 )
 (
@@ -306,20 +306,20 @@ parse_fixture run test test test tron --cpu 3100 --gpu 1150 --final-hours 2
     source "$ROOT/autopioverclock"
     apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 48
     [[ $APO_COMMAND == run && $APO_ORIGIN_COMMAND == test && $APO_PUBLIC_COMMAND == test ]]
-    [[ $APO_MANUAL_MINUTES == 2880 && $APO_MANUAL_DURATION_S == 172800 ]]
+    [[ $APO_MANUAL_DURATION_S == 172800 ]]
     [[ $APO_FINAL_HOURS_OPTION_SEEN == 1 && $APO_AUTO_APPLY == 0 ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 168
-    [[ $APO_MANUAL_MINUTES == 10080 && $APO_MANUAL_DURATION_S == 604800 ]]
+    [[ $APO_MANUAL_DURATION_S == 604800 ]]
 )
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli test tron --cpu 3100 --gpu 1150 --final-hours 596523
-    [[ $APO_MANUAL_MINUTES == 35791380 && $APO_MANUAL_DURATION_S == 2147482800 ]]
+    [[ $APO_MANUAL_DURATION_S == 2147482800 ]]
 )
 parse_fixture reset reset reset reset tron
 parse_fixture restore restore '' restore tron

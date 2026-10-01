@@ -351,15 +351,10 @@ apo_report_duration() {
 }
 
 apo_report_manual_duration() {
-    local seconds minutes
+    local seconds
     seconds=$(apo_state_get MANUAL_DURATION_S "$(apo_state_get CFG_MANUAL_DURATION_S '')")
     if [[ $seconds =~ ^[0-9]+$ ]]; then
         apo_report_duration "$seconds"
-        return 0
-    fi
-    minutes=$(apo_state_get MANUAL_MINUTES "$(apo_state_get CFG_MANUAL_MINUTES '')")
-    if [[ $minutes =~ ^[0-9]+$ ]]; then
-        apo_report_duration "$((minutes * 60))"
     else
         printf n/a
     fi

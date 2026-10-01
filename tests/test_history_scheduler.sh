@@ -36,9 +36,17 @@ apo_class_is_edge_failure() { [[ $1 == BOOT_FAILURE || $1 == STABILITY_FAILURE ]
 seed_plan() {
     APO_STATE=()
     SAVE_COUNT=0
+    apo_state_set RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA"
     apo_state_set RUN_ID history-scheduler
     apo_state_set HISTORY_ISOLATION_STAGE PLANNED
+    apo_state_set HISTORY_CPU_FAILURE_BOUNDARY ''
+    apo_state_set HISTORY_GPU_FAILURE_BOUNDARY ''
     apo_state_set HISTORY_PAIR_FRONTIERS 3100/1200
+    apo_state_set HISTORY_PROVENANCE retained-ledger
+    apo_state_set HISTORY_LEDGER_FILE fixture-ledger
+    apo_state_set HISTORY_SCANNED_STATES 1
+    apo_state_set HISTORY_ACCEPTED_STATES 1
+    apo_state_set HISTORY_EVIDENCE_COUNT 1
     apo_state_set CFG_CPU_MAX_EFFECTIVE 3200
     apo_state_set CFG_GPU_MAX_EFFECTIVE 1200
     apo_state_set HISTORY_ISOLATION_ANCHOR_CPU 3100
