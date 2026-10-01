@@ -1528,6 +1528,12 @@ apo_start_new_run() {
     if [[ $APO_COMMAND == prepare ]]; then
         if apo_config_stock_auto_baseline_ready "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" \
             "$APO_PERMANENT_TUNING_PROVENANCE" "$APO_PERMANENT_TUNING_EVIDENCE"; then
+            apo_history_reconcile_prepared_baseline ||
+                apo_die "Preparation history reconciliation failed: ${APO_HISTORY_SCAN_ERROR:-invalid retained history}" "$APO_EXIT_PREFLIGHT"
+            if (( APO_HISTORY_PREPARE_REBASED_EMPTY_LEDGER == 1 )); then
+                apo_event prepare-history PASS '' 'An empty unsealed failure ledger from the pre-normalization baseline was atomically rebuilt for the verified stock baseline.'
+                apo_summary_line 'History ledger: empty and unsealed pre-normalization metadata was refreshed for the verified stock baseline.'
+            fi
             apo_state_phase COMPLETE HOST_READY PASS
             apo_summary_line "HOST READY: profile=$APO_PROFILE mode=$APO_MODE_EFFECTIVE normal=${APO_NORMAL_CPU}/${APO_NORMAL_GPU} voltage=${APO_NORMAL_VOLTAGE}"
             if [[ $(apo_state_get PREPARE_BASELINE_STATUS NOT_NEEDED) == VERIFIED ]]; then

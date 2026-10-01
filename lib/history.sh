@@ -40,9 +40,11 @@ APO_HISTORY_RECENT_PAIR_RUN_ID=''
 APO_HISTORY_AUTO_PAIR_ANCHOR=''
 APO_HISTORY_AUTO_PAIR_RUN_ID=''
 APO_HISTORY_MACHINE_RECORDS=0
+APO_HISTORY_LEDGER_RECORD_COUNT=0
 APO_HISTORY_MACHINE_LEDGER_PRESENT=0
 APO_HISTORY_MACHINE_LEDGER_COMPATIBLE=0
 APO_HISTORY_COMPLETED_BASELINE_ADOPTED=0
+APO_HISTORY_PREPARE_REBASED_EMPTY_LEDGER=0
 APO_HISTORY_LEDGER_BASELINE_CPU=''
 APO_HISTORY_LEDGER_BASELINE_GPU=''
 APO_HISTORY_LEDGER_BASELINE_VOLTAGE=''
@@ -90,8 +92,10 @@ apo_history_reset() {
     APO_HISTORY_AUTO_PAIR_ANCHOR=''
     APO_HISTORY_AUTO_PAIR_RUN_ID=''
     APO_HISTORY_MACHINE_RECORDS=0
+    APO_HISTORY_LEDGER_RECORD_COUNT=0
     APO_HISTORY_MACHINE_LEDGER_PRESENT=0
     APO_HISTORY_MACHINE_LEDGER_COMPATIBLE=0
+    APO_HISTORY_PREPARE_REBASED_EMPTY_LEDGER=0
     APO_HISTORY_LEDGER_BASELINE_CPU=''
     APO_HISTORY_LEDGER_BASELINE_GPU=''
     APO_HISTORY_LEDGER_BASELINE_VOLTAGE=''
@@ -423,6 +427,7 @@ apo_history_load_machine_ledger() {
 
     APO_HISTORY_LEDGER_META=()
     for key in "${required_keys[@]}"; do APO_HISTORY_LEDGER_META[$key]=${parsed_meta[$key]}; done
+    APO_HISTORY_LEDGER_RECORD_COUNT=${#parsed_records[@]}
     APO_HISTORY_MACHINE_LEDGER_PRESENT=1
     APO_HISTORY_MACHINE_LEDGER_COMPATIBLE=1
     APO_HISTORY_LEDGER_BASELINE_CPU=${parsed_meta[BASELINE_CPU]}
@@ -736,13 +741,16 @@ apo_history_emit_loaded_evidence() {
 # a subshell so a retained file cannot alter the new run's controller state.
 # shellcheck disable=SC2030,SC2031
 apo_history_screen_validate_emit_file() (
-    local source_file=$1 basename run_id origin schema read_only auto_generated edge_status edge_class
+    local source_file=$1 skip_compatibility=${2:-0}
+    local basename run_id origin schema read_only auto_generated edge_status edge_class
     local post_floor_final post_floor_final_stage
     local expected_profile=${APO_PROFILE:-} expected_gpu_key=${APO_GPU_KEY:-}
     local expected_test_voltage=${APO_TEST_VOLTAGE:-}
     local expected_baseline_cpu expected_baseline_gpu expected_baseline_voltage
     local expected_model expected_compatible expected_arch state_key
     local -A schema_fields=() metadata=() evidence=() loaded_state=() APO_STATE=()
+
+    [[ $skip_compatibility == 0 || $skip_compatibility == 1 ]] || return 1
 
     expected_model=$(apo_history_expected_discovery_value DISC_MODEL)
     expected_compatible=$(apo_history_expected_discovery_value DISC_COMPATIBLE)
@@ -854,10 +862,12 @@ apo_history_screen_validate_emit_file() (
     for state_key in "${!loaded_state[@]}"; do APO_STATE[$state_key]=${loaded_state[$state_key]}; done
     APO_STATE_FILE=$source_file
     apo_history_validate_loaded_state || return 1
-    apo_history_loaded_state_is_compatible \
-        "$expected_profile" "$expected_gpu_key" "$expected_test_voltage" \
-        "$expected_baseline_cpu" "$expected_baseline_gpu" "$expected_baseline_voltage" \
-        "$expected_model" "$expected_compatible" "$expected_arch" || return 3
+    if (( skip_compatibility == 0 )); then
+        apo_history_loaded_state_is_compatible \
+            "$expected_profile" "$expected_gpu_key" "$expected_test_voltage" \
+            "$expected_baseline_cpu" "$expected_baseline_gpu" "$expected_baseline_voltage" \
+            "$expected_model" "$expected_compatible" "$expected_arch" || return 3
+    fi
 
     printf 'ACCEPT|||%s|%s\n' "$run_id" "$basename"
     apo_history_emit_loaded_evidence "$run_id" "$basename"
@@ -1685,6 +1695,102 @@ apo_history_rebuild_ledger() {
 apo_history_refresh() {
     apo_history_scan_retained_states || return 1
     apo_history_rebuild_ledger
+}
+
+apo_history_prepare_has_no_retained_evidence() {
+    local source_file status had_nullglob=0
+    local -a source_files=()
+
+    if [[ -e ${APO_OUTPUT_DIR:-} || -L ${APO_OUTPUT_DIR:-} ]]; then
+        [[ -n ${APO_OUTPUT_DIR:-} && -d $APO_OUTPUT_DIR && ! -L $APO_OUTPUT_DIR ]] || {
+            APO_HISTORY_SCAN_ERROR='Preparation cannot inspect an unsafe target runs path.'
+            return 1
+        }
+        shopt -q nullglob && had_nullglob=1
+        shopt -s nullglob
+        source_files=("$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-"*.state)
+        (( had_nullglob == 1 )) || shopt -u nullglob
+    fi
+
+    for source_file in "${source_files[@]}"; do
+        [[ -f $source_file && ! -L $source_file ]] || continue
+        if apo_history_screen_validate_emit_file "$source_file" 1 >/dev/null; then
+            APO_HISTORY_SCAN_ERROR="Preparation refuses to rebase an empty ledger while retained failure evidence exists: ${source_file##*/}"
+            return 1
+        else
+            status=$?
+            if (( status != 3 )); then
+                APO_HISTORY_SCAN_ERROR="Preparation cannot prove retained state is evidence-free: ${source_file##*/}"
+                return 1
+            fi
+        fi
+    done
+}
+
+apo_history_reconcile_prepared_baseline() {
+    local ledger_file ledger_rc failure_reason
+
+    APO_HISTORY_PREPARE_REBASED_EMPTY_LEDGER=0
+    [[ ${APO_COMMAND:-} == prepare && ${APO_DRY_RUN:-0} == 0 ]] || return 0
+    ledger_file=$(apo_history_ledger_path) || {
+        APO_HISTORY_SCAN_ERROR='Preparation could not resolve the target failure ledger path.'
+        return 1
+    }
+    [[ -e $ledger_file || -L $ledger_file ]] || return 0
+    [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
+        APO_HISTORY_SCAN_ERROR='Preparation found an unsafe retained failure ledger path.'
+        return 1
+    }
+
+    if apo_history_load_machine_ledger "$ledger_file" 0; then
+        apo_history_reset
+        return 0
+    fi
+    ledger_rc=$?
+    apo_history_reset
+
+    if [[ ${APO_PERMANENT_TUNING_PROVENANCE:-} != verified-default ||
+          ${APO_PERMANENT_TUNING_EVIDENCE:-} != none ]]; then
+        APO_HISTORY_SCAN_ERROR='Preparation found a failure ledger that does not match the live non-stock baseline.'
+        return "$ledger_rc"
+    fi
+    if apo_history_load_machine_ledger "$ledger_file" 0 1; then
+        :
+    else
+        ledger_rc=$?
+        apo_history_reset
+        APO_HISTORY_SCAN_ERROR='Preparation found a malformed or foreign failure ledger.'
+        return "$ledger_rc"
+    fi
+    if (( APO_HISTORY_LEDGER_RECORD_COUNT != 0 )) ||
+       [[ -n $APO_HISTORY_SEALED_RUN_ID || -n $APO_HISTORY_SEALED_CPU ||
+          -n $APO_HISTORY_SEALED_GPU || -n $APO_HISTORY_SEALED_VOLTAGE ||
+          -n $APO_HISTORY_SEALED_HASH || -n $APO_HISTORY_SEALED_RUN_SCHEMA ||
+          -n $APO_HISTORY_SEALED_VALIDATION_SCHEMA ]]; then
+        apo_history_reset
+        APO_HISTORY_SCAN_ERROR='Preparation refuses to rebase a failure ledger containing retained records or a sealed applied floor.'
+        return 1
+    fi
+    apo_history_reset
+    if ! apo_history_prepare_has_no_retained_evidence; then
+        failure_reason=$APO_HISTORY_SCAN_ERROR
+        apo_history_reset
+        APO_HISTORY_SCAN_ERROR=$failure_reason
+        return 1
+    fi
+
+    apo_history_reset
+    APO_HISTORY_RENDER_BASELINE_CPU=''
+    APO_HISTORY_RENDER_BASELINE_GPU=''
+    APO_HISTORY_RENDER_BASELINE_VOLTAGE=''
+    if ! apo_history_rebuild_ledger "$ledger_file" ||
+       ! apo_history_load_machine_ledger "$ledger_file" 0; then
+        apo_history_reset
+        APO_HISTORY_SCAN_ERROR='Preparation could not atomically rebuild and verify the empty failure ledger for the current stock baseline.'
+        return 1
+    fi
+    apo_history_reset
+    APO_HISTORY_PREPARE_REBASED_EMPTY_LEDGER=1
 }
 
 apo_history_adopt_completed_baseline() {

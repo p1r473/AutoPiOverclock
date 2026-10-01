@@ -127,7 +127,7 @@ Every operational command requires a target such as `pi@hostname`.
 
 | Command | What it does | Use it when... |
 | --- | --- | --- |
-| `prepare TARGET` | Installs missing workload dependencies, verifies recovery, and safely normalizes first-time explicit tuning controls to a backed-up, reboot-verified stock baseline without changing native watchdog configuration. | Setting up a target, checking prerequisites, or checking readiness with read-only `--dry-run`. |
+| `prepare TARGET` | Installs missing workload dependencies, verifies recovery, and safely normalizes first-time explicit tuning controls to a backed-up, reboot-verified stock baseline without changing native watchdog configuration. After that proof, it may refresh only a structurally valid empty, unsealed ledger from the pre-normalization baseline. | Setting up a target, checking prerequisites, or checking readiness with read-only `--dry-run`. |
 | `overclock TARGET [OPTIONS]` | Starts a **new** history-guided tuning run, validates, applies, reboots, and verifies. | You want a new tuning decision. It never silently resumes an older run. |
 | `test TARGET --cpu MHZ --gpu MHZ --final-hours HOURS` | Tests one exact pair for the requested whole-hour duration, then recovers normally; it never tunes or applies. | You already know the exact clocks and only want pass/fail evidence. |
 | `reset TARGET` | Backs up the boot config, removes tuning, reboots, and verifies stock clocks. | You want to return the Pi to stock; it preserves run history. |

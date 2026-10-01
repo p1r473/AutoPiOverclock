@@ -127,6 +127,103 @@ fi
 [[ $APO_HISTORY_SCAN_ERROR == *'hash does not match'* ]]
 APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
+# A verified stock prepare may refresh only an empty, unsealed ledger left by
+# the pre-normalization baseline. The replacement must validate immediately
+# against the current stock context.
+(
+    APO_OUTPUT_DIR="$TEST_ROOT/prepared-empty/runs"
+    APO_HISTORY_DIR="$TEST_ROOT/prepared-empty/history"
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    APO_COMMAND=prepare
+    APO_DRY_RUN=0
+    APO_PERMANENT_TUNING_PROVENANCE='verified-default'
+    APO_PERMANENT_TUNING_EVIDENCE=none
+    APO_TEST_VOLTAGE=50000
+    APO_NORMAL_VOLTAGE=50000
+    apo_history_reset
+    APO_HISTORY_RENDER_BASELINE_CPU=''
+    APO_HISTORY_RENDER_BASELINE_GPU=''
+    APO_HISTORY_RENDER_BASELINE_VOLTAGE=''
+    apo_history_rebuild_ledger
+    stale_ledger=$APO_HISTORY_LEDGER_FILE
+    stale_hash=$(sha256sum "$stale_ledger" | awk 'NR == 1 {print $1}')
+
+    APO_TEST_VOLTAGE=0
+    APO_NORMAL_VOLTAGE=0
+    apo_history_reconcile_prepared_baseline
+    [[ $APO_HISTORY_PREPARE_REBASED_EMPTY_LEDGER == 1 ]]
+    [[ $(sha256sum "$stale_ledger" | awk 'NR == 1 {print $1}') != "$stale_hash" ]]
+    apo_history_load_machine_ledger "$stale_ledger" 0
+    [[ $APO_HISTORY_LEDGER_RECORD_COUNT == 0 ]]
+    [[ $APO_HISTORY_LEDGER_BASELINE_CPU == 3050 ]]
+    [[ $APO_HISTORY_LEDGER_BASELINE_GPU == 1125 ]]
+    [[ $APO_HISTORY_LEDGER_BASELINE_VOLTAGE == 0 ]]
+    [[ -z $APO_HISTORY_SEALED_RUN_ID ]]
+)
+
+# Retained machine evidence can never use the empty-ledger prepare path.
+(
+    APO_OUTPUT_DIR="$TEST_ROOT/prepared-record/runs"
+    APO_HISTORY_DIR="$TEST_ROOT/prepared-record/history"
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    APO_COMMAND=prepare
+    APO_DRY_RUN=0
+    APO_PERMANENT_TUNING_PROVENANCE='verified-default'
+    APO_PERMANENT_TUNING_EVIDENCE=none
+    APO_TEST_VOLTAGE=50000
+    APO_NORMAL_VOLTAGE=50000
+    apo_history_reset
+    apo_history_record_ledger 2026-09-20T02:00:00-0400 retained-run 3125 1125 BOOT_FAILURE CPU \
+        "$source_b64" "$cpu_reason_b64" retained-run.state
+    apo_history_record CPU 3125 retained-run final-endurance retained-run.state
+    apo_history_rebuild_ledger
+    retained_ledger=$APO_HISTORY_LEDGER_FILE
+    retained_hash=$(sha256sum "$retained_ledger" | awk 'NR == 1 {print $1}')
+
+    APO_TEST_VOLTAGE=0
+    APO_NORMAL_VOLTAGE=0
+    if apo_history_reconcile_prepared_baseline; then
+        printf 'prepare rebased a ledger containing retained failure evidence\n' >&2
+        exit 1
+    fi
+    [[ $APO_HISTORY_SCAN_ERROR == *'retained records or a sealed applied floor'* ]]
+    [[ $(sha256sum "$retained_ledger" | awk 'NR == 1 {print $1}') == "$retained_hash" ]]
+)
+
+# A sealed applied floor is protected even when the ledger contains no failure
+# records. Prepare must not rewrite it to match a different live baseline.
+(
+    APO_OUTPUT_DIR="$TEST_ROOT/prepared-sealed/runs"
+    APO_HISTORY_DIR="$TEST_ROOT/prepared-sealed/history"
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    APO_COMMAND=prepare
+    APO_DRY_RUN=0
+    APO_PERMANENT_TUNING_PROVENANCE='verified-default'
+    APO_PERMANENT_TUNING_EVIDENCE=none
+    APO_TEST_VOLTAGE=50000
+    APO_NORMAL_VOLTAGE=50000
+    apo_history_reset
+    APO_HISTORY_SEALED_RUN_ID=protected-run
+    APO_HISTORY_SEALED_CPU=3050
+    APO_HISTORY_SEALED_GPU=1125
+    APO_HISTORY_SEALED_VOLTAGE=50000
+    APO_HISTORY_SEALED_HASH=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    APO_HISTORY_SEALED_RUN_SCHEMA=$APO_CURRENT_RUN_SCHEMA
+    APO_HISTORY_SEALED_VALIDATION_SCHEMA=$APO_CURRENT_VALIDATION_SCHEMA
+    apo_history_rebuild_ledger
+    sealed_ledger=$APO_HISTORY_LEDGER_FILE
+    sealed_hash=$(sha256sum "$sealed_ledger" | awk 'NR == 1 {print $1}')
+
+    APO_TEST_VOLTAGE=0
+    APO_NORMAL_VOLTAGE=0
+    if apo_history_reconcile_prepared_baseline; then
+        printf 'prepare rebased a ledger containing a sealed applied floor\n' >&2
+        exit 1
+    fi
+    [[ $APO_HISTORY_SCAN_ERROR == *'retained records or a sealed applied floor'* ]]
+    [[ $(sha256sum "$sealed_ledger" | awk 'NR == 1 {print $1}') == "$sealed_hash" ]]
+)
+
 # The loader is strict about identity, structure, canonical encoding, unique
 # metadata, and data after the machine section.
 APO_REMOTE_TARGET=pi@other

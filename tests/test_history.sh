@@ -872,6 +872,40 @@ fi
 APO_HISTORY_PAIR_FRONTIERS='2950/1150'
 apo_history_has_legal_axis_headroom 2925 1125 25 25
 
+# Even an empty unsealed ledger cannot be refreshed by prepare when a retained
+# current-schema state contains committed failure evidence.
+# shellcheck disable=SC2030
+(
+    APO_OUTPUT_DIR=$TMP/prepare-evidence/runs
+    APO_HISTORY_DIR=$TMP/prepare-evidence/history
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    APO_COMMAND=prepare
+    APO_DRY_RUN=0
+    APO_SWEEP_DOMAIN=all
+    APO_PERMANENT_TUNING_PROVENANCE='verified-default'
+    APO_PERMANENT_TUNING_EVIDENCE=none
+    APO_TEST_VOLTAGE=50000
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=960
+    APO_NORMAL_VOLTAGE=50000
+    apo_history_reset
+    APO_HISTORY_RENDER_BASELINE_CPU=''
+    APO_HISTORY_RENDER_BASELINE_GPU=''
+    APO_HISTORY_RENDER_BASELINE_VOLTAGE=''
+    apo_history_rebuild_ledger
+    stale_ledger=$APO_HISTORY_LEDGER_FILE
+    stale_hash=$(sha256sum "$stale_ledger" | awk 'NR == 1 {print $1}')
+    APO_TEST_VOLTAGE=0
+    APO_NORMAL_VOLTAGE=0
+    write_auto_state evidence-run STATUS FAILED PHASE CPU_SWEEP CPU_FAILURE_BOUNDARY 3000
+    if apo_history_reconcile_prepared_baseline; then
+        printf 'prepare rebased an empty ledger despite retained state evidence\n' >&2
+        exit 1
+    fi
+    [[ $APO_HISTORY_SCAN_ERROR == *'retained failure evidence exists'* ]]
+    [[ $(sha256sum "$stale_ledger" | awk 'NR == 1 {print $1}') == "$stale_hash" ]]
+)
+
 # Timestamp generation is explicitly checked even though the production call
 # chain suppresses errexit while reporting a failed history plan. A clock-tool
 # failure must preserve an existing ledger and leave an absent path absent.

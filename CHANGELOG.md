@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.102 - 2026-10-01
+
+- Made successful first-time `prepare` atomically refresh a structurally valid empty, unsealed failure ledger after verified stock normalization. Any retained failure record, sealed applied floor, malformed ledger, unsafe path, or current evidence-bearing state still fails closed.
+
 ## 0.1.0-alpha.101 - 2026-10-01
 
 - Captured and asserted intentional warning and fail-closed diagnostics inside their regression tests instead of printing them as apparent live failures. The expected return codes and safety assertions are unchanged.
