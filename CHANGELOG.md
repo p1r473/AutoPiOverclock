@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.106 - 2026-10-01
+
+- Fixed state-independent Debian watchdog cleanup to validate the uploaded cleanup script against the current reset run directory while separately applying the retained installing run ID to target ownership evidence.
+- Added a regression that rejects the old installing run as upload-path authority and proves the current reset run is the only accepted uploader.
+
 ## 0.1.0-alpha.105 - 2026-10-01
 
 - Made explicit `reset TARGET` remove a strictly verified run-owned network-watchdog observer or temporary companion before changing the permanent clock configuration, even when its original controller run state is gone.

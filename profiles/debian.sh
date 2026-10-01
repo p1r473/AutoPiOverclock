@@ -697,7 +697,7 @@ apo_profile_cleanup_discovered_watchdog() {
     apo_state_set NETWORK_WATCHDOG_INSTALL_STATUS CLEANING
     apo_state_save
     apo_run_worker_capture reset-network-watchdog-cleanup cleanup-owned-network-watchdog \
-        "$remote_installer" "$installing_run" "$backup" "$config_hash" "$keeper_hash" "$service_hash" || return 1
+        "$remote_installer" "$APO_RUN_ID" "$installing_run" "$backup" "$config_hash" "$keeper_hash" "$service_hash" || return 1
     apo_discovery_capture || return 1
     native_after=''
     for key in "${native_keys[@]}"; do native_after+="${key}=${APO_DISCOVERY[$key]:-}"$'\n'; done

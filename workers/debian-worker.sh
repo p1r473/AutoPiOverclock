@@ -3534,17 +3534,17 @@ cmd_cleanup_network_watchdog() {
 }
 
 cmd_cleanup_owned_network_watchdog() {
-    local installer=${1:-} run_id=${2:-} marker
+    local installer=${1:-} upload_run_id=${2:-} installing_run_id=${3:-} marker
     if [[ $installer == *observer* ]]; then
         marker='AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER'
     else
         marker='AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG'
     fi
-    debian_network_watchdog_installer_ready "$installer" "$run_id" "$marker" || {
+    debian_network_watchdog_installer_ready "$installer" "$upload_run_id" "$marker" || {
         emit_result RECOVERY_FAILURE 'The uploaded Debian state-independent watchdog cleanup installer is missing or unsafe.'
         return 1
     }
-    "$installer" cleanup-owned "${@:2}"
+    "$installer" cleanup-owned "$installing_run_id" "${@:4}"
 }
 
 cmd_prove_network_watchdog_reboot() {

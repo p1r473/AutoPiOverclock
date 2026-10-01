@@ -778,8 +778,8 @@ PROFILE="$ROOT/profiles/debian.sh" REPO_ROOT="$ROOT" bash -c '
     }
     apo_run_worker_capture() {
         [[ $1 == reset-network-watchdog-cleanup && $2 == cleanup-owned-network-watchdog &&
-           $4 == older-run && $5 == /fixture/backup && $6 == "$HASH_B" &&
-           $7 == "$HASH_C" && $8 == "$HASH_D" ]]
+           $4 == reset-fixture && $5 == older-run && $6 == /fixture/backup && $7 == "$HASH_B" &&
+           $8 == "$HASH_C" && $9 == "$HASH_D" ]]
         CALLS+=" cleanup"
     }
     apo_discovery_capture() {
@@ -1786,6 +1786,27 @@ BATOCERA_CONFIG_RESTORE_LINE=$(awk '/^cmd_cleanup\(\)/ {inside=1} inside && /ato
 [[ $BATOCERA_CLEANUP_STOP_LINE =~ ^[0-9]+$ && $BATOCERA_CONFIG_RESTORE_LINE =~ ^[0-9]+$ &&
    $BATOCERA_CLEANUP_STOP_LINE -lt $BATOCERA_CONFIG_RESTORE_LINE ]]
 grep -q 'network-watchdog process remained active after its service stopped' "$ROOT/assets/batocera/install_network_watchdog.sh"
+
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" \
+    INSTALLER="$ROOT/assets/debian/install_network_watchdog_observer.sh" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    upload_run=reset-upload-fixture
+    upload_root=/tmp/autopioverclock-$upload_run
+    trap '\''rm -rf -- "$upload_root"'\'' EXIT
+    mkdir -p "$upload_root"
+    cp -- "$INSTALLER" "$upload_root/reset-network-watchdog-observer-cleanup.sh"
+    chmod 755 "$upload_root/reset-network-watchdog-observer-cleanup.sh"
+    debian_network_watchdog_installer_ready \
+        "$upload_root/reset-network-watchdog-observer-cleanup.sh" "$upload_run" \
+        "AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER"
+    if debian_network_watchdog_installer_ready \
+        "$upload_root/reset-network-watchdog-observer-cleanup.sh" older-installing-run \
+        "AUTOPIOVERCLOCK MANAGED DEBIAN NETWORK WATCHDOG OBSERVER"; then
+        printf "state-independent cleanup accepted the installing run as the upload path owner\n" >&2
+        exit 1
+    fi
+'
 
 grep -q 'WATCHDOG_RUNTIME_TIMEOUT' "$ROOT/lib/detect.sh"
 grep -q 'NETWORK_WATCHDOG_SERVICE_ACTIVE' "$ROOT/lib/detect.sh"
