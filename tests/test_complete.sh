@@ -59,13 +59,20 @@ kernel=boot/linux
 initramfs boot/initrd.lz4
 dtoverlay=vc4-kms-v3d,cma-512
 
+# User boot policy stays
 dtparam=krnbt=on
 [Overclock]
 
 [all]
 # Stable Tron overclock validated under combined CPU and GPU load
+# Keep the hardware watchdog armed while Linux starts
+# Add 50 mV to the voltage selected by DVFS
+# Raspberry Pi 5 Cortex-A76 CPU clock
+# Raspberry Pi 5 VideoCore VII 3D clock
+# Return to stock clocks if the SoC reaches 80 C
 # AUTOPIOVERCLOCK-STOCK-DISABLED over_voltage_delta=50000
-temp_limit=80
+temp_limit=85
+
 
 [all]
 
@@ -371,6 +378,37 @@ test_global_section_regressions() {
         echo 'Tron completion retained managed watchdog markers' >&2
         return 1
     fi
+    for obsolete_comment in \
+        '# Stable Tron overclock validated under combined CPU and GPU load' \
+        '# Keep the hardware watchdog armed while Linux starts' \
+        '# Add 50 mV to the voltage selected by DVFS' \
+        '# Raspberry Pi 5 Cortex-A76 CPU clock' \
+        '# Raspberry Pi 5 VideoCore VII 3D clock' \
+        '# Return to stock clocks if the SoC reaches 80 C'; do
+        if grep -Fqx "$obsolete_comment" "$rendered"; then
+            printf 'Tron completion retained obsolete overclock comment: %s\n' "$obsolete_comment" >&2
+            return 1
+        fi
+    done
+    grep -Fqx '# User boot policy stays' "$rendered"
+    if awk '
+        {
+            blank=($0 ~ /^[[:space:]]*$/)
+            if (blank && previous_blank) found=1
+            previous_blank=blank
+        }
+        END {exit !found}
+    ' "$rendered"; then
+        echo 'Tron completion retained consecutive blank lines' >&2
+        return 1
+    fi
+    [[ $(awk '
+        /^temp_limit=85$/ {
+            getline separator
+            getline watchdog
+            if (separator == "" && watchdog == "kernel_watchdog_timeout=180") print "ok"
+        }
+    ' "$rendered") == ok ]]
     grep -Fqx 'kernel_watchdog_timeout=180' "$rendered"
     grep -Fqx 'arm_freq=2900' "$rendered"
     grep -Fqx 'v3d_freq=1125' "$rendered"

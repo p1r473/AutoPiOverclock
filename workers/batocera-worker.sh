@@ -464,8 +464,9 @@ canonicalize_global_sections() {
 }
 
 canonicalize_completed_config() {
-    local source_file=$1 destination_file=$2 stripped_file
+    local source_file=$1 destination_file=$2 stripped_file canonical_file
     stripped_file=$(mktemp /tmp/autopioverclock-complete-comments.XXXXXX) || return 1
+    canonical_file=$(mktemp /tmp/autopioverclock-complete-sections.XXXXXX) || { rm -f -- "$stripped_file"; return 1; }
     awk '
         function normalized(value) {
             sub(/\r$/, "", value)
@@ -473,17 +474,41 @@ canonicalize_completed_config() {
             sub(/[[:space:]]*$/, "", value)
             return value
         }
+        function stale_overclock_comment(value) {
+            return value == "# Stable Tron overclock validated under combined CPU and GPU load" ||
+                   value == "# Keep the hardware watchdog armed while Linux starts" ||
+                   value == "# Add 50 mV to the voltage selected by DVFS" ||
+                   value == "# Raspberry Pi 5 Cortex-A76 CPU clock" ||
+                   value == "# Raspberry Pi 5 VideoCore VII 3D clock" ||
+                   value == "# Return to stock clocks if the SoC reaches 80 C"
+        }
         {
             marker=normalized($0)
             if (marker == "# BEGIN AUTOPIOVERCLOCK WATCHDOG" ||
                 marker == "# END AUTOPIOVERCLOCK WATCHDOG" ||
                 marker == "# BEGIN AUTOPIOVERCLOCK MANAGED WATCHDOG" ||
-                marker == "# END AUTOPIOVERCLOCK MANAGED WATCHDOG") next
+                marker == "# END AUTOPIOVERCLOCK MANAGED WATCHDOG" ||
+                stale_overclock_comment(marker)) next
             print
         }
-    ' "$source_file" > "$stripped_file" || { rm -f -- "$stripped_file"; return 1; }
-    canonicalize_global_sections "$stripped_file" "$destination_file" 1 || { rm -f -- "$stripped_file"; return 1; }
-    rm -f -- "$stripped_file"
+    ' "$source_file" > "$stripped_file" || { rm -f -- "$stripped_file" "$canonical_file"; return 1; }
+    canonicalize_global_sections "$stripped_file" "$canonical_file" 1 || { rm -f -- "$stripped_file" "$canonical_file"; return 1; }
+    awk '
+        {
+            probe=$0
+            sub(/\r$/, "", probe)
+            sub(/^[[:space:]]*/, "", probe)
+            sub(/[[:space:]]*$/, "", probe)
+            if (probe == "") {
+                if (previous_blank) next
+                previous_blank=1
+            } else {
+                previous_blank=0
+            }
+            print
+        }
+    ' "$canonical_file" > "$destination_file" || { rm -f -- "$stripped_file" "$canonical_file"; return 1; }
+    rm -f -- "$stripped_file" "$canonical_file"
 }
 
 render_clock_config() {

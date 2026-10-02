@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-alpha.109 - 2026-10-02
+
+- Made `complete` remove obsolete overclock-description comments and collapse consecutive blank lines after section canonicalization. Permanent native watchdog settings and unrelated user comments remain unchanged.
+- Added Batocera and Debian regressions proving the obsolete comments are absent and exactly one blank line separates the retained `temp_limit=85` and `kernel_watchdog_timeout=180` settings.
+
 ## 0.1.0-alpha.108 - 2026-10-02
 
 - Replaced `history/failures.txt` and machine-ledger v2 with the non-compatible `history/history.txt` machine-ledger v3. The readable section now records validated successes, the protected applied floor, hard CPU/GPU failure ceilings, ambiguous pair frontiers, the sealed final result, total validated duration, and detailed failure evidence. The strict machine block remains consistently Base64-encoded and fail-closed.
