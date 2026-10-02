@@ -283,9 +283,54 @@ apo_history_expected_context_baseline() {
 
 apo_history_machine_meta_key_allowed() {
     case $1 in
-        LEDGER_SCHEMA|TARGET_SLUG|REMOTE_TARGET|PROFILE|GPU_KEY|TEST_VOLTAGE|BASELINE_CPU|BASELINE_GPU|BASELINE_VOLTAGE|MODEL|COMPATIBLE|ARCH|BOOT_CONFIG|TRYBOOT_CONFIG|SEALED_RUN_ID|SEALED_CPU|SEALED_GPU|SEALED_VOLTAGE|SEALED_HASH|SEALED_RUN_SCHEMA|SEALED_VALIDATION_SCHEMA|SEALED_DURATION_SECONDS) return 0 ;;
+        LEDGER_SCHEMA|GENERATED_AT|ACCEPTED_STATES|IMPORTED_MACHINE_RECORDS|TARGET_SLUG|REMOTE_TARGET|PROFILE|GPU_KEY|TEST_VOLTAGE|BASELINE_CPU|BASELINE_GPU|BASELINE_VOLTAGE|MODEL|COMPATIBLE|ARCH|BOOT_CONFIG|TRYBOOT_CONFIG|SEALED_RUN_ID|SEALED_CPU|SEALED_GPU|SEALED_VOLTAGE|SEALED_HASH|SEALED_RUN_SCHEMA|SEALED_VALIDATION_SCHEMA|SEALED_DURATION_SECONDS) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+apo_history_extract_human_report() {
+    local source_file=$1 line machine_marker_seen=0
+
+    [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" ]]; then
+            machine_marker_seen=1
+            break
+        fi
+        printf '%s\n' "$line"
+    done < "$source_file"
+    (( machine_marker_seen == 1 ))
+}
+
+apo_history_human_report_matches_machine() {
+    local source_file=$1 meta_name=$2 records_name=$3 key record stored_report expected_report
+    local -n source_meta=$meta_name source_records=$records_name
+
+    stored_report=$(
+        apo_history_extract_human_report "$source_file" || exit 1
+        printf '\036'
+    ) || return 1
+    expected_report=$(
+        apo_history_reset
+        for key in "${!source_meta[@]}"; do
+            APO_HISTORY_LEDGER_META[$key]=${source_meta[$key]}
+        done
+        APO_HISTORY_SEALED_RUN_ID=${source_meta[SEALED_RUN_ID]}
+        APO_HISTORY_SEALED_CPU=${source_meta[SEALED_CPU]}
+        APO_HISTORY_SEALED_GPU=${source_meta[SEALED_GPU]}
+        APO_HISTORY_SEALED_VOLTAGE=${source_meta[SEALED_VOLTAGE]}
+        APO_HISTORY_SEALED_HASH=${source_meta[SEALED_HASH]}
+        APO_HISTORY_SEALED_RUN_SCHEMA=${source_meta[SEALED_RUN_SCHEMA]}
+        APO_HISTORY_SEALED_VALIDATION_SCHEMA=${source_meta[SEALED_VALIDATION_SCHEMA]}
+        APO_HISTORY_SEALED_DURATION_SECONDS=${source_meta[SEALED_DURATION_SECONDS]}
+        for record in "${source_records[@]}"; do
+            apo_history_machine_record_import "$record" || exit 1
+        done
+        apo_history_finalize_frontiers
+        apo_history_render_human_report "${source_meta[GENERATED_AT]}" || exit 1
+        printf '\n\036'
+    ) || return 1
+    [[ $stored_report == "$expected_report" ]]
 }
 
 apo_history_machine_record_import() {
@@ -331,7 +376,8 @@ apo_history_load_machine_ledger() {
     local begin_count=0 end_count=0
     local -A parsed_meta=() seen_records=()
     local -a parsed_records=() required_keys=(
-        LEDGER_SCHEMA TARGET_SLUG REMOTE_TARGET PROFILE GPU_KEY TEST_VOLTAGE
+        LEDGER_SCHEMA GENERATED_AT ACCEPTED_STATES IMPORTED_MACHINE_RECORDS
+        TARGET_SLUG REMOTE_TARGET PROFILE GPU_KEY TEST_VOLTAGE
         BASELINE_CPU BASELINE_GPU BASELINE_VOLTAGE MODEL COMPATIBLE ARCH
         BOOT_CONFIG TRYBOOT_CONFIG SEALED_RUN_ID SEALED_CPU SEALED_GPU
         SEALED_VOLTAGE SEALED_HASH SEALED_RUN_SCHEMA SEALED_VALIDATION_SCHEMA
@@ -390,6 +436,9 @@ apo_history_load_machine_ledger() {
     for key in "${required_keys[@]}"; do [[ -v parsed_meta[$key] ]] || return 1; done
     (( ${#parsed_meta[@]} == ${#required_keys[@]} )) || return 1
     [[ ${parsed_meta[LEDGER_SCHEMA]} == "$APO_HISTORY_LEDGER_SCHEMA" ]] || return 1
+    apo_history_generated_timestamp_is_valid "${parsed_meta[GENERATED_AT]}" || return 1
+    apo_is_uint "${parsed_meta[ACCEPTED_STATES]}" || return 1
+    apo_is_uint "${parsed_meta[IMPORTED_MACHINE_RECORDS]}" || return 1
     [[ ${parsed_meta[TARGET_SLUG]} == "${APO_TARGET_SLUG:-}" &&
        ${parsed_meta[REMOTE_TARGET]} == "${APO_REMOTE_TARGET:-}" ]] || return 1
     [[ ${parsed_meta[PROFILE]} == debian || ${parsed_meta[PROFILE]} == batocera ]] || return 1
@@ -431,6 +480,8 @@ apo_history_load_machine_ledger() {
            ${parsed_meta[SEALED_VALIDATION_SCHEMA]} =~ ^[1-9][0-9]*$ &&
            ${parsed_meta[SEALED_DURATION_SECONDS]} =~ ^[1-9][0-9]*$ ]] || return 1
     fi
+
+    apo_history_human_report_matches_machine "$source_file" parsed_meta parsed_records || return 1
 
     APO_HISTORY_LEDGER_META=()
     for key in "${required_keys[@]}"; do APO_HISTORY_LEDGER_META[$key]=${parsed_meta[$key]}; done
@@ -1554,9 +1605,12 @@ apo_history_existing_ledger_timestamp() {
 }
 
 apo_history_prepare_ledger_meta() {
-    local baseline cpu gpu voltage key value
+    local generated_at=$1 baseline cpu gpu voltage key value
     local -a context_keys=(TARGET_SLUG REMOTE_TARGET PROFILE GPU_KEY TEST_VOLTAGE MODEL COMPATIBLE ARCH BOOT_CONFIG TRYBOOT_CONFIG)
 
+    apo_history_generated_timestamp_is_valid "$generated_at" || return 1
+    apo_is_uint "${APO_HISTORY_ACCEPTED_STATES:-}" || return 1
+    apo_is_uint "${APO_HISTORY_MACHINE_RECORDS:-}" || return 1
     if [[ -n ${APO_HISTORY_RENDER_BASELINE_CPU:-} || -n ${APO_HISTORY_RENDER_BASELINE_GPU:-} ||
           -n ${APO_HISTORY_RENDER_BASELINE_VOLTAGE:-} ]]; then
         [[ -n ${APO_HISTORY_RENDER_BASELINE_CPU:-} && -n ${APO_HISTORY_RENDER_BASELINE_GPU:-} &&
@@ -1573,6 +1627,9 @@ apo_history_prepare_ledger_meta() {
 
     APO_HISTORY_LEDGER_META=()
     APO_HISTORY_LEDGER_META[LEDGER_SCHEMA]=$APO_HISTORY_LEDGER_SCHEMA
+    APO_HISTORY_LEDGER_META[GENERATED_AT]=$generated_at
+    APO_HISTORY_LEDGER_META[ACCEPTED_STATES]=$APO_HISTORY_ACCEPTED_STATES
+    APO_HISTORY_LEDGER_META[IMPORTED_MACHINE_RECORDS]=$APO_HISTORY_MACHINE_RECORDS
     for key in "${context_keys[@]}"; do
         value=$(apo_history_current_context_value "$key") || return 1
         [[ -n $value ]] || return 1
@@ -1594,13 +1651,13 @@ apo_history_prepare_ledger_meta() {
 apo_history_render_machine_ledger() {
     local key encoded record
     local -a keys=(
-        LEDGER_SCHEMA TARGET_SLUG REMOTE_TARGET PROFILE GPU_KEY TEST_VOLTAGE
+        LEDGER_SCHEMA GENERATED_AT ACCEPTED_STATES IMPORTED_MACHINE_RECORDS
+        TARGET_SLUG REMOTE_TARGET PROFILE GPU_KEY TEST_VOLTAGE
         BASELINE_CPU BASELINE_GPU BASELINE_VOLTAGE MODEL COMPATIBLE ARCH
         BOOT_CONFIG TRYBOOT_CONFIG SEALED_RUN_ID SEALED_CPU SEALED_GPU
         SEALED_VOLTAGE SEALED_HASH SEALED_RUN_SCHEMA SEALED_VALIDATION_SCHEMA
         SEALED_DURATION_SECONDS
     )
-    apo_history_prepare_ledger_meta || return 1
     printf '%s\n' "$APO_HISTORY_MACHINE_BEGIN"
     for key in "${keys[@]}"; do
         encoded=$(apo_history_encode_field "${APO_HISTORY_LEDGER_META[$key]}") || return 1
@@ -1627,8 +1684,8 @@ apo_history_render_human_report() {
     printf 'Generated: %s\n' "$generated_at"
     printf 'Target: %s\n' "$APO_REMOTE_TARGET"
     printf 'Authority: strictly validated state evidence plus the encoded durable section in this file.\n'
-    printf 'Accepted retained auto-overclock states: %s\n' "$APO_HISTORY_ACCEPTED_STATES"
-    printf 'Imported durable machine records: %s\n' "$APO_HISTORY_MACHINE_RECORDS"
+    printf 'Accepted retained auto-overclock states: %s\n' "${APO_HISTORY_LEDGER_META[ACCEPTED_STATES]}"
+    printf 'Imported durable machine records: %s\n' "${APO_HISTORY_LEDGER_META[IMPORTED_MACHINE_RECORDS]}"
     printf '\nValidated successes:\n'
     if [[ -n ${APO_HISTORY_SEALED_RUN_ID:-} ]]; then
         duration_text=$(apo_format_duration_hours "$APO_HISTORY_SEALED_DURATION_SECONDS") || return 1
@@ -1667,6 +1724,7 @@ apo_history_render_human_report() {
 apo_history_render_ledger() {
     local destination=$1 generated_at=$2
 
+    apo_history_prepare_ledger_meta "$generated_at" || return 1
     {
         apo_history_render_human_report "$generated_at" || return 1
         printf '\n'
@@ -1675,17 +1733,7 @@ apo_history_render_ledger() {
 }
 
 apo_history_print_human_report() {
-    local source_file=$1 line machine_marker_seen=0
-
-    [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
-    while IFS= read -r line || [[ -n $line ]]; do
-        if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" ]]; then
-            machine_marker_seen=1
-            break
-        fi
-        printf '%s\n' "$line"
-    done < "$source_file"
-    (( machine_marker_seen == 1 ))
+    apo_history_extract_human_report "$1"
 }
 
 apo_history_rebuild_ledger() {
@@ -1750,7 +1798,11 @@ apo_history_rebuild_ledger() {
 
 apo_history_refresh() {
     apo_history_scan_retained_states || return 1
-    apo_history_rebuild_ledger
+    apo_history_rebuild_ledger || return 1
+    apo_history_load_machine_ledger "$APO_HISTORY_LEDGER_FILE" 0 || return 1
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
+    printf '\n'
+    apo_history_print_human_report "$APO_HISTORY_LEDGER_FILE"
 }
 
 apo_history_prepare_has_no_retained_evidence() {

@@ -130,7 +130,15 @@ write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-incompatible.state" \
 # The production definition was sourced above; focused fixture overrides appear
 # later in this file for planner-only cases.
 # shellcheck disable=SC2218
-apo_history_refresh
+history_refresh_output=$TMP/history-refresh-output.txt
+apo_history_refresh > "$history_refresh_output"
+grep -Fq "$APO_HISTORY_HUMAN_BEGIN" "$history_refresh_output"
+grep -Fq "$APO_HISTORY_HUMAN_END" "$history_refresh_output"
+grep -Fq 'CPU hard ceiling, exclusive: 2900 MHz' "$history_refresh_output"
+if grep -Fq -- "$APO_HISTORY_MACHINE_BEGIN" "$history_refresh_output"; then
+    printf 'history refresh printed encoded machine data to the terminal\n' >&2
+    exit 1
+fi
 [[ $APO_HISTORY_SCANNED_STATES == 10 ]]
 [[ $APO_HISTORY_ACCEPTED_STATES == 4 ]]
 [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2900 ]]
@@ -181,18 +189,18 @@ scanned_states_before=$APO_HISTORY_SCANNED_STATES
 write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-later-reset.state" \
     FORMAT_VERSION 1 RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA" RUN_ID later-reset \
     REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" ORIGIN_COMMAND reset
-sed -i '3cGenerated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"
 touch -t 200001010000.00 "$APO_HISTORY_LEDGER_FILE"
 ledger_hash_before=$(sha256sum "$APO_HISTORY_LEDGER_FILE" | awk '{print $1}')
 ledger_inode_before=$(stat -c '%i' "$APO_HISTORY_LEDGER_FILE")
 ledger_mtime_before=$(stat -c '%y' "$APO_HISTORY_LEDGER_FILE")
+ledger_generated_before=$(sed -n '3p' "$APO_HISTORY_LEDGER_FILE")
 # shellcheck disable=SC2218
 apo_history_refresh
 [[ $APO_HISTORY_SCANNED_STATES == $((scanned_states_before + 1)) ]]
 [[ $(sha256sum "$APO_HISTORY_LEDGER_FILE" | awk '{print $1}') == "$ledger_hash_before" ]]
 [[ $(stat -c '%i' "$APO_HISTORY_LEDGER_FILE") == "$ledger_inode_before" ]]
 [[ $(stat -c '%y' "$APO_HISTORY_LEDGER_FILE") == "$ledger_mtime_before" ]]
-grep -Fxq 'Generated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"
+[[ $(sed -n '3p' "$APO_HISTORY_LEDGER_FILE") == "$ledger_generated_before" ]]
 
 # A ledger without its current machine section fails closed.
 strict_ledger_file=$APO_HISTORY_LEDGER_FILE
@@ -219,7 +227,7 @@ apo_history_refresh
 [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2875 ]]
 [[ $(stat -c '%i' "$APO_HISTORY_LEDGER_FILE") != "$ledger_inode_before" ]]
 [[ $(stat -c '%y' "$APO_HISTORY_LEDGER_FILE") != "$ledger_mtime_before" ]]
-if grep -Fxq 'Generated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"; then
+if [[ $(sed -n '3p' "$APO_HISTORY_LEDGER_FILE") == "$ledger_generated_before" ]]; then
     printf 'changed history retained the previous ledger generation timestamp\n' >&2
     exit 1
 fi

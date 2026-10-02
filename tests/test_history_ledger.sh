@@ -81,6 +81,7 @@ grep -Fq 'Validated at final clocks: 100h 00m 00s (360000 seconds)' "$ledger"
 grep -Fq "$APO_HISTORY_HUMAN_END" "$ledger"
 grep -Fq $'META\tSEALED_CPU\tMzA1MA==' "$ledger"
 grep -Fq $'META\tSEALED_DURATION_SECONDS\tMzYwMDAw' "$ledger"
+grep -Fq $'META\tGENERATED_AT\t' "$ledger"
 
 # The terminal-facing report is byte-for-byte the human prefix of history.txt
 # and never emits the encoded machine section.
@@ -95,6 +96,16 @@ if grep -Fq -- "$APO_HISTORY_MACHINE_BEGIN" "$human_report"; then
 fi
 if grep -Fq $'META\t' "$human_report"; then
     printf 'terminal-facing human history included encoded machine metadata\n' >&2
+    exit 1
+fi
+
+# The visible report is authenticated by the strict machine section. Editing
+# any human line must fail closed instead of printing altered text as verified.
+tampered_human="$TEST_ROOT/tampered-human.txt"
+sed 's/CPU hard ceiling, exclusive: 3125 MHz/CPU hard ceiling, exclusive: none/' \
+    "$ledger" > "$tampered_human"
+if apo_history_load_machine_ledger "$tampered_human" 1; then
+    printf 'machine ledger accepted a human report that disagrees with its encoded authority\n' >&2
     exit 1
 fi
 
@@ -205,8 +216,8 @@ APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     APO_NORMAL_VOLTAGE=50000
     apo_history_reset
     apo_history_record_ledger 2026-09-20T02:00:00-0400 retained-run 3125 1125 BOOT_FAILURE CPU \
-        "$source_b64" "$cpu_reason_b64" retained-run.state
-    apo_history_record CPU 3125 retained-run final-endurance retained-run.state
+        "$source_b64" "$cpu_reason_b64" tron-retained-run.state
+    apo_history_record CPU 3125 retained-run final-endurance tron-retained-run.state
     apo_history_rebuild_ledger
     retained_ledger=$APO_HISTORY_LEDGER_FILE
     retained_hash=$(sha256sum "$retained_ledger" | awk 'NR == 1 {print $1}')
