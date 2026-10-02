@@ -200,22 +200,33 @@ write_state_fixture "$CONTINUATION_STATE" \
     CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all \
     CFG_CPU_MAX 3075 CFG_GPU_MAX 1175 CFG_CPU_MAX_REQUESTED '' CFG_GPU_MAX_REQUESTED '' CFG_USE_HISTORY 1 \
     STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED CFG_MAX_FAN 1 \
-    CFG_QUALIFICATION_DURATION_S 10800 CFG_FINAL_DURATION_S 21600 \
+    CFG_QUALIFICATION_DURATION_S 10800 CFG_FINAL_DURATION_S 360000 \
     CFG_EDGE_DURATION_S 86400 CFG_DURATION_POLICY custom
-ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
+FAILED_NEWER_RUN=20260827-020304-bbbbbbbbbbbbbbbb
+FAILED_NEWER_STATE="$CONTINUATION_OUTPUT/tron-${FAILED_NEWER_RUN}.state"
+write_state_fixture "$FAILED_NEWER_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$FAILED_NEWER_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all CFG_EDGE_CPU_24H 0 \
+    STATUS FAILED PHASE PREPARE FAILURE_CLASS PREFLIGHT_FAILURE
+ln -s "$(basename "$FAILED_NEWER_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
 
-# Plain overclock is always a fresh operation. Retained state is history input,
-# never permission to replace the requested duration, bounds, or cooling plan.
+# Plain overclock selects the newest compatible interrupted automatic run even
+# when a newer failed preflight state owns the latest pointer. Matching duration
+# options are accepted without changing the saved immutable plan.
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --final-hours 100
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_source
-    [[ $APO_COMMAND == run ]]
-    [[ -z $APO_SELECTED_RUN_ID && -z ${APO_STATE_FILE:-} && ${#APO_STATE[@]} == 0 ]]
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
+    [[ -z ${APO_STATE_FILE:-} && ${#APO_STATE[@]} == 0 ]]
     [[ $APO_AUTO_APPLY == 1 ]]
     [[ $APO_USE_HISTORY == 1 && $APO_FINAL_DURATION_S == 360000 ]]
+    apo_state_load "$CONTINUATION_STATE"
+    apo_restore_saved_command_policy
+    apo_resume_require_matching_duration_options
 )
 
 # Exercise the complete fresh public planning path: CLI parsing and source
@@ -294,7 +305,8 @@ ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
     [[ $(apo_state_get CFG_GPU_MIN_SOURCE '') == automatic-baseline ]]
 )
 
-# Only explicit resume selects saved progress; omitting --run-id selects latest.
+# Explicit resume continues to select saved progress. Omitting --run-id follows
+# the latest pointer and therefore selects the newer failed audit in this fixture.
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -302,18 +314,26 @@ ln -s "$(basename "$CONTINUATION_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_source
     [[ $APO_COMMAND == resume && -z $APO_SELECTED_RUN_ID ]]
-    [[ $(apo_find_state_file '') == "$CONTINUATION_STATE" ]]
+    [[ $(apo_find_state_file '') == "$FAILED_NEWER_STATE" ]]
 )
 
-# A different duration or fan policy describes a new run and is accepted.
-(
+# A plain overclock cannot silently alter the immutable plan of the resumable
+# run. It selects that run and then rejects a mismatched duration.
+if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --final-hours 8
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_source
-    [[ $APO_COMMAND == run && $APO_FINAL_DURATION_S == 28800 ]]
-)
+    [[ $APO_COMMAND == resume && $APO_SELECTED_RUN_ID == "$CONTINUATION_RUN" ]]
+    apo_state_load "$CONTINUATION_STATE"
+    apo_restore_saved_command_policy
+    apo_resume_require_matching_duration_options
+) 2>"$TEMP_DIR/active-duration-change.err"; then
+    echo 'an active run accepted a different final duration' >&2
+    exit 1
+fi
+grep -Fq 'active run final duration cannot change during continuation' "$TEMP_DIR/active-duration-change.err"
 if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
@@ -325,14 +345,26 @@ if (
     exit 1
 fi
 grep -Fq 'Unknown option: --edge-cpu-24h' "$TEMP_DIR/active-edge-change.err"
-(
+if (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
     apo_parse_cli overclock tron --no-max-fan
     APO_OUTPUT_DIR=$CONTINUATION_OUTPUT
     apo_public_overclock_select_source
-    [[ $APO_COMMAND == run && $APO_MAX_FAN == 0 ]]
-)
+) 2>"$TEMP_DIR/active-fan-change.err"; then
+    echo 'an active run accepted a different cooling policy' >&2
+    exit 1
+fi
+grep -Fq 'requested planning or cooling options would change its immutable plan' "$TEMP_DIR/active-fan-change.err"
+
+# Later fixtures in this shared output directory exercise failed-run history,
+# not continuation. Retire the interruption before those independent cases.
+CONTINUATION_RESET_RUN=20260902-000000-eeeeeeeeeeeeeeee
+CONTINUATION_RESET_STATE="$CONTINUATION_OUTPUT/tron-${CONTINUATION_RESET_RUN}.state"
+write_state_fixture "$CONTINUATION_RESET_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$CONTINUATION_RESET_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND reset READ_ONLY_RUN 0 \
+    STATUS PASS PHASE COMPLETE SUBPHASE STOCK_VERIFIED RESET_RETIRE_RESUMABLE 1
 
 # A completed reset owns the latest-state pointer and forces a fresh all-domain
 # overclock. An older interrupted run remains historical evidence but is never
@@ -351,7 +383,7 @@ RESET_SHADOW_RESET_STATE="$RESET_SHADOW_OUTPUT/tron-${RESET_SHADOW_RESET_RUN}.st
 write_state_fixture "$RESET_SHADOW_RESET_STATE" \
     FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$RESET_SHADOW_RESET_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND reset READ_ONLY_RUN 0 \
-    STATUS PASS PHASE COMPLETE SUBPHASE STOCK_VERIFIED
+    STATUS PASS PHASE COMPLETE SUBPHASE STOCK_VERIFIED RESET_RETIRE_RESUMABLE 1
 ln -s "$(basename "$RESET_SHADOW_RESET_STATE")" "$RESET_SHADOW_OUTPUT/tron-latest.state"
 (
     export APO_CLI_LIBRARY_ONLY=1
@@ -362,6 +394,109 @@ ln -s "$(basename "$RESET_SHADOW_RESET_STATE")" "$RESET_SHADOW_OUTPUT/tron-lates
     [[ $APO_COMMAND == run ]]
     [[ -z $APO_SELECTED_RUN_ID && -z ${APO_STATE_FILE:-} && ${#APO_STATE[@]} == 0 ]]
 )
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --run-id "$RESET_SHADOW_OLD_RUN"
+    APO_OUTPUT_DIR=$RESET_SHADOW_OUTPUT
+    apo_load_selected_run
+) 2>"$TEMP_DIR/reset-retired-explicit-resume.err"; then
+    echo 'explicit resume crossed a later stock-reset retirement boundary' >&2
+    exit 1
+fi
+grep -Fq "retired from continuation by stock reset $RESET_SHADOW_RESET_RUN" "$TEMP_DIR/reset-retired-explicit-resume.err"
+
+# Retirement is committed before reset watchdog cleanup and clock mutation. An
+# interrupted reset that saved the marker therefore also blocks older runs.
+RESET_PENDING_OUTPUT="$TEMP_DIR/reset-pending-output"
+mkdir -p "$RESET_PENDING_OUTPUT"
+RESET_PENDING_OLD_RUN=20260907-010000-cccccccccccccccc
+RESET_PENDING_OLD_STATE="$RESET_PENDING_OUTPUT/tron-${RESET_PENDING_OLD_RUN}.state"
+write_state_fixture "$RESET_PENDING_OLD_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$RESET_PENDING_OLD_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all CFG_EDGE_CPU_24H 0 \
+    STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED
+RESET_PENDING_RUN=20260907-020000-dddddddddddddddd
+RESET_PENDING_STATE="$RESET_PENDING_OUTPUT/tron-${RESET_PENDING_RUN}.state"
+write_state_fixture "$RESET_PENDING_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$RESET_PENDING_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND reset READ_ONLY_RUN 0 \
+    STATUS RUNNING PHASE PREPARE RESET_RETIRE_RESUMABLE 1
+ln -s "$(basename "$RESET_PENDING_STATE")" "$RESET_PENDING_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$RESET_PENDING_OUTPUT
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
+)
+
+# A newer successful automatic operation is also a plain-overclock barrier.
+# It must not allow an older interruption to become the ordinary next action.
+COMPLETED_BARRIER_OUTPUT="$TEMP_DIR/completed-barrier-output"
+mkdir -p "$COMPLETED_BARRIER_OUTPUT"
+COMPLETED_BARRIER_OLD_RUN=20260908-010000-1111111111111111
+COMPLETED_BARRIER_OLD_STATE="$COMPLETED_BARRIER_OUTPUT/tron-${COMPLETED_BARRIER_OLD_RUN}.state"
+write_state_fixture "$COMPLETED_BARRIER_OLD_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$COMPLETED_BARRIER_OLD_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all CFG_EDGE_CPU_24H 0 \
+    STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED
+COMPLETED_BARRIER_RUN=20260908-020000-2222222222222222
+COMPLETED_BARRIER_STATE="$COMPLETED_BARRIER_OUTPUT/tron-${COMPLETED_BARRIER_RUN}.state"
+write_state_fixture "$COMPLETED_BARRIER_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$COMPLETED_BARRIER_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    STATUS PASS PHASE COMPLETE APPLY_STATUS APPLIED
+ln -s "$(basename "$COMPLETED_BARRIER_STATE")" "$COMPLETED_BARRIER_OUTPUT/tron-latest.state"
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$COMPLETED_BARRIER_OUTPUT
+    apo_public_overclock_select_source
+    [[ $APO_COMMAND == run && -z $APO_SELECTED_RUN_ID ]]
+)
+
+# An unreadable newer managed state might be the reset barrier. Automatic or
+# explicit continuation must fail closed instead of silently crossing it.
+MALFORMED_BARRIER_OUTPUT="$TEMP_DIR/malformed-barrier-output"
+mkdir -p "$MALFORMED_BARRIER_OUTPUT"
+MALFORMED_BARRIER_OLD_RUN=20260909-010000-3333333333333333
+MALFORMED_BARRIER_OLD_STATE="$MALFORMED_BARRIER_OUTPUT/tron-${MALFORMED_BARRIER_OLD_RUN}.state"
+write_state_fixture "$MALFORMED_BARRIER_OLD_STATE" \
+    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$MALFORMED_BARRIER_OLD_RUN" \
+    REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND overclock READ_ONLY_RUN 0 \
+    CFG_AUTO_GENERATED_CANDIDATES 1 CFG_SWEEP_DOMAIN all CFG_EDGE_CPU_24H 0 \
+    STATUS INTERRUPTED PHASE CPU_SWEEP APPLY_STATUS NOT_APPLIED
+MALFORMED_BARRIER_RUN=20260909-020000-4444444444444444
+MALFORMED_BARRIER_STATE="$MALFORMED_BARRIER_OUTPUT/tron-${MALFORMED_BARRIER_RUN}.state"
+printf 'malformed-state\n' > "$MALFORMED_BARRIER_STATE"
+ln -s "$(basename "$MALFORMED_BARRIER_STATE")" "$MALFORMED_BARRIER_OUTPUT/tron-latest.state"
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli overclock tron
+    APO_OUTPUT_DIR=$MALFORMED_BARRIER_OUTPUT
+    apo_public_overclock_select_source
+) 2>"$TEMP_DIR/malformed-automatic-selection.err"; then
+    echo 'automatic continuation skipped a malformed newer managed state' >&2
+    exit 1
+fi
+grep -Fq 'could not be screened safely during automatic continuation selection' "$TEMP_DIR/malformed-automatic-selection.err"
+if (
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli resume tron --run-id "$MALFORMED_BARRIER_OLD_RUN"
+    APO_OUTPUT_DIR=$MALFORMED_BARRIER_OUTPUT
+    apo_load_selected_run
+) 2>"$TEMP_DIR/malformed-explicit-selection.err"; then
+    echo 'explicit continuation skipped a malformed newer managed state' >&2
+    exit 1
+fi
+grep -Fq 'could not be screened safely for reset retirement' "$TEMP_DIR/malformed-explicit-selection.err"
 
 # An explicit checkpoint restart may replace an untouched long-duration plan.
 # The saved state supplies clocks; the command supplies only checkpoint/time.

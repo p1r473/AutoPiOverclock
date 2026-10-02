@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.107 - 2026-10-02
+
+- Made plain `overclock TARGET` select the newest compatible interrupted automatic run even when a newer failed audit owns the latest pointer. Matching duration options are verified against the saved plan, and planning or cooling changes fail with exact reset guidance.
+- Made `reset TARGET` commit a durable continuation barrier before run-owned watchdog cleanup or stock mutation. Older checkpoints remain as audit and failure-history evidence but cannot be resumed after the reset request.
+- Added exact watchdog-owner conflict guidance plus regressions for failed-latest selection, immutable duration and cooling checks, successful and interrupted reset barriers, explicit resume refusal across a reset, completed-run precedence, and fail-closed malformed-state screening.
+
 ## 0.1.0-alpha.106 - 2026-10-01
 
 - Fixed state-independent Debian watchdog cleanup to validate the uploaded cleanup script against the current reset run directory while separately applying the retained installing run ID to target ownership evidence.

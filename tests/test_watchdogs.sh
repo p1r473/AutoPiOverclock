@@ -1619,6 +1619,7 @@ APO_ROOT="$ROOT" bash -c '
 
     APO_PROFILE=debian
     APO_RUN_ID=current-run
+    APO_RAW_TARGET=fixture
     APO_PERMANENT_CONFIG_HASH=$(printf "%064d" 1)
     declare -A APO_DISCOVERY=()
     apo_discovery_capture() {
@@ -1633,7 +1634,10 @@ APO_ROOT="$ROOT" bash -c '
         exit 1
     fi
     [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
-    [[ $APO_LAST_REASON == *"belongs to another resumable run"* ]]
+    [[ $APO_LAST_REASON == *"belongs to resumable run foreign-run"* ]]
+    [[ $APO_LAST_REASON == *"autopioverclock overclock fixture"* ]]
+    [[ $APO_LAST_REASON == *"autopioverclock resume fixture --run-id foreign-run"* ]]
+    [[ $APO_LAST_REASON == *"autopioverclock reset fixture"* ]]
 '
 
 APO_CLI_LIBRARY_ONLY=1 APO_ROOT="$ROOT" bash -c '

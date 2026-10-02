@@ -717,6 +717,7 @@ apo_network_watchdog_observation_summary() {
 apo_network_watchdog_ensure_for_run() {
     local protected_hash=${APO_PERMANENT_CONFIG_HASH:-$(apo_state_get PERMANENT_HASH '')}
     local live_install_run live_install_backup install_status reconcile_required=0
+    local target_hint=${APO_RAW_TARGET:-${APO_REMOTE_TARGET:-TARGET}}
     local canonical_remote_worker=$APO_REMOTE_WORKER
     local APO_REMOTE_WORKER=$canonical_remote_worker
     local watchdog_control_worker
@@ -746,7 +747,7 @@ apo_network_watchdog_ensure_for_run() {
     install_status=$(apo_state_get NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED)
     if [[ -n $live_install_run && $live_install_run != "$APO_RUN_ID" ]]; then
         APO_LAST_CLASS=RECOVERY_FAILURE
-        APO_LAST_REASON="A run-owned network-watchdog provider belongs to another resumable run ($live_install_run). Resume or recover that run before starting this one."
+        APO_LAST_REASON="A run-owned network-watchdog provider belongs to resumable run $live_install_run. Continue it with 'autopioverclock overclock $target_hint' or select it exactly with 'autopioverclock resume $target_hint --run-id $live_install_run'. To discard that checkpoint and return to stock first, run 'autopioverclock reset $target_hint'."
         return 1
     fi
     APO_NETWORK_WATCHDOG_PROVIDER_CHANGED=0

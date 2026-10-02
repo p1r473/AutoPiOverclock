@@ -423,6 +423,8 @@ done
     [[ ${APO_STATE[RESET_BACKUP]} == "$RESET_BACKUP_FIXTURE" ]] || fail 'reset fixture did not persist its backup path'
     [[ ${APO_STATE[RESET_TRYBOOT_BACKUP]} == "$RESET_TRYBOOT_BACKUP_FIXTURE" ]] || fail 'reset fixture did not persist its managed-tryboot backup path'
     [[ ${APO_STATE[RESET_OLD_HASH]} == "$RESET_OLD_HASH_FIXTURE" && ${APO_STATE[RESET_NEW_HASH]} == "$RESET_NEW_HASH_FIXTURE" ]] || fail 'reset fixture did not bind old/new hashes'
+    [[ ${APO_STATE[RESET_RETIRE_RESUMABLE]} == 1 && ${APO_STATE[RESET_RETIRE_CUTOFF_RUN_ID]} == "$APO_RUN_ID" ]] ||
+        fail 'reset fixture did not persist the resumable-run retirement boundary'
     [[ ${APO_STATE[NORMAL_CPU]} == 2400 && ${APO_STATE[NORMAL_GPU]} == 960 && ${APO_STATE[NORMAL_VOLTAGE]} == 0 ]] || fail 'reset fixture retained stale pre-reset clocks'
     [[ " ${RESET_ACTIONS[*]} " == *' worker:reset-stock '* ]] || fail 'reset fixture skipped reset-stock'
     [[ " ${RESET_ACTIONS[*]} " == *' cleanup-discovered-watchdog '* ]] || fail 'reset fixture skipped the discovered run-owned watchdog cleanup'
@@ -441,6 +443,10 @@ done
     [[ $FINAL_RESET_EVENT == *"$RESET_BACKUP_FIXTURE"* ]] || fail 'reset PASS event did not report its backup path'
     [[ ${FINAL_RESET_EVENT,,} == *preserv* && ${FINAL_RESET_EVENT,,} == *log* && ${FINAL_RESET_EVENT,,} == *saved*run* ]] ||
         fail 'reset PASS event did not state that logs/saved runs were preserved'
+    [[ ${FINAL_RESET_EVENT,,} == *no*longer*resumable* ]] ||
+        fail 'reset PASS event did not state that earlier tuning checkpoints were retired'
+    [[ " ${RESET_EVENTS[*]} " == *' reset-resume-retirement|INFO|'* ]] ||
+        fail 'reset fixture did not record the resumable-run retirement event'
 )
 
 # A temporary-watchdog cleanup failure must stop reset before any permanent

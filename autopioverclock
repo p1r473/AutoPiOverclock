@@ -72,6 +72,7 @@ APO_SSH_PORT=22
 APO_IDENTITY_FILE=''
 APO_SELECTED_RUN_ID=''
 APO_RUN_ID_OPTION_SEEN=0
+APO_RESET_RESUME_BARRIER_RUN_ID=''
 APO_INSTALL_MISSING=0
 APO_DRY_RUN=0
 APO_ASSUME_YES=0
@@ -189,9 +190,9 @@ Usage:
 
 Commands:
   prepare    Install dependencies, verify recovery, and prove a usable baseline
-  overclock  Start a fresh history-guided tune, validate, and apply operation
+  overclock  Continue a compatible interrupted tune, or start, validate, and apply a new one
   test       Stability-test one exact CPU/GPU pair, then return to normal clocks
-  reset      Back up the boot config, remove tuning, reboot, and verify stock clocks
+  reset      Retire older checkpoints, remove tuning, reboot, and verify stock clocks
   run        Advanced tuning run with explicit plan/control options
   resume     Recover when needed and continue a selected saved run
   status     Show live clocks, health, tryboot, controller, and saved-run state
@@ -516,7 +517,7 @@ apo_parse_cli() {
         (( APO_DRY_RUN == 0 )) || apo_die '--dry-run is not valid with overclock TARGET; use prepare TARGET --dry-run for inspection.' "$APO_EXIT_USAGE"
         (( APO_REDACT == 0 )) || apo_die '--redact is not valid with overclock TARGET.' "$APO_EXIT_USAGE"
         (( APO_RESTART_FROM_OPTION_SEEN == 0 )) ||
-            apo_die '--restart-from belongs to resume TARGET; overclock TARGET always starts a fresh history-guided run.' "$APO_EXIT_USAGE"
+            apo_die '--restart-from belongs to resume TARGET; plain overclock TARGET continues only the saved current checkpoint.' "$APO_EXIT_USAGE"
         APO_EDGE_CPU_24H=0
         APO_EDGE_ORDER='floor-first'
         APO_ASSUME_YES=1
@@ -703,6 +704,124 @@ apo_capture_domain_sweep_source() {
     APO_STATE_FILE=''
 }
 
+apo_state_screen_is_reset_resume_barrier() {
+    local screen_name=$1
+    local -n screen=$screen_name
+    [[ ${screen[FORMAT_VERSION]:-} == 1 &&
+       ${screen[RUN_SCHEMA]:-} == "$APO_CURRENT_RUN_SCHEMA" &&
+       ${screen[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" &&
+       ${screen[ORIGIN_COMMAND]:-} == reset &&
+       ( ${screen[RESET_RETIRE_RESUMABLE]:-0} == 1 ||
+         ( ${screen[STATUS]:-} == PASS && ${screen[PHASE]:-} == COMPLETE ) ) ]]
+}
+
+apo_state_screen_is_public_overclock_barrier() {
+    local screen_name=$1
+    local -n screen=$screen_name
+    apo_state_screen_is_reset_resume_barrier "$screen_name" && return 0
+    [[ ${screen[FORMAT_VERSION]:-} == 1 &&
+       ${screen[RUN_SCHEMA]:-} == "$APO_CURRENT_RUN_SCHEMA" &&
+       ${screen[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" &&
+       ${screen[ORIGIN_COMMAND]:-} == overclock &&
+       ${screen[STATUS]:-} == PASS && ${screen[PHASE]:-} == COMPLETE ]]
+}
+
+apo_find_later_reset_resume_barrier() {
+    local selected_run_id=$1 state_file barrier_run_id state_prefix
+    local -a state_files=()
+    local -A state_screen=()
+    APO_RESET_RESUME_BARRIER_RUN_ID=''
+    apo_is_safe_run_id "$selected_run_id" || return 1
+    state_prefix="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"
+    shopt -s nullglob
+    state_files=("${state_prefix}"*.state)
+    shopt -u nullglob
+    for state_file in "${state_files[@]}"; do
+        [[ $state_file != "${state_prefix}latest.state" ]] || continue
+        [[ -f $state_file && ! -L $state_file ]] ||
+            apo_die "Retained state path is unsafe while checking reset retirement: $state_file" "$APO_EXIT_INTERNAL"
+        barrier_run_id=${state_file#"$state_prefix"}
+        barrier_run_id=${barrier_run_id%.state}
+        apo_is_safe_run_id "$barrier_run_id" ||
+            apo_die "Retained state filename has an unsafe run ID while checking reset retirement: $state_file" "$APO_EXIT_INTERNAL"
+        [[ $barrier_run_id > "$selected_run_id" ]] || continue
+        apo_state_load_fields "$state_file" state_screen \
+            FORMAT_VERSION RUN_SCHEMA RUN_ID REMOTE_TARGET ORIGIN_COMMAND STATUS PHASE \
+            RESET_RETIRE_RESUMABLE ||
+            apo_die "A newer retained state could not be screened safely for reset retirement: $state_file" "$APO_EXIT_INTERNAL"
+        [[ ${state_screen[RUN_ID]:-} == "$barrier_run_id" ]] ||
+            apo_die "A newer retained state run ID does not match its filename: $state_file" "$APO_EXIT_INTERNAL"
+        apo_state_screen_is_reset_resume_barrier state_screen || continue
+        if [[ -z $APO_RESET_RESUME_BARRIER_RUN_ID ||
+              $barrier_run_id < "$APO_RESET_RESUME_BARRIER_RUN_ID" ]]; then
+            APO_RESET_RESUME_BARRIER_RUN_ID=$barrier_run_id
+        fi
+    done
+    [[ -n $APO_RESET_RESUME_BARRIER_RUN_ID ]]
+}
+
+apo_public_overclock_resume_options_compatible() {
+    local saved_max_fan=$1
+    (( APO_CPU_ONLY_OPTION_SEEN == 0 && APO_GPU_ONLY_OPTION_SEEN == 0 &&
+       APO_CPU_MIN_OPTION_SEEN == 0 && APO_GPU_MIN_OPTION_SEEN == 0 &&
+       APO_CPU_MAX_OPTION_SEEN == 0 && APO_GPU_MAX_OPTION_SEEN == 0 &&
+       APO_CPU_RESOLUTION_OPTION_SEEN == 0 && APO_GPU_RESOLUTION_OPTION_SEEN == 0 &&
+       APO_HISTORY_OPTION_SEEN == 0 )) || return 1
+    (( APO_MAX_FAN_OPTION_SEEN == 0 )) || [[ $saved_max_fan == "$APO_MAX_FAN" ]]
+}
+
+apo_public_overclock_select_continuation() {
+    local state_file run_id status phase saved_max_fan state_index state_prefix
+    local -a state_files=()
+    local -A state_screen=()
+    state_prefix="${APO_OUTPUT_DIR}/${APO_TARGET_SLUG}-"
+    shopt -s nullglob
+    state_files=("${state_prefix}"*.state)
+    shopt -u nullglob
+    for ((state_index=${#state_files[@]} - 1; state_index >= 0; state_index--)); do
+        state_file=${state_files[$state_index]}
+        [[ $state_file != "${state_prefix}latest.state" ]] || continue
+        [[ -f $state_file && ! -L $state_file ]] ||
+            apo_die "Retained state path is unsafe during automatic continuation selection: $state_file" "$APO_EXIT_INTERNAL"
+        run_id=${state_file#"$state_prefix"}
+        run_id=${run_id%.state}
+        apo_is_safe_run_id "$run_id" ||
+            apo_die "Retained state filename has an unsafe run ID during automatic continuation selection: $state_file" "$APO_EXIT_INTERNAL"
+        apo_state_load_fields "$state_file" state_screen \
+            FORMAT_VERSION RUN_SCHEMA RUN_ID REMOTE_TARGET ORIGIN_COMMAND READ_ONLY_RUN \
+            STATUS PHASE CFG_AUTO_GENERATED_CANDIDATES CFG_SWEEP_DOMAIN CFG_EDGE_CPU_24H \
+            CFG_MAX_FAN RESET_RETIRE_RESUMABLE ||
+            apo_die "Retained state could not be screened safely during automatic continuation selection: $state_file" "$APO_EXIT_INTERNAL"
+        [[ ${state_screen[RUN_ID]:-} == "$run_id" ]] ||
+            apo_die "Retained state run ID does not match its filename: $state_file" "$APO_EXIT_INTERNAL"
+        if apo_state_screen_is_public_overclock_barrier state_screen; then
+            return 1
+        fi
+        [[ ${state_screen[FORMAT_VERSION]:-} == 1 &&
+           ${state_screen[RUN_SCHEMA]:-} == "$APO_CURRENT_RUN_SCHEMA" &&
+           ${state_screen[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" &&
+           ${state_screen[ORIGIN_COMMAND]:-} == overclock &&
+           ${state_screen[READ_ONLY_RUN]:-0} == 0 &&
+           ${state_screen[CFG_AUTO_GENERATED_CANDIDATES]:-0} == 1 &&
+           ${state_screen[CFG_SWEEP_DOMAIN]:-all} == all &&
+           ${state_screen[CFG_EDGE_CPU_24H]:-0} == 0 ]] || continue
+        status=${state_screen[STATUS]:-}
+        phase=${state_screen[PHASE]:-}
+        [[ $status == RUNNING || $status == INTERRUPTED ]] || continue
+        [[ $phase != PREPARE && $phase != PREPARED && $phase != COMPLETE ]] || continue
+        saved_max_fan=${state_screen[CFG_MAX_FAN]:-1}
+        if ! apo_public_overclock_resume_options_compatible "$saved_max_fan"; then
+            apo_die "Interrupted overclock run $run_id is resumable, but the requested planning or cooling options would change its immutable plan. Resume it with autopioverclock overclock $APO_RAW_TARGET using only matching duration options, or run autopioverclock reset $APO_RAW_TARGET before starting a different plan." "$APO_EXIT_USAGE"
+        fi
+        APO_SELECTED_RUN_ID=$run_id
+        APO_COMMAND=resume
+        APO_STATE=()
+        APO_STATE_FILE=''
+        return 0
+    done
+    return 1
+}
+
 apo_public_overclock_select_source() {
     local state_file stored_target origin status phase state_schema source_run_id source_state
     local prepare_hash prepare_cpu prepare_gpu prepare_voltage prepare_profile prepare_boot_config prepare_tryboot_config prepare_gpu_key
@@ -714,15 +833,17 @@ apo_public_overclock_select_source() {
 
     [[ $APO_PUBLIC_COMMAND == overclock ]] || return 0
 
-    # A public overclock invocation is always a new operation.  Retained state
-    # may constrain its fresh plan, but it can never silently replace the
-    # requested command, duration, bounds, cooling, or history policy with an
-    # older run.  Continuation belongs exclusively to `resume TARGET`.
+    # A plain public overclock continues the newest compatible automatic run.
+    # A verified reset or newer completed automatic operation is a hard
+    # continuation barrier. Planning changes cannot alter a saved plan.
     APO_COMMAND=run
     APO_SELECTED_RUN_ID=''
     APO_STATE=()
     APO_STATE_FILE=''
-    [[ $APO_SWEEP_DOMAIN != all ]] || return 0
+    if [[ $APO_SWEEP_DOMAIN == all ]]; then
+        apo_public_overclock_select_continuation || true
+        return 0
+    fi
 
     state_file=$(apo_find_state_file '' || true)
     [[ -n $state_file ]] ||
@@ -1601,6 +1722,9 @@ apo_load_selected_run() {
             apo_die 'Selected state belongs to a different target.' "$APO_EXIT_USAGE"
         fi
         apo_die "Selected state belongs to $stored_target, not $APO_REMOTE_TARGET." "$APO_EXIT_USAGE"
+    fi
+    if [[ $APO_COMMAND == resume ]] && apo_find_later_reset_resume_barrier "$stored_run_id"; then
+        apo_die "Run $stored_run_id was retired from continuation by stock reset $APO_RESET_RESUME_BARRIER_RUN_ID. Start a new tuning operation with autopioverclock overclock $APO_RAW_TARGET." "$APO_EXIT_USAGE"
     fi
     apo_attach_artifacts_from_state
     case $APO_COMMAND in status|summary|report) return 0 ;; esac

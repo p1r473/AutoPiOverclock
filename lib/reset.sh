@@ -44,6 +44,14 @@ apo_reset_store_discovery() {
     apo_state_save
 }
 
+apo_reset_retire_prior_resumable_runs() {
+    apo_state_set RESET_RETIRE_RESUMABLE 1
+    apo_state_set RESET_RETIRE_CUTOFF_RUN_ID "$APO_RUN_ID"
+    apo_state_save
+    apo_event reset-resume-retirement INFO '' \
+        'This stock reset retires every earlier tuning checkpoint for this target from continuation while preserving its audit files.'
+}
+
 apo_reset_cleanup_owned_watchdog() {
     local kind=${APO_DISCOVERY[NETWORK_WATCHDOG_KIND]:-}
     local installing_run=${APO_DISCOVERY[NETWORK_WATCHDOG_INSTALL_RUN_ID]:-}
@@ -277,6 +285,7 @@ apo_reset_stock() {
         apo_die 'Profile probe and reset discovery disagree.' "$APO_EXIT_PREFLIGHT"
     apo_validate_pi5
     apo_reset_store_discovery
+    apo_reset_retire_prior_resumable_runs
     apo_reset_cleanup_owned_watchdog
     apo_reset_verify_watchdog_ready
     discovered_hash=$APO_PERMANENT_CONFIG_HASH
@@ -330,5 +339,5 @@ apo_reset_stock() {
     reset_backup=$(apo_state_get RESET_BACKUP '')
     apo_summary_line "Verified boot ID: $new_boot_id"
     apo_summary_line 'Result: stock reset verified'
-    apo_event reset PASS '' "Permanent clock/voltage overrides were disabled, rebooted, and verified at stock settings. Backup: $reset_backup. Prior logs and saved runs were preserved."
+    apo_event reset PASS '' "Permanent clock/voltage overrides were disabled, rebooted, and verified at stock settings. Backup: $reset_backup. Prior logs and saved runs were preserved as audit evidence, but earlier tuning checkpoints are no longer resumable."
 }
