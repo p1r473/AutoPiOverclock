@@ -61,12 +61,42 @@ APO_HISTORY_SEALED_VOLTAGE=0
 APO_HISTORY_SEALED_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 APO_HISTORY_SEALED_RUN_SCHEMA=$APO_CURRENT_RUN_SCHEMA
 APO_HISTORY_SEALED_VALIDATION_SCHEMA=$APO_CURRENT_VALIDATION_SCHEMA
+APO_HISTORY_SEALED_DURATION_SECONDS=360000
 apo_history_rebuild_ledger
 ledger=$APO_HISTORY_LEDGER_FILE
-[[ $ledger == "$APO_HISTORY_DIR/failures.txt" ]]
+[[ $ledger == "$APO_HISTORY_DIR/history.txt" ]]
 [[ -f $ledger && ! -L $ledger ]]
+grep -Fq "$APO_HISTORY_HUMAN_BEGIN" "$ledger"
+grep -Fq 'AutoPiOverclock retained tuning history' "$ledger"
+grep -Fq 'Validated successes:' "$ledger"
+grep -Fq 'Protected applied floor: CPU 3050 MHz | GPU/V3D 1125 MHz | voltage delta 0 uV' "$ledger"
+grep -Fq 'Final sealed result: run completed-run | 100h 00m 00s (360000 seconds)' "$ledger"
+grep -Fq 'CPU hard ceiling, exclusive: 3125 MHz' "$ledger"
+grep -Fq 'GPU/V3D hard ceiling, exclusive: 1200 MHz' "$ledger"
+grep -Fq 'Ambiguous failed-pair frontier: 3100/1175' "$ledger"
 grep -Fq 'CPU failed above the completed floor.' "$ledger"
 grep -Fq 'A controller transport failed without clock evidence.' "$ledger"
+grep -Fq 'AUTOPIOVERCLOCK VALIDATED RESULT' "$ledger"
+grep -Fq 'Validated at final clocks: 100h 00m 00s (360000 seconds)' "$ledger"
+grep -Fq "$APO_HISTORY_HUMAN_END" "$ledger"
+grep -Fq $'META\tSEALED_CPU\tMzA1MA==' "$ledger"
+grep -Fq $'META\tSEALED_DURATION_SECONDS\tMzYwMDAw' "$ledger"
+
+# The terminal-facing report is byte-for-byte the human prefix of history.txt
+# and never emits the encoded machine section.
+human_report="$TEST_ROOT/human-report.txt"
+expected_human_report="$TEST_ROOT/expected-human-report.txt"
+apo_history_print_human_report "$ledger" > "$human_report"
+awk -v marker="$APO_HISTORY_MACHINE_BEGIN" '$0 == marker {exit} {print}' "$ledger" > "$expected_human_report"
+cmp -s -- "$human_report" "$expected_human_report"
+if grep -Fq -- "$APO_HISTORY_MACHINE_BEGIN" "$human_report"; then
+    printf 'terminal-facing human history included the machine-section marker\n' >&2
+    exit 1
+fi
+if grep -Fq $'META\t' "$human_report"; then
+    printf 'terminal-facing human history included encoded machine metadata\n' >&2
+    exit 1
+fi
 
 # A completing run still carries its original stock baseline in APO_NORMAL_*.
 # Its immediate sealed-ledger verification must use the verified final tuple.
@@ -83,6 +113,7 @@ apo_history_load_machine_ledger "$ledger" 0
 [[ $APO_HISTORY_SEALED_RUN_ID == completed-run ]]
 [[ $APO_HISTORY_SEALED_CPU == 3050 ]]
 [[ $APO_HISTORY_SEALED_GPU == 1125 ]]
+[[ $APO_HISTORY_SEALED_DURATION_SECONDS == 360000 ]]
 APO_HISTORY_SCAN_BASELINE_CPU=''
 APO_HISTORY_SCAN_BASELINE_GPU=''
 APO_HISTORY_SCAN_BASELINE_VOLTAGE=''
@@ -115,7 +146,7 @@ APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 apo_history_adopt_completed_baseline
 [[ $APO_HISTORY_COMPLETED_BASELINE_ADOPTED == 1 ]]
 [[ $APO_PERMANENT_TUNING_PROVENANCE == verified-completed-ledger ]]
-[[ $APO_PERMANENT_TUNING_EVIDENCE == failure-ledger-v2:* ]]
+[[ $APO_PERMANENT_TUNING_EVIDENCE == history-ledger-v3:* ]]
 APO_PERMANENT_CONFIG_HASH=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 if apo_history_adopt_completed_baseline; then
     printf 'completed floor adoption accepted a live hash mismatch\n' >&2
@@ -210,6 +241,7 @@ APO_PERMANENT_CONFIG_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     APO_HISTORY_SEALED_HASH=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     APO_HISTORY_SEALED_RUN_SCHEMA=$APO_CURRENT_RUN_SCHEMA
     APO_HISTORY_SEALED_VALIDATION_SCHEMA=$APO_CURRENT_VALIDATION_SCHEMA
+    APO_HISTORY_SEALED_DURATION_SECONDS=360000
     apo_history_rebuild_ledger
     sealed_ledger=$APO_HISTORY_LEDGER_FILE
     sealed_hash=$(sha256sum "$sealed_ledger" | awk 'NR == 1 {print $1}')
@@ -256,9 +288,16 @@ if apo_history_load_machine_ledger "$bad_base64" 1; then
 fi
 
 human_only="$TEST_ROOT/human-only.txt"
-printf 'AutoPiOverclock retained failure ledger\nGenerated: 2026-09-20T01:00:00-0400\n' > "$human_only"
+printf 'AutoPiOverclock retained tuning history\nGenerated: 2026-09-20T01:00:00-0400\n' > "$human_only"
 if apo_history_load_machine_ledger "$human_only" 1; then
     printf 'human-only ledger was accepted as machine history\n' >&2
+    exit 1
+fi
+
+legacy_v2="$TEST_ROOT/legacy-v2.txt"
+sed 's/MACHINE HISTORY v3/MACHINE HISTORY v2/g' "$ledger" > "$legacy_v2"
+if apo_history_load_machine_ledger "$legacy_v2" 1; then
+    printf 'machine ledger accepted legacy v2 history\n' >&2
     exit 1
 fi
 

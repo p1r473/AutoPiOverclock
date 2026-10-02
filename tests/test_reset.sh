@@ -659,7 +659,7 @@ fi
     APO_NORMAL_GPU=1200
     APO_NORMAL_VOLTAGE=0
     APO_PERMANENT_TUNING_PROVENANCE=verified-completed-ledger
-    APO_PERMANENT_TUNING_EVIDENCE="failure-ledger-v2:$PREPARE_LEDGER_HASH"
+    APO_PERMANENT_TUNING_EVIDENCE="history-ledger-v3:$PREPARE_LEDGER_HASH"
     apo_prepare_stock_baseline
     [[ ${APO_STATE[PREPARE_BASELINE_STATUS]} == NOT_NEEDED ]] || fail 'completed-ledger prepare did not select NOT_NEEDED'
     [[ " ${PREPARE_ACTIONS[*]} " != *' worker:'* && " ${PREPARE_ACTIONS[*]} " != *' remote-worker:'* ]] || fail 'completed-ledger prepare reset the applied baseline'

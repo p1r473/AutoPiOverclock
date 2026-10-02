@@ -512,7 +512,7 @@ fi
     APO_JSON_FILE="$APO_RUN_PREFIX.json"
     APO_SUMMARY_FILE="$APO_RUN_PREFIX-summary.txt"
     mkdir -p -- "$APO_OUTPUT_DIR" "$APO_HISTORY_DIR"
-    printf 'durable history\n' > "$APO_HISTORY_DIR/failures.txt"
+    printf 'durable history\n' > "$APO_HISTORY_DIR/history.txt"
     printf 'lock\n' > "$APO_TARGET_STATE_DIR/.lock"
     touch -- \
         "$APO_RUN_PREFIX.state" "$APO_RUN_PREFIX.log" "$APO_RUN_PREFIX.csv" \
@@ -531,8 +531,8 @@ fi
     apo_complete_delete_controller_artifacts >/dev/null
 
     [[ ! -e $APO_OUTPUT_DIR && ! -L $APO_OUTPUT_DIR ]]
-    [[ -f $APO_HISTORY_DIR/failures.txt ]]
-    [[ $(<"$APO_HISTORY_DIR/failures.txt") == 'durable history' ]]
+    [[ -f $APO_HISTORY_DIR/history.txt ]]
+    [[ $(<"$APO_HISTORY_DIR/history.txt") == 'durable history' ]]
     [[ -f $APO_TARGET_STATE_DIR/.lock ]]
 )
 

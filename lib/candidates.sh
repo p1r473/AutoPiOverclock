@@ -68,7 +68,7 @@ apo_completed_ledger_baseline_active() {
     [[ ${APO_AUTO_GENERATED_CANDIDATES:-0} == 1 &&
        $(apo_refined_sweep_domain) == all &&
        ${APO_AUTO_BASELINE_PROVENANCE:-} == verified-completed-ledger &&
-       ${APO_AUTO_BASELINE_EVIDENCE:-} =~ ^failure-ledger-v2:[0-9a-f]{64}$ ]]
+       ${APO_AUTO_BASELINE_EVIDENCE:-} =~ ^history-ledger-v3:[0-9a-f]{64}$ ]]
 }
 
 apo_completed_ledger_cpu_has_no_headroom() {
@@ -2497,7 +2497,7 @@ apo_validate_auto_resume_state() {
                    ( ${APO_AUTO_BASELINE_GPU:-missing} == 800 || ${APO_AUTO_BASELINE_GPU:-missing} == 960 ) &&
                    ${APO_AUTO_BASELINE_VOLTAGE:-missing} == "$APO_PI5_STOCK_VOLTAGE_UV" ]] ||
                [[ ${APO_AUTO_BASELINE_PROVENANCE:-missing} == verified-completed-ledger &&
-                    ${APO_AUTO_BASELINE_EVIDENCE:-missing} =~ ^failure-ledger-v2:[0-9a-f]{64}$ &&
+                    ${APO_AUTO_BASELINE_EVIDENCE:-missing} =~ ^history-ledger-v3:[0-9a-f]{64}$ &&
                    ${APO_AUTO_BASELINE_CPU:-missing} =~ ^[1-9][0-9]*$ &&
                    ${APO_AUTO_BASELINE_GPU:-missing} =~ ^[1-9][0-9]*$ &&
                    ${APO_AUTO_BASELINE_VOLTAGE:-missing} =~ ^-?[0-9]+$ ]]; }; then

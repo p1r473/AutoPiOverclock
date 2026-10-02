@@ -150,7 +150,7 @@ apo_history_refresh
 [[ $APO_HISTORY_PROVENANCE != *'999'* ]]
 [[ -f $APO_HISTORY_LEDGER_FILE && ! -L $APO_HISTORY_LEDGER_FILE ]]
 grep -Fq 'Authority: strictly validated state evidence plus the encoded durable section in this file.' "$APO_HISTORY_LEDGER_FILE"
-grep -Fq 'Clear CPU failed boundary: 2900' "$APO_HISTORY_LEDGER_FILE"
+grep -Fq 'CPU hard ceiling, exclusive: 2900 MHz' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq 'Ambiguous failed-pair frontier: 2975/1200,3000/1175' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq '2026-09-07T03:00:00-0400 | run-d | 2900 | 1150 | STABILITY_FAILURE | CPU | Recovered exact CPU failure.' "$APO_HISTORY_LEDGER_FILE"
 if grep -Fq '2026-09-07T03:05:00-0400 | run-d | 2850 | 1150 | STABILITY_FAILURE | PAIR | Recovered ambiguous pair failure.' "$APO_HISTORY_LEDGER_FILE"; then
@@ -181,7 +181,7 @@ scanned_states_before=$APO_HISTORY_SCANNED_STATES
 write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-later-reset.state" \
     FORMAT_VERSION 1 RUN_SCHEMA "$APO_CURRENT_RUN_SCHEMA" RUN_ID later-reset \
     REMOTE_TARGET "$APO_REMOTE_TARGET" TARGET_SLUG "$APO_TARGET_SLUG" ORIGIN_COMMAND reset
-sed -i '2cGenerated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"
+sed -i '3cGenerated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"
 touch -t 200001010000.00 "$APO_HISTORY_LEDGER_FILE"
 ledger_hash_before=$(sha256sum "$APO_HISTORY_LEDGER_FILE" | awk '{print $1}')
 ledger_inode_before=$(stat -c '%i' "$APO_HISTORY_LEDGER_FILE")
@@ -223,13 +223,13 @@ if grep -Fxq 'Generated: 2000-01-01T00:00:00+0000' "$APO_HISTORY_LEDGER_FILE"; t
     printf 'changed history retained the previous ledger generation timestamp\n' >&2
     exit 1
 fi
-grep -Fq 'Clear CPU failed boundary: 2875' "$APO_HISTORY_LEDGER_FILE"
+grep -Fq 'CPU hard ceiling, exclusive: 2875 MHz' "$APO_HISTORY_LEDGER_FILE"
 grep -Fq 'run-e' "$APO_HISTORY_LEDGER_FILE"
 rm -f -- "$APO_HISTORY_LEDGER_FILE"
 # shellcheck disable=SC2218
 apo_history_refresh
 [[ -f $APO_HISTORY_LEDGER_FILE && ! -L $APO_HISTORY_LEDGER_FILE ]]
-grep -Fq 'Clear CPU failed boundary: 2875' "$APO_HISTORY_LEDGER_FILE"
+grep -Fq 'CPU hard ceiling, exclusive: 2875 MHz' "$APO_HISTORY_LEDGER_FILE"
 
 # A generated audit path is never allowed to traverse or replace a symlink,
 # directory, FIFO, or symlinked destination directory. Comparison errors also
@@ -249,14 +249,14 @@ for refused_ledger in file-link.txt broken-link.txt directory.txt directory-link
         exit 1
     fi
 done
-if apo_history_rebuild_ledger "$ledger_safety_dir/linked-parent/failures.txt"; then
+if apo_history_rebuild_ledger "$ledger_safety_dir/linked-parent/history.txt"; then
     printf 'symlinked ledger destination directory was accepted\n' >&2
     exit 1
 fi
 [[ -L $ledger_safety_dir/file-link.txt && $(<"$ledger_safety_dir/target.txt") == keep-target ]]
 [[ -L $ledger_safety_dir/broken-link.txt && ! -e $ledger_safety_dir/broken-link.txt ]]
 [[ -d $ledger_safety_dir/directory.txt && -L $ledger_safety_dir/directory-link.txt ]]
-[[ -p $ledger_safety_dir/fifo.txt && ! -e $ledger_safety_dir/real-parent/failures.txt ]]
+[[ -p $ledger_safety_dir/fifo.txt && ! -e $ledger_safety_dir/real-parent/history.txt ]]
 
 comparison_ledger=$ledger_safety_dir/comparison.txt
 apo_history_rebuild_ledger "$comparison_ledger"
@@ -586,7 +586,7 @@ apo_history_refresh() {
     APO_HISTORY_RECENT_PAIR_FRONTIER=3075/1200
     APO_HISTORY_RECENT_PAIR_RUN_ID=latest-run
     APO_HISTORY_PROVENANCE='PAIR|3075/1200|latest-run|fixture|pi-one-latest-run.state'
-    APO_HISTORY_LEDGER_FILE="$TMP/planner-failures.txt"
+    APO_HISTORY_LEDGER_FILE="$TMP/planner-history.txt"
     APO_HISTORY_SCANNED_STATES=1
     APO_HISTORY_ACCEPTED_STATES=1
     APO_HISTORY_EVIDENCE_COUNT=5
@@ -711,7 +711,7 @@ apo_history_refresh() {
     APO_HISTORY_GPU_FAILURE_BOUNDARY=''
     APO_HISTORY_PAIR_FRONTIERS=''
     APO_HISTORY_PROVENANCE='CPU|3100|old-run|fixture|pi-one-old-run.state'
-    APO_HISTORY_LEDGER_FILE="$TMP/clear-boundary-failures.txt"
+    APO_HISTORY_LEDGER_FILE="$TMP/clear-boundary-history.txt"
     APO_HISTORY_SCANNED_STATES=1
     APO_HISTORY_ACCEPTED_STATES=1
     APO_HISTORY_EVIDENCE_COUNT=1
@@ -768,7 +768,7 @@ apo_history_refresh() {
     APO_HISTORY_GPU_FAILURE_BOUNDARY=1200
     APO_HISTORY_PAIR_FRONTIERS=''
     APO_HISTORY_PROVENANCE='CPU|3200|old-run|fixture|cpu.state,GPU|1200|old-run|fixture|gpu.state'
-    APO_HISTORY_LEDGER_FILE="$TMP/one-domain-failures.txt"
+    APO_HISTORY_LEDGER_FILE="$TMP/one-domain-history.txt"
     APO_HISTORY_SCANNED_STATES=2
     APO_HISTORY_ACCEPTED_STATES=2
     APO_HISTORY_EVIDENCE_COUNT=2
@@ -924,7 +924,7 @@ if apo_history_rebuild_ledger "$timestamp_failure_missing"; then
     exit 1
 fi
 [[ ! -e $timestamp_failure_missing && ! -L $timestamp_failure_missing ]]
-if find "$ledger_safety_dir" -maxdepth 1 -type f -name ".${APO_TARGET_SLUG}-failures.*" | grep -q .; then
+if find "$ledger_safety_dir" -maxdepth 1 -type f -name ".${APO_TARGET_SLUG}-history.*" | grep -q .; then
     printf 'failed timestamp generation left a temporary ledger behind\n' >&2
     exit 1
 fi

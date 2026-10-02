@@ -6,7 +6,8 @@ for fixture in \
     test_simple_cli_parse.sh \
     test_simple_cli_resume.sh \
     test_simple_cli_edge.sh \
-    test_simple_cli_manual.sh; do
+    test_simple_cli_manual.sh \
+    test_simple_cli_output.sh; do
     "$ROOT/tests/$fixture"
 done
 

@@ -110,6 +110,55 @@ apo_validate_uint_range() {
     fi
 }
 
+apo_format_duration_hours() {
+    local raw_seconds=${1-} total_seconds hours minutes seconds
+    [[ $raw_seconds =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+    total_seconds=$((10#$raw_seconds))
+    hours=$((total_seconds / 3600))
+    minutes=$(((total_seconds % 3600) / 60))
+    seconds=$((total_seconds % 60))
+    printf '%dh %02dm %02ds (%s seconds)' "$hours" "$minutes" "$seconds" "$raw_seconds"
+}
+
+apo_render_validated_result_box() {
+    local target=${1-} final_cpu=${2-} final_gpu=${3-} final_voltage=${4-} validation_duration=${5-}
+    local title='AUTOPIOVERCLOCK VALIDATED RESULT' duration_text row border centered line
+    local content_width left_padding right_padding
+    local -a rows=() lines=()
+
+    [[ -n $target && $final_cpu =~ ^[1-9][0-9]*$ && $final_gpu =~ ^[1-9][0-9]*$ ]] || return 1
+    apo_is_int "$final_voltage" || return 1
+    duration_text=$(apo_format_duration_hours "$validation_duration") || return 1
+
+    rows=(
+        "Target: $target"
+        "CPU: $final_cpu MHz"
+        "GPU/V3D: $final_gpu MHz"
+        "Voltage delta: $final_voltage uV"
+        "Validated at final clocks: $duration_text"
+    )
+    content_width=${#title}
+    for row in "${rows[@]}"; do
+        (( ${#row} <= content_width )) || content_width=${#row}
+    done
+    (( content_width >= 54 )) || content_width=54
+
+    printf -v border '%*s' "$((content_width + 2))" ''
+    border=${border// /-}
+    border="+${border}+"
+    left_padding=$(((content_width - ${#title}) / 2))
+    right_padding=$((content_width - ${#title} - left_padding))
+    printf -v centered '| %*s%s%*s |' "$left_padding" '' "$title" "$right_padding" ''
+
+    lines+=("$border" "$centered" "$border")
+    for row in "${rows[@]}"; do
+        printf -v line '| %-*s |' "$content_width" "$row"
+        lines+=("$line")
+    done
+    lines+=("$border")
+    printf '%s\n' "${lines[@]}"
+}
+
 apo_throttle_word() {
     local reading=${1-} hex_value
     [[ $reading =~ ^throttled=0x([0-9A-Fa-f]+)$ ]] || return 1

@@ -507,6 +507,13 @@ apo_verify_domain_sweep_source_discovery() {
     apo_reconcile_domain_sweep_source_hash
 }
 
+apo_validate_manual_test_clocks() {
+    (( APO_MANUAL_CPU >= APO_NORMAL_CPU )) ||
+        apo_die "Manual CPU clock $APO_MANUAL_CPU MHz is below the protected normal clock $APO_NORMAL_CPU MHz; test accepts a normal-or-higher clock, not an underclock." "$APO_EXIT_USAGE"
+    (( APO_MANUAL_GPU >= APO_NORMAL_GPU )) ||
+        apo_die "Manual GPU/V3D clock $APO_MANUAL_GPU MHz is below the protected normal clock $APO_NORMAL_GPU MHz; test accepts a normal-or-higher clock, not an underclock." "$APO_EXIT_USAGE"
+}
+
 apo_context_from_discovery() {
     local audio_attempt_suffix='' ledger_adopt_rc
     APO_BOOT_CONFIG=${APO_DISCOVERY[BOOT_CONFIG]:-}
@@ -552,7 +559,7 @@ apo_context_from_discovery() {
         else
             ledger_adopt_rc=$?
             if (( ledger_adopt_rc == 2 )); then
-                apo_die "Completed-result ledger validation failed: ${APO_HISTORY_SCAN_ERROR:-invalid retained failures ledger}" "$APO_EXIT_PREFLIGHT"
+                apo_die "Completed-result ledger validation failed: ${APO_HISTORY_SCAN_ERROR:-invalid retained history ledger}" "$APO_EXIT_PREFLIGHT"
             fi
         fi
     fi
@@ -585,12 +592,7 @@ apo_context_from_discovery() {
     fi
     local candidate
     if (( ${APO_MANUAL_TEST:-0} == 1 )); then
-        (( APO_MANUAL_CPU >= APO_NORMAL_CPU )) ||
-            apo_die "Manual CPU clock $APO_MANUAL_CPU MHz is below the protected normal clock $APO_NORMAL_CPU MHz; test accepts a normal-or-higher clock, not an underclock." "$APO_EXIT_USAGE"
-        (( APO_MANUAL_GPU >= APO_NORMAL_GPU )) ||
-            apo_die "Manual GPU/V3D clock $APO_MANUAL_GPU MHz is below the protected normal clock $APO_NORMAL_GPU MHz; test accepts a normal-or-higher clock, not an underclock." "$APO_EXIT_USAGE"
-        (( APO_MANUAL_CPU > APO_NORMAL_CPU || APO_MANUAL_GPU > APO_NORMAL_GPU )) ||
-            apo_die 'Manual test clocks exactly match the protected normal clocks; raise at least one clock to test an overclock.' "$APO_EXIT_USAGE"
+        apo_validate_manual_test_clocks
     else
         for candidate in "${APO_CPU_CANDIDATES[@]}"; do
             (( candidate > APO_NORMAL_CPU )) || apo_die "CPU candidate $candidate MHz is not above the discovered normal clock $APO_NORMAL_CPU MHz. The normal-clock tryboot proof is automatic; tuning candidates must be fresh overclocks." "$APO_EXIT_USAGE"

@@ -402,7 +402,7 @@ fi
 [[ $(apo_config_auto_ladder 1100 50 1200 200) == '1150,1200' ]]
 [[ -z $(apo_config_auto_ladder 1200 50 1200 200) ]]
 
-completed_ledger_evidence=failure-ledger-v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+completed_ledger_evidence=history-ledger-v3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 apo_config_stock_auto_baseline_ready 3050 1125 0 verified-completed-ledger "$completed_ledger_evidence"
 (
     APO_PUBLIC_COMMAND=overclock

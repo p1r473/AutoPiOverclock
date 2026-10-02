@@ -42,13 +42,14 @@ apo_complete_cleanup_maintenance_temps() {
 }
 
 apo_complete_validate_selected_run() {
-    local origin status phase apply_status validated validation_schema
+    local origin status phase apply_status validated validation_schema validation_duration
     origin=$(apo_state_get ORIGIN_COMMAND '')
     status=$(apo_state_get STATUS '')
     phase=$(apo_state_get PHASE '')
     apply_status=$(apo_state_get APPLY_STATUS '')
     validated=$(apo_state_get VALIDATED 0)
     validation_schema=$(apo_state_get VALIDATION_SCHEMA '')
+    validation_duration=$(apo_state_get VALIDATION_DURATION_S '')
 
     [[ $(apo_state_get RUN_SCHEMA '') == "$APO_CURRENT_RUN_SCHEMA" ]] ||
         apo_die 'Complete requires a run created with the current safety schema.' "$APO_EXIT_USAGE"
@@ -59,6 +60,8 @@ apo_complete_validate_selected_run() {
         apo_die 'Complete requires a fully passed current-schema final validation.' "$APO_EXIT_USAGE"
     [[ $apply_status == APPLIED ]] ||
         apo_die 'Complete requires the selected validated result to be permanently applied first.' "$APO_EXIT_USAGE"
+    apo_validate_uint_range "$validation_duration" "$APO_MIN_FINAL_DURATION_S" "$APO_MAX_TUNING_DURATION_S" ||
+        apo_die 'Complete found malformed or out-of-range final validation duration evidence.' "$APO_EXIT_INTERNAL"
     [[ $(apo_state_get OVERCLOCK_COMPLETE_RECORDED 0) == 1 ]] ||
         apo_die 'Complete requires the applied overclock completion checkpoint.' "$APO_EXIT_USAGE"
     if apo_remote_job_pending || [[ $(apo_state_get REMOTE_STRESS_STATUS IDLE) == RUNNING ]]; then
@@ -279,11 +282,14 @@ apo_complete_collect_sealed_cleanup_runs() {
 }
 
 apo_complete_show_sealed_cleanup_plan() {
-    local run_id
+    local run_id duration_text
+    duration_text=$(apo_format_duration_hours "$APO_HISTORY_SEALED_DURATION_SECONDS") ||
+        apo_die 'Complete found malformed sealed validation duration evidence.' "$APO_EXIT_INTERNAL"
     if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     printf '\n===== ALREADY-COMPLETED CLEANUP =====\n' >&2
     printf 'Sealed applied run: %s at %s/%s MHz\n' \
         "$APO_HISTORY_SEALED_RUN_ID" "$APO_HISTORY_SEALED_CPU" "$APO_HISTORY_SEALED_GPU" >&2
+    printf 'Sealed combined validation: %s\n' "$duration_text" >&2
     printf 'Permanent config was already canonicalized and verified. This artifact-cleanup stage does not change it.\n' >&2
     printf 'Safe post-completion controller runs scheduled for cleanup:\n' >&2
     for run_id in "${APO_COMPLETE_RUN_IDS[@]}"; do printf '  %s\n' "$run_id" >&2; done
@@ -379,14 +385,18 @@ apo_complete_try_sealed_cleanup() {
     ledger_file=$(apo_history_ledger_path) || return 1
     [[ -e $ledger_file || -L $ledger_file ]] || return 1
     [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] ||
-        apo_die 'Complete found an unsafe durable failure ledger.' "$APO_EXIT_INTERNAL"
+        apo_die 'Complete found an unsafe durable history ledger.' "$APO_EXIT_INTERNAL"
     apo_history_load_machine_ledger "$ledger_file" 1 1 ||
-        apo_die 'Complete could not strictly validate the durable sealed failure ledger.' "$APO_EXIT_INTERNAL"
+        apo_die 'Complete could not strictly validate the durable sealed history ledger.' "$APO_EXIT_INTERNAL"
     [[ -n $APO_HISTORY_SEALED_RUN_ID &&
        $APO_HISTORY_SEALED_RUN_SCHEMA == "$APO_CURRENT_RUN_SCHEMA" &&
        $APO_HISTORY_SEALED_VALIDATION_SCHEMA == "$APO_CURRENT_VALIDATION_SCHEMA" ]] || return 1
     apo_complete_collect_sealed_cleanup_runs || return 1
     apo_complete_verify_sealed_config
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
+    printf '\n'
+    apo_history_print_human_report "$ledger_file" ||
+        apo_die 'Complete could not print the verified human-readable history report.' "$APO_EXIT_INTERNAL"
 
     if (( ${#APO_COMPLETE_RUN_IDS[@]} == 0 )); then
         printf 'Complete finished for %s. No target runs remain; canonical config and durable history are verified at %s.\n' \
@@ -396,7 +406,7 @@ apo_complete_try_sealed_cleanup() {
 
     apo_complete_show_sealed_cleanup_plan
     expected_confirmation="COMPLETE ${APO_TARGET_SLUG} ${APO_HISTORY_SEALED_RUN_ID}"
-    apo_confirm_exact 'Complete will remove only the listed safe post-completion controller artifacts. This stage will not further change the permanent config, target clocks, watchdogs, or durable failure ledger.' "$expected_confirmation" ||
+    apo_confirm_exact 'Complete will remove only the listed safe post-completion controller artifacts. This stage will not further change the permanent config, target clocks, watchdogs, or durable history ledger.' "$expected_confirmation" ||
         apo_die 'Complete was not confirmed.' "$APO_EXIT_USAGE"
     run_id=${APO_COMPLETE_RUN_IDS[0]}
     apo_complete_attach_cleanup_artifacts "$run_id"
@@ -532,7 +542,7 @@ apo_complete_delete_controller_artifacts() {
 }
 
 apo_complete_run() {
-    local final_cpu final_gpu final_voltage current_hash old_hash expected_hash saved_expected saved_old complete_status
+    local final_cpu final_gpu final_voltage validation_duration current_hash old_hash expected_hash saved_expected saved_old complete_status
     local current_file proposed_file diff_file manifest_file remote_manifest manifest_hash expected_confirmation previous_hash
     local reported_hash ledger_file
 
@@ -557,6 +567,7 @@ apo_complete_run() {
     final_cpu=$(apo_state_get FINAL_CPU '')
     final_gpu=$(apo_state_get FINAL_GPU '')
     final_voltage=$(apo_state_get NORMAL_VOLTAGE '')
+    validation_duration=$(apo_state_get VALIDATION_DURATION_S '')
     old_hash=$(apo_state_get PERMANENT_HASH '')
     complete_status=$(apo_state_get COMPLETE_STATUS '')
     saved_old=$(apo_state_get COMPLETE_OLD_HASH '')
@@ -667,8 +678,9 @@ apo_complete_run() {
     APO_HISTORY_SEALED_HASH=$expected_hash
     APO_HISTORY_SEALED_RUN_SCHEMA=$APO_CURRENT_RUN_SCHEMA
     APO_HISTORY_SEALED_VALIDATION_SCHEMA=$APO_CURRENT_VALIDATION_SCHEMA
+    APO_HISTORY_SEALED_DURATION_SECONDS=$validation_duration
     apo_history_rebuild_ledger "$ledger_file" ||
-        apo_die 'Complete could not durably seal the retained failure ledger, so no run artifacts were deleted.' "$APO_EXIT_INTERNAL"
+        apo_die 'Complete could not durably seal the retained history ledger, so no run artifacts were deleted.' "$APO_EXIT_INTERNAL"
     APO_HISTORY_RENDER_BASELINE_CPU=''
     APO_HISTORY_RENDER_BASELINE_GPU=''
     APO_HISTORY_RENDER_BASELINE_VOLTAGE=''
@@ -679,7 +691,7 @@ apo_complete_run() {
         APO_HISTORY_SCAN_BASELINE_CPU=''
         APO_HISTORY_SCAN_BASELINE_GPU=''
         APO_HISTORY_SCAN_BASELINE_VOLTAGE=''
-        apo_die 'Complete could not revalidate the sealed retained failure ledger, so no run artifacts were deleted.' "$APO_EXIT_INTERNAL"
+        apo_die 'Complete could not revalidate the sealed retained history ledger, so no run artifacts were deleted.' "$APO_EXIT_INTERNAL"
     fi
     APO_HISTORY_SCAN_BASELINE_CPU=''
     APO_HISTORY_SCAN_BASELINE_GPU=''
@@ -688,8 +700,14 @@ apo_complete_run() {
        $APO_HISTORY_SEALED_CPU == "$final_cpu" &&
        $APO_HISTORY_SEALED_GPU == "$final_gpu" &&
        $APO_HISTORY_SEALED_VOLTAGE == "$final_voltage" &&
+       $APO_HISTORY_SEALED_DURATION_SECONDS == "$validation_duration" &&
        $APO_HISTORY_SEALED_HASH == "$expected_hash" ]] ||
-        apo_die 'Complete reloaded a retained failure ledger that does not match the verified applied result.' "$APO_EXIT_INTERNAL"
+        apo_die 'Complete reloaded a retained history ledger that does not match the verified applied result.' "$APO_EXIT_INTERNAL"
+
+    if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
+    printf '\n'
+    apo_history_print_human_report "$ledger_file" ||
+        apo_die 'Complete could not print the verified human-readable history report, so no run artifacts were deleted.' "$APO_EXIT_INTERNAL"
 
     apo_cleanup_completed_run_watchdog
     apo_complete_cleanup_controller_watchdog_records

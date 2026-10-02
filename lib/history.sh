@@ -2,7 +2,7 @@
 # Retained-run failure evidence for bounded automatic tuning.
 #
 # Current state files and the strictly encoded section of a compatible retained
-# failures ledger are planning authority. Human-readable ledger text is not.
+# history ledger are planning authority. Human-readable ledger text is not.
 
 declare -ag APO_HISTORY_RECORDS=()
 declare -ag APO_HISTORY_RAW_PAIRS=()
@@ -12,9 +12,11 @@ declare -Ag APO_HISTORY_SEEN_PAIRS=()
 declare -Ag APO_HISTORY_SEEN_LEDGER_RECORDS=()
 declare -Ag APO_HISTORY_LEDGER_META=()
 
-APO_HISTORY_LEDGER_SCHEMA=2
-APO_HISTORY_MACHINE_BEGIN='----- BEGIN AUTOPIOVERCLOCK MACHINE HISTORY v2 -----'
-APO_HISTORY_MACHINE_END='----- END AUTOPIOVERCLOCK MACHINE HISTORY v2 -----'
+APO_HISTORY_LEDGER_SCHEMA=3
+APO_HISTORY_HUMAN_BEGIN='===== BEGIN AUTOPIOVERCLOCK HUMAN-READABLE HISTORY ====='
+APO_HISTORY_HUMAN_END='===== END AUTOPIOVERCLOCK HUMAN-READABLE HISTORY ====='
+APO_HISTORY_MACHINE_BEGIN='----- BEGIN AUTOPIOVERCLOCK MACHINE HISTORY v3 -----'
+APO_HISTORY_MACHINE_END='----- END AUTOPIOVERCLOCK MACHINE HISTORY v3 -----'
 
 APO_HISTORY_CPU_FAILURE_BOUNDARY=''
 APO_HISTORY_GPU_FAILURE_BOUNDARY=''
@@ -61,11 +63,12 @@ APO_HISTORY_SEALED_VOLTAGE=''
 APO_HISTORY_SEALED_HASH=''
 APO_HISTORY_SEALED_RUN_SCHEMA=''
 APO_HISTORY_SEALED_VALIDATION_SCHEMA=''
+APO_HISTORY_SEALED_DURATION_SECONDS=''
 APO_HISTORY_NO_HEADROOM=0
 
 apo_history_ledger_path() {
     [[ -n ${APO_HISTORY_DIR:-} ]] || return 1
-    printf '%s/failures.txt' "$APO_HISTORY_DIR"
+    printf '%s/history.txt' "$APO_HISTORY_DIR"
 }
 
 apo_history_reset() {
@@ -106,6 +109,7 @@ apo_history_reset() {
     APO_HISTORY_SEALED_HASH=''
     APO_HISTORY_SEALED_RUN_SCHEMA=''
     APO_HISTORY_SEALED_VALIDATION_SCHEMA=''
+    APO_HISTORY_SEALED_DURATION_SECONDS=''
     APO_HISTORY_NO_HEADROOM=0
     APO_HISTORY_RECORDS=()
     APO_HISTORY_RAW_PAIRS=()
@@ -279,7 +283,7 @@ apo_history_expected_context_baseline() {
 
 apo_history_machine_meta_key_allowed() {
     case $1 in
-        LEDGER_SCHEMA|TARGET_SLUG|REMOTE_TARGET|PROFILE|GPU_KEY|TEST_VOLTAGE|BASELINE_CPU|BASELINE_GPU|BASELINE_VOLTAGE|MODEL|COMPATIBLE|ARCH|BOOT_CONFIG|TRYBOOT_CONFIG|SEALED_RUN_ID|SEALED_CPU|SEALED_GPU|SEALED_VOLTAGE|SEALED_HASH|SEALED_RUN_SCHEMA|SEALED_VALIDATION_SCHEMA) return 0 ;;
+        LEDGER_SCHEMA|TARGET_SLUG|REMOTE_TARGET|PROFILE|GPU_KEY|TEST_VOLTAGE|BASELINE_CPU|BASELINE_GPU|BASELINE_VOLTAGE|MODEL|COMPATIBLE|ARCH|BOOT_CONFIG|TRYBOOT_CONFIG|SEALED_RUN_ID|SEALED_CPU|SEALED_GPU|SEALED_VOLTAGE|SEALED_HASH|SEALED_RUN_SCHEMA|SEALED_VALIDATION_SCHEMA|SEALED_DURATION_SECONDS) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -331,6 +335,7 @@ apo_history_load_machine_ledger() {
         BASELINE_CPU BASELINE_GPU BASELINE_VOLTAGE MODEL COMPATIBLE ARCH
         BOOT_CONFIG TRYBOOT_CONFIG SEALED_RUN_ID SEALED_CPU SEALED_GPU
         SEALED_VOLTAGE SEALED_HASH SEALED_RUN_SCHEMA SEALED_VALIDATION_SCHEMA
+        SEALED_DURATION_SECONDS
     )
 
     [[ $import_records == 0 || $import_records == 1 ]] || return 1
@@ -416,13 +421,15 @@ apo_history_load_machine_ledger() {
     if [[ -n ${parsed_meta[SEALED_RUN_ID]} || -n ${parsed_meta[SEALED_CPU]} ||
           -n ${parsed_meta[SEALED_GPU]} || -n ${parsed_meta[SEALED_VOLTAGE]} ||
           -n ${parsed_meta[SEALED_HASH]} || -n ${parsed_meta[SEALED_RUN_SCHEMA]} ||
-          -n ${parsed_meta[SEALED_VALIDATION_SCHEMA]} ]]; then
+          -n ${parsed_meta[SEALED_VALIDATION_SCHEMA]} ||
+          -n ${parsed_meta[SEALED_DURATION_SECONDS]} ]]; then
         apo_is_safe_run_id "${parsed_meta[SEALED_RUN_ID]}" || return 1
         apo_is_uint "${parsed_meta[SEALED_CPU]}" && apo_is_uint "${parsed_meta[SEALED_GPU]}" &&
             apo_is_int "${parsed_meta[SEALED_VOLTAGE]}" || return 1
         [[ ${parsed_meta[SEALED_HASH]} =~ ^[0-9a-f]{64}$ &&
            ${parsed_meta[SEALED_RUN_SCHEMA]} =~ ^[1-9][0-9]*$ &&
-           ${parsed_meta[SEALED_VALIDATION_SCHEMA]} =~ ^[1-9][0-9]*$ ]] || return 1
+           ${parsed_meta[SEALED_VALIDATION_SCHEMA]} =~ ^[1-9][0-9]*$ &&
+           ${parsed_meta[SEALED_DURATION_SECONDS]} =~ ^[1-9][0-9]*$ ]] || return 1
     fi
 
     APO_HISTORY_LEDGER_META=()
@@ -440,6 +447,7 @@ apo_history_load_machine_ledger() {
     APO_HISTORY_SEALED_HASH=${parsed_meta[SEALED_HASH]}
     APO_HISTORY_SEALED_RUN_SCHEMA=${parsed_meta[SEALED_RUN_SCHEMA]}
     APO_HISTORY_SEALED_VALIDATION_SCHEMA=${parsed_meta[SEALED_VALIDATION_SCHEMA]}
+    APO_HISTORY_SEALED_DURATION_SECONDS=${parsed_meta[SEALED_DURATION_SECONDS]}
     if (( import_records == 1 )); then
         for record in "${parsed_records[@]}"; do
             apo_history_machine_record_import "$record" || return 1
@@ -1429,16 +1437,16 @@ apo_history_scan_retained_states() {
     }
     if [[ -e $ledger_file || -L $ledger_file ]]; then
         [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
-            APO_HISTORY_SCAN_ERROR="Retained failure ledger is not a safe readable regular file: ${ledger_file##*/}"
+            APO_HISTORY_SCAN_ERROR="Retained history ledger is not a safe readable regular file: ${ledger_file##*/}"
             return 1
         }
         if apo_history_load_machine_ledger "$ledger_file" 1; then
             APO_HISTORY_LEDGER_FILE=$ledger_file
         else
             ledger_rc=$?
-            APO_HISTORY_SCAN_ERROR="Retained failure ledger failed strict machine-history validation: ${ledger_file##*/}"
+            APO_HISTORY_SCAN_ERROR="Retained history ledger failed strict machine-history validation: ${ledger_file##*/}"
             apo_history_reset
-            APO_HISTORY_SCAN_ERROR="Retained failure ledger failed strict machine-history validation: ${ledger_file##*/}"
+            APO_HISTORY_SCAN_ERROR="Retained history ledger failed strict machine-history validation: ${ledger_file##*/}"
             return "$ledger_rc"
         fi
     fi
@@ -1520,7 +1528,7 @@ apo_history_generated_timestamp_is_valid() {
 }
 
 apo_history_existing_ledger_timestamp() {
-    local source_file=$1 file_fd first_line second_line timestamp
+    local source_file=$1 file_fd first_line second_line third_line timestamp
 
     [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
     exec {file_fd}< "$source_file" || return 1
@@ -1532,10 +1540,15 @@ apo_history_existing_ledger_timestamp() {
         exec {file_fd}<&-
         return 1
     fi
+    if ! IFS= read -r third_line <&"$file_fd"; then
+        exec {file_fd}<&-
+        return 1
+    fi
     exec {file_fd}<&-
-    [[ $first_line == 'AutoPiOverclock retained failure ledger' ]] || return 1
-    [[ $second_line == 'Generated: '* ]] || return 1
-    timestamp=${second_line#Generated: }
+    [[ $first_line == "$APO_HISTORY_HUMAN_BEGIN" ]] || return 1
+    [[ $second_line == 'AutoPiOverclock retained tuning history' ]] || return 1
+    [[ $third_line == 'Generated: '* ]] || return 1
+    timestamp=${third_line#Generated: }
     apo_history_generated_timestamp_is_valid "$timestamp" || return 1
     printf '%s' "$timestamp"
 }
@@ -1575,6 +1588,7 @@ apo_history_prepare_ledger_meta() {
     APO_HISTORY_LEDGER_META[SEALED_HASH]=${APO_HISTORY_SEALED_HASH:-}
     APO_HISTORY_LEDGER_META[SEALED_RUN_SCHEMA]=${APO_HISTORY_SEALED_RUN_SCHEMA:-}
     APO_HISTORY_LEDGER_META[SEALED_VALIDATION_SCHEMA]=${APO_HISTORY_SEALED_VALIDATION_SCHEMA:-}
+    APO_HISTORY_LEDGER_META[SEALED_DURATION_SECONDS]=${APO_HISTORY_SEALED_DURATION_SECONDS:-}
 }
 
 apo_history_render_machine_ledger() {
@@ -1584,6 +1598,7 @@ apo_history_render_machine_ledger() {
         BASELINE_CPU BASELINE_GPU BASELINE_VOLTAGE MODEL COMPATIBLE ARCH
         BOOT_CONFIG TRYBOOT_CONFIG SEALED_RUN_ID SEALED_CPU SEALED_GPU
         SEALED_VOLTAGE SEALED_HASH SEALED_RUN_SCHEMA SEALED_VALIDATION_SCHEMA
+        SEALED_DURATION_SECONDS
     )
     apo_history_prepare_ledger_meta || return 1
     printf '%s\n' "$APO_HISTORY_MACHINE_BEGIN"
@@ -1598,38 +1613,79 @@ apo_history_render_machine_ledger() {
     printf '%s\n' "$APO_HISTORY_MACHINE_END"
 }
 
+apo_history_render_human_report() {
+    local generated_at=$1 record timestamp run_id cpu gpu class domain
+    local encoded_source encoded_reason basename source reason duration_text cpu_ceiling gpu_ceiling
+
+    cpu_ceiling=${APO_HISTORY_CPU_FAILURE_BOUNDARY:-none}
+    gpu_ceiling=${APO_HISTORY_GPU_FAILURE_BOUNDARY:-none}
+    [[ $cpu_ceiling == none ]] || cpu_ceiling="${cpu_ceiling} MHz"
+    [[ $gpu_ceiling == none ]] || gpu_ceiling="${gpu_ceiling} MHz"
+
+    printf '%s\n' "$APO_HISTORY_HUMAN_BEGIN"
+    printf 'AutoPiOverclock retained tuning history\n'
+    printf 'Generated: %s\n' "$generated_at"
+    printf 'Target: %s\n' "$APO_REMOTE_TARGET"
+    printf 'Authority: strictly validated state evidence plus the encoded durable section in this file.\n'
+    printf 'Accepted retained auto-overclock states: %s\n' "$APO_HISTORY_ACCEPTED_STATES"
+    printf 'Imported durable machine records: %s\n' "$APO_HISTORY_MACHINE_RECORDS"
+    printf '\nValidated successes:\n'
+    if [[ -n ${APO_HISTORY_SEALED_RUN_ID:-} ]]; then
+        duration_text=$(apo_format_duration_hours "$APO_HISTORY_SEALED_DURATION_SECONDS") || return 1
+        printf '  Protected applied floor: CPU %s MHz | GPU/V3D %s MHz | voltage delta %s uV\n' \
+            "$APO_HISTORY_SEALED_CPU" "$APO_HISTORY_SEALED_GPU" "$APO_HISTORY_SEALED_VOLTAGE"
+        printf '  Final sealed result: run %s | %s\n' "$APO_HISTORY_SEALED_RUN_ID" "$duration_text"
+        printf '\n'
+        apo_render_validated_result_box \
+            "$APO_REMOTE_TARGET" "$APO_HISTORY_SEALED_CPU" "$APO_HISTORY_SEALED_GPU" \
+            "$APO_HISTORY_SEALED_VOLTAGE" "$APO_HISTORY_SEALED_DURATION_SECONDS" || return 1
+    else
+        printf '  none\n'
+    fi
+    printf '\nRetained failure boundaries:\n'
+    printf '  CPU hard ceiling, exclusive: %s\n' "$cpu_ceiling"
+    printf '  GPU/V3D hard ceiling, exclusive: %s\n' "$gpu_ceiling"
+    printf '  Ambiguous failed-pair frontier: %s\n' "${APO_HISTORY_PAIR_FRONTIERS:-none}"
+    printf '\nDetailed failure evidence:\n'
+    if (( ${#APO_HISTORY_LEDGER_RECORDS[@]} == 0 )); then
+        printf '  none\n'
+    else
+        printf '  timestamp | run | cpu_mhz | gpu_mhz | class | domain | reason | source | state\n'
+        for record in "${APO_HISTORY_LEDGER_RECORDS[@]}"; do
+            IFS='|' read -r timestamp run_id cpu gpu class domain encoded_source encoded_reason basename <<< "$record"
+            source=$(apo_history_decode_field "$encoded_source") || return 1
+            reason=$(apo_history_decode_field "$encoded_reason") || return 1
+            reason=${reason//$'\r'/ }
+            reason=${reason//$'\n'/ }
+            printf '  %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
+                "$timestamp" "$run_id" "$cpu" "$gpu" "$class" "$domain" "$reason" "$source" "$basename"
+        done
+    fi
+    printf '\n%s\n' "$APO_HISTORY_HUMAN_END"
+}
+
 apo_history_render_ledger() {
-    local destination=$1 generated_at=$2 record timestamp run_id cpu gpu class domain
-    local encoded_source encoded_reason basename source reason
+    local destination=$1 generated_at=$2
 
     {
-        printf 'AutoPiOverclock retained failure ledger\n'
-        printf 'Generated: %s\n' "$generated_at"
-        printf 'Target: %s\n' "$APO_REMOTE_TARGET"
-        printf 'Authority: strictly validated state evidence plus the encoded durable section in this file.\n'
-        printf 'Accepted retained auto-overclock states: %s\n' "$APO_HISTORY_ACCEPTED_STATES"
-        printf 'Imported durable machine records: %s\n' "$APO_HISTORY_MACHINE_RECORDS"
-        printf 'Clear CPU failed boundary: %s\n' "${APO_HISTORY_CPU_FAILURE_BOUNDARY:-none}"
-        printf 'Clear GPU failed boundary: %s\n' "${APO_HISTORY_GPU_FAILURE_BOUNDARY:-none}"
-        printf 'Ambiguous failed-pair frontier: %s\n' "${APO_HISTORY_PAIR_FRONTIERS:-none}"
-        printf '\nEvidence:\n'
-        if (( ${#APO_HISTORY_LEDGER_RECORDS[@]} == 0 )); then
-            printf '  none\n'
-        else
-            printf '  timestamp | run | cpu_mhz | gpu_mhz | class | domain | reason | source | state\n'
-            for record in "${APO_HISTORY_LEDGER_RECORDS[@]}"; do
-                IFS='|' read -r timestamp run_id cpu gpu class domain encoded_source encoded_reason basename <<< "$record"
-                source=$(apo_history_decode_field "$encoded_source") || return 1
-                reason=$(apo_history_decode_field "$encoded_reason") || return 1
-                reason=${reason//$'\r'/ }
-                reason=${reason//$'\n'/ }
-                printf '  %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
-                    "$timestamp" "$run_id" "$cpu" "$gpu" "$class" "$domain" "$reason" "$source" "$basename"
-            done
-        fi
+        apo_history_render_human_report "$generated_at" || return 1
         printf '\n'
         apo_history_render_machine_ledger || return 1
     } > "$destination"
+}
+
+apo_history_print_human_report() {
+    local source_file=$1 line machine_marker_seen=0
+
+    [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" ]]; then
+            machine_marker_seen=1
+            break
+        fi
+        printf '%s\n' "$line"
+    done < "$source_file"
+    (( machine_marker_seen == 1 ))
 }
 
 apo_history_rebuild_ledger() {
@@ -1649,7 +1705,7 @@ apo_history_rebuild_ledger() {
     if [[ -e $destination || -L $destination ]]; then
         [[ -f $destination && ! -L $destination && -r $destination ]] || return 1
     fi
-    temporary_file=$(mktemp "${destination_dir}/.${APO_TARGET_SLUG}-failures.XXXXXX") || return 1
+    temporary_file=$(mktemp "${destination_dir}/.${APO_TARGET_SLUG}-history.XXXXXX") || return 1
     chmod 600 "$temporary_file" || { rm -f -- "$temporary_file"; return 1; }
     if ! generated_at=$(apo_now_iso) || ! apo_history_generated_timestamp_is_valid "$generated_at"; then
         rm -f -- "$temporary_file"
@@ -1733,12 +1789,12 @@ apo_history_reconcile_prepared_baseline() {
     APO_HISTORY_PREPARE_REBASED_EMPTY_LEDGER=0
     [[ ${APO_COMMAND:-} == prepare && ${APO_DRY_RUN:-0} == 0 ]] || return 0
     ledger_file=$(apo_history_ledger_path) || {
-        APO_HISTORY_SCAN_ERROR='Preparation could not resolve the target failure ledger path.'
+        APO_HISTORY_SCAN_ERROR='Preparation could not resolve the target history ledger path.'
         return 1
     }
     [[ -e $ledger_file || -L $ledger_file ]] || return 0
     [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
-        APO_HISTORY_SCAN_ERROR='Preparation found an unsafe retained failure ledger path.'
+        APO_HISTORY_SCAN_ERROR='Preparation found an unsafe retained history ledger path.'
         return 1
     }
 
@@ -1751,7 +1807,7 @@ apo_history_reconcile_prepared_baseline() {
 
     if [[ ${APO_PERMANENT_TUNING_PROVENANCE:-} != verified-default ||
           ${APO_PERMANENT_TUNING_EVIDENCE:-} != none ]]; then
-        APO_HISTORY_SCAN_ERROR='Preparation found a failure ledger that does not match the live non-stock baseline.'
+        APO_HISTORY_SCAN_ERROR='Preparation found a history ledger that does not match the live non-stock baseline.'
         return "$ledger_rc"
     fi
     if apo_history_load_machine_ledger "$ledger_file" 0 1; then
@@ -1759,16 +1815,17 @@ apo_history_reconcile_prepared_baseline() {
     else
         ledger_rc=$?
         apo_history_reset
-        APO_HISTORY_SCAN_ERROR='Preparation found a malformed or foreign failure ledger.'
+        APO_HISTORY_SCAN_ERROR='Preparation found a malformed or foreign history ledger.'
         return "$ledger_rc"
     fi
     if (( APO_HISTORY_LEDGER_RECORD_COUNT != 0 )) ||
        [[ -n $APO_HISTORY_SEALED_RUN_ID || -n $APO_HISTORY_SEALED_CPU ||
           -n $APO_HISTORY_SEALED_GPU || -n $APO_HISTORY_SEALED_VOLTAGE ||
           -n $APO_HISTORY_SEALED_HASH || -n $APO_HISTORY_SEALED_RUN_SCHEMA ||
-          -n $APO_HISTORY_SEALED_VALIDATION_SCHEMA ]]; then
+          -n $APO_HISTORY_SEALED_VALIDATION_SCHEMA ||
+          -n $APO_HISTORY_SEALED_DURATION_SECONDS ]]; then
         apo_history_reset
-        APO_HISTORY_SCAN_ERROR='Preparation refuses to rebase a failure ledger containing retained records or a sealed applied floor.'
+        APO_HISTORY_SCAN_ERROR='Preparation refuses to rebase a history ledger containing retained records or a sealed applied floor.'
         return 1
     fi
     apo_history_reset
@@ -1786,7 +1843,7 @@ apo_history_reconcile_prepared_baseline() {
     if ! apo_history_rebuild_ledger "$ledger_file" ||
        ! apo_history_load_machine_ledger "$ledger_file" 0; then
         apo_history_reset
-        APO_HISTORY_SCAN_ERROR='Preparation could not atomically rebuild and verify the empty failure ledger for the current stock baseline.'
+        APO_HISTORY_SCAN_ERROR='Preparation could not atomically rebuild and verify the empty history ledger for the current stock baseline.'
         return 1
     fi
     apo_history_reset
@@ -1804,44 +1861,45 @@ apo_history_adopt_completed_baseline() {
         return 1
     fi
     ledger_file=$(apo_history_ledger_path) || {
-        APO_HISTORY_SCAN_ERROR='The retained failures ledger path could not be resolved.'
+        APO_HISTORY_SCAN_ERROR='The retained history ledger path could not be resolved.'
         return 2
     }
     [[ -e $ledger_file || -L $ledger_file ]] || return 1
     [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
-        APO_HISTORY_SCAN_ERROR='The retained failures ledger is not a safe readable regular file.'
+        APO_HISTORY_SCAN_ERROR='The retained history ledger is not a safe readable regular file.'
         return 2
     }
     if apo_history_load_machine_ledger "$ledger_file" 0; then
         :
     else
         ledger_rc=$?
-        APO_HISTORY_SCAN_ERROR='The retained failures ledger failed strict machine-history validation.'
+        APO_HISTORY_SCAN_ERROR='The retained history ledger failed strict machine-history validation.'
         return 2
     fi
     [[ -n $APO_HISTORY_SEALED_RUN_ID &&
        $APO_HISTORY_SEALED_RUN_SCHEMA == "$APO_CURRENT_RUN_SCHEMA" &&
-       $APO_HISTORY_SEALED_VALIDATION_SCHEMA == "$APO_CURRENT_VALIDATION_SCHEMA" ]] || {
-        APO_HISTORY_SCAN_ERROR='The retained failures ledger does not contain a current validated applied-floor record.'
+       $APO_HISTORY_SEALED_VALIDATION_SCHEMA == "$APO_CURRENT_VALIDATION_SCHEMA" &&
+       $APO_HISTORY_SEALED_DURATION_SECONDS =~ ^[1-9][0-9]*$ ]] || {
+        APO_HISTORY_SCAN_ERROR='The retained history ledger does not contain a current validated applied-floor record.'
         return 2
     }
     [[ $APO_HISTORY_SEALED_CPU == "${APO_NORMAL_CPU:-}" &&
        $APO_HISTORY_SEALED_GPU == "${APO_NORMAL_GPU:-}" &&
        $APO_HISTORY_SEALED_VOLTAGE == "${APO_NORMAL_VOLTAGE:-}" ]] || {
-        APO_HISTORY_SCAN_ERROR='The live clock tuple does not match the completed applied floor in the retained failures ledger.'
+        APO_HISTORY_SCAN_ERROR='The live clock tuple does not match the completed applied floor in the retained history ledger.'
         return 2
     }
     [[ $APO_HISTORY_SEALED_HASH == "${APO_PERMANENT_CONFIG_HASH:-}" ]] || {
-        APO_HISTORY_SCAN_ERROR='The live permanent config hash does not match the completed applied floor in the retained failures ledger.'
+        APO_HISTORY_SCAN_ERROR='The live permanent config hash does not match the completed applied floor in the retained history ledger.'
         return 2
     }
     ledger_hash=$(sha256sum "$ledger_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
     [[ $ledger_hash =~ ^[0-9a-f]{64}$ ]] || {
-        APO_HISTORY_SCAN_ERROR='The retained failures ledger could not be hashed.'
+        APO_HISTORY_SCAN_ERROR='The retained history ledger could not be hashed.'
         return 2
     }
     APO_PERMANENT_TUNING_PROVENANCE=verified-completed-ledger
-    APO_PERMANENT_TUNING_EVIDENCE="failure-ledger-v2:${ledger_hash}"
+    APO_PERMANENT_TUNING_EVIDENCE="history-ledger-v3:${ledger_hash}"
     if declare -p APO_DISCOVERY >/dev/null 2>&1; then
         APO_DISCOVERY[PERMANENT_TUNING_PROVENANCE]=$APO_PERMANENT_TUNING_PROVENANCE
         APO_DISCOVERY[PERMANENT_TUNING_EVIDENCE]=$APO_PERMANENT_TUNING_EVIDENCE

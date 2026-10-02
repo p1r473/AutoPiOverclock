@@ -245,7 +245,7 @@ ln -s "$(basename "$FAILED_NEWER_STATE")" "$CONTINUATION_OUTPUT/tron-latest.stat
         APO_HISTORY_GPU_FAILURE_BOUNDARY=1200
         APO_HISTORY_PAIR_FRONTIERS=''
         APO_HISTORY_PROVENANCE='CPU|3100|old-cpu-run|fixture|cpu.state,GPU|1200|old-gpu-run|fixture|gpu.state'
-        APO_HISTORY_LEDGER_FILE="$TEMP_DIR/integration-failures.txt"
+        APO_HISTORY_LEDGER_FILE="$TEMP_DIR/integration-history.txt"
         APO_HISTORY_SCANNED_STATES=2
         APO_HISTORY_ACCEPTED_STATES=2
         APO_HISTORY_EVIDENCE_COUNT=2

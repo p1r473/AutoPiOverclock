@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.108 - 2026-10-02
+
+- Replaced `history/failures.txt` and machine-ledger v2 with the non-compatible `history/history.txt` machine-ledger v3. The readable section now records validated successes, the protected applied floor, hard CPU/GPU failure ceilings, ambiguous pair frontiers, the sealed final result, total validated duration, and detailed failure evidence. The strict machine block remains consistently Base64-encoded and fail-closed.
+- Added the final validation duration to the sealed applied-result binding and to repeat-completion verification. Older ledger schemas and filenames are not imported.
+- Added a dynamically padded ASCII completion box showing the target, CPU, GPU/V3D, voltage delta, and total time validated at the final clocks. `complete` also prints the full human-readable `history.txt` report between explicit markers while leaving the encoded machine block in the file only.
+- Allowed `test TARGET` to revalidate the exact protected applied clock pair while continuing to reject underclocks. This supports an evidence-only test of an already applied result without tuning or applying anything.
+
 ## 0.1.0-alpha.107 - 2026-10-02
 
 - Made plain `overclock TARGET` select the newest compatible interrupted automatic run even when a newer failed audit owns the latest pointer. Matching duration options are verified against the saved plan, and planning or cooling changes fail with exact reset guidance.
