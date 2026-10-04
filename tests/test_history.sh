@@ -129,8 +129,8 @@ write_state "$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-incompatible.state" \
 
 # The production definition was sourced above; focused fixture overrides appear
 # later in this file for planner-only cases.
-# shellcheck disable=SC2218
 history_refresh_output=$TMP/history-refresh-output.txt
+# shellcheck disable=SC2218
 apo_history_refresh > "$history_refresh_output"
 grep -Fq "$APO_HISTORY_HUMAN_BEGIN" "$history_refresh_output"
 grep -Fq "$APO_HISTORY_HUMAN_END" "$history_refresh_output"
