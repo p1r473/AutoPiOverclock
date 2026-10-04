@@ -651,6 +651,21 @@ cat > "$TEMP_DIR/debian-graphical-pass.log" <<'DEBIAN_GRAPHICAL_LOG'
 DEBIAN_GRAPHICAL_LOG
 printf '%s\n' '"[terrain] duration=5","94","10.673","Success"' > "$TEMP_DIR/debian-graphical-pass.csv"
 graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-pass.log" "$TEMP_DIR/debian-graphical-pass.csv" card0-DSI-1 800x480 5
+sed 's/^\[terrain\] duration=5: FPS: 94 FrameTime: 10.673 ms$/[shading] shading=phong:num-lights=8:model=horse:duration=5: FPS: 94 FrameTime: 10.673 ms/' \
+    "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-shading-pass.log"
+printf '%s\n' '"[shading] shading=phong:num-lights=8:model=horse:duration=5","94","10.673","Success"' > "$TEMP_DIR/debian-graphical-shading-pass.csv"
+graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-shading-pass.log" "$TEMP_DIR/debian-graphical-shading-pass.csv" card0-DSI-1 800x480 5
+sed 's/^\[terrain\] duration=5: FPS: 94 FrameTime: 10.673 ms$/[bump] bump-render=height:duration=5: FPS: 94 FrameTime: 10.673 ms/' \
+    "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-bump-pass.log"
+printf '%s\n' '"[bump] bump-render=height:duration=5","94","10.673","Success"' > "$TEMP_DIR/debian-graphical-bump-pass.csv"
+graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-bump-pass.log" "$TEMP_DIR/debian-graphical-bump-pass.csv" card0-DSI-1 800x480 5
+sed 's/^\[terrain\] duration=5: FPS: 94 FrameTime: 10.673 ms$/[conditionals] fragment-steps=5:vertex-steps=5:duration=5: FPS: 94 FrameTime: 10.673 ms/' \
+    "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-conditionals-pass.log"
+printf '%s\n' '"[conditionals] fragment-steps=5:vertex-steps=5:duration=5","94","10.673","Success"' > "$TEMP_DIR/debian-graphical-conditionals-pass.csv"
+graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-conditionals-pass.log" "$TEMP_DIR/debian-graphical-conditionals-pass.csv" card0-DSI-1 800x480 5
+sed 's/^\[terrain\] duration=5: FPS: 94 FrameTime: 10.673 ms$/[INFO] duration=5 seconds elapsed/' \
+    "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-false-duration.log"
+if graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-false-duration.log" "$TEMP_DIR/debian-graphical-pass.csv" card0-DSI-1 800x480 5; then exit 1; fi
 sed "s/DSI-1/HDMI-A-1/g" "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-hdmi.log"
 graphical_gpu_log_has_success "$TEMP_DIR/debian-graphical-hdmi.log" "$TEMP_DIR/debian-graphical-pass.csv" card2-HDMI-A-1 800x480 5
 sed 's/V3D 7.1.7.0/llvmpipe/g' "$TEMP_DIR/debian-graphical-pass.log" > "$TEMP_DIR/debian-graphical-software.log"
@@ -1001,14 +1016,16 @@ rm -f "$WAYLAND_RUN"/wayland-*
 )
 
 GLMARK_FIXTURE_ROOT="$TEMP_DIR/glmark-fixture"
-mkdir -p "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin"
+mkdir -p "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin" "$GLMARK_FIXTURE_ROOT/glmark2/usr/sbin"
 : > "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland"
 : > "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-drm"
-chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-drm"
+: > "$GLMARK_FIXTURE_ROOT/glmark2/usr/sbin/memtester"
+chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-drm" "$GLMARK_FIXTURE_ROOT/glmark2/usr/sbin/memtester"
 (
     PERSISTENT_ROOT=$GLMARK_FIXTURE_ROOT
     [[ $(find_glmark_binary graphical) == "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" ]]
     [[ $(find_glmark_binary headless) == "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-drm" ]]
+    [[ $(find_memtester_binary) == "$GLMARK_FIXTURE_ROOT/glmark2/usr/sbin/memtester" ]]
     if find_glmark_binary invalid >/dev/null; then exit 1; fi
 )
 (
@@ -1018,7 +1035,7 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
     source "$ROOT/profiles/batocera.sh"
     # shellcheck disable=SC2030
     declare -Ag APO_DISCOVERY=(
-        [CPU_STRESS_AVAILABLE]=1 [GLMARK_DATA]=/fixture/data
+        [CPU_STRESS_AVAILABLE]=1 [MEMORY_STRESS_AVAILABLE]=1 [MEMTESTER_BINARY]=/fixture/memtester [GLMARK_DATA]=/fixture/data
         [GLMARK_WAYLAND_BINARY]=/fixture/glmark2-es2-wayland [GLMARK_DRM_BINARY]=''
     )
     # shellcheck disable=SC2030
@@ -1051,7 +1068,7 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
     source "$ROOT/profiles/debian.sh"
     # shellcheck disable=SC2030
     declare -Ag APO_DISCOVERY=(
-        [CPU_STRESS_AVAILABLE]=1 [STRESS_NG_GPU_AVAILABLE]=1
+        [CPU_STRESS_AVAILABLE]=1 [MEMORY_STRESS_AVAILABLE]=1 [MEMTESTER_BINARY]=/usr/bin/memtester [STRESS_NG_GPU_AVAILABLE]=1
         [DEBIAN_GRAPHICAL_GPU_AVAILABLE]=1 [DEBIAN_GRAPHICAL_GPU_STRATEGY]=cage-wayland-onscreen
     )
     # shellcheck disable=SC2030
@@ -1087,7 +1104,7 @@ APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
     APO_MODE_EFFECTIVE=graphical
     apo_profile_install_dependencies
 '
-grep -Fq 'apt-get install -y --no-install-recommends stress-ng cage glmark2-es2-wayland' "$DEBIAN_INSTALL_CAPTURE"
+grep -Fq 'apt-get install -y --no-install-recommends stress-ng memtester cage glmark2-es2-wayland' "$DEBIAN_INSTALL_CAPTURE"
 APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
     set -Eeuo pipefail
     APO_RUN_ID=fixture-run
@@ -1100,7 +1117,7 @@ APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
     APO_MODE_EFFECTIVE=headless
     apo_profile_install_dependencies
 '
-grep -Fq 'apt-get install -y --no-install-recommends stress-ng' "$DEBIAN_INSTALL_CAPTURE"
+grep -Fq 'apt-get install -y --no-install-recommends stress-ng memtester' "$DEBIAN_INSTALL_CAPTURE"
 if grep -Eq 'cage|glmark2' "$DEBIAN_INSTALL_CAPTURE"; then exit 1; fi
 
 # The controller-side cache gate verifies the complete archive before reuse,
@@ -1119,9 +1136,11 @@ if grep -Eq 'cage|glmark2' "$DEBIAN_INSTALL_CAPTURE"; then exit 1; fi
     mkdir -p "$BUNDLE_TEST_ROOT"
     make_bundle_fixture() {
         local destination=$1 marker=$2 include_wayland=$3
-        mkdir -p "$destination/usr/bin" "$destination/usr/share/glmark2"
+        mkdir -p "$destination/usr/bin" "$destination/usr/sbin" "$destination/usr/share/glmark2"
         printf '#!/bin/sh\nexit 0\n' > "$destination/usr/bin/glmark2-es2-drm"
         chmod 755 "$destination/usr/bin/glmark2-es2-drm"
+        printf '#!/bin/sh\nexit 0\n' > "$destination/usr/sbin/memtester"
+        chmod 755 "$destination/usr/sbin/memtester"
         if (( include_wayland == 1 )); then
             printf '#!/bin/sh\nexit 0\n' > "$destination/usr/bin/glmark2-es2-wayland"
             chmod 755 "$destination/usr/bin/glmark2-es2-wayland"
@@ -1152,6 +1171,7 @@ if grep -Eq 'cage|glmark2' "$DEBIAN_INSTALL_CAPTURE"; then exit 1; fi
     bash "$INSTALL_SCRIPT"
     [[ $(<"$INSTALL_ROOT/glmark2/MARKER") == NEW ]]
     [[ -x $INSTALL_ROOT/glmark2/usr/bin/glmark2-es2-wayland ]]
+    [[ -x $INSTALL_ROOT/glmark2/usr/sbin/memtester ]]
     [[ ! -e $INSTALL_ROOT/glmark2.new && ! -e $INSTALL_ROOT/glmark2.old ]]
     (cd "$INSTALL_ROOT/glmark2" && sha256sum -c MANIFEST.sha256 >/dev/null)
 
@@ -1589,10 +1609,186 @@ for elapsed_worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-w
     grep -Fq 'elapsed=%s/%ss' "$elapsed_worker"
 done
 
+# memtester uses a bitmask for test failures. Only its documented low exit
+# codes can become stability evidence; setup failures and signal-style codes
+# remain harness failures in both workers.
+for WORKER_NAME in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${WORKER_NAME}-worker.sh" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        for memory_rc in 2 4 6; do memtester_exit_is_stability_failure "$memory_rc"; done
+        for memory_rc in 0 1 8 130 malformed; do
+            if memtester_exit_is_stability_failure "$memory_rc"; then exit 1; fi
+        done
+    '
+done
+
+# The final memory companion covers 60 percent of currently available RAM
+# without the old 2 GiB ceiling, while always leaving at least 1 GiB free.
+for WORKER_NAME in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${WORKER_NAME}-worker.sh" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        awk() { printf "%s\n" "$MEMORY_AVAILABLE_KIB"; }
+        MEMORY_AVAILABLE_KIB=$((16384 * 1024))
+        [[ $(memory_test_size_mib) == 9830 ]]
+        MEMORY_AVAILABLE_KIB=$((2048 * 1024))
+        [[ $(memory_test_size_mib) == 1024 ]]
+        MEMORY_AVAILABLE_KIB=$((1280 * 1024))
+        [[ $(memory_test_size_mib) == 256 ]]
+        MEMORY_AVAILABLE_KIB=$((1200 * 1024))
+        if memory_test_size_mib >/dev/null; then exit 1; fi
+    '
+done
+
+# The memory companion must count a complete pass and preserve memtester test
+# failure status. The storage companion must alternate data sources and count
+# only complete write, sync, checksum, and readback cycles.
+MEMTESTER_FIXTURE="$TEMP_DIR/memtester-fixture"
+cat > "$MEMTESTER_FIXTURE" <<'MEMTESTER_FIXTURE'
+#!/usr/bin/env bash
+count=0
+[[ ! -r $MEMTESTER_FIXTURE_COUNT ]] || read -r count < "$MEMTESTER_FIXTURE_COUNT"
+if (( count == 0 )); then
+    printf '1\n' > "$MEMTESTER_FIXTURE_COUNT"
+    printf 'fixture pass\n'
+    exit 0
+fi
+printf 'fixture memory failure\n'
+exit 2
+MEMTESTER_FIXTURE
+chmod 755 "$MEMTESTER_FIXTURE"
+for WORKER_NAME in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${WORKER_NAME}-worker.sh" \
+        MEMTESTER_FIXTURE="$MEMTESTER_FIXTURE" MEMTESTER_FIXTURE_COUNT="$TEMP_DIR/memtester-${WORKER_NAME}.invocations" \
+        MEMORY_COUNT_FILE="$TEMP_DIR/memtester-${WORKER_NAME}.count" MEMORY_OUTPUT_FILE="$TEMP_DIR/memtester-${WORKER_NAME}.log" bash -c '
+        set -Eeuo pipefail
+        source "$WORKER"
+        start_memory_activity "$MEMTESTER_FIXTURE" "$MEMORY_OUTPUT_FILE" "$MEMORY_COUNT_FILE" 256
+        if wait "$stress_memory_pid"; then exit 1; else memory_rc=$?; fi
+        [[ $memory_rc == 2 ]]
+        [[ $(<"$MEMORY_COUNT_FILE") == 1 ]]
+        grep -Fq "MEMORY_LOOP_PASS=1 size_mib=256" "$MEMORY_OUTPUT_FILE"
+        grep -Fq "MEMORY_LOOP_FAILURE=2 rc=2" "$MEMORY_OUTPUT_FILE"
+    '
+done
+
+APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" IO_TEST_ROOT="$TEMP_DIR/io-companion" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    mkdir -p "$IO_TEST_ROOT"
+    dd() {
+        local input= output= argument
+        for argument in "$@"; do
+            case $argument in
+                if=*) input=${argument#if=} ;;
+                of=*) output=${argument#of=} ;;
+            esac
+        done
+        io_fixture_calls=${io_fixture_calls:-0}
+        io_fixture_calls=$((io_fixture_calls + 1))
+        (( io_fixture_calls <= 2 )) || return 1
+        printf "%s-cycle-%s\n" "${input##*/}" "$io_fixture_calls" > "$output"
+    }
+    sync() { :; }
+    sleep() { :; }
+    start_io_activity "$IO_TEST_ROOT/payload.bin" "$IO_TEST_ROOT/io.log" "$IO_TEST_ROOT/io.count"
+    if wait "$stress_io_pid"; then exit 1; else io_rc=$?; fi
+    [[ $io_rc == 1 ]]
+    [[ $(<"$IO_TEST_ROOT/io.count") == 2 ]]
+    grep -Eq "IO_CYCLE_PASS=1 source=urandom bytes=67108864 sha256=[0-9a-f]{64}" "$IO_TEST_ROOT/io.log"
+    grep -Eq "IO_CYCLE_PASS=2 source=zero bytes=67108864 sha256=[0-9a-f]{64}" "$IO_TEST_ROOT/io.log"
+'
+
+# Final endurance classifies a memtester pattern failure as stability evidence
+# while treating a memtester setup failure as a harness fault.
+for MEMORY_EXPECTED_EXIT in 2 1; do
+    set +e
+    MEMORY_FAILURE_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_DIR/memory-class-$MEMORY_EXPECTED_EXIT" \
+        WORKER="$ROOT/workers/debian-worker.sh" MEMORY_EXIT="$MEMORY_EXPECTED_EXIT" bash -c '
+        set -u -o pipefail
+        source "$WORKER"
+        current_temp() { printf 50; }
+        current_throttle() { printf "throttled=0x0"; }
+        clock_mhz() { case $1 in arm) printf 2400 ;; *) printf 800 ;; esac; }
+        kernel_log() { :; }
+        kernel_error_lines() { :; }
+        stress-ng() { command /bin/sleep 5; printf "cpu output\n"; }
+        memtester() { :; }
+        memory_test_size_mib() { printf 256; }
+        start_memory_activity() { (command /bin/sleep 0.2; exit "$MEMORY_EXIT") & stress_memory_pid=$!; }
+        start_io_activity() { printf "1\n" > "$3"; (command /bin/sleep 5) & stress_io_pid=$!; }
+        terminate_child() { kill -TERM "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+        sleep() { command /bin/sleep 0.3; SECONDS=$((SECONDS + $1)); }
+        cmd_stress cpu 20 75 headless "" 1 2400 800 throttled=0x0 60
+    ' 2>&1)
+    MEMORY_FAILURE_RC=$?
+    set -e
+    [[ $MEMORY_FAILURE_RC -ne 0 ]]
+    if [[ $MEMORY_EXPECTED_EXIT == 2 ]]; then
+        [[ $MEMORY_FAILURE_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+    else
+        [[ $MEMORY_FAILURE_OUTPUT == *'APO_RESULT_CLASS=HARNESS_FAILURE'* ]]
+    fi
+    MEMORY_FAILURE_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); print; exit}' <<< "$MEMORY_FAILURE_OUTPUT")
+    [[ $(printf '%s' "$MEMORY_FAILURE_REASON_B64" | base64 --decode) == "Memory-pattern workload exited during load with rc=$MEMORY_EXPECTED_EXIT." ]]
+done
+
+# A long final endurance run deliberately unloads and reloads the compute and
+# memory workloads at each natural hourly segment boundary. Persistent storage
+# activity stays supervised through the ten-second idle interval.
+TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_DIR/load-transition" \
+    WORKER="$ROOT/workers/debian-worker.sh" bash -c '
+    set -Eeuo pipefail
+    source "$WORKER"
+    current_temp() { printf 50; }
+    current_throttle() { printf "throttled=0x0"; }
+    clock_mhz() { case $1 in arm) printf 2400 ;; *) printf 800 ;; esac; }
+    kernel_log() { :; }
+    kernel_error_lines() { :; }
+    stress-ng() { :; }
+    memtester() { :; }
+    memory_test_size_mib() { printf 256; }
+    launch_debian_cpu_segment() {
+        local segment_duration=$1 output_file=$2 segment_number=$3
+        printf "segment=%s duration=%s\n" "$segment_number" "$segment_duration" >> "$output_file"
+        (command /bin/sleep 0.2) &
+        stress_cpu_pid=$!
+    }
+    start_memory_activity() {
+        printf "1\n" > "$3"
+        (command /bin/sleep 10) &
+        stress_memory_pid=$!
+    }
+    start_io_activity() {
+        printf "1\n" > "$3"
+        (command /bin/sleep 10) &
+        stress_io_pid=$!
+    }
+    terminate_child() { kill -TERM "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+    fixture_poll=0
+    sleep() {
+        case $1 in
+            10) SECONDS=$((SECONDS + 10)) ;;
+            1)
+                fixture_poll=$((fixture_poll + 1))
+                if (( fixture_poll == 1 )); then SECONDS=$((SECONDS + 3600)); else SECONDS=$((SECONDS + 3590)); fi
+                command /bin/sleep 0.3
+                ;;
+        esac
+    }
+    SECONDS=0
+    cmd_stress cpu 7200 75 headless "" 1 2400 800 throttled=0x0 60
+' 2>&1)
+[[ $TRANSITION_OUTPUT == *'LOAD_TRANSITION_START=1 idle_seconds=10 elapsed=3600/7200s'* ]]
+[[ $TRANSITION_OUTPUT == *'LOAD_TRANSITION_RELOAD=1 elapsed=3610/7200s'* ]]
+[[ $TRANSITION_OUTPUT == *'MEMORY_LOOPS=1 IO_CYCLES=1 LOAD_TRANSITIONS=1'* ]]
+[[ $TRANSITION_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+
 # The endurance IO companion is polled every second as an independent safety
 # workload rather than only when temperature/clock telemetry is due.
 set +e
-DEBIAN_IO_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
+DEBIAN_IO_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_DIR/endurance-io" WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     set -u -o pipefail
     source "$WORKER"
     current_temp() { printf 50; }
@@ -1601,6 +1797,8 @@ DEBIAN_IO_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker
     kernel_log() { :; }
     kernel_error_lines() { :; }
     stress-ng() { command /bin/sleep 2; printf "cpu output\n"; }
+    memtester() { command /bin/sleep 2; printf "memory output\n"; }
+    memory_test_size_mib() { printf 256; }
     start_io_activity() { (command /bin/sleep 0.5; exit 7) & stress_io_pid=$!; }
     terminate_child() { kill -TERM "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
     sleep() { command /bin/sleep 0.7; SECONDS=$((SECONDS + $1)); }

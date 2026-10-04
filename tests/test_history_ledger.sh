@@ -305,8 +305,30 @@ if apo_history_load_machine_ledger "$human_only" 1; then
     exit 1
 fi
 
+# The immediately previous v3 ledger remains readable for migration. Recreate
+# its exact schema from the v4 fixture by removing only the v4 cutoff fields and
+# their human-readable additions.
+legacy_v3="$TEST_ROOT/legacy-v3.txt"
+sed \
+    -e 's/MACHINE HISTORY v4/MACHINE HISTORY v3/g' \
+    -e 's/Detailed failure and audit evidence:/Detailed failure evidence:/' \
+    -e '/^Active fresh-tuning boundary: none$/d' \
+    -e $'s/^META\tLEDGER_SCHEMA\tNA==$/META\tLEDGER_SCHEMA\tMw==/' \
+    -e $'/^META\tFRESH_TUNING_CUTOFF_/d' \
+    "$ledger" > "$legacy_v3"
+(
+    apo_history_reset
+    apo_history_load_machine_ledger "$legacy_v3" 1
+    apo_history_finalize_frontiers
+    [[ $APO_HISTORY_MACHINE_RECORDS == 4 ]]
+    [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 3125 ]]
+    [[ $APO_HISTORY_GPU_FAILURE_BOUNDARY == 1200 ]]
+    [[ $APO_HISTORY_PAIR_FRONTIERS == 3100/1175 ]]
+    [[ -z $APO_HISTORY_FRESH_CUTOFF_RUN_ID$APO_HISTORY_FRESH_CUTOFF_AT$APO_HISTORY_FRESH_CUTOFF_RECORDS ]]
+)
+
 legacy_v2="$TEST_ROOT/legacy-v2.txt"
-sed 's/MACHINE HISTORY v3/MACHINE HISTORY v2/g' "$ledger" > "$legacy_v2"
+sed 's/MACHINE HISTORY v3/MACHINE HISTORY v2/g' "$legacy_v3" > "$legacy_v2"
 if apo_history_load_machine_ledger "$legacy_v2" 1; then
     printf 'machine ledger accepted legacy v2 history\n' >&2
     exit 1

@@ -141,6 +141,10 @@ APO_CPU_RESOLUTION_OPTION_SEEN=0
 APO_GPU_RESOLUTION_OPTION_SEEN=0
 APO_USE_HISTORY=1
 APO_HISTORY_OPTION_SEEN=0
+APO_FRESH_TUNING=0
+APO_FRESH_TUNING_OPTION_SEEN=0
+APO_FRESH_TUNING_FORCE=0
+APO_FRESH_TUNING_FORCE_OPTION_SEEN=0
 APO_DOMAIN_SOURCE_STATE=''
 APO_SOURCE_APPLIED_RUN_ID=''
 APO_SOURCE_APPLIED_PERMANENT_HASH=''
@@ -175,7 +179,7 @@ Usage:
                                       [--no-max-fan]
   autopioverclock test TARGET --cpu MHZ --gpu MHZ --final-hours HOURS
                                       [--no-max-fan]
-  autopioverclock reset TARGET
+  autopioverclock reset TARGET [--freshtuning [-f]]
   autopioverclock run TARGET [OPTIONS]
   autopioverclock resume TARGET [--run-id RUN_ID] [--restart-from CHECKPOINT]
                                   [--qualification-hours HOURS] [--final-hours HOURS]
@@ -225,6 +229,8 @@ Common options:
   --cpu-resolution MHZ     CPU refinement/backoff granularity (default: 25; 1-1000)
   --gpu-resolution MHZ     GPU refinement/backoff granularity (default: 25; 1-1000)
   --no-history             Ignore compatible retained tuning history for this new run
+  --freshtuning            Reset-only persistent boundary; earlier history becomes audit-only
+  -f                       With reset --freshtuning, permanently delete the old history ledger
   --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning/test
   --cpu MHZ                Exact CPU clock for test TARGET
   --gpu MHZ                Exact GPU/V3D clock for test TARGET
@@ -400,6 +406,18 @@ apo_parse_cli() {
                 APO_HISTORY_OPTION_SEEN=1
                 index=$((index + 1))
                 ;;
+            --freshtuning)
+                (( APO_FRESH_TUNING_OPTION_SEEN == 0 )) || apo_die '--freshtuning may be specified only once with reset TARGET.' "$APO_EXIT_USAGE"
+                APO_FRESH_TUNING=1
+                APO_FRESH_TUNING_OPTION_SEEN=1
+                index=$((index + 1))
+                ;;
+            -f)
+                (( APO_FRESH_TUNING_FORCE_OPTION_SEEN == 0 )) || apo_die '-f may be specified only once with reset TARGET --freshtuning.' "$APO_EXIT_USAGE"
+                APO_FRESH_TUNING_FORCE=1
+                APO_FRESH_TUNING_FORCE_OPTION_SEEN=1
+                index=$((index + 1))
+                ;;
             --no-max-fan) APO_MAX_FAN=0; APO_MAX_FAN_OPTION_SEEN=1; index=$((index + 1)) ;;
             --yes)
                 (( APO_YES_OPTION_SEEN == 0 )) || apo_die '--yes may be specified only once.' "$APO_EXIT_USAGE"
@@ -478,6 +496,13 @@ apo_parse_cli() {
           APO_CPU_RESOLUTION_OPTION_SEEN == 1 || APO_GPU_RESOLUTION_OPTION_SEEN == 1 ||
           APO_HISTORY_OPTION_SEEN == 1 )); then
         apo_die '--cpu-only, --gpu-only, --cpu-min/max/resolution, --gpu-min/max/resolution, and --no-history are valid only with overclock TARGET.' "$APO_EXIT_USAGE"
+    fi
+    if (( APO_FRESH_TUNING_OPTION_SEEN == 1 )) && [[ $APO_COMMAND != reset ]]; then
+        apo_die '--freshtuning is valid only with reset TARGET.' "$APO_EXIT_USAGE"
+    fi
+    if (( APO_FRESH_TUNING_FORCE_OPTION_SEEN == 1 )); then
+        [[ $APO_COMMAND == reset && $APO_FRESH_TUNING_OPTION_SEEN == 1 ]] ||
+            apo_die '-f is valid only with reset TARGET --freshtuning.' "$APO_EXIT_USAGE"
     fi
     if [[ $APO_PUBLIC_COMMAND != overclock && $APO_COMMAND != resume ]] &&
        (( APO_QUALIFICATION_HOURS_OPTION_SEEN == 1 )); then
@@ -1660,7 +1685,7 @@ apo_start_new_run() {
         apo_summary_line "Automatic selection policy: ${APO_SELECTION_POLICY:-adaptive-refined-v1}"
         apo_summary_line "CPU qualification: ${APO_QUALIFICATION_DURATION_S}s with GPU held at its selected clock"
         apo_summary_line "GPU qualification: ${APO_QUALIFICATION_DURATION_S}s with CPU held at its selected clock"
-        apo_summary_line "Final validation requirement: ${APO_CFG[FINAL_DURATION_S]}s accepted combined CPU/GPU/I/O workload"
+        apo_summary_line "Final validation requirement: ${APO_CFG[FINAL_DURATION_S]}s accepted CPU/GPU, RAM-pattern, persistent-storage, and load-transition workload"
         apo_summary_line 'Final credit policy: genuine failures restart from zero; proved network-watchdog reboots retain target-reported completed work'
     fi
     apo_summary_line ''

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-alpha.110 - 2026-10-04
+
+- Accepted graphical benchmark durations after benchmark-specific options so valid Debian `shading`, `bump`, and `conditionals` results are no longer misclassified as incomplete onscreen-render proof.
+- Tightened that parser to require the benchmark result line's numeric FPS and frame-time fields, and added positive regressions for all four rotating workloads plus a false-duration diagnostic rejection.
+- Added `reset TARGET --freshtuning`, which verifies stock before moving one persistent `FRESH TUNING START` boundary. Earlier ledger records and run states remain readable audit history but no longer constrain tuning, and repeated use moves the single boundary after newer evidence.
+- Added the explicit destructive `reset TARGET --freshtuning -f` mode. It commits a crash-safe cutoff and exact ledger hash after stock proof, permanently deletes the old `history/history.txt`, prevents retained old run states or a restored old ledger from regaining authority, and creates a new v4 ledger on the next history-enabled tune.
+- Advanced the durable ledger to machine-ledger v4 while retaining strict v3 loading and migration on the next material refresh.
+- Replaced the final endurance phase's lightweight temporary filesystem companion with repeated memtester pattern passes over 60 percent of currently available RAM while reserving at least 1 GiB, persistent alternating 64 MiB random/zero write-sync-checksum-readback cycles every ten minutes, and a ten-second compute-and-memory unload/reload transition at each natural hourly segment boundary. Final acceptance requires at least one complete RAM pass and one complete storage cycle.
+- Added memtester to Debian dependency installation and the verified Batocera compatibility payload, including Debian's current `usr/sbin` package layout, legacy `usr/bin` compatibility, live one-megabyte smoke discovery, manifest/install checks, exit-code classification, companion supervision, and mocked regression coverage. Candidate sweeps and domain qualifications retain their focused workloads.
+- Marked the retained 100-hour hardware examples as legacy-harness evidence because they predate these stronger alpha.110 final-endurance conditions.
+
 ## 0.1.0-alpha.109 - 2026-10-02
 
 - Made `complete` remove obsolete overclock-description comments and collapse consecutive blank lines after section canonicalization. Permanent native watchdog settings and unrelated user comments remain unchanged.

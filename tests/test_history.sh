@@ -914,6 +914,136 @@ apo_history_has_legal_axis_headroom 2925 1125 25 25
     [[ $(sha256sum "$stale_ledger" | awk 'NR == 1 {print $1}') == "$stale_hash" ]]
 )
 
+# A fresh-tuning reset keeps every ledger record, places one visible protected
+# boundary after the old evidence, and permanently excludes earlier state and
+# machine records from planning. A later fresh reset moves that single boundary
+# after all evidence accumulated since the previous reset.
+(
+    APO_OUTPUT_DIR=$TMP/fresh-tuning/runs
+    APO_HISTORY_DIR=$TMP/fresh-tuning/history
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    APO_COMMAND=reset
+    APO_ORIGIN_COMMAND=reset
+    APO_PUBLIC_COMMAND=reset
+    APO_FRESH_TUNING=1
+    APO_SWEEP_DOMAIN=all
+    APO_TEST_VOLTAGE=0
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=960
+    APO_NORMAL_VOLTAGE=0
+    APO_RUN_ID=20261004-010000-bbbbbbbbbbbbbbbb
+    APO_STATE=()
+    apo_state_save() { :; }
+
+    write_auto_state 20261001-000000-aaaaaaaaaaaaaaaa \
+        STATUS FAILED PHASE CPU_SWEEP CPU_FAILURE_BOUNDARY 3000
+    apo_history_prepare_fresh_tuning_boundary
+    [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 3000 ]]
+    apo_history_commit_fresh_tuning_boundary
+    fresh_ledger=$APO_HISTORY_LEDGER_FILE
+    [[ -f $fresh_ledger && ! -L $fresh_ledger ]]
+    grep -Fq '20261001-000000-aaaaaaaaaaaaaaaa' "$fresh_ledger"
+    [[ $(grep -Fc '===== FRESH TUNING START: EVIDENCE ABOVE THIS LINE IS AUDIT-ONLY' "$fresh_ledger") == 1 ]]
+    apo_history_scan_retained_states
+    [[ -z $APO_HISTORY_CPU_FAILURE_BOUNDARY$APO_HISTORY_GPU_FAILURE_BOUNDARY$APO_HISTORY_PAIR_FRONTIERS ]]
+    [[ $APO_HISTORY_FRESH_CUTOFF_RUN_ID == 20261004-010000-bbbbbbbbbbbbbbbb ]]
+    [[ $APO_HISTORY_FRESH_CUTOFF_RECORDS == 1 ]]
+
+    write_auto_state 20261004-020000-cccccccccccccccc \
+        STATUS FAILED PHASE CPU_SWEEP CPU_FAILURE_BOUNDARY 2900
+    apo_history_scan_retained_states
+    [[ $APO_HISTORY_CPU_FAILURE_BOUNDARY == 2900 ]]
+    [[ ${#APO_HISTORY_LEDGER_RECORDS[@]} == 2 ]]
+
+    APO_RUN_ID=20261004-030000-dddddddddddddddd
+    apo_history_prepare_fresh_tuning_boundary
+    apo_history_commit_fresh_tuning_boundary
+    [[ $(grep -Fc '===== FRESH TUNING START: EVIDENCE ABOVE THIS LINE IS AUDIT-ONLY' "$fresh_ledger") == 1 ]]
+    grep -Fq '20261001-000000-aaaaaaaaaaaaaaaa' "$fresh_ledger"
+    grep -Fq '20261004-020000-cccccccccccccccc' "$fresh_ledger"
+    marker_line=$(grep -Fn '===== FRESH TUNING START: EVIDENCE ABOVE THIS LINE IS AUDIT-ONLY' "$fresh_ledger" | cut -d: -f1)
+    newest_record_line=$(grep -Fn '20261004-020000-cccccccccccccccc' "$fresh_ledger" | head -n 1 | cut -d: -f1)
+    (( marker_line > newest_record_line ))
+    apo_history_scan_retained_states
+    [[ -z $APO_HISTORY_CPU_FAILURE_BOUNDARY$APO_HISTORY_GPU_FAILURE_BOUNDARY$APO_HISTORY_PAIR_FRONTIERS ]]
+    [[ $APO_HISTORY_FRESH_CUTOFF_RUN_ID == 20261004-030000-dddddddddddddddd ]]
+    [[ $APO_HISTORY_FRESH_CUTOFF_RECORDS == 2 ]]
+)
+
+# The explicit -f form removes the old ledger after stock verification. Its
+# committed reset state remains a durable cutoff, so an interrupted deletion or
+# a restored byte-identical old ledger cannot re-import pre-purge state evidence.
+(
+    APO_OUTPUT_DIR=$TMP/fresh-tuning-purge/runs
+    APO_HISTORY_DIR=$TMP/fresh-tuning-purge/history
+    mkdir -p -- "$APO_OUTPUT_DIR"
+    APO_COMMAND=reset
+    APO_ORIGIN_COMMAND=reset
+    APO_PUBLIC_COMMAND=reset
+    APO_FRESH_TUNING=1
+    APO_FRESH_TUNING_FORCE=1
+    APO_SWEEP_DOMAIN=all
+    APO_TEST_VOLTAGE=0
+    APO_NORMAL_CPU=2400
+    APO_NORMAL_GPU=960
+    APO_NORMAL_VOLTAGE=0
+    APO_RUN_ID=20261004-040000-eeeeeeeeeeeeeeee
+    purge_state="$APO_OUTPUT_DIR/${APO_TARGET_SLUG}-${APO_RUN_ID}.state"
+
+    write_auto_state 20261001-000000-aaaaaaaaaaaaaaaa \
+        STATUS FAILED PHASE CPU_SWEEP CPU_FAILURE_BOUNDARY 3000
+    apo_history_scan_retained_states
+    apo_history_rebuild_ledger
+    purge_ledger=$APO_HISTORY_LEDGER_FILE
+    purge_ledger_copy=$TMP/fresh-tuning-purge/old-history.txt
+    cp -- "$purge_ledger" "$purge_ledger_copy"
+    purge_ledger_hash=$(sha256sum "$purge_ledger" | awk 'NR == 1 {print $1}')
+
+    declare -Ag APO_STATE=(
+        [FORMAT_VERSION]=1
+        [RUN_SCHEMA]="$APO_CURRENT_RUN_SCHEMA"
+        [RUN_ID]="$APO_RUN_ID"
+        [TARGET_SLUG]="$APO_TARGET_SLUG"
+        [REMOTE_TARGET]="$APO_REMOTE_TARGET"
+        [ORIGIN_COMMAND]=reset
+    )
+    apo_state_save() {
+        local key
+        : > "$purge_state"
+        for key in "${!APO_STATE[@]}"; do
+            printf '%s\t%s\n' "$key" "$(apo_state_encode "${APO_STATE[$key]}")" >> "$purge_state"
+        done
+    }
+
+    apo_history_prepare_fresh_tuning_boundary
+    apo_history_commit_fresh_tuning_boundary
+    [[ ! -e $purge_ledger && ! -L $purge_ledger ]]
+    [[ ${APO_STATE[FRESH_TUNING_PURGE_COMMITTED]} == 1 ]]
+    [[ ${APO_STATE[FRESH_TUNING_PURGED_LEDGER_HASH]} == "$purge_ledger_hash" ]]
+    [[ ${APO_STATE[FRESH_TUNING_CUTOFF_RECORDS]} == 0 ]]
+
+    cp -- "$purge_ledger_copy" "$purge_ledger"
+    apo_history_scan_retained_states
+    [[ -z $APO_HISTORY_CPU_FAILURE_BOUNDARY$APO_HISTORY_GPU_FAILURE_BOUNDARY$APO_HISTORY_PAIR_FRONTIERS ]]
+    [[ $APO_HISTORY_FRESH_CUTOFF_RUN_ID == 20261004-040000-eeeeeeeeeeeeeeee ]]
+    [[ $APO_HISTORY_FRESH_CUTOFF_RECORDS == 0 ]]
+    [[ -z $APO_HISTORY_LEDGER_FILE ]]
+    apo_history_rebuild_ledger
+    [[ -f $purge_ledger && ! -L $purge_ledger ]]
+    if grep -Fq '20261001-000000-aaaaaaaaaaaaaaaa' "$purge_ledger"; then
+        printf 'destructive fresh tuning rebuilt the purged pre-cutoff record\n' >&2
+        exit 1
+    fi
+    [[ $(grep -Fc '===== FRESH TUNING START: EVIDENCE ABOVE THIS LINE IS AUDIT-ONLY' "$purge_ledger") == 1 ]]
+
+    write_auto_state 20261004-050000-ffffffffffffffff \
+        STATUS FAILED PHASE GPU_SWEEP GPU_FAILURE_BOUNDARY 1150
+    apo_history_scan_retained_states
+    [[ -z $APO_HISTORY_CPU_FAILURE_BOUNDARY ]]
+    [[ $APO_HISTORY_GPU_FAILURE_BOUNDARY == 1150 ]]
+    [[ ${#APO_HISTORY_LEDGER_RECORDS[@]} == 1 ]]
+)
+
 # Timestamp generation is explicitly checked even though the production call
 # chain suppresses errexit while reporting a failed history plan. A clock-tool
 # failure must preserve an existing ledger and leave an absent path absent.

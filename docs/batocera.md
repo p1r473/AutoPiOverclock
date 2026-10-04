@@ -18,9 +18,9 @@ Graphical discovery captures the current default audio-sink identity automatical
 
 ## Portable payload
 
-`tools/build-batocera-bundle.sh` extracts ARM64 Debian packages without installing them. It includes the Wayland and DRM glmark2 executables, their shared data, and a private libjpeg compatibility library. It deliberately excludes glibc, Mesa, Wayland, DRM, and kernel components supplied by Batocera. Every file is verified from `MANIFEST.sha256` after upload, and a cached payload that lacks either executable is rebuilt.
+`tools/build-batocera-bundle.sh` extracts ARM64 Debian packages without installing them. It includes memtester, the Wayland and DRM glmark2 executables, their shared data, and a private libjpeg compatibility library. It deliberately excludes glibc, Mesa, Wayland, DRM, and kernel components supplied by Batocera. Every file is verified from `MANIFEST.sha256` after upload, and a cached payload that lacks memtester or either GPU executable is rebuilt. Discovery runs a one-megabyte, one-loop memtester smoke and reports the dependency unavailable if the binary cannot execute on the live Batocera build.
 
-`prepare` automatically builds and stages this payload when it is missing. The builder requires an ARM64 Debian-family controller with `apt-get`, `dpkg-deb`, access to its configured Debian package repositories, `sha256sum`, and `tar`; Batocera itself remains package-manager-free.
+`prepare` automatically builds and stages this payload when it is missing. The builder requires an ARM64 Debian-family controller with `apt-get`, `dpkg-deb`, access to its configured Debian package repositories, `sha256sum`, and `tar`; Batocera itself remains package-manager-free. Final endurance uses the bundled memtester plus a persistent `/userdata/system/autopioverclock/stress` write/sync/checksum loop, so neither depends on volatile `/tmp` surviving a reboot.
 
 ## Watchdog integration
 

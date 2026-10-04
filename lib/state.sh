@@ -582,6 +582,14 @@ apo_state_initialize() {
     apo_state_set ORIGIN_COMMAND "${APO_ORIGIN_COMMAND:-${APO_COMMAND:-run}}"
     apo_state_set READ_ONLY_RUN "${APO_DRY_RUN:-0}"
     apo_state_set RESET_RETIRE_RESUMABLE 0
+    apo_state_set RESET_FRESH_TUNING "${APO_FRESH_TUNING:-0}"
+    apo_state_set RESET_FRESH_TUNING_FORCE "${APO_FRESH_TUNING_FORCE:-0}"
+    apo_state_set FRESH_TUNING_CUTOFF_RUN_ID ''
+    apo_state_set FRESH_TUNING_CUTOFF_AT ''
+    apo_state_set FRESH_TUNING_CUTOFF_RECORDS ''
+    apo_state_set FRESH_TUNING_PURGE_COMMITTED 0
+    apo_state_set FRESH_TUNING_PURGED_AT ''
+    apo_state_set FRESH_TUNING_PURGED_LEDGER_HASH ''
     apo_state_set STATUS PREPARING
     apo_state_set PHASE PREPARE
     apo_state_set SUBPHASE INITIAL

@@ -10,6 +10,7 @@ APO_BOOT_SETTLE_SECONDS=8
 
 apo_profile_dependencies_ready() {
     [[ ${APO_DISCOVERY[CPU_STRESS_AVAILABLE]:-0} == 1 ]] || return 1
+    [[ ${APO_DISCOVERY[MEMORY_STRESS_AVAILABLE]:-0} == 1 && -n ${APO_DISCOVERY[MEMTESTER_BINARY]:-} ]] || return 1
     (( APO_REQUIRE_GPU_STRESS == 0 )) && return 0
     [[ -n ${APO_DISCOVERY[GLMARK_DATA]:-} ]] || return 1
     case ${APO_MODE_EFFECTIVE:-} in
@@ -29,6 +30,7 @@ apo_profile_batocera_bundle_ready() {
     bundle_listing=$(tar -tzf "$bundle_file" 2>/dev/null) || return 1
     grep -Eq '^(\./)?usr/bin/glmark2-es2-drm$' <<< "$bundle_listing" || return 1
     grep -Eq '^(\./)?usr/bin/glmark2-es2-wayland$' <<< "$bundle_listing" || return 1
+    grep -Eq '^(\./)?usr/(s?bin)/memtester$' <<< "$bundle_listing" || return 1
 }
 
 apo_profile_batocera_bundle_install_command() {
@@ -49,6 +51,7 @@ bundle_dir_integrity_valid() {
         cd "$directory" || return 1
         sha256sum -c MANIFEST.sha256 >/dev/null || return 1
         [[ -x usr/bin/glmark2-es2-drm ]] || return 1
+        [[ -x usr/bin/memtester || -x usr/sbin/memtester ]] || return 1
         [[ -d usr/share/glmark2 ]] || return 1
     )
 }
@@ -89,6 +92,7 @@ tar -xzf "$archive" -C "$new_dir"
     sha256sum -c MANIFEST.sha256
     [[ -x usr/bin/glmark2-es2-drm ]]
     [[ -x usr/bin/glmark2-es2-wayland ]]
+    [[ -x usr/bin/memtester || -x usr/sbin/memtester ]]
     [[ -d usr/share/glmark2 ]]
 )
 if [[ -e $live_dir ]] || [[ -L $live_dir ]]; then
@@ -102,6 +106,7 @@ mv "$new_dir" "$live_dir"
     sha256sum -c MANIFEST.sha256
     [[ -x usr/bin/glmark2-es2-drm ]]
     [[ -x usr/bin/glmark2-es2-wayland ]]
+    [[ -x usr/bin/memtester || -x usr/sbin/memtester ]]
     [[ -d usr/share/glmark2 ]]
 )
 sync
@@ -111,19 +116,18 @@ APO_BATOCERA_BUNDLE_INSTALL
 }
 
 apo_profile_install_dependencies() {
-    (( APO_REQUIRE_GPU_STRESS == 1 )) || return 0
     local bundle_dir="${APO_ROOT}/dist"
     local bundle_file="${bundle_dir}/autopioverclock-batocera-glmark2.tar.gz"
     local remote_bundle='/userdata/system/autopioverclock/cache/autopioverclock-batocera-glmark2.tar.gz'
     local remote_command=''
     mkdir -p "$bundle_dir" || return 1
     if ! apo_profile_batocera_bundle_ready "$bundle_file"; then
-        apo_event dependencies INFO '' 'Building portable ARM64 glmark2 bundle from Debian packages'
+        apo_event dependencies INFO '' 'Building portable ARM64 Batocera stress bundle from Debian packages'
         if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
         "${APO_ROOT}/tools/build-batocera-bundle.sh" "$bundle_dir" || return 1
     fi
     apo_profile_batocera_bundle_ready "$bundle_file" || return 1
-    apo_event dependencies INFO '' 'Uploading portable glmark2 bundle to Batocera persistent storage'
+    apo_event dependencies INFO '' 'Uploading portable Batocera stress bundle to persistent storage'
     apo_remote_upload_root "$bundle_file" "$remote_bundle" || return 1
     remote_command=$(apo_profile_batocera_bundle_install_command "$remote_bundle") || return 1
     if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi

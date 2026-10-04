@@ -187,7 +187,7 @@ for command_line in \
     'autopioverclock prepare TARGET' \
     'autopioverclock overclock TARGET' \
     'autopioverclock test TARGET' \
-    'autopioverclock reset TARGET'; do
+    'autopioverclock reset TARGET [--freshtuning [-f]]'; do
     grep -Fq "$command_line" <<< "$help_output"
 done
 
@@ -247,7 +247,7 @@ grep -Fq 'It then refines the proved pass/fail gap at `--cpu-resolution` granula
 grep -Fq 'Exact CPU evidence lowers only CPU by `--cpu-resolution`; exact GPU evidence lowers only GPU by `--gpu-resolution`.' "$ROOT/README.md"
 grep -Fq 'If the domain is ambiguous, the pair becomes the anchor and a CPU-only reduction is tried first.' "$ROOT/README.md"
 grep -Fq 'A required reduction below either hard minimum fails clearly instead of silently changing the requested range.' "$ROOT/README.md"
-grep -Fq 'one fresh 48-hour combined CPU/GPU/I/O validation by default' "$ROOT/README.md"
+grep -Fq 'one fresh 48-hour combined CPU/GPU, RAM-pattern, and persistent-storage validation by default' "$ROOT/README.md"
 grep -Fq 'test pi@hostname --cpu 3100 --gpu 1150 --final-hours 72' "$ROOT/README.md"
 grep -Fq -- '--qualification-hours 3 --final-hours 72' "$ROOT/README.md"
 quick_start=$(sed -n '/^## Quick start$/,/^## Supported targets$/p' "$ROOT/README.md")

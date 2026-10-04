@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the narrow portable glmark2 payload used by the Batocera profile.
+# Build the narrow portable glmark2 and memtester payload used by Batocera.
 # This deliberately does not bundle or replace glibc, Mesa, DRM, or kernel drivers.
 set -Eeuo pipefail
 umask 022
@@ -37,7 +37,7 @@ else
     mkdir -p "$DOWNLOAD_DIR"
     cd "$DOWNLOAD_DIR"
     printf 'Downloading ARM64 packages without installing them...\n' >&2
-    apt-get download "glmark2-es2-drm:${ARCHITECTURE}" "glmark2-es2-wayland:${ARCHITECTURE}" "glmark2-data:${ARCHITECTURE}" "libjpeg62-turbo:${ARCHITECTURE}"
+    apt-get download "glmark2-es2-drm:${ARCHITECTURE}" "glmark2-es2-wayland:${ARCHITECTURE}" "glmark2-data:${ARCHITECTURE}" "libjpeg62-turbo:${ARCHITECTURE}" "memtester:${ARCHITECTURE}"
     shopt -s nullglob
     GLMARK_PACKAGES=()
     while IFS= read -r -d '' package_file; do GLMARK_PACKAGES+=("${package_file#./}"); done < <(
@@ -52,14 +52,20 @@ else
     while IFS= read -r -d '' package_file; do JPEG_PACKAGES+=("${package_file#./}"); done < <(
         find . -maxdepth 1 -type f -name "libjpeg62-turbo_*_${ARCHITECTURE}.deb" -print0 | LC_ALL=C sort -z
     )
+    MEMTESTER_PACKAGES=()
+    while IFS= read -r -d '' package_file; do MEMTESTER_PACKAGES+=("${package_file#./}"); done < <(
+        find . -maxdepth 1 -type f -name "memtester_*_${ARCHITECTURE}.deb" -print0 | LC_ALL=C sort -z
+    )
     (( ${#GLMARK_PACKAGES[@]} >= 3 )) || { printf 'Could not locate both downloaded glmark2 binaries and the data package.\n' >&2; exit 1; }
     (( ${#JPEG_PACKAGES[@]} == 1 )) || { printf 'Could not locate the downloaded libjpeg package.\n' >&2; exit 1; }
+    (( ${#MEMTESTER_PACKAGES[@]} == 1 )) || { printf 'Could not locate the downloaded memtester package.\n' >&2; exit 1; }
     for package_file in "${GLMARK_PACKAGES[@]}"; do dpkg-deb -x "$package_file" "$STAGE"; done
+    dpkg-deb -x "${MEMTESTER_PACKAGES[0]}" "$STAGE"
     mkdir -p "$STAGE/jpeg-package"
     dpkg-deb -x "${JPEG_PACKAGES[0]}" "$STAGE/jpeg-package"
     {
         printf 'Packages used:\n'
-        for package_file in "${GLMARK_PACKAGES[@]}" "${JPEG_PACKAGES[@]}"; do
+        for package_file in "${GLMARK_PACKAGES[@]}" "${JPEG_PACKAGES[@]}" "${MEMTESTER_PACKAGES[@]}"; do
             printf '%s %s %s\n' "$(dpkg-deb -f "$package_file" Package)" "$(dpkg-deb -f "$package_file" Version)" "$(dpkg-deb -f "$package_file" Architecture)"
         done
     } > "$STAGE/PACKAGES.txt"
@@ -68,20 +74,21 @@ fi
 
 [[ -x $STAGE/usr/bin/glmark2-es2-drm ]] || { printf 'Staged glmark2-es2-drm is missing or not executable.\n' >&2; exit 1; }
 [[ -x $STAGE/usr/bin/glmark2-es2-wayland ]] || { printf 'Staged glmark2-es2-wayland is missing or not executable.\n' >&2; exit 1; }
+[[ -x $STAGE/usr/bin/memtester || -x $STAGE/usr/sbin/memtester ]] || { printf 'Staged memtester is missing or not executable.\n' >&2; exit 1; }
 [[ -d $STAGE/usr/share/glmark2 ]] || { printf 'Staged glmark2 data directory is missing.\n' >&2; exit 1; }
 find "$STAGE/jpeg-package" -type f -name 'libjpeg.so.62*' -print -quit | grep -q . || { printf 'Staged libjpeg.so.62 is missing.\n' >&2; exit 1; }
 
 cat > "$STAGE/BUNDLE-README.txt" <<EOF_README
-AutoPiOverclock Batocera glmark2 compatibility payload
+AutoPiOverclock Batocera stress compatibility payload
 ======================================================
 Source: ${SOURCE_DESCRIPTION}
 Architecture: ${ARCHITECTURE}
 
-This archive contains the glmark2-es2-drm and glmark2-es2-wayland executables,
-their data files, and a private libjpeg compatibility library. It does not
+This archive contains memtester, the glmark2-es2-drm and glmark2-es2-wayland
+executables, their data files, and a private libjpeg compatibility library. It does not
 replace Batocera's glibc, Mesa, DRM stack, kernel, or system libraries.
-AutoPiOverclock verifies this payload with a short renderer smoke test before
-any candidate or endurance run.
+AutoPiOverclock verifies this payload with short renderer and memory smoke tests
+before any candidate or endurance run.
 EOF_README
 
 (

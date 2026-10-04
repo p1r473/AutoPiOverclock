@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Standalone stock-reset controller. This creates a new audit trail and never
-# deletes or rewrites artifacts from an earlier tuning or reset operation.
+# Standalone stock-reset controller. This creates a new audit trail and keeps
+# earlier tuning and reset artifacts unless the explicit force form deletes
+# only the history ledger after verified stock and a durable cutoff commit.
 
 apo_reset_abort_worker() {
     local failure_class=${APO_LAST_CLASS:-HARNESS_FAILURE}
@@ -249,7 +250,7 @@ apo_prepare_stock_baseline() {
 }
 
 apo_reset_stock() {
-    local probed_profile discovered_hash old_boot_id new_boot_id reset_backup
+    local probed_profile discovered_hash old_boot_id new_boot_id reset_backup fresh_history_note=''
 
     apo_init_artifacts
     apo_state_initialize
@@ -264,6 +265,11 @@ apo_reset_stock() {
     apo_summary_line "Run ID: $APO_RUN_ID"
     apo_summary_line "Target: $APO_REMOTE_TARGET"
     apo_summary_line 'Previous run artifacts: preserved'
+    if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
+        apo_summary_line 'Fresh tuning history: destructive deletion requested'
+    else
+        apo_summary_line "Fresh tuning boundary: $([[ ${APO_FRESH_TUNING:-0} == 1 ]] && printf requested || printf unchanged)"
+    fi
     apo_summary_line ''
     apo_event reset-start INFO '' "command=reset version=$APO_VERSION"
 
@@ -285,6 +291,10 @@ apo_reset_stock() {
         apo_die 'Profile probe and reset discovery disagree.' "$APO_EXIT_PREFLIGHT"
     apo_validate_pi5
     apo_reset_store_discovery
+    if (( ${APO_FRESH_TUNING:-0} == 1 )); then
+        apo_history_prepare_fresh_tuning_boundary ||
+            apo_die "Fresh-tuning history preparation failed: ${APO_HISTORY_SCAN_ERROR:-invalid retained history}" "$APO_EXIT_PREFLIGHT"
+    fi
     apo_reset_retire_prior_resumable_runs
     apo_reset_cleanup_owned_watchdog
     apo_reset_verify_watchdog_ready
@@ -329,6 +339,26 @@ apo_reset_stock() {
     fi
     apo_reset_validate_verification "$APO_PERMANENT_CONFIG_HASH"
 
+    if (( ${APO_FRESH_TUNING:-0} == 1 )); then
+        if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
+            apo_state_set RESET_STATUS DELETING_TUNING_HISTORY
+            apo_state_set SUBPHASE DELETING_TUNING_HISTORY
+        else
+            apo_state_set RESET_STATUS RECORDING_FRESH_TUNING_BOUNDARY
+            apo_state_set SUBPHASE RECORDING_FRESH_TUNING_BOUNDARY
+        fi
+        apo_state_save
+        apo_history_commit_fresh_tuning_boundary ||
+            apo_die 'Stock was verified, but the requested fresh-tuning history operation could not be committed safely.' "$APO_EXIT_INTERNAL"
+        if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
+            apo_summary_line "Fresh tuning history: old ledger deleted at $APO_HISTORY_FRESH_CUTOFF_AT"
+            apo_event reset-fresh-tuning-purge PASS '' 'The old history ledger was deleted after verified stock recovery. Earlier retained run states remain audit files but are excluded from future tuning by this reset cutoff.'
+        else
+            apo_summary_line "Fresh tuning boundary: $APO_HISTORY_FRESH_CUTOFF_AT, reset $APO_HISTORY_FRESH_CUTOFF_RUN_ID"
+            apo_event reset-fresh-tuning PASS '' 'Earlier retained tuning evidence remains readable above the boundary but no longer constrains future tuning. New evidence below the boundary is authoritative.'
+        fi
+    fi
+
     apo_state_set RESET_STATUS VERIFIED
     apo_state_set SUBPHASE STOCK_VERIFIED
     apo_state_set PHASE COMPLETE
@@ -339,5 +369,10 @@ apo_reset_stock() {
     reset_backup=$(apo_state_get RESET_BACKUP '')
     apo_summary_line "Verified boot ID: $new_boot_id"
     apo_summary_line 'Result: stock reset verified'
-    apo_event reset PASS '' "Permanent clock/voltage overrides were disabled, rebooted, and verified at stock settings. Backup: $reset_backup. Prior logs and saved runs were preserved as audit evidence, but earlier tuning checkpoints are no longer resumable."
+    if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
+        fresh_history_note=' The old history ledger was deleted and earlier run-state evidence is below the destructive cutoff.'
+    elif (( ${APO_FRESH_TUNING:-0} == 1 )); then
+        fresh_history_note=' Earlier tuning boundaries are audit-only for future searches.'
+    fi
+    apo_event reset PASS '' "Permanent clock/voltage overrides were disabled, rebooted, and verified at stock settings. Backup: $reset_backup. Prior logs and saved runs were preserved as audit evidence, but earlier tuning checkpoints are no longer resumable.${fresh_history_note}"
 }

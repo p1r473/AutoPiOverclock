@@ -669,7 +669,7 @@ apo_write_effective_config() {
                 printf '# automatic_edge_seconds=%s\n' "$APO_EDGE_DURATION_S"
             fi
             printf '# automatic_duration_policy=%s\n' "$APO_DURATION_POLICY"
-            printf '# automatic_final_workload=combined CPU/GPU/I/O\n'
+            printf '# automatic_final_workload=CPU/GPU plus RAM-pattern, persistent-storage, and load-transition coverage\n'
         fi
         if (( ${APO_MANUAL_TEST:-0} == 1 )); then
             printf '# manual_stability_test=CPU:%sMHz GPU:%sMHz duration:%ss; never eligible for permanent apply\n' \

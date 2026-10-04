@@ -113,6 +113,22 @@ done
 (
     export APO_CLI_LIBRARY_ONLY=1
     source "$ROOT/autopioverclock"
+    apo_parse_cli reset tron --freshtuning
+    [[ $APO_COMMAND == reset && $APO_PUBLIC_COMMAND == reset ]]
+    [[ $APO_FRESH_TUNING == 1 && $APO_FRESH_TUNING_OPTION_SEEN == 1 ]]
+    [[ $APO_FRESH_TUNING_FORCE == 0 && $APO_FRESH_TUNING_FORCE_OPTION_SEEN == 0 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
+    apo_parse_cli reset tron --freshtuning -f
+    [[ $APO_COMMAND == reset && $APO_PUBLIC_COMMAND == reset ]]
+    [[ $APO_FRESH_TUNING == 1 && $APO_FRESH_TUNING_FORCE == 1 ]]
+    [[ $APO_FRESH_TUNING_OPTION_SEEN == 1 && $APO_FRESH_TUNING_FORCE_OPTION_SEEN == 1 ]]
+)
+(
+    export APO_CLI_LIBRARY_ONLY=1
+    source "$ROOT/autopioverclock"
     apo_parse_cli resume tron --restart-from cpu-qualification --qualification-hours 2 --final-hours 24
     [[ $APO_COMMAND == resume && $APO_RESTART_FROM == cpu-qualification ]]
     [[ $APO_RESTART_FROM_OPTION_SEEN == 1 ]]
@@ -127,6 +143,30 @@ for removed_edge_args in '--edge-hours 24' '--edge-cpu-24h'; do
         apo_parse_cli resume tron $removed_edge_args
     ) >/dev/null 2>&1; then
         echo "resume accepted removed edge options: $removed_edge_args" >&2
+        exit 1
+    fi
+done
+
+for invalid_force_args in '-f' '--freshtuning -f -f'; do
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        # Fixed fixture tokens contain no shell metacharacters.
+        # shellcheck disable=SC2086
+        apo_parse_cli reset tron $invalid_force_args
+    ) >/dev/null 2>&1; then
+        echo "reset accepted invalid destructive fresh-tuning options: $invalid_force_args" >&2
+        exit 1
+    fi
+done
+
+for non_reset_command in prepare overclock run status summary recover restore apply complete report; do
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        apo_parse_cli "$non_reset_command" tron -f
+    ) >/dev/null 2>&1; then
+        echo "$non_reset_command accepted reset-only destructive fresh-tuning -f" >&2
         exit 1
     fi
 done
@@ -162,6 +202,17 @@ assert_non_resume_rejects_restart restore
 assert_non_resume_rejects_restart apply
 assert_non_resume_rejects_restart complete
 assert_non_resume_rejects_restart report
+
+for non_reset_command in prepare overclock run status summary recover restore apply complete report; do
+    if (
+        export APO_CLI_LIBRARY_ONLY=1
+        source "$ROOT/autopioverclock"
+        apo_parse_cli "$non_reset_command" tron --freshtuning
+    ) >/dev/null 2>&1; then
+        echo "$non_reset_command accepted reset-only --freshtuning" >&2
+        exit 1
+    fi
+done
 
 if (
     export APO_CLI_LIBRARY_ONLY=1

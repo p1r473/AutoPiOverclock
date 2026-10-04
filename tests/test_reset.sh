@@ -84,6 +84,9 @@ assert_reset_option_rejected --final-hours --final-hours 6
 assert_reset_option_rejected --no-max-fan --no-max-fan
 assert_reset_option_rejected --redact --redact
 assert_reset_option_rejected --reset --reset
+assert_reset_option_rejected 'duplicate --freshtuning' --freshtuning --freshtuning
+assert_reset_option_rejected '-f without --freshtuning' -f
+assert_reset_option_rejected 'duplicate -f' --freshtuning -f -f
 
 # Transport and artifact selectors remain available without changing reset's
 # stock policy. A readable identity fixture prevents a local option failure.
@@ -94,6 +97,16 @@ run_cli reset fixture-target --output-dir "$TEST_ROOT/custom-output" --ssh-port 
 [[ $CLI_OUTPUT != *'is not valid with reset TARGET'* ]] ||
     fail 'reset rejected an approved transport or artifact selector'
 [[ -s $SSH_LOG ]] || fail 'reset with approved selectors did not reach transport dispatch'
+
+run_cli reset fixture-target --freshtuning
+(( CLI_RC != 0 )) || fail 'fake-transport fresh-tuning reset unexpectedly succeeded'
+[[ $CLI_OUTPUT != *'is not valid with reset TARGET'* ]] || fail 'reset rejected --freshtuning'
+[[ -s $SSH_LOG ]] || fail 'fresh-tuning reset did not reach transport dispatch'
+
+run_cli reset fixture-target --freshtuning -f
+(( CLI_RC != 0 )) || fail 'fake-transport destructive fresh-tuning reset unexpectedly succeeded'
+[[ $CLI_OUTPUT != *'is not valid with reset TARGET'* ]] || fail 'reset rejected --freshtuning -f'
+[[ -s $SSH_LOG ]] || fail 'destructive fresh-tuning reset did not reach transport dispatch'
 
 # A failed reset attempt may add its own audit artifacts, but it must not
 # delete or truncate any prior run. It also must not signal unrelated jobs or
@@ -120,7 +133,7 @@ SENTINEL_PID=''
 
 # Public/controller contract: command-first help, verified-stock completion, worker
 # data binding, and no terminal/session-process management.
-grep -Fq 'autopioverclock reset TARGET' "$ROOT/autopioverclock" || fail 'usage does not document mandatory-target reset syntax'
+grep -Fq 'autopioverclock reset TARGET [--freshtuning [-f]]' "$ROOT/autopioverclock" || fail 'usage does not document fresh-tuning reset syntax'
 if grep -Fq 'autopioverclock TARGET reset' "$ROOT/autopioverclock"; then
     fail 'usage still documents the removed postfix reset syntax'
 fi

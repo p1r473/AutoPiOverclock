@@ -12,11 +12,14 @@ declare -Ag APO_HISTORY_SEEN_PAIRS=()
 declare -Ag APO_HISTORY_SEEN_LEDGER_RECORDS=()
 declare -Ag APO_HISTORY_LEDGER_META=()
 
-APO_HISTORY_LEDGER_SCHEMA=3
+APO_HISTORY_LEDGER_SCHEMA=4
+APO_HISTORY_LEGACY_LEDGER_SCHEMA=3
 APO_HISTORY_HUMAN_BEGIN='===== BEGIN AUTOPIOVERCLOCK HUMAN-READABLE HISTORY ====='
 APO_HISTORY_HUMAN_END='===== END AUTOPIOVERCLOCK HUMAN-READABLE HISTORY ====='
-APO_HISTORY_MACHINE_BEGIN='----- BEGIN AUTOPIOVERCLOCK MACHINE HISTORY v3 -----'
-APO_HISTORY_MACHINE_END='----- END AUTOPIOVERCLOCK MACHINE HISTORY v3 -----'
+APO_HISTORY_MACHINE_BEGIN='----- BEGIN AUTOPIOVERCLOCK MACHINE HISTORY v4 -----'
+APO_HISTORY_MACHINE_END='----- END AUTOPIOVERCLOCK MACHINE HISTORY v4 -----'
+APO_HISTORY_LEGACY_MACHINE_BEGIN='----- BEGIN AUTOPIOVERCLOCK MACHINE HISTORY v3 -----'
+APO_HISTORY_LEGACY_MACHINE_END='----- END AUTOPIOVERCLOCK MACHINE HISTORY v3 -----'
 
 APO_HISTORY_CPU_FAILURE_BOUNDARY=''
 APO_HISTORY_GPU_FAILURE_BOUNDARY=''
@@ -64,6 +67,12 @@ APO_HISTORY_SEALED_HASH=''
 APO_HISTORY_SEALED_RUN_SCHEMA=''
 APO_HISTORY_SEALED_VALIDATION_SCHEMA=''
 APO_HISTORY_SEALED_DURATION_SECONDS=''
+APO_HISTORY_FRESH_CUTOFF_RUN_ID=''
+APO_HISTORY_FRESH_CUTOFF_AT=''
+APO_HISTORY_FRESH_CUTOFF_RECORDS=''
+APO_HISTORY_FORCE_PURGE_RUN_ID=''
+APO_HISTORY_FORCE_PURGE_AT=''
+APO_HISTORY_FORCE_PURGE_LEDGER_HASH=''
 APO_HISTORY_NO_HEADROOM=0
 
 apo_history_ledger_path() {
@@ -110,6 +119,12 @@ apo_history_reset() {
     APO_HISTORY_SEALED_RUN_SCHEMA=''
     APO_HISTORY_SEALED_VALIDATION_SCHEMA=''
     APO_HISTORY_SEALED_DURATION_SECONDS=''
+    APO_HISTORY_FRESH_CUTOFF_RUN_ID=''
+    APO_HISTORY_FRESH_CUTOFF_AT=''
+    APO_HISTORY_FRESH_CUTOFF_RECORDS=''
+    APO_HISTORY_FORCE_PURGE_RUN_ID=''
+    APO_HISTORY_FORCE_PURGE_AT=''
+    APO_HISTORY_FORCE_PURGE_LEDGER_HASH=''
     APO_HISTORY_NO_HEADROOM=0
     APO_HISTORY_RECORDS=()
     APO_HISTORY_RAW_PAIRS=()
@@ -283,7 +298,7 @@ apo_history_expected_context_baseline() {
 
 apo_history_machine_meta_key_allowed() {
     case $1 in
-        LEDGER_SCHEMA|GENERATED_AT|ACCEPTED_STATES|IMPORTED_MACHINE_RECORDS|TARGET_SLUG|REMOTE_TARGET|PROFILE|GPU_KEY|TEST_VOLTAGE|BASELINE_CPU|BASELINE_GPU|BASELINE_VOLTAGE|MODEL|COMPATIBLE|ARCH|BOOT_CONFIG|TRYBOOT_CONFIG|SEALED_RUN_ID|SEALED_CPU|SEALED_GPU|SEALED_VOLTAGE|SEALED_HASH|SEALED_RUN_SCHEMA|SEALED_VALIDATION_SCHEMA|SEALED_DURATION_SECONDS) return 0 ;;
+        LEDGER_SCHEMA|GENERATED_AT|ACCEPTED_STATES|IMPORTED_MACHINE_RECORDS|TARGET_SLUG|REMOTE_TARGET|PROFILE|GPU_KEY|TEST_VOLTAGE|BASELINE_CPU|BASELINE_GPU|BASELINE_VOLTAGE|MODEL|COMPATIBLE|ARCH|BOOT_CONFIG|TRYBOOT_CONFIG|SEALED_RUN_ID|SEALED_CPU|SEALED_GPU|SEALED_VOLTAGE|SEALED_HASH|SEALED_RUN_SCHEMA|SEALED_VALIDATION_SCHEMA|SEALED_DURATION_SECONDS|FRESH_TUNING_CUTOFF_RUN_ID|FRESH_TUNING_CUTOFF_AT|FRESH_TUNING_CUTOFF_RECORDS) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -293,7 +308,7 @@ apo_history_extract_human_report() {
 
     [[ -f $source_file && ! -L $source_file && -r $source_file ]] || return 1
     while IFS= read -r line || [[ -n $line ]]; do
-        if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" ]]; then
+        if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" || $line == "$APO_HISTORY_LEGACY_MACHINE_BEGIN" ]]; then
             machine_marker_seen=1
             break
         fi
@@ -303,7 +318,7 @@ apo_history_extract_human_report() {
 }
 
 apo_history_human_report_matches_machine() {
-    local source_file=$1 meta_name=$2 records_name=$3 key record stored_report expected_report
+    local source_file=$1 meta_name=$2 records_name=$3 key record stored_report expected_report record_index active_record
     local -n source_meta=$meta_name source_records=$records_name
 
     stored_report=$(
@@ -323,8 +338,18 @@ apo_history_human_report_matches_machine() {
         APO_HISTORY_SEALED_RUN_SCHEMA=${source_meta[SEALED_RUN_SCHEMA]}
         APO_HISTORY_SEALED_VALIDATION_SCHEMA=${source_meta[SEALED_VALIDATION_SCHEMA]}
         APO_HISTORY_SEALED_DURATION_SECONDS=${source_meta[SEALED_DURATION_SECONDS]}
+        APO_HISTORY_FRESH_CUTOFF_RUN_ID=${source_meta[FRESH_TUNING_CUTOFF_RUN_ID]:-}
+        APO_HISTORY_FRESH_CUTOFF_AT=${source_meta[FRESH_TUNING_CUTOFF_AT]:-}
+        APO_HISTORY_FRESH_CUTOFF_RECORDS=${source_meta[FRESH_TUNING_CUTOFF_RECORDS]:-}
+        record_index=0
         for record in "${source_records[@]}"; do
-            apo_history_machine_record_import "$record" || exit 1
+            active_record=1
+            if [[ -n $APO_HISTORY_FRESH_CUTOFF_RECORDS ]] &&
+               (( record_index < APO_HISTORY_FRESH_CUTOFF_RECORDS )); then
+                active_record=0
+            fi
+            apo_history_machine_record_import "$record" "$active_record" || exit 1
+            record_index=$((record_index + 1))
         done
         apo_history_finalize_frontiers
         apo_history_render_human_report "${source_meta[GENERATED_AT]}" || exit 1
@@ -334,7 +359,8 @@ apo_history_human_report_matches_machine() {
 }
 
 apo_history_machine_record_import() {
-    local record=$1 timestamp run_id cpu gpu class domain encoded_source encoded_reason basename extra source reason
+    local record=$1 import_planning=${2:-1} timestamp run_id cpu gpu class domain encoded_source encoded_reason basename extra source reason
+    [[ $import_planning == 0 || $import_planning == 1 ]] || return 1
     timestamp=''; run_id=''; cpu=''; gpu=''; class=''; domain=''
     encoded_source=''; encoded_reason=''; basename=''; extra=''
     IFS='|' read -r timestamp run_id cpu gpu class domain encoded_source encoded_reason basename extra <<< "$record"
@@ -346,6 +372,7 @@ apo_history_machine_record_import() {
     source=$(apo_history_decode_field "$encoded_source") || return 1
     reason=$(apo_history_decode_field "$encoded_reason") || return 1
     [[ -n $source && -n $reason && $source != *$'\n'* && $source != *$'\r'* ]] || return 1
+    (( import_planning == 1 )) || return 0
     [[ $class == BOOT_FAILURE || $class == STABILITY_FAILURE ]] || return 0
     case $domain in
         CPU)
@@ -370,10 +397,10 @@ apo_history_machine_record_import() {
 
 apo_history_load_machine_ledger() {
     local source_file=$1 import_records=${2:-1} skip_live_context=${3:-0}
-    local line section=human kind key encoded decoded extra
+    local line section=human kind key encoded decoded extra expected_machine_end='' marker_schema=''
     local expected_baseline expected_cpu expected_gpu expected_voltage expected_value record
     local live_cpu=${APO_NORMAL_CPU:-} live_gpu=${APO_NORMAL_GPU:-} live_voltage=${APO_NORMAL_VOLTAGE:-}
-    local begin_count=0 end_count=0
+    local begin_count=0 end_count=0 record_index=0 active_record=1
     local -A parsed_meta=() seen_records=()
     local -a parsed_records=() required_keys=(
         LEDGER_SCHEMA GENERATED_AT ACCEPTED_STATES IMPORTED_MACHINE_RECORDS
@@ -382,6 +409,10 @@ apo_history_load_machine_ledger() {
         BOOT_CONFIG TRYBOOT_CONFIG SEALED_RUN_ID SEALED_CPU SEALED_GPU
         SEALED_VOLTAGE SEALED_HASH SEALED_RUN_SCHEMA SEALED_VALIDATION_SCHEMA
         SEALED_DURATION_SECONDS
+    )
+    local -a fresh_keys=(
+        FRESH_TUNING_CUTOFF_RUN_ID FRESH_TUNING_CUTOFF_AT
+        FRESH_TUNING_CUTOFF_RECORDS
     )
 
     [[ $import_records == 0 || $import_records == 1 ]] || return 1
@@ -392,18 +423,26 @@ apo_history_load_machine_ledger() {
             human)
                 if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" ]]; then
                     begin_count=$((begin_count + 1))
+                    marker_schema=$APO_HISTORY_LEDGER_SCHEMA
+                    expected_machine_end=$APO_HISTORY_MACHINE_END
                     section=machine
-                elif [[ $line == "$APO_HISTORY_MACHINE_END" ]]; then
+                elif [[ $line == "$APO_HISTORY_LEGACY_MACHINE_BEGIN" ]]; then
+                    begin_count=$((begin_count + 1))
+                    marker_schema=$APO_HISTORY_LEGACY_LEDGER_SCHEMA
+                    expected_machine_end=$APO_HISTORY_LEGACY_MACHINE_END
+                    section=machine
+                elif [[ $line == "$APO_HISTORY_MACHINE_END" || $line == "$APO_HISTORY_LEGACY_MACHINE_END" ]]; then
                     return 1
                 fi
                 ;;
             machine)
-                if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" ]]; then return 1; fi
-                if [[ $line == "$APO_HISTORY_MACHINE_END" ]]; then
+                if [[ $line == "$APO_HISTORY_MACHINE_BEGIN" || $line == "$APO_HISTORY_LEGACY_MACHINE_BEGIN" ]]; then return 1; fi
+                if [[ $line == "$expected_machine_end" ]]; then
                     end_count=$((end_count + 1))
                     section=finished
                     continue
                 fi
+                if [[ $line == "$APO_HISTORY_MACHINE_END" || $line == "$APO_HISTORY_LEGACY_MACHINE_END" ]]; then return 1; fi
                 kind=''; key=''; encoded=''; extra=''
                 IFS=$'\t' read -r kind key encoded extra <<< "$line"
                 case $kind in
@@ -433,9 +472,21 @@ apo_history_load_machine_ledger() {
     done < "$source_file"
 
     (( begin_count == 1 && end_count == 1 )) || return 1
+    [[ ${parsed_meta[LEDGER_SCHEMA]:-} == "$marker_schema" ]] || return 1
+    case ${parsed_meta[LEDGER_SCHEMA]} in
+        "$APO_HISTORY_LEGACY_LEDGER_SCHEMA") ;;
+        "$APO_HISTORY_LEDGER_SCHEMA")
+            required_keys+=("${fresh_keys[@]}")
+            ;;
+        *) return 1 ;;
+    esac
     for key in "${required_keys[@]}"; do [[ -v parsed_meta[$key] ]] || return 1; done
     (( ${#parsed_meta[@]} == ${#required_keys[@]} )) || return 1
-    [[ ${parsed_meta[LEDGER_SCHEMA]} == "$APO_HISTORY_LEDGER_SCHEMA" ]] || return 1
+    if [[ ${parsed_meta[LEDGER_SCHEMA]} == "$APO_HISTORY_LEGACY_LEDGER_SCHEMA" ]]; then
+        parsed_meta[FRESH_TUNING_CUTOFF_RUN_ID]=''
+        parsed_meta[FRESH_TUNING_CUTOFF_AT]=''
+        parsed_meta[FRESH_TUNING_CUTOFF_RECORDS]=''
+    fi
     apo_history_generated_timestamp_is_valid "${parsed_meta[GENERATED_AT]}" || return 1
     apo_is_uint "${parsed_meta[ACCEPTED_STATES]}" || return 1
     apo_is_uint "${parsed_meta[IMPORTED_MACHINE_RECORDS]}" || return 1
@@ -448,6 +499,17 @@ apo_history_load_machine_ledger() {
         apo_is_int "${parsed_meta[BASELINE_VOLTAGE]}" || return 1
     [[ -n ${parsed_meta[MODEL]} && -n ${parsed_meta[COMPATIBLE]} && -n ${parsed_meta[ARCH]} &&
        ${parsed_meta[BOOT_CONFIG]} == /* && ${parsed_meta[TRYBOOT_CONFIG]} == /* ]] || return 1
+    if [[ -n ${parsed_meta[FRESH_TUNING_CUTOFF_RUN_ID]} ||
+          -n ${parsed_meta[FRESH_TUNING_CUTOFF_AT]} ||
+          -n ${parsed_meta[FRESH_TUNING_CUTOFF_RECORDS]} ]]; then
+        [[ -n ${parsed_meta[FRESH_TUNING_CUTOFF_RUN_ID]} &&
+           -n ${parsed_meta[FRESH_TUNING_CUTOFF_AT]} &&
+           -n ${parsed_meta[FRESH_TUNING_CUTOFF_RECORDS]} ]] || return 1
+        apo_is_safe_run_id "${parsed_meta[FRESH_TUNING_CUTOFF_RUN_ID]}" || return 1
+        apo_history_generated_timestamp_is_valid "${parsed_meta[FRESH_TUNING_CUTOFF_AT]}" || return 1
+        apo_is_uint "${parsed_meta[FRESH_TUNING_CUTOFF_RECORDS]}" || return 1
+        (( parsed_meta[FRESH_TUNING_CUTOFF_RECORDS] <= ${#parsed_records[@]} )) || return 1
+    fi
 
     if (( skip_live_context == 0 )); then
         expected_baseline=$(apo_history_expected_context_baseline) || return 1
@@ -499,17 +561,27 @@ apo_history_load_machine_ledger() {
     APO_HISTORY_SEALED_RUN_SCHEMA=${parsed_meta[SEALED_RUN_SCHEMA]}
     APO_HISTORY_SEALED_VALIDATION_SCHEMA=${parsed_meta[SEALED_VALIDATION_SCHEMA]}
     APO_HISTORY_SEALED_DURATION_SECONDS=${parsed_meta[SEALED_DURATION_SECONDS]}
+    APO_HISTORY_FRESH_CUTOFF_RUN_ID=${parsed_meta[FRESH_TUNING_CUTOFF_RUN_ID]}
+    APO_HISTORY_FRESH_CUTOFF_AT=${parsed_meta[FRESH_TUNING_CUTOFF_AT]}
+    APO_HISTORY_FRESH_CUTOFF_RECORDS=${parsed_meta[FRESH_TUNING_CUTOFF_RECORDS]}
     if (( import_records == 1 )); then
+        record_index=0
         for record in "${parsed_records[@]}"; do
-            apo_history_machine_record_import "$record" || return 1
+            active_record=1
+            if [[ -n $APO_HISTORY_FRESH_CUTOFF_RECORDS ]] &&
+               (( record_index < APO_HISTORY_FRESH_CUTOFF_RECORDS )); then
+                active_record=0
+            fi
+            apo_history_machine_record_import "$record" "$active_record" || return 1
             APO_HISTORY_MACHINE_RECORDS=$((APO_HISTORY_MACHINE_RECORDS + 1))
+            record_index=$((record_index + 1))
         done
     fi
 }
 
 apo_history_validate_failure_class() {
     case $1 in
-        PREFLIGHT_FAILURE|HARNESS_FAILURE|BOOT_FAILURE|STABILITY_FAILURE|RECOVERY_FAILURE|APPLY_FAILURE) return 0 ;;
+        PASS|PREFLIGHT_FAILURE|HARNESS_FAILURE|BOOT_FAILURE|STABILITY_FAILURE|RECOVERY_FAILURE|APPLY_FAILURE) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -608,6 +680,7 @@ apo_history_record_failure_event() {
 
     apo_history_validate_failure_domain "$domain" || return 1
     apo_history_validate_failure_class "$class" || return 1
+    [[ $class != PASS ]] || return 1
     case $domain in
         CPU) apo_is_uint "$cpu" || return 1; [[ -z $gpu || $gpu == - ]] && gpu=- ;;
         GPU) apo_is_uint "$gpu" || return 1; [[ -z $cpu || $cpu == - ]] && cpu=- ;;
@@ -1465,14 +1538,69 @@ apo_history_validate_plan_state() {
     fi
 }
 
+# Find the newest completed destructive fresh-tuning request before loading the
+# ledger. The reset state is the durable cutoff if the controller stops after
+# committing the purge but before removing the old ledger.
+apo_history_find_latest_force_purge() {
+    local files_name=$1 source_file basename source_run_id
+    local -n source_files_ref=$files_name
+    local -A purge_screen=()
+
+    APO_HISTORY_FORCE_PURGE_RUN_ID=''
+    APO_HISTORY_FORCE_PURGE_AT=''
+    APO_HISTORY_FORCE_PURGE_LEDGER_HASH=''
+    for source_file in "${source_files_ref[@]}"; do
+        [[ -f $source_file && ! -L $source_file ]] || continue
+        basename=${source_file##*/}
+        source_run_id=${basename#"${APO_TARGET_SLUG}-"}
+        source_run_id=${source_run_id%.state}
+        purge_screen=()
+        apo_history_load_screen_fields "$source_file" purge_screen \
+            FORMAT_VERSION RUN_SCHEMA RUN_ID TARGET_SLUG REMOTE_TARGET ORIGIN_COMMAND \
+            RESET_FRESH_TUNING RESET_FRESH_TUNING_FORCE FRESH_TUNING_PURGE_COMMITTED \
+            FRESH_TUNING_PURGED_AT FRESH_TUNING_PURGED_LEDGER_HASH || continue
+        [[ ${purge_screen[FORMAT_VERSION]:-} == 1 &&
+           ${purge_screen[RUN_SCHEMA]:-} == "${APO_CURRENT_RUN_SCHEMA:-}" &&
+           ${purge_screen[TARGET_SLUG]:-} == "$APO_TARGET_SLUG" &&
+           ${purge_screen[REMOTE_TARGET]:-} == "$APO_REMOTE_TARGET" &&
+           ${purge_screen[ORIGIN_COMMAND]:-} == reset &&
+           ${purge_screen[RESET_FRESH_TUNING]:-0} == 1 &&
+           ${purge_screen[RESET_FRESH_TUNING_FORCE]:-0} == 1 &&
+           ${purge_screen[FRESH_TUNING_PURGE_COMMITTED]:-0} == 1 ]] || continue
+        [[ ${purge_screen[RUN_ID]:-} == "$source_run_id" ]] || {
+            APO_HISTORY_SCAN_ERROR="A destructive fresh-tuning reset state does not match its filename: $basename"
+            return 1
+        }
+        apo_is_safe_run_id "$source_run_id" || {
+            APO_HISTORY_SCAN_ERROR="A destructive fresh-tuning reset state has an unsafe run ID: $basename"
+            return 1
+        }
+        apo_history_generated_timestamp_is_valid "${purge_screen[FRESH_TUNING_PURGED_AT]:-}" || {
+            APO_HISTORY_SCAN_ERROR="A destructive fresh-tuning reset state has a malformed purge timestamp: $basename"
+            return 1
+        }
+        [[ ${purge_screen[FRESH_TUNING_PURGED_LEDGER_HASH]:-} == NONE ||
+           ${purge_screen[FRESH_TUNING_PURGED_LEDGER_HASH]:-} =~ ^[0-9a-f]{64}$ ]] || {
+            APO_HISTORY_SCAN_ERROR="A destructive fresh-tuning reset state has a malformed ledger hash: $basename"
+            return 1
+        }
+        if [[ -z $APO_HISTORY_FORCE_PURGE_RUN_ID ||
+              $source_run_id > "$APO_HISTORY_FORCE_PURGE_RUN_ID" ]]; then
+            APO_HISTORY_FORCE_PURGE_RUN_ID=$source_run_id
+            APO_HISTORY_FORCE_PURGE_AT=${purge_screen[FRESH_TUNING_PURGED_AT]}
+            APO_HISTORY_FORCE_PURGE_LEDGER_HASH=${purge_screen[FRESH_TUNING_PURGED_LEDGER_HASH]}
+        fi
+    done
+}
+
 # Scan every exact regular TARGET-RUN_ID.state file in the target runs
 # directory and merge it with the target's durable history ledger. Non-current
 # schemas and unrelated commands are ignored. A malformed or
 # validator-rejected current-schema auto-overclock state for this exact target
 # fails closed instead of silently authorizing a higher clock.
 apo_history_scan_retained_states() {
-    local source_file output status line kind value run_id evidence_source basename extra ledger_file ledger_rc
-    local timestamp cpu gpu class domain encoded_source encoded_reason field10 field11
+    local source_file source_run_id output status line kind value run_id evidence_source basename extra ledger_file ledger_rc
+    local timestamp cpu gpu class domain encoded_source encoded_reason field10 field11 ledger_hash
     local had_nullglob=0
     local -a source_files=()
 
@@ -1481,26 +1609,6 @@ apo_history_scan_retained_states() {
         APO_HISTORY_SCAN_ERROR='History scan requires target run and history directories plus exact parsed target identity.'
         return 1
     }
-
-    ledger_file=$(apo_history_ledger_path) || {
-        APO_HISTORY_SCAN_ERROR='History scan could not resolve the target ledger path.'
-        return 1
-    }
-    if [[ -e $ledger_file || -L $ledger_file ]]; then
-        [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
-            APO_HISTORY_SCAN_ERROR="Retained history ledger is not a safe readable regular file: ${ledger_file##*/}"
-            return 1
-        }
-        if apo_history_load_machine_ledger "$ledger_file" 1; then
-            APO_HISTORY_LEDGER_FILE=$ledger_file
-        else
-            ledger_rc=$?
-            APO_HISTORY_SCAN_ERROR="Retained history ledger failed strict machine-history validation: ${ledger_file##*/}"
-            apo_history_reset
-            APO_HISTORY_SCAN_ERROR="Retained history ledger failed strict machine-history validation: ${ledger_file##*/}"
-            return "$ledger_rc"
-        fi
-    fi
 
     if [[ -e $APO_OUTPUT_DIR || -L $APO_OUTPUT_DIR ]]; then
         [[ -d $APO_OUTPUT_DIR && ! -L $APO_OUTPUT_DIR ]] || {
@@ -1513,8 +1621,60 @@ apo_history_scan_retained_states() {
         (( had_nullglob == 1 )) || shopt -u nullglob
     fi
 
+    apo_history_find_latest_force_purge source_files || return 1
+    ledger_file=$(apo_history_ledger_path) || {
+        APO_HISTORY_SCAN_ERROR='History scan could not resolve the target ledger path.'
+        return 1
+    }
+    if [[ -e $ledger_file || -L $ledger_file ]]; then
+        [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
+            APO_HISTORY_SCAN_ERROR="Retained history ledger is not a safe readable regular file: ${ledger_file##*/}"
+            return 1
+        }
+        ledger_hash=$(sha256sum "$ledger_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        [[ $ledger_hash =~ ^[0-9a-f]{64}$ ]] || {
+            APO_HISTORY_SCAN_ERROR="Retained history ledger could not be hashed safely: ${ledger_file##*/}"
+            return 1
+        }
+        if [[ -n $APO_HISTORY_FORCE_PURGE_RUN_ID &&
+              $APO_HISTORY_FORCE_PURGE_LEDGER_HASH != NONE &&
+              $ledger_hash == "$APO_HISTORY_FORCE_PURGE_LEDGER_HASH" ]]; then
+            APO_HISTORY_FRESH_CUTOFF_RUN_ID=$APO_HISTORY_FORCE_PURGE_RUN_ID
+            APO_HISTORY_FRESH_CUTOFF_AT=$APO_HISTORY_FORCE_PURGE_AT
+            APO_HISTORY_FRESH_CUTOFF_RECORDS=0
+        elif apo_history_load_machine_ledger "$ledger_file" 1; then
+            if [[ -n $APO_HISTORY_FORCE_PURGE_RUN_ID ]] &&
+               { [[ -z $APO_HISTORY_FRESH_CUTOFF_RUN_ID ]] ||
+                 [[ $APO_HISTORY_FRESH_CUTOFF_RUN_ID < "$APO_HISTORY_FORCE_PURGE_RUN_ID" ]]; }; then
+                APO_HISTORY_SCAN_ERROR='The retained history ledger predates the destructive fresh-tuning cutoff.'
+                return 1
+            fi
+            APO_HISTORY_LEDGER_FILE=$ledger_file
+        else
+            ledger_rc=$?
+            APO_HISTORY_SCAN_ERROR="Retained history ledger failed strict machine-history validation: ${ledger_file##*/}"
+            apo_history_reset
+            APO_HISTORY_SCAN_ERROR="Retained history ledger failed strict machine-history validation: ${ledger_file##*/}"
+            return "$ledger_rc"
+        fi
+    elif [[ -n $APO_HISTORY_FORCE_PURGE_RUN_ID ]]; then
+        APO_HISTORY_FRESH_CUTOFF_RUN_ID=$APO_HISTORY_FORCE_PURGE_RUN_ID
+        APO_HISTORY_FRESH_CUTOFF_AT=$APO_HISTORY_FORCE_PURGE_AT
+        APO_HISTORY_FRESH_CUTOFF_RECORDS=0
+    fi
+
     for source_file in "${source_files[@]}"; do
         [[ -f $source_file && ! -L $source_file ]] || continue
+        basename=${source_file##*/}
+        source_run_id=${basename#"${APO_TARGET_SLUG}-"}
+        source_run_id=${source_run_id%.state}
+        if [[ -n $APO_HISTORY_FRESH_CUTOFF_RUN_ID ]]; then
+            apo_is_safe_run_id "$source_run_id" || {
+                APO_HISTORY_SCAN_ERROR="Retained state has an unsafe run ID after the fresh-tuning boundary: $basename"
+                return 1
+            }
+            [[ $source_run_id > "$APO_HISTORY_FRESH_CUTOFF_RUN_ID" ]] || continue
+        fi
         # The validator's APO_STATE_FILE assignment is isolated in its own
         # subshell; this is the caller's new-run state path.
         # shellcheck disable=SC2031
@@ -1611,6 +1771,17 @@ apo_history_prepare_ledger_meta() {
     apo_history_generated_timestamp_is_valid "$generated_at" || return 1
     apo_is_uint "${APO_HISTORY_ACCEPTED_STATES:-}" || return 1
     apo_is_uint "${APO_HISTORY_MACHINE_RECORDS:-}" || return 1
+    if [[ -n ${APO_HISTORY_FRESH_CUTOFF_RUN_ID:-} ||
+          -n ${APO_HISTORY_FRESH_CUTOFF_AT:-} ||
+          -n ${APO_HISTORY_FRESH_CUTOFF_RECORDS:-} ]]; then
+        [[ -n ${APO_HISTORY_FRESH_CUTOFF_RUN_ID:-} &&
+           -n ${APO_HISTORY_FRESH_CUTOFF_AT:-} &&
+           -n ${APO_HISTORY_FRESH_CUTOFF_RECORDS:-} ]] || return 1
+        apo_is_safe_run_id "$APO_HISTORY_FRESH_CUTOFF_RUN_ID" || return 1
+        apo_history_generated_timestamp_is_valid "$APO_HISTORY_FRESH_CUTOFF_AT" || return 1
+        apo_is_uint "$APO_HISTORY_FRESH_CUTOFF_RECORDS" || return 1
+        (( APO_HISTORY_FRESH_CUTOFF_RECORDS <= ${#APO_HISTORY_LEDGER_RECORDS[@]} )) || return 1
+    fi
     if [[ -n ${APO_HISTORY_RENDER_BASELINE_CPU:-} || -n ${APO_HISTORY_RENDER_BASELINE_GPU:-} ||
           -n ${APO_HISTORY_RENDER_BASELINE_VOLTAGE:-} ]]; then
         [[ -n ${APO_HISTORY_RENDER_BASELINE_CPU:-} && -n ${APO_HISTORY_RENDER_BASELINE_GPU:-} &&
@@ -1646,6 +1817,9 @@ apo_history_prepare_ledger_meta() {
     APO_HISTORY_LEDGER_META[SEALED_RUN_SCHEMA]=${APO_HISTORY_SEALED_RUN_SCHEMA:-}
     APO_HISTORY_LEDGER_META[SEALED_VALIDATION_SCHEMA]=${APO_HISTORY_SEALED_VALIDATION_SCHEMA:-}
     APO_HISTORY_LEDGER_META[SEALED_DURATION_SECONDS]=${APO_HISTORY_SEALED_DURATION_SECONDS:-}
+    APO_HISTORY_LEDGER_META[FRESH_TUNING_CUTOFF_RUN_ID]=${APO_HISTORY_FRESH_CUTOFF_RUN_ID:-}
+    APO_HISTORY_LEDGER_META[FRESH_TUNING_CUTOFF_AT]=${APO_HISTORY_FRESH_CUTOFF_AT:-}
+    APO_HISTORY_LEDGER_META[FRESH_TUNING_CUTOFF_RECORDS]=${APO_HISTORY_FRESH_CUTOFF_RECORDS:-}
 }
 
 apo_history_render_machine_ledger() {
@@ -1656,7 +1830,8 @@ apo_history_render_machine_ledger() {
         BASELINE_CPU BASELINE_GPU BASELINE_VOLTAGE MODEL COMPATIBLE ARCH
         BOOT_CONFIG TRYBOOT_CONFIG SEALED_RUN_ID SEALED_CPU SEALED_GPU
         SEALED_VOLTAGE SEALED_HASH SEALED_RUN_SCHEMA SEALED_VALIDATION_SCHEMA
-        SEALED_DURATION_SECONDS
+        SEALED_DURATION_SECONDS FRESH_TUNING_CUTOFF_RUN_ID
+        FRESH_TUNING_CUTOFF_AT FRESH_TUNING_CUTOFF_RECORDS
     )
     printf '%s\n' "$APO_HISTORY_MACHINE_BEGIN"
     for key in "${keys[@]}"; do
@@ -1673,6 +1848,7 @@ apo_history_render_machine_ledger() {
 apo_history_render_human_report() {
     local generated_at=$1 record timestamp run_id cpu gpu class domain
     local encoded_source encoded_reason basename source reason duration_text cpu_ceiling gpu_ceiling
+    local record_index=0 ledger_schema=${APO_HISTORY_LEDGER_META[LEDGER_SCHEMA]:-$APO_HISTORY_LEDGER_SCHEMA}
 
     cpu_ceiling=${APO_HISTORY_CPU_FAILURE_BOUNDARY:-none}
     gpu_ceiling=${APO_HISTORY_GPU_FAILURE_BOUNDARY:-none}
@@ -1686,6 +1862,15 @@ apo_history_render_human_report() {
     printf 'Authority: strictly validated state evidence plus the encoded durable section in this file.\n'
     printf 'Accepted retained auto-overclock states: %s\n' "${APO_HISTORY_LEDGER_META[ACCEPTED_STATES]}"
     printf 'Imported durable machine records: %s\n' "${APO_HISTORY_LEDGER_META[IMPORTED_MACHINE_RECORDS]}"
+    if [[ $ledger_schema == "$APO_HISTORY_LEDGER_SCHEMA" ]]; then
+        if [[ -n ${APO_HISTORY_FRESH_CUTOFF_RUN_ID:-} ]]; then
+            printf 'Active fresh-tuning boundary: %s | reset %s | record offset %s\n' \
+                "$APO_HISTORY_FRESH_CUTOFF_AT" "$APO_HISTORY_FRESH_CUTOFF_RUN_ID" \
+                "$APO_HISTORY_FRESH_CUTOFF_RECORDS"
+        else
+            printf 'Active fresh-tuning boundary: none\n'
+        fi
+    fi
     printf '\nValidated successes:\n'
     if [[ -n ${APO_HISTORY_SEALED_RUN_ID:-} ]]; then
         duration_text=$(apo_format_duration_hours "$APO_HISTORY_SEALED_DURATION_SECONDS") || return 1
@@ -1703,12 +1888,26 @@ apo_history_render_human_report() {
     printf '  CPU hard ceiling, exclusive: %s\n' "$cpu_ceiling"
     printf '  GPU/V3D hard ceiling, exclusive: %s\n' "$gpu_ceiling"
     printf '  Ambiguous failed-pair frontier: %s\n' "${APO_HISTORY_PAIR_FRONTIERS:-none}"
-    printf '\nDetailed failure evidence:\n'
+    if [[ $ledger_schema == "$APO_HISTORY_LEGACY_LEDGER_SCHEMA" ]]; then
+        printf '\nDetailed failure evidence:\n'
+    else
+        printf '\nDetailed failure and audit evidence:\n'
+    fi
     if (( ${#APO_HISTORY_LEDGER_RECORDS[@]} == 0 )); then
-        printf '  none\n'
+        if [[ -n ${APO_HISTORY_FRESH_CUTOFF_RUN_ID:-} ]]; then
+            printf '===== FRESH TUNING START: EVIDENCE ABOVE THIS LINE IS AUDIT-ONLY | %s | reset %s =====\n' \
+                "$APO_HISTORY_FRESH_CUTOFF_AT" "$APO_HISTORY_FRESH_CUTOFF_RUN_ID"
+        else
+            printf '  none\n'
+        fi
     else
         printf '  timestamp | run | cpu_mhz | gpu_mhz | class | domain | reason | source | state\n'
         for record in "${APO_HISTORY_LEDGER_RECORDS[@]}"; do
+            if [[ -n ${APO_HISTORY_FRESH_CUTOFF_RUN_ID:-} ]] &&
+               (( record_index == APO_HISTORY_FRESH_CUTOFF_RECORDS )); then
+                printf '===== FRESH TUNING START: EVIDENCE ABOVE THIS LINE IS AUDIT-ONLY | %s | reset %s =====\n' \
+                    "$APO_HISTORY_FRESH_CUTOFF_AT" "$APO_HISTORY_FRESH_CUTOFF_RUN_ID"
+            fi
             IFS='|' read -r timestamp run_id cpu gpu class domain encoded_source encoded_reason basename <<< "$record"
             source=$(apo_history_decode_field "$encoded_source") || return 1
             reason=$(apo_history_decode_field "$encoded_reason") || return 1
@@ -1716,7 +1915,13 @@ apo_history_render_human_report() {
             reason=${reason//$'\n'/ }
             printf '  %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
                 "$timestamp" "$run_id" "$cpu" "$gpu" "$class" "$domain" "$reason" "$source" "$basename"
+            record_index=$((record_index + 1))
         done
+        if [[ -n ${APO_HISTORY_FRESH_CUTOFF_RUN_ID:-} ]] &&
+           (( record_index == APO_HISTORY_FRESH_CUTOFF_RECORDS )); then
+            printf '===== FRESH TUNING START: EVIDENCE ABOVE THIS LINE IS AUDIT-ONLY | %s | reset %s =====\n' \
+                "$APO_HISTORY_FRESH_CUTOFF_AT" "$APO_HISTORY_FRESH_CUTOFF_RUN_ID"
+        fi
     fi
     printf '\n%s\n' "$APO_HISTORY_HUMAN_END"
 }
@@ -1803,6 +2008,143 @@ apo_history_refresh() {
     if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi
     printf '\n'
     apo_history_print_human_report "$APO_HISTORY_LEDGER_FILE"
+}
+
+apo_history_prepare_fresh_tuning_boundary() {
+    (( ${APO_FRESH_TUNING:-0} == 1 )) || return 0
+    if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
+        local ledger_file ledger_dir
+        ledger_file=$(apo_history_ledger_path) || {
+            APO_HISTORY_SCAN_ERROR='Destructive fresh tuning could not resolve the history ledger path.'
+            return 1
+        }
+        ledger_dir=$(dirname -- "$ledger_file")
+        if [[ -e $ledger_dir || -L $ledger_dir ]]; then
+            [[ -d $ledger_dir && ! -L $ledger_dir ]] || {
+                APO_HISTORY_SCAN_ERROR='Destructive fresh tuning found an unsafe history directory.'
+                return 1
+            }
+        fi
+        if [[ -e $ledger_file || -L $ledger_file ]]; then
+            [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
+                APO_HISTORY_SCAN_ERROR='Destructive fresh tuning found an unsafe history ledger path.'
+                return 1
+            }
+        fi
+        return 0
+    fi
+    apo_history_scan_retained_states || return 1
+}
+
+apo_history_commit_fresh_tuning_purge() {
+    local cutoff_at ledger_file ledger_dir ledger_hash=NONE verify_hash
+
+    (( ${APO_FRESH_TUNING:-0} == 1 && ${APO_FRESH_TUNING_FORCE:-0} == 1 )) || return 1
+    apo_is_safe_run_id "${APO_RUN_ID:-}" || return 1
+    cutoff_at=$(apo_now_iso) || return 1
+    apo_history_generated_timestamp_is_valid "$cutoff_at" || return 1
+    ledger_file=$(apo_history_ledger_path) || return 1
+    ledger_dir=$(dirname -- "$ledger_file")
+    if [[ -e $ledger_dir || -L $ledger_dir ]]; then
+        [[ -d $ledger_dir && ! -L $ledger_dir ]] || return 1
+    fi
+    if [[ -e $ledger_file || -L $ledger_file ]]; then
+        [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || return 1
+        ledger_hash=$(sha256sum "$ledger_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        [[ $ledger_hash =~ ^[0-9a-f]{64}$ ]] || return 1
+    fi
+
+    apo_state_set RESET_FRESH_TUNING 1
+    apo_state_set RESET_FRESH_TUNING_FORCE 1
+    apo_state_set FRESH_TUNING_CUTOFF_RUN_ID "$APO_RUN_ID"
+    apo_state_set FRESH_TUNING_CUTOFF_AT "$cutoff_at"
+    apo_state_set FRESH_TUNING_CUTOFF_RECORDS 0
+    apo_state_set FRESH_TUNING_PURGED_AT "$cutoff_at"
+    apo_state_set FRESH_TUNING_PURGED_LEDGER_HASH "$ledger_hash"
+    apo_state_set FRESH_TUNING_PURGE_COMMITTED 1
+    apo_state_save || return 1
+
+    if [[ $ledger_hash != NONE ]]; then
+        [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || return 1
+        verify_hash=$(sha256sum "$ledger_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
+        [[ $verify_hash == "$ledger_hash" ]] || return 1
+        rm -f -- "$ledger_file" || return 1
+        [[ ! -e $ledger_file && ! -L $ledger_file ]] || return 1
+        sync "$ledger_dir" || return 1
+    fi
+
+    APO_HISTORY_FRESH_CUTOFF_RUN_ID=$APO_RUN_ID
+    APO_HISTORY_FRESH_CUTOFF_AT=$cutoff_at
+    APO_HISTORY_FRESH_CUTOFF_RECORDS=0
+    APO_HISTORY_LEDGER_FILE=''
+}
+
+apo_history_commit_fresh_tuning_boundary() {
+    local cutoff_at cutoff_records source_encoded reason_encoded ledger_file archived_reason
+    local rebuild_rc=0
+
+    (( ${APO_FRESH_TUNING:-0} == 1 )) || return 0
+    if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
+        apo_history_commit_fresh_tuning_purge
+        return $?
+    fi
+    apo_is_safe_run_id "${APO_RUN_ID:-}" || return 1
+    cutoff_at=$(apo_now_iso) || return 1
+    apo_history_generated_timestamp_is_valid "$cutoff_at" || return 1
+
+    if [[ -n ${APO_HISTORY_SEALED_RUN_ID:-} ]]; then
+        archived_reason="Fresh tuning reset archived the prior protected applied result after ${APO_HISTORY_SEALED_DURATION_SECONDS}s of final validation. Permanent hash: ${APO_HISTORY_SEALED_HASH}."
+        source_encoded=$(apo_history_encode_field FRESH_TUNING_ARCHIVED_APPLIED_RESULT) || return 1
+        reason_encoded=$(apo_history_encode_field "$archived_reason") || return 1
+        apo_history_record_ledger "$cutoff_at" "$APO_HISTORY_SEALED_RUN_ID" \
+            "$APO_HISTORY_SEALED_CPU" "$APO_HISTORY_SEALED_GPU" PASS NONE \
+            "$source_encoded" "$reason_encoded" \
+            "${APO_TARGET_SLUG}-${APO_HISTORY_SEALED_RUN_ID}.state" || return 1
+    fi
+
+    cutoff_records=${#APO_HISTORY_LEDGER_RECORDS[@]}
+    APO_HISTORY_FRESH_CUTOFF_RUN_ID=$APO_RUN_ID
+    APO_HISTORY_FRESH_CUTOFF_AT=$cutoff_at
+    APO_HISTORY_FRESH_CUTOFF_RECORDS=$cutoff_records
+    APO_HISTORY_ACCEPTED_STATES=0
+    APO_HISTORY_MACHINE_RECORDS=$cutoff_records
+    APO_HISTORY_CPU_FAILURE_BOUNDARY=''
+    APO_HISTORY_GPU_FAILURE_BOUNDARY=''
+    APO_HISTORY_PAIR_FRONTIERS=''
+    APO_HISTORY_PROVENANCE=''
+    APO_HISTORY_RECENT_PAIR_FRONTIER=''
+    APO_HISTORY_RECENT_PAIR_RUN_ID=''
+    APO_HISTORY_SEALED_RUN_ID=''
+    APO_HISTORY_SEALED_CPU=''
+    APO_HISTORY_SEALED_GPU=''
+    APO_HISTORY_SEALED_VOLTAGE=''
+    APO_HISTORY_SEALED_HASH=''
+    APO_HISTORY_SEALED_RUN_SCHEMA=''
+    APO_HISTORY_SEALED_VALIDATION_SCHEMA=''
+    APO_HISTORY_SEALED_DURATION_SECONDS=''
+
+    ledger_file=$(apo_history_ledger_path) || return 1
+    APO_HISTORY_RENDER_BASELINE_CPU=${APO_NORMAL_CPU:-}
+    APO_HISTORY_RENDER_BASELINE_GPU=${APO_NORMAL_GPU:-}
+    APO_HISTORY_RENDER_BASELINE_VOLTAGE=${APO_NORMAL_VOLTAGE:-}
+    apo_history_rebuild_ledger "$ledger_file" || rebuild_rc=$?
+    APO_HISTORY_RENDER_BASELINE_CPU=''
+    APO_HISTORY_RENDER_BASELINE_GPU=''
+    APO_HISTORY_RENDER_BASELINE_VOLTAGE=''
+    (( rebuild_rc == 0 )) || return "$rebuild_rc"
+
+    apo_history_load_machine_ledger "$ledger_file" 0 || return 1
+    [[ $APO_HISTORY_FRESH_CUTOFF_RUN_ID == "$APO_RUN_ID" &&
+       $APO_HISTORY_FRESH_CUTOFF_AT == "$cutoff_at" &&
+       $APO_HISTORY_FRESH_CUTOFF_RECORDS == "$cutoff_records" &&
+       -z $APO_HISTORY_SEALED_RUN_ID ]] || return 1
+
+    apo_state_set RESET_FRESH_TUNING 1
+    apo_state_set FRESH_TUNING_CUTOFF_RUN_ID "$APO_RUN_ID"
+    apo_state_set FRESH_TUNING_CUTOFF_AT "$cutoff_at"
+    apo_state_set FRESH_TUNING_CUTOFF_RECORDS "$cutoff_records"
+    apo_state_save
+    APO_HISTORY_LEDGER_FILE=$ledger_file
 }
 
 apo_history_prepare_has_no_retained_evidence() {

@@ -1020,7 +1020,7 @@ cmd_status_snapshot() {
 cmd_discover() {
     local boot_config tryboot_config boot_mount model compatible os_id os_version gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
     local boot_watchdog kernel_watchdog runtime_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source display_baseline display_present audio_baseline permanent_hash
-    local stress_ng_binary stress_ng_gpu_available stress_ng_gpu_strategy_value render_node tryboot_exists tryboot_type tryboot_hash
+    local stress_ng_binary memtester_binary memory_stress_available=0 stress_ng_gpu_available stress_ng_gpu_strategy_value render_node tryboot_exists tryboot_type tryboot_hash
     local glmark_wayland_binary glmark_data cage_binary display_drm_device graphical_gpu_strategy_value graphical_gpu_available=0
     local network_root=/var/lib/autopioverclock/network-watchdog network_config network_keeper network_service
     local observer_config observer_keeper observer_service
@@ -1070,6 +1070,8 @@ cmd_discover() {
         PERMANENT_TUNING_EVIDENCE='permanent-config-changed-after-audit'
     fi
     stress_ng_binary=$(command -v stress-ng 2>/dev/null || true)
+    memtester_binary=$(command -v memtester 2>/dev/null || true)
+    if [[ -n $memtester_binary ]] && "$memtester_binary" 1M 1 >/dev/null 2>&1; then memory_stress_available=1; fi
     render_node=$(v3d_render_node || true)
     stress_ng_gpu_strategy_value=$([[ -n $stress_ng_binary && -n $render_node ]] && stress_ng_gpu_strategy "$render_node" || true)
     stress_ng_gpu_available=$([[ -n $stress_ng_gpu_strategy_value ]] && printf 1 || printf 0)
@@ -1171,8 +1173,10 @@ cmd_discover() {
     emit_data AUDIO_BASELINE "$audio_baseline"
     emit_data DISPLAY_CONNECTED "$([[ -n $display_baseline ]] && printf 1 || printf 0)"
     emit_data CPU_STRESS_AVAILABLE "$([[ -n $stress_ng_binary ]] && printf 1 || printf 0)"
+    emit_data MEMORY_STRESS_AVAILABLE "$memory_stress_available"
     emit_data GPU_STRESS_AVAILABLE "$([[ $stress_ng_gpu_available == 1 || $graphical_gpu_available == 1 ]] && printf 1 || printf 0)"
     emit_data STRESS_NG_BINARY "$stress_ng_binary"
+    emit_data MEMTESTER_BINARY "$memtester_binary"
     emit_data STRESS_NG_GPU_AVAILABLE "$stress_ng_gpu_available"
     emit_data STRESS_NG_GPU_STRATEGY "$stress_ng_gpu_strategy_value"
     emit_data DRM_RENDER_NODE "$render_node"
@@ -1568,33 +1572,94 @@ terminate_child() {
     wait "$child_pid" 2>/dev/null || true
 }
 
-start_io_activity() {
-    local destination=$1
+memory_test_size_mib() {
+    local available_kib available_mib target reserve_limited
+    available_kib=$(awk '$1 == "MemAvailable:" {print $2; exit}' /proc/meminfo 2>/dev/null || true)
+    [[ $available_kib =~ ^[1-9][0-9]*$ ]] || return 1
+    available_mib=$((available_kib / 1024))
+    (( available_mib > 1024 )) || return 1
+    target=$((available_mib * 60 / 100))
+    reserve_limited=$((available_mib - 1024))
+    (( target > reserve_limited )) && target=$reserve_limited
+    (( target >= 256 )) || return 1
+    printf '%s' "$target"
+}
+
+memtester_exit_is_stability_failure() {
+    local exit_code=$1
+    [[ $exit_code =~ ^[0-9]+$ ]] || return 1
+    (( exit_code >= 2 && exit_code <= 7 && (exit_code & 6) != 0 ))
+}
+
+start_memory_activity() {
+    local binary=$1 output_file=$2 count_file=$3 size_mib=$4
     (
         trap 'exit 0' TERM INT HUP
+        memory_loop=0
         while :; do
-            dd if=/dev/zero of="${destination}.new" bs=1M count=1 conv=fsync status=none || exit 1
-            mv -f "${destination}.new" "$destination" || exit 1
-            sha256sum "$destination" >/dev/null || exit 1
-            pause_seconds=0
-            while (( pause_seconds < 300 )); do sleep 1; pause_seconds=$((pause_seconds + 1)); done
+            printf 'MEMORY_LOOP_START=%s size_mib=%s\n' "$((memory_loop + 1))" "$size_mib"
+            if "$binary" "${size_mib}M" 1; then
+                memory_loop=$((memory_loop + 1))
+                printf '%s\n' "$memory_loop" > "${count_file}.new" || exit 1
+                mv -f "${count_file}.new" "$count_file" || exit 1
+                printf 'MEMORY_LOOP_PASS=%s size_mib=%s\n' "$memory_loop" "$size_mib"
+            else
+                memory_rc=$?
+                printf 'MEMORY_LOOP_FAILURE=%s rc=%s\n' "$((memory_loop + 1))" "$memory_rc"
+                exit "$memory_rc"
+            fi
         done
-    ) >/dev/null 2>&1 &
+    ) >>"$output_file" 2>&1 &
+    stress_memory_pid=$!
+}
+
+start_io_activity() {
+    local destination=$1 output_file=${2:-/dev/null} count_file=${3:-}
+    (
+        trap 'exit 0' TERM INT HUP
+        io_cycle=0
+        while :; do
+            if (( io_cycle % 2 == 0 )); then io_source=/dev/urandom; else io_source=/dev/zero; fi
+            dd if="$io_source" of="${destination}.new" bs=1M count=64 conv=fsync status=none || exit 1
+            expected_hash=$(sha256sum "${destination}.new" | awk 'NR == 1 {print $1}') || exit 1
+            [[ $expected_hash =~ ^[0-9a-f]{64}$ ]] || exit 1
+            mv -f "${destination}.new" "$destination" || exit 1
+            sync || exit 1
+            actual_hash=$(sha256sum "$destination" | awk 'NR == 1 {print $1}') || exit 1
+            [[ $actual_hash == "$expected_hash" ]] || exit 1
+            io_cycle=$((io_cycle + 1))
+            if [[ -n $count_file ]]; then
+                printf '%s\n' "$io_cycle" > "${count_file}.new" || exit 1
+                mv -f "${count_file}.new" "$count_file" || exit 1
+            fi
+            printf 'IO_CYCLE_PASS=%s source=%s bytes=67108864 sha256=%s\n' "$io_cycle" "${io_source##*/}" "$actual_hash"
+            pause_seconds=0
+            while (( pause_seconds < 600 )); do sleep 1; pause_seconds=$((pause_seconds + 1)); done
+        done
+    ) >>"$output_file" 2>&1 &
     stress_io_pid=$!
 }
 
 stress_cpu_pid=''
 stress_gpu_pid=''
 stress_io_pid=''
+stress_memory_pid=''
 stress_work_dir=''
 stress_io_file=''
+stress_io_output=''
+stress_io_count_file=''
+stress_memory_output=''
+stress_memory_count_file=''
 
 cleanup_stress() {
     trap '' INT TERM HUP
     if [[ -n ${stress_cpu_pid:-} ]]; then terminate_child "$stress_cpu_pid"; stress_cpu_pid=''; fi
     if [[ -n ${stress_gpu_pid:-} ]]; then terminate_child "$stress_gpu_pid"; stress_gpu_pid=''; fi
     if [[ -n ${stress_io_pid:-} ]]; then terminate_child "$stress_io_pid"; stress_io_pid=''; fi
+    if [[ -n ${stress_memory_pid:-} ]]; then terminate_child "$stress_memory_pid"; stress_memory_pid=''; fi
     if [[ -n ${stress_io_file:-} ]]; then rm -f -- "$stress_io_file" "${stress_io_file}.new" 2>/dev/null || true; stress_io_file=''; fi
+    if [[ -n ${stress_io_count_file:-} ]]; then rm -f -- "$stress_io_count_file" "${stress_io_count_file}.new" 2>/dev/null || true; stress_io_count_file=''; fi
+    if [[ -n ${stress_memory_count_file:-} ]]; then rm -f -- "$stress_memory_count_file" "${stress_memory_count_file}.new" 2>/dev/null || true; stress_memory_count_file=''; fi
     if [[ ${stress_work_dir:-} == /tmp/autopioverclock-stress.* ]]; then rm -rf -- "$stress_work_dir"; fi
     stress_work_dir=''
 }
@@ -1669,7 +1734,7 @@ graphical_gpu_log_has_success() {
     grep -Fq "Found connector '$connector_short'" "$log_file" || return 1
     grep -Fq "'$connector_short' connected" "$log_file" || return 1
     grep -Eq "Modesetting with ${expected_mode//x/[x]}[[:space:]]+@" "$log_file" || return 1
-    grep -Eq "\[[^]]+\][[:space:]]+duration=${segment_duration}([.:]|[[:space:]])" "$log_file" || return 1
+    grep -Eq "^\[[^]]+\].*([.:]|[[:space:]])duration=${segment_duration}([.:]|[[:space:]]).*FPS:[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]+FrameTime:[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]+ms" "$log_file" || return 1
     grep -Eq 'glmark2 Score:[[:space:]]*[1-9][0-9]*' "$log_file" || return 1
     grep -Fq '"Success"' "$result_file"
 }
@@ -1753,11 +1818,13 @@ launch_debian_graphical_gpu_segment() {
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
     local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors graphical_errors
-    local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
+    local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 memory_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 cpu_dead=0 gpu_dead=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
     local cpu_segment_duration=0 gpu_segment_duration=0 cpu_segment_end=0 gpu_segment_end=0
     local cpu_segment_number=0 gpu_segment_number=0 remaining=0 segment_tolerance=0 cpu_segment_bad=0 gpu_segment_bad=0
+    local memory_binary='' memory_size_mib=0 memory_loops=0 io_cycles=0 transition_count=0
+    local persistent_stress_dir=${APO_STRESS_PERSISTENT_DIR:-/var/lib/autopioverclock/stress}
     : "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
@@ -1770,9 +1837,10 @@ cmd_stress() {
         *) emit_result HARNESS_FAILURE "Unknown fan policy for stress: $fan_policy"; return 1 ;;
     esac
     command -v stress-ng >/dev/null 2>&1 || { emit_result HARNESS_FAILURE 'stress-ng is not installed.'; return 1; }
-    stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_work_dir=''; stress_io_file=''
+    stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_memory_pid=''; stress_work_dir=''; stress_io_file=''
+    stress_io_output=''; stress_io_count_file=''; stress_memory_output=''; stress_memory_count_file=''
     stress_work_dir=$(mktemp -d /tmp/autopioverclock-stress.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create stress workspace.'; return 1; }
-    cpu_output="$stress_work_dir/cpu.log"; gpu_output="$stress_work_dir/gpu.log"; stress_io_file=/tmp/autopioverclock-io-$$
+    cpu_output="$stress_work_dir/cpu.log"; gpu_output="$stress_work_dir/gpu.log"
     trap cleanup_stress EXIT
     trap 'stress_signal_cleanup 130' INT
     trap 'stress_signal_cleanup 143' TERM
@@ -1809,7 +1877,27 @@ cmd_stress() {
             ;;
     esac
     [[ -n $stress_cpu_pid || -n $stress_gpu_pid ]] || { emit_result HARNESS_FAILURE "Unknown stress kind: $stress_kind"; return 1; }
-    if [[ $io_check == 1 ]]; then start_io_activity "$stress_io_file"; fi
+    if [[ $io_check == 1 ]]; then
+        if [[ -e $persistent_stress_dir || -L $persistent_stress_dir ]]; then
+            [[ -d $persistent_stress_dir && ! -L $persistent_stress_dir ]] || { emit_result HARNESS_FAILURE 'The persistent stress directory is unsafe.'; return 1; }
+        else
+            mkdir -p -- "$persistent_stress_dir" || { emit_result HARNESS_FAILURE 'Could not create the persistent stress directory.'; return 1; }
+        fi
+        chmod 700 "$persistent_stress_dir" || { emit_result HARNESS_FAILURE 'Could not protect the persistent stress directory.'; return 1; }
+        memory_binary=$(command -v memtester 2>/dev/null || true)
+        [[ -n $memory_binary ]] || { emit_result HARNESS_FAILURE 'memtester is unavailable for final endurance.'; return 1; }
+        memory_size_mib=$(memory_test_size_mib || true)
+        [[ $memory_size_mib =~ ^[1-9][0-9]*$ ]] || { emit_result HARNESS_FAILURE 'Available RAM is too low or unreadable for the guarded memory workload.'; return 1; }
+        stress_io_file="$persistent_stress_dir/io-$$.bin"
+        stress_io_output="$stress_work_dir/io.log"
+        stress_io_count_file="$stress_work_dir/io.count"
+        stress_memory_output="$stress_work_dir/memory.log"
+        stress_memory_count_file="$stress_work_dir/memory.count"
+        : > "$stress_io_output"; : > "$stress_memory_output"
+        printf '0\n' > "$stress_io_count_file"; printf '0\n' > "$stress_memory_count_file"
+        start_memory_activity "$memory_binary" "$stress_memory_output" "$stress_memory_count_file" "$memory_size_mib"
+        start_io_activity "$stress_io_file" "$stress_io_output" "$stress_io_count_file"
+    fi
 
     while :; do
         now_seconds=$SECONDS
@@ -1834,6 +1922,13 @@ cmd_stress() {
             wait "$stress_io_pid"; io_rc=$?; stress_io_pid=''
             failure_class=STABILITY_FAILURE
             failure_reason="Filesystem activity failed during load with rc=$io_rc."
+            break
+        fi
+        if [[ -n $stress_memory_pid ]] && ! kill -0 "$stress_memory_pid" 2>/dev/null; then
+            if wait "$stress_memory_pid"; then memory_rc=0; else memory_rc=$?; fi
+            stress_memory_pid=''
+            if memtester_exit_is_stability_failure "$memory_rc"; then failure_class=STABILITY_FAILURE; else failure_class=HARNESS_FAILURE; fi
+            failure_reason="Memory-pattern workload exited during load with rc=$memory_rc."
             break
         fi
         # Reap every worker found dead in the same supervision poll. A clean
@@ -1876,6 +1971,17 @@ cmd_stress() {
                 failure_reason="GPU stress exited early with rc=$gpu_rc."
             fi
             break
+        fi
+        if (( io_check == 1 && now_seconds + 10 < expected_end && ( cpu_dead == 1 || gpu_dead == 1 ) )); then
+            if [[ -n $stress_cpu_pid ]] && kill -0 "$stress_cpu_pid" 2>/dev/null; then terminate_child "$stress_cpu_pid"; stress_cpu_pid=''; cpu_rc=0; cpu_dead=1; fi
+            if [[ -n $stress_gpu_pid ]] && kill -0 "$stress_gpu_pid" 2>/dev/null; then terminate_child "$stress_gpu_pid"; stress_gpu_pid=''; gpu_rc=0; gpu_dead=1; fi
+            if [[ -n $stress_memory_pid ]]; then terminate_child "$stress_memory_pid"; stress_memory_pid=''; fi
+            transition_count=$((transition_count + 1))
+            printf 'LOAD_TRANSITION_START=%s idle_seconds=10 elapsed=%s/%ss\n' "$transition_count" "$((now_seconds - start_seconds))" "$duration"
+            sleep 10
+            now_seconds=$SECONDS
+            printf 'LOAD_TRANSITION_RELOAD=%s elapsed=%s/%ss\n' "$transition_count" "$((now_seconds - start_seconds))" "$duration"
+            start_memory_activity "$memory_binary" "$stress_memory_output" "$stress_memory_count_file" "$memory_size_mib"
         fi
         if (( cpu_dead == 1 && now_seconds < expected_end )); then
             remaining=$((expected_end - now_seconds))
@@ -1943,10 +2049,15 @@ cmd_stress() {
     fi
     if [[ -n $stress_cpu_pid ]]; then wait "$stress_cpu_pid" 2>/dev/null; cpu_rc=$?; stress_cpu_pid=''; fi
     if [[ -n $stress_gpu_pid ]]; then wait "$stress_gpu_pid" 2>/dev/null; gpu_rc=$?; stress_gpu_pid=''; fi
+    if [[ -n $stress_memory_pid ]]; then terminate_child "$stress_memory_pid"; stress_memory_pid=''; fi
     if [[ -n $stress_io_pid ]]; then terminate_child "$stress_io_pid"; stress_io_pid=''; fi
+    if [[ -r $stress_memory_count_file ]]; then memory_loops=$(<"$stress_memory_count_file"); fi
+    if [[ -r $stress_io_count_file ]]; then io_cycles=$(<"$stress_io_count_file"); fi
     [[ -f $cpu_output ]] && { printf '%s\n' '--- CPU stress output ---'; cat "$cpu_output"; }
     [[ -f $gpu_output ]] && { printf '%s\n' '--- GPU stress output ---'; cat "$gpu_output"; }
-    printf 'CPU_RC=%s GPU_RC=%s IO_RC=%s\n' "$cpu_rc" "$gpu_rc" "$io_rc"
+    [[ -n $stress_memory_output && -f $stress_memory_output ]] && { printf '%s\n' '--- Memory stress output ---'; cat "$stress_memory_output"; }
+    [[ -n $stress_io_output && -f $stress_io_output ]] && { printf '%s\n' '--- Persistent I/O output ---'; cat "$stress_io_output"; }
+    printf 'CPU_RC=%s GPU_RC=%s MEMORY_RC=%s IO_RC=%s MEMORY_LOOPS=%s IO_CYCLES=%s LOAD_TRANSITIONS=%s\n' "$cpu_rc" "$gpu_rc" "$memory_rc" "$io_rc" "$memory_loops" "$io_cycles" "$transition_count"
     printf '%s\n' "$(current_throttle)"
     vcgencmd measure_clock arm 2>/dev/null || true; vcgencmd measure_clock v3d 2>/dev/null || true; vcgencmd pmic_read_adc EXT5V_V 2>/dev/null || true
     if [[ -z $failure_class && ( $cpu_rc -ne 0 || $gpu_rc -ne 0 ) ]]; then
@@ -1958,6 +2069,13 @@ cmd_stress() {
     if [[ -z $failure_class ]]; then
         [[ $stress_kind != cpu ]] || [[ -s $cpu_output ]] || { failure_class=HARNESS_FAILURE; failure_reason='CPU stress produced no output.'; }
         [[ $stress_kind != gpu && $stress_kind != combined ]] || [[ -s $gpu_output ]] || { failure_class=HARNESS_FAILURE; failure_reason='GPU stress produced no output.'; }
+    fi
+    if [[ -z $failure_class && $io_check == 1 ]]; then
+        if [[ ! $memory_loops =~ ^[1-9][0-9]*$ ]]; then
+            failure_class=HARNESS_FAILURE; failure_reason='Final endurance ended without one complete memtester pattern pass.'
+        elif [[ ! $io_cycles =~ ^[1-9][0-9]*$ ]]; then
+            failure_class=HARNESS_FAILURE; failure_reason='Final endurance ended without one complete persistent write, sync, and readback cycle.'
+        fi
     fi
     if [[ -n $failure_class ]]; then emit_result "$failure_class" "$failure_reason" "$max_seen"; return 1; fi
     emit_result PASS "$stress_kind stress completed successfully." "$max_seen"
