@@ -318,7 +318,7 @@ apo_reset_stock() {
     apo_state_set RESET_STATUS REBOOTING
     apo_state_set SUBPHASE REBOOTING
     apo_state_save
-    apo_event reset-reboot INFO '' 'Rebooting to activate the backed-up stock configuration.'
+    apo_event reset-reboot INFO '' 'Rebooting to activate the rendered stock configuration. The original permanent configuration remains preserved in its verified reset backup.'
     apo_remote_worker "$APO_REMOTE_WORKER" reboot-stock-reset "$APO_PERMANENT_CONFIG_HASH" >/dev/null 2>&1 || true
     if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" stock-reset; then
         if [[ ${APO_REBOOT_HANDSHAKE_STAGE:-wait} == worker ]]; then
