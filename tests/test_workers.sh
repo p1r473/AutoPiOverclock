@@ -1553,6 +1553,9 @@ DEBIAN_GRAPHICAL_SEGMENT_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/worker
         command /bin/sleep 0.1
         SECONDS=$((SECONDS + 10))
     }
+    # Make SECONDS an ordinary fixture counter so real wall-clock ticks cannot
+    # move the mocked hourly boundary by one second on a loaded test host.
+    unset SECONDS
     SECONDS=0
     cmd_stress combined 20 75 graphical "connector=card0-DSI-1;mode=800x480;enabled=enabled" 0 2400 800 throttled=0x0 60
 ' 2>&1)
@@ -1752,8 +1755,9 @@ TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_D
     launch_debian_cpu_segment() {
         local segment_duration=$1 output_file=$2 segment_number=$3
         printf "segment=%s duration=%s\n" "$segment_number" "$segment_duration" >> "$output_file"
-        (command /bin/sleep 0.2) &
+        (:) &
         stress_cpu_pid=$!
+        fixture_cpu_launch_poll=$fixture_poll
     }
     start_memory_activity() {
         printf "1\n" > "$3"
@@ -1767,16 +1771,26 @@ TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_D
     }
     terminate_child() { kill -TERM "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
     fixture_poll=0
+    fixture_cpu_launch_poll=0
+    kill() {
+        if [[ ${1:-} == -0 && -n ${stress_cpu_pid:-} && ${2:-} == "$stress_cpu_pid" ]]; then
+            (( fixture_poll == fixture_cpu_launch_poll ))
+            return
+        fi
+        builtin kill "$@"
+    }
     sleep() {
         case $1 in
             10) SECONDS=$((SECONDS + 10)) ;;
             1)
                 fixture_poll=$((fixture_poll + 1))
                 if (( fixture_poll == 1 )); then SECONDS=$((SECONDS + 3600)); else SECONDS=$((SECONDS + 3590)); fi
-                command /bin/sleep 0.3
                 ;;
         esac
     }
+    # Make SECONDS an ordinary fixture counter so real wall-clock ticks cannot
+    # move the mocked hourly boundary by one second on a loaded test host.
+    unset SECONDS
     SECONDS=0
     cmd_stress cpu 7200 75 headless "" 1 2400 800 throttled=0x0 60
 ' 2>&1)

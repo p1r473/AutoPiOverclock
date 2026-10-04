@@ -230,7 +230,7 @@ Common options:
   --gpu-resolution MHZ     GPU refinement/backoff granularity (default: 25; 1-1000)
   --no-history             Ignore compatible retained tuning history for this new run
   --freshtuning            Reset-only persistent boundary; earlier history becomes audit-only
-  -f                       With reset --freshtuning, permanently delete the old history ledger
+  -f                       With reset --freshtuning, delete current and obsolete history ledgers
   --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning/test
   --cpu MHZ                Exact CPU clock for test TARGET
   --gpu MHZ                Exact GPU/V3D clock for test TARGET

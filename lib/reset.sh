@@ -351,8 +351,8 @@ apo_reset_stock() {
         apo_history_commit_fresh_tuning_boundary ||
             apo_die 'Stock was verified, but the requested fresh-tuning history operation could not be committed safely.' "$APO_EXIT_INTERNAL"
         if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
-            apo_summary_line "Fresh tuning history: old ledger deleted at $APO_HISTORY_FRESH_CUTOFF_AT"
-            apo_event reset-fresh-tuning-purge PASS '' 'The old history ledger was deleted after verified stock recovery. Earlier retained run states remain audit files but are excluded from future tuning by this reset cutoff.'
+            apo_summary_line "Fresh tuning history: current and obsolete recognized ledgers deleted at $APO_HISTORY_FRESH_CUTOFF_AT"
+            apo_event reset-fresh-tuning-purge PASS '' 'The current and obsolete history ledgers that existed were deleted after verified stock recovery. Earlier retained run states remain audit files but are excluded from future tuning by this reset cutoff.'
         else
             apo_summary_line "Fresh tuning boundary: $APO_HISTORY_FRESH_CUTOFF_AT, reset $APO_HISTORY_FRESH_CUTOFF_RUN_ID"
             apo_event reset-fresh-tuning PASS '' 'Earlier retained tuning evidence remains readable above the boundary but no longer constrains future tuning. New evidence below the boundary is authoritative.'
@@ -370,7 +370,7 @@ apo_reset_stock() {
     apo_summary_line "Verified boot ID: $new_boot_id"
     apo_summary_line 'Result: stock reset verified'
     if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
-        fresh_history_note=' The old history ledger was deleted and earlier run-state evidence is below the destructive cutoff.'
+        fresh_history_note=' Current and obsolete recognized history ledgers were deleted and earlier run-state evidence is below the destructive cutoff.'
     elif (( ${APO_FRESH_TUNING:-0} == 1 )); then
         fresh_history_note=' Earlier tuning boundaries are audit-only for future searches.'
     fi
