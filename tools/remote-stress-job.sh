@@ -5,6 +5,12 @@
 set -Eeuo pipefail
 
 readonly APO_JOB_FORMAT=1
+: "${APO_JOB_RAM_MIB:=192}"
+[[ $APO_JOB_RAM_MIB =~ ^[1-9][0-9]*$ ]] || APO_JOB_RAM_MIB=192
+readonly APO_JOB_RAM_MIB
+: "${APO_JOB_STARTUP_GRACE_SECONDS:=15}"
+[[ $APO_JOB_STARTUP_GRACE_SECONDS =~ ^[1-9][0-9]*$ ]] || APO_JOB_STARTUP_GRACE_SECONDS=15
+readonly APO_JOB_STARTUP_GRACE_SECONDS
 : "${APO_JOB_HARD_GRACE_SECONDS:=300}"
 [[ $APO_JOB_HARD_GRACE_SECONDS =~ ^[1-9][0-9]*$ ]] || APO_JOB_HARD_GRACE_SECONDS=300
 readonly APO_JOB_HARD_GRACE_SECONDS
@@ -26,6 +32,73 @@ valid_uint() { [[ ${1-} =~ ^[0-9]+$ ]]; }
 valid_boot_id() { [[ ${1-} =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; }
 valid_job_id() { [[ ${1-} =~ ^job-[0-9a-f]{32}$ ]]; }
 valid_base64() { [[ ${1-} != *[^A-Za-z0-9+/=]* && $(( ${#1} % 4 )) -eq 0 ]]; }
+valid_connection_ip() { [[ -n ${1-} && ${1-} != *[^0-9A-Fa-f:.]* ]]; }
+
+network_port() {
+    local token=$1
+    valid_hex64 "$token" || return 1
+    printf '%s' "$((20000 + 16#${token:0:4} % 30000))"
+}
+
+ram_root_mount_valid() {
+    local root=$1 expected
+    [[ ${APO_JOB_TEST_ALLOW_NON_TMPFS:-0} == 1 ]] && return 0
+    expected=$(readlink -f -- "$root" 2>/dev/null || true)
+    [[ -n $expected ]] || return 1
+    awk -v expected="$expected" '
+        $5 == expected {
+            separator = 0
+            for (field = 1; field <= NF; field++) {
+                if ($field == "-") { separator = field; break }
+            }
+            if (!separator || $(separator + 1) != "tmpfs") next
+            options = $6 "," $(separator + 3)
+            count = split(options, entries, ",")
+            for (index = 1; index <= count; index++) {
+                if (entries[index] == "noswap") found = 1
+            }
+        }
+        END { exit !found }
+    ' /proc/self/mountinfo
+}
+
+ram_root_path_valid() {
+    local root=$1 run_name parent_resolved root_resolved
+    if [[ ${APO_JOB_TEST_ALLOW_NON_TMPFS:-0} == 1 ]]; then
+        [[ $root == /* && $root != / && $root != *'/../'* && $root != */.. && $root != *//* ]]
+        return
+    fi
+    [[ $root == /var/run/autopioverclock-* && $root != *'/../'* && $root != */.. && $root != *//* ]] || return 1
+    run_name=${root#/var/run/autopioverclock-}
+    [[ $run_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    parent_resolved=$(readlink -f -- /var/run 2>/dev/null || true)
+    if [[ -e $root || -L $root ]]; then
+        root_resolved=$(readlink -f -- "$root" 2>/dev/null || true)
+    else
+        root_resolved="${parent_resolved}/autopioverclock-${run_name}"
+    fi
+    [[ -n $parent_resolved && -n $root_resolved && $root_resolved == "$parent_resolved/autopioverclock-${run_name}" ]]
+}
+
+prepare_ram_root() {
+    local root=$1 existing_entry=''
+    if [[ ${APO_JOB_TEST_ALLOW_NON_TMPFS:-0} == 1 ]]; then
+        mkdir -p -- "$root"
+        chmod 700 "$root"
+        return 0
+    fi
+    ram_root_path_valid "$root" || return 1
+    if ram_root_mount_valid "$root"; then return 0; fi
+    if [[ -e $root || -L $root ]]; then
+        [[ -d $root && ! -L $root ]] || return 1
+        existing_entry=$(find "$root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)
+        [[ -z $existing_entry ]] || return 1
+    else
+        mkdir -m 700 -- "$root" || return 1
+    fi
+    mount -t tmpfs -o "size=${APO_JOB_RAM_MIB}M,noswap,mode=0700,nodev,nosuid,noexec" autopioverclock-stress "$root" || return 1
+    ram_root_mount_valid "$root"
+}
 
 job_status_log() {
     local event=$1 operation=$2 command_rc=$3 output_valid=$4 reconciled=$5
@@ -116,9 +189,7 @@ atomic_lines() {
     umask 077
     : >"$temporary"
     printf '%s\n' "$@" >"$temporary"
-    sync "$temporary" 2>/dev/null || sync
     mv -f -- "$temporary" "$destination"
-    sync "${destination%/*}" 2>/dev/null || sync
 }
 
 manifest_value() {
@@ -135,6 +206,7 @@ validate_job() {
     valid_job_id "$job_id" || return 1
     valid_hex64 "$token" || return 1
     [[ $root == /* && $root != / ]] || return 1
+    ram_root_path_valid "$root" && ram_root_mount_valid "$root" || return 1
     job_dir="${root}/jobs/${job_id}"
     manifest="${job_dir}/manifest"
     [[ -d $job_dir && ! -L $job_dir && -f $manifest && ! -L $manifest ]] || return 1
@@ -199,22 +271,71 @@ job_state_capture() {
     esac
 }
 
+remove_owned_job_tree() {
+    local root=$1 job_id=$2 job_dir=$3 remaining=''
+    [[ $job_dir == "${root}/jobs/${job_id}" && $job_dir != / && -d $job_dir && ! -L $job_dir ]] || return 1
+    rm -rf -- "$job_dir" || return 1
+    [[ ! -e $job_dir && ! -L $job_dir ]] || return 1
+    remaining=$(find "${root}/jobs" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)
+    if [[ -z $remaining ]]; then
+        rmdir -- "${root}/jobs" 2>/dev/null || return 1
+        if [[ ${APO_JOB_TEST_ALLOW_NON_TMPFS:-0} == 1 ]]; then
+            rmdir -- "$root" 2>/dev/null || return 1
+        else
+            umount -- "$root" || return 1
+            rmdir -- "$root" 2>/dev/null || return 1
+        fi
+    fi
+}
+
+abort_unstarted_job() {
+    local root=$1 job_id=$2 token=$3 job_dir=$4 supervisor_pid=$5 attempt
+    validate_job "$root" "$job_id" "$token" >/dev/null || return 1
+    [[ ! -e ${job_dir}/complete && ! -L ${job_dir}/complete ]] || return 1
+    if kill -0 "$supervisor_pid" 2>/dev/null; then
+        supervisor_identity_matches "$supervisor_pid" "$root" "$job_id" "$token" || return 1
+        kill -TERM -- "-$supervisor_pid" 2>/dev/null || kill -TERM "$supervisor_pid" 2>/dev/null || true
+        for (( attempt=0; attempt<5; attempt++ )); do
+            kill -0 "$supervisor_pid" 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 "$supervisor_pid" 2>/dev/null; then
+            kill -KILL -- "-$supervisor_pid" 2>/dev/null || kill -KILL "$supervisor_pid" 2>/dev/null || true
+        fi
+        wait "$supervisor_pid" 2>/dev/null || true
+    fi
+    kill -0 "$supervisor_pid" 2>/dev/null && return 1
+    remove_owned_job_tree "$root" "$job_id" "$job_dir"
+}
+
 run_job() {
     local root=$1 job_id=$2 token=$3
     shift 3
-    local job_dir manifest output complete worker duration start_epoch start_monotonic source_boot_id spec_hash
+    local job_dir manifest output complete worker network_peer controller_ip target_ip network_required port
+    local duration start_epoch start_monotonic source_boot_id spec_hash
     local hard_deadline hard_limit rc=0 now output_size output_hash end_epoch
     job_dir=$(validate_job "$root" "$job_id" "$token") || return 2
     manifest="${job_dir}/manifest"
     output="${job_dir}/worker.log"
     complete="${job_dir}/complete"
     worker=$(manifest_value "$manifest" WORKER)
+    network_peer=$(manifest_value "$manifest" NETWORK_PEER)
+    controller_ip=$(manifest_value "$manifest" CONTROLLER_IP)
+    target_ip=$(manifest_value "$manifest" TARGET_IP)
+    network_required=$(manifest_value "$manifest" NETWORK_REQUIRED)
+    port=$(manifest_value "$manifest" NETWORK_PORT)
     duration=$(manifest_value "$manifest" DURATION)
     start_epoch=$(manifest_value "$manifest" START_EPOCH)
     start_monotonic=$(manifest_value "$manifest" START_MONOTONIC_SECONDS)
     source_boot_id=$(manifest_value "$manifest" SOURCE_BOOT_ID)
     spec_hash=$(manifest_value "$manifest" SPEC_HASH)
     [[ -x $worker && ! -L $worker ]] || return 2
+    [[ $network_required == 0 || $network_required == 1 ]] || return 2
+    if [[ $network_required == 1 ]]; then
+        [[ -x $network_peer && ! -L $network_peer ]] || return 2
+        valid_connection_ip "$controller_ip" && valid_connection_ip "$target_ip" || return 2
+        valid_uint "$port" && (( port >= 1024 && port <= 65535 )) || return 2
+    fi
     valid_uint "$duration" && (( duration > 0 )) || return 2
     valid_uint "$start_epoch" || return 2
     valid_uint "$start_monotonic" || return 2
@@ -230,14 +351,22 @@ run_job() {
     if (( hard_limit <= 0 )); then
         rc=124
     else
-        if timeout -s TERM -k 30 "$hard_limit" "$worker" stress "$@" >>"$output" 2>&1; then rc=0; else rc=$?; fi
+        if timeout -s TERM -k 30 "$hard_limit" env \
+            APO_STRESS_RAM_ROOT="$root" \
+            APO_STRESS_RAM_BUDGET_MIB="$APO_JOB_RAM_MIB" \
+            APO_STRESS_NETWORK_REQUIRED="$network_required" \
+            APO_STRESS_NETWORK_HELPER="$network_peer" \
+            APO_STRESS_NETWORK_TOKEN="$token" \
+            APO_STRESS_NETWORK_PORT="$port" \
+            APO_STRESS_CONTROLLER_IP="$controller_ip" \
+            APO_STRESS_TARGET_IP="$target_ip" \
+            "$worker" stress "$@" >>"$output" 2>&1; then rc=0; else rc=$?; fi
     fi
     if (( rc == 124 || rc == 137 )); then
         printf 'APO_RESULT_CLASS=HARNESS_FAILURE\n' >>"$output"
         printf 'APO_RESULT_REASON_B64=%s\n' "$(printf '%s' 'The detached stress worker exceeded its fixed deadline and was terminated.' | base64 | tr -d '\n')" >>"$output"
         rc=124
     fi
-    sync "$output" 2>/dev/null || sync
     job_file_size "$output" complete-size || return 2
     output_size=$APO_JOB_FILE_SIZE
     job_file_hash "$output" complete-sha256 || return 2
@@ -259,21 +388,30 @@ run_job() {
 }
 
 start_job() {
-    local root=$1 job_id=$2 token=$3 spec_hash=$4 source_boot_id=$5 duration=$6 worker=$7
-    shift 7
+    local root=$1 job_id=$2 token=$3 spec_hash=$4 source_boot_id=$5 duration=$6 worker=$7 network_peer=$8 controller_ip=$9 target_ip=${10}
+    shift 10
     local current_boot job_dir manifest state start_epoch start_monotonic supervisor_pid startup_deadline
-    [[ $root == /* && $root != / ]] || job_die 'invalid job root'
+    local network_required=${6:-0} port
+    ram_root_path_valid "$root" || job_die 'invalid job RAM root'
     valid_job_id "$job_id" || job_die 'invalid job id'
     valid_hex64 "$token" || job_die 'invalid job token'
     valid_hex64 "$spec_hash" || job_die 'invalid job specification hash'
     valid_boot_id "$source_boot_id" || job_die 'invalid source boot id'
     valid_uint "$duration" && (( duration > 0 )) || job_die 'invalid duration'
     [[ $worker == /* && -x $worker && ! -L $worker ]] || job_die 'invalid worker path'
+    [[ $network_required == 0 || $network_required == 1 ]] || job_die 'invalid network workload flag'
+    if [[ $network_required == 1 ]]; then
+        [[ $network_peer == /* && -x $network_peer && ! -L $network_peer ]] || job_die 'invalid network peer path'
+        valid_connection_ip "$controller_ip" || job_die 'invalid controller connection address'
+        valid_connection_ip "$target_ip" || job_die 'invalid target connection address'
+    fi
+    port=$(network_port "$token") || job_die 'could not derive the network peer port'
     command -v nohup >/dev/null 2>&1 || job_die 'nohup is unavailable'
     command -v setsid >/dev/null 2>&1 || job_die 'setsid is unavailable'
     command -v timeout >/dev/null 2>&1 || job_die 'timeout is unavailable'
     current_boot=$(read_boot_id) || job_die 'unreadable current boot id'
     [[ $current_boot == "$source_boot_id" ]] || job_die 'source boot id does not match current boot'
+    prepare_ram_root "$root" || job_die 'could not establish a verified noswap tmpfs job root under /var/run'
     mkdir -p -- "${root}/jobs"
     chmod 700 "$root" "${root}/jobs" 2>/dev/null || true
     job_dir="${root}/jobs/${job_id}"
@@ -283,6 +421,10 @@ start_job() {
         [[ $(manifest_value "$manifest" SOURCE_BOOT_ID) == "$source_boot_id" ]] || job_die 'existing job boot id does not match'
         [[ $(manifest_value "$manifest" DURATION) == "$duration" ]] || job_die 'existing job duration does not match'
         [[ $(manifest_value "$manifest" WORKER) == "$worker" ]] || job_die 'existing job worker path does not match'
+        [[ $(manifest_value "$manifest" NETWORK_PEER) == "$network_peer" ]] || job_die 'existing job network peer does not match'
+        [[ $(manifest_value "$manifest" NETWORK_REQUIRED) == "$network_required" ]] || job_die 'existing job network workload does not match'
+        [[ $(manifest_value "$manifest" CONTROLLER_IP) == "$controller_ip" ]] || job_die 'existing job controller address does not match'
+        [[ $(manifest_value "$manifest" TARGET_IP) == "$target_ip" ]] || job_die 'existing job target address does not match'
         job_state_capture "$job_dir" "$root" "$job_id" "$token" || job_die 'existing job state is unreadable'
         state=$APO_JOB_OBSERVED_STATE
         [[ $state != ORPHANED ]] || job_die 'existing job supervisor is orphaned'
@@ -302,16 +444,25 @@ start_job() {
         "START_EPOCH=$start_epoch" \
         "START_MONOTONIC_SECONDS=$start_monotonic" \
         "DURATION=$duration" \
-        "WORKER=$worker"
+        "WORKER=$worker" \
+        "NETWORK_PEER=$network_peer" \
+        "NETWORK_REQUIRED=$network_required" \
+        "NETWORK_PORT=$port" \
+        "CONTROLLER_IP=$controller_ip" \
+        "TARGET_IP=$target_ip"
     nohup setsid "$0" run "$root" "$job_id" "$token" "$@" </dev/null >"${job_dir}/supervisor.log" 2>&1 &
     supervisor_pid=$!
     printf '%s\n' "$supervisor_pid" >"${job_dir}/launcher.pid"
-    startup_deadline=$((SECONDS + 15))
+    startup_deadline=$((SECONDS + APO_JOB_STARTUP_GRACE_SECONDS))
     while :; do
         job_state_capture "$job_dir" "$root" "$job_id" "$token" || job_die 'new job state is unreadable'
         state=$APO_JOB_OBSERVED_STATE
         [[ $state != ORPHANED ]] && break
-        (( SECONDS >= startup_deadline )) && job_die 'detached stress supervisor did not establish owned process or completion evidence'
+        if (( SECONDS >= startup_deadline )); then
+            abort_unstarted_job "$root" "$job_id" "$token" "$job_dir" "$supervisor_pid" ||
+                job_die 'detached stress supervisor startup failed and its exact process could not be cleaned up safely'
+            job_die 'detached stress supervisor did not establish owned process or completion evidence'
+        fi
         sleep 1
     done
     printf 'APO_JOB_STARTED\t%s\t%s\n' "$state" "$start_epoch"
@@ -388,6 +539,14 @@ fetch_job() {
     cat -- "${job_dir}/worker.log"
 }
 
+purge_job() {
+    local root=$1 job_id=$2 token=$3 spec_hash=$4 job_dir
+    job_dir=$(validate_job "$root" "$job_id" "$token" "$spec_hash") || job_die 'job ownership does not match'
+    [[ -f ${job_dir}/complete && ! -L ${job_dir}/complete ]] || job_die 'job is not complete'
+    [[ $job_dir == "${root}/jobs/${job_id}" && $job_dir != / ]] || job_die 'job cleanup path is unsafe'
+    remove_owned_job_tree "$root" "$job_id" "$job_dir" || job_die 'completed job RAM root could not be removed safely'
+}
+
 inspect_job() {
     local root=$1 job_id=$2 token=$3 spec_hash=$4 job_dir manifest state
     job_dir=$(validate_job "$root" "$job_id" "$token" "$spec_hash") || job_die 'job ownership does not match'
@@ -412,6 +571,7 @@ main() {
         run) run_job "$@" ;;
         follow) follow_job "$@" ;;
         fetch) fetch_job "$@" ;;
+        purge) purge_job "$@" ;;
         inspect) inspect_job "$@" ;;
         *) job_die 'unknown command' ;;
     esac

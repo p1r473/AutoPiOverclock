@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+export APO_JOB_TEST_ALLOW_NON_TMPFS=1
 APO_ROOT=$ROOT
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/state.sh"
@@ -15,6 +16,7 @@ if [[ ! -r /proc/sys/kernel/random/boot_id ]] || ! command -v setsid >/dev/null 
 fi
 
 TEMP_DIR=$(mktemp -d)
+NETWORK_SERVER_PID=''
 test_failure_trace() {
     local command_rc=$1 source_line=$2 failed_command=$3
     trap - ERR
@@ -23,6 +25,10 @@ test_failure_trace() {
 }
 cleanup() {
     local pid
+    if [[ $NETWORK_SERVER_PID =~ ^[1-9][0-9]*$ ]]; then
+        kill "$NETWORK_SERVER_PID" 2>/dev/null || true
+        wait "$NETWORK_SERVER_PID" 2>/dev/null || true
+    fi
     for pid_file in "$TEMP_DIR"/run/jobs/*/supervisor.pid; do
         [[ -f $pid_file ]] || continue
         pid=$(sed -n '1p' "$pid_file" 2>/dev/null || true)
@@ -53,6 +59,7 @@ WORKER
 chmod 700 "$WORKER"
 
 HELPER=$ROOT/tools/remote-stress-job.sh
+NETWORK_PEER=$ROOT/tools/stress-network-peer.py
 if grep -Eq '^[[:space:]]*set[[:space:]]+[+-]e([[:space:]]|$)' "$HELPER"; then
     echo 'target job helper still mutates its global error mode' >&2
     exit 1
@@ -70,6 +77,40 @@ capture_command_output() {
     printf -v "$output_name" '%s' "$captured_output"
     return 0
 }
+
+# The final-endurance peer must exercise authenticated concurrent TCP and UDP
+# traffic, update its RAM marker only for valid frames, and reject another run.
+NETWORK_TOKEN=$(printf '2%.0s' {1..64})
+NETWORK_BAD_TOKEN=$(printf '3%.0s' {1..64})
+NETWORK_MARKER=$TEMP_DIR/network.marker
+NETWORK_OUTPUT=$TEMP_DIR/network-server.log
+NETWORK_PORT=$(python3 -c 'import socket; sock=socket.socket(); sock.bind(("127.0.0.1", 0)); print(sock.getsockname()[1]); sock.close()')
+python3 "$NETWORK_PEER" server --bind 127.0.0.1 --client-ip 127.0.0.1 \
+    --port "$NETWORK_PORT" --token "$NETWORK_TOKEN" --marker "$NETWORK_MARKER" >"$NETWORK_OUTPUT" 2>&1 &
+NETWORK_SERVER_PID=$!
+for _ in {1..100}; do
+    grep -q '^NETWORK_SERVER_READY ' "$NETWORK_OUTPUT" 2>/dev/null && break
+    kill -0 "$NETWORK_SERVER_PID" 2>/dev/null || break
+    sleep 0.05
+done
+grep -q '^NETWORK_SERVER_READY ' "$NETWORK_OUTPUT"
+NETWORK_CLIENT_OUTPUT=$(python3 "$NETWORK_PEER" client --host 127.0.0.1 --port "$NETWORK_PORT" \
+    --token "$NETWORK_TOKEN" --timeout 1 --connect-wait 2)
+grep -q '^NETWORK_BURST_PASS tcp_connections=8 udp_datagrams=32 bytes=' <<<"$NETWORK_CLIENT_OUTPUT"
+read -r NETWORK_MESSAGE_COUNT NETWORK_MARKER_EPOCH < "$NETWORK_MARKER"
+[[ $NETWORK_MESSAGE_COUNT =~ ^[0-9]+$ && $NETWORK_MARKER_EPOCH =~ ^[0-9]+$ ]]
+(( NETWORK_MESSAGE_COUNT >= 40 ))
+if python3 "$NETWORK_PEER" client --host 127.0.0.1 --port "$NETWORK_PORT" \
+    --token "$NETWORK_BAD_TOKEN" --timeout 0.2 --connect-wait 0.5 >/dev/null 2>&1; then
+    echo 'network peer accepted a different run token' >&2
+    exit 1
+fi
+read -r NETWORK_MESSAGE_COUNT_AFTER NETWORK_MARKER_EPOCH_AFTER < "$NETWORK_MARKER"
+[[ $NETWORK_MESSAGE_COUNT_AFTER == "$NETWORK_MESSAGE_COUNT" && $NETWORK_MARKER_EPOCH_AFTER == "$NETWORK_MARKER_EPOCH" ]]
+kill "$NETWORK_SERVER_PID"
+wait "$NETWORK_SERVER_PID"
+NETWORK_SERVER_PID=''
+grep -q "^NETWORK_SERVER_STOP messages=${NETWORK_MESSAGE_COUNT}$" "$NETWORK_OUTPUT"
 
 # The long-lived follow coprocess must become the transport itself. If a Bash
 # wrapper remains above it, controller shutdown can kill the wrapper and orphan
@@ -108,7 +149,7 @@ capture_command_output() {
 )
 
 START_OUTPUT=''
-capture_command_output START_OUTPUT "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
+capture_command_output START_OUTPUT "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" "$NETWORK_PEER" 127.0.0.1 127.0.0.1 pass 1
 [[ $START_OUTPUT =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
 [[ $APO_TEST_CAPTURE_RC == 0 ]]
 grep -Eq '^START_MONOTONIC_SECONDS=[0-9]+$' "$RUN_ROOT/jobs/$JOB_ID/manifest"
@@ -119,7 +160,7 @@ capture_command_output FETCHED "$HELPER" fetch "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$
 grep -q '^APO_RESULT_CLASS=PASS$' <<<"$FETCHED"
 [[ $APO_TEST_CAPTURE_RC == 0 ]]
 
-capture_command_output START_AGAIN "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
+capture_command_output START_AGAIN "$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$WORKER" "$NETWORK_PEER" 127.0.0.1 127.0.0.1 pass 1
 grep -Eq $'^APO_JOB_STARTED\tCOMPLETE\t[0-9]+$' <<<"$START_AGAIN"
 [[ $APO_TEST_CAPTURE_RC == 0 ]]
 
@@ -145,7 +186,7 @@ STATUS_SPEC=$(printf '8%.0s' {1..64})
 STATUS_JOB=job-${STATUS_TOKEN:0:32}
 APO_TEST_REAL_WC=$REAL_WC APO_TEST_REAL_SHA256SUM=$REAL_SHA256SUM PATH="$MOCK_BIN:$PATH" \
     capture_command_output STATUS_START "$HELPER" start "$RUN_ROOT" "$STATUS_JOB" "$STATUS_TOKEN" \
-        "$STATUS_SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
+        "$STATUS_SPEC" "$BOOT_ID" 1 "$WORKER" "$NETWORK_PEER" 127.0.0.1 127.0.0.1 pass 1
 [[ $STATUS_START =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
 [[ $APO_TEST_CAPTURE_RC == 0 ]]
 capture_command_output STATUS_FOLLOW "$HELPER" follow "$RUN_ROOT" "$STATUS_JOB" "$STATUS_TOKEN" "$STATUS_SPEC"
@@ -172,16 +213,41 @@ SLOW_SPEC=$(printf '6%.0s' {1..64})
 SLOW_JOB=job-${SLOW_TOKEN:0:32}
 APO_TEST_REAL_SETSID=$REAL_SETSID PATH="$SLOW_BIN:$PATH" \
     capture_command_output SLOW_START "$HELPER" start "$RUN_ROOT" "$SLOW_JOB" "$SLOW_TOKEN" \
-        "$SLOW_SPEC" "$BOOT_ID" 1 "$WORKER" pass 1
+        "$SLOW_SPEC" "$BOOT_ID" 1 "$WORKER" "$NETWORK_PEER" 127.0.0.1 127.0.0.1 pass 1
 [[ $SLOW_START =~ ^APO_JOB_STARTED$'\t'(RUNNING|COMPLETE)$'\t'[0-9]+$ ]]
 [[ $APO_TEST_CAPTURE_RC == 0 ]]
 capture_command_output SLOW_FOLLOW "$HELPER" follow "$RUN_ROOT" "$SLOW_JOB" "$SLOW_TOKEN" "$SLOW_SPEC"
 grep -q '^APO_JOB_COMPLETE' <<<"$SLOW_FOLLOW"
 [[ $APO_TEST_CAPTURE_RC == 0 ]]
+
+# If the exact detached launcher cannot establish owned evidence before its
+# bounded startup deadline, it must be terminated and its unstarted job removed.
+ABORT_BIN=$TEMP_DIR/abort-bin
+mkdir "$ABORT_BIN"
+cat >"$ABORT_BIN/setsid" <<'MOCK_ABORT_SETSID'
+#!/usr/bin/env bash
+sleep 10 &
+delay_pid=$!
+trap 'kill "$delay_pid" 2>/dev/null || true; wait "$delay_pid" 2>/dev/null || true; exit 143' TERM INT
+wait "$delay_pid"
+exec "$APO_TEST_REAL_SETSID" "$@"
+MOCK_ABORT_SETSID
+chmod 700 "$ABORT_BIN/setsid"
+ABORT_TOKEN=$(printf '5%.0s' {1..64})
+ABORT_SPEC=$(printf '4%.0s' {1..64})
+ABORT_JOB=job-${ABORT_TOKEN:0:32}
+ABORT_ROOT=$TEMP_DIR/abort-run
+capture_command_output ABORT_START env APO_JOB_STARTUP_GRACE_SECONDS=1 APO_TEST_REAL_SETSID="$REAL_SETSID" \
+    PATH="$ABORT_BIN:$PATH" "$HELPER" start "$ABORT_ROOT" "$ABORT_JOB" "$ABORT_TOKEN" \
+    "$ABORT_SPEC" "$BOOT_ID" 1 "$WORKER" "$NETWORK_PEER" 127.0.0.1 127.0.0.1 pass 1
+[[ $APO_TEST_CAPTURE_RC -ne 0 ]]
+grep -q $'^APO_JOB_ERROR\tdetached stress supervisor did not establish owned process or completion evidence$' <<<"$ABORT_START"
+[[ ! -e $ABORT_ROOT && ! -L $ABORT_ROOT ]]
+
 OTHER_WORKER=$TEMP_DIR/other-worker.sh
 cp -- "$WORKER" "$OTHER_WORKER"
 chmod 700 "$OTHER_WORKER"
-if DIFFERENT_WORKER_OUTPUT=$("$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$OTHER_WORKER" pass 1); then
+if DIFFERENT_WORKER_OUTPUT=$("$HELPER" start "$RUN_ROOT" "$JOB_ID" "$TOKEN" "$SPEC" "$BOOT_ID" 1 "$OTHER_WORKER" "$NETWORK_PEER" 127.0.0.1 127.0.0.1 pass 1); then
     echo 'detached job accepted a different worker path for existing ownership' >&2
     exit 1
 fi
@@ -196,7 +262,7 @@ DEADLINE_TOKEN=$(printf 'd%.0s' {1..64})
 DEADLINE_SPEC=$(printf 'e%.0s' {1..64})
 DEADLINE_JOB=job-${DEADLINE_TOKEN:0:32}
 APO_JOB_HARD_GRACE_SECONDS=1 "$HELPER" start "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" \
-    "$DEADLINE_SPEC" "$BOOT_ID" 1 "$WORKER" deadline 10 >/dev/null
+    "$DEADLINE_SPEC" "$BOOT_ID" 1 "$WORKER" "$NETWORK_PEER" 127.0.0.1 127.0.0.1 deadline 10 >/dev/null
 capture_command_output DEADLINE_FOLLOW "$HELPER" follow "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" "$DEADLINE_SPEC"
 grep -q $'^APO_JOB_COMPLETE\t124\t' <<<"$DEADLINE_FOLLOW"
 capture_command_output DEADLINE_RESULT "$HELPER" fetch "$RUN_ROOT" "$DEADLINE_JOB" "$DEADLINE_TOKEN" "$DEADLINE_SPEC"
@@ -348,11 +414,15 @@ fi
     TEST_STATE[REMOTE_STRESS_SOURCE_BOOT_ID]=$TEST_BOOT
     TEST_STATE[REMOTE_STRESS_PHASE]=$TEST_PHASE
     TEST_STATE[REMOTE_STRESS_DURATION_S]=1
+    TEST_STATE[REMOTE_STRESS_SEGMENT_DURATION_S]=1
+    TEST_STATE[REMOTE_STRESS_NETWORK_REQUIRED]=0
     TEST_STATE[REMOTE_STRESS_START_EPOCH]=''
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=''
     APO_REMOTE_WORK_DIR=/tmp/controller-reconnect
+    APO_REMOTE_STRESS_DIR=/tmp/controller-reconnect-stress
     APO_REMOTE_WORKER=/tmp/controller-reconnect/worker.sh
     APO_REMOTE_JOB_HELPER=/tmp/controller-reconnect/remote-stress-job.sh
+    APO_REMOTE_NETWORK_PEER=/tmp/controller-reconnect/stress-network-peer.py
     APO_TRANSIENT_WORKER_ATTEMPTS=5
 
     apo_state_get() { printf '%s' "${TEST_STATE[$1]:-${2-}}"; }
@@ -419,6 +489,7 @@ fi
     TEST_BOOT=12345678-1234-1234-1234-123456789abc
     TEST_STATE[REMOTE_STRESS_SOURCE_BOOT_ID]=$TEST_BOOT
     TEST_STATE[REMOTE_STRESS_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_NETWORK_REQUIRED]=0
     TEST_STATE['REMOTE_STRESS_PHASE']='telemetry-credit'
     TEST_STATE[REMOTE_STRESS_SPEC_HASH]=$(printf '9%.0s' {1..64})
 
@@ -483,6 +554,7 @@ fi
     TEST_STATE[REMOTE_STRESS_PHASE]=$TEST_PHASE
     TEST_STATE[REMOTE_STRESS_DURATION_S]=100
     TEST_STATE[REMOTE_STRESS_SEGMENT_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_NETWORK_REQUIRED]=0
     TEST_STATE[REMOTE_STRESS_START_EPOCH]=1000
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1060
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=60
@@ -532,8 +604,10 @@ fi
     CONTROLLER_OUTPUT=$TEMP_DIR/network-credit-output
     TEST_STATE[REMOTE_STRESS_STATUS]=IDLE
     APO_REMOTE_WORK_DIR=/tmp/network-credit
+    APO_REMOTE_STRESS_DIR=/tmp/network-credit-stress
     APO_REMOTE_WORKER=/tmp/network-credit/worker.sh
     APO_REMOTE_JOB_HELPER=/tmp/network-credit/remote-stress-job.sh
+    APO_REMOTE_NETWORK_PEER=/tmp/network-credit/stress-network-peer.py
     apo_remote_job_token() { printf '5%.0s' {1..64}; }
     apo_remote_boot_id() { printf '%s' "$TEST_BOOT"; }
     apo_remote_boot_id_once() { printf '%s' "$TEST_BOOT"; }
@@ -560,8 +634,8 @@ fi
     apo_run_remote_stress_capture "$TEST_PHASE" stress "$CONTROLLER_OUTPUT" combined 100
     mapfile -t START_ARGUMENTS < "$CAPTURED_START"
     [[ ${START_ARGUMENTS[6]} == 40 ]]
-    [[ ${START_ARGUMENTS[8]} == combined ]]
-    [[ ${START_ARGUMENTS[9]} == 40 ]]
+    [[ ${START_ARGUMENTS[11]} == combined ]]
+    [[ ${START_ARGUMENTS[12]} == 40 ]]
     [[ ${TEST_STATE[REMOTE_STRESS_CREDIT_SECONDS]} == 0 ]]
 )
 
@@ -631,6 +705,7 @@ fi
     TEST_STATE[REMOTE_STRESS_PHASE]=$TEST_PHASE
     TEST_STATE[REMOTE_STRESS_DURATION_S]=100
     TEST_STATE[REMOTE_STRESS_SEGMENT_DURATION_S]=100
+    TEST_STATE[REMOTE_STRESS_NETWORK_REQUIRED]=0
     TEST_STATE[REMOTE_STRESS_START_EPOCH]=1000
     TEST_STATE[REMOTE_STRESS_LAST_SEEN_EPOCH]=1060
     TEST_STATE[REMOTE_STRESS_CONFIRMED_ELAPSED_S]=''

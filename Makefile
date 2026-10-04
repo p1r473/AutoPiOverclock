@@ -47,6 +47,7 @@ install:
 	install -m 644 profiles/*.sh "$(INSTALL_ROOT)/profiles/"
 	install -m 755 workers/*.sh "$(INSTALL_ROOT)/workers/"
 	install -m 755 tools/*.sh "$(INSTALL_ROOT)/tools/"
+	install -m 755 tools/*.py "$(INSTALL_ROOT)/tools/"
 	install -m 755 $(BATOCERA_ASSETS) "$(INSTALL_ROOT)/assets/batocera/"
 	install -m 755 $(DEBIAN_EXECUTABLE_ASSETS) "$(INSTALL_ROOT)/assets/debian/"
 	install -m 644 assets/debian/autopioverclock-network-watchdog.service "$(INSTALL_ROOT)/assets/debian/"

@@ -26,6 +26,7 @@ INSTALLED_DEBIAN_ASSETS="$TEMP_DIR/usr/local/lib/autopioverclock/assets/debian"
 [[ -x $TEMP_DIR/usr/local/lib/autopioverclock/autopioverclock ]]
 [[ -x $TEMP_DIR/usr/local/lib/autopioverclock/workers/debian-worker.sh ]]
 [[ -x $TEMP_DIR/usr/local/lib/autopioverclock/tools/build-batocera-bundle.sh ]]
+[[ -x $TEMP_DIR/usr/local/lib/autopioverclock/tools/stress-network-peer.py ]]
 [[ -x $INSTALLED_ASSETS/AutoPiOverclockWatchdog ]]
 [[ -x $INSTALLED_ASSETS/AutoPiOverclockNetworkWatchdog ]]
 [[ -x $INSTALLED_ASSETS/install_network_watchdog.sh ]]

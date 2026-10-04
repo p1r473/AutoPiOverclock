@@ -40,7 +40,7 @@ grep -q 'GPU_SMOKE' "$ROOT/lib/candidates.sh"
 grep -q 'Existing run files are retained unless' "$ROOT/lib/logging.sh"
 grep -Fq 'autopioverclock complete TARGET' "$ROOT/README.md"
 grep -Fq 'history/history.txt' "$ROOT/docs/output.md"
-if grep -RIn --include='*-worker.sh' 'io_pid=\$(start_io_activity' "$ROOT/workers"; then
+if grep -RIn --include='*-worker.sh' 'ramfs_pid=\$(start_ramfs_activity' "$ROOT/workers"; then
     echo 'filesystem exerciser was launched through blocking command substitution' >&2
     exit 1
 fi

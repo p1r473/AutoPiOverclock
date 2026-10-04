@@ -503,10 +503,13 @@ APO_LOG_FILE=''
     trap 'rm -rf "$HANDSHAKE_ROOT"' EXIT
     APO_LOCAL_WORKER="$HANDSHAKE_ROOT/local-worker.sh"
     APO_LOCAL_REMOTE_JOB="$HANDSHAKE_ROOT/remote-stress-job.sh"
+    APO_LOCAL_NETWORK_PEER="$HANDSHAKE_ROOT/stress-network-peer.py"
     APO_REMOTE_WORKER=/tmp/autopioverclock-fixture/worker.sh
     APO_REMOTE_JOB_HELPER=/tmp/autopioverclock-fixture/remote-stress-job.sh
+    APO_REMOTE_NETWORK_PEER=/tmp/autopioverclock-fixture/stress-network-peer.py
     printf '#!/usr/bin/env bash\nexit 0\n' > "$APO_LOCAL_WORKER"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$APO_LOCAL_REMOTE_JOB"
+    printf '#!/usr/bin/env python3\n' > "$APO_LOCAL_NETWORK_PEER"
     UPLOADS=0
     apo_wait_for_new_boot() {
         [[ $2 == 30 ]]
@@ -514,7 +517,7 @@ APO_LOG_FILE=''
     }
     apo_remote_upload_root() {
         case "$1:$2" in
-            "$APO_LOCAL_WORKER:$APO_REMOTE_WORKER"|"$APO_LOCAL_REMOTE_JOB:$APO_REMOTE_JOB_HELPER") ;;
+            "$APO_LOCAL_WORKER:$APO_REMOTE_WORKER"|"$APO_LOCAL_REMOTE_JOB:$APO_REMOTE_JOB_HELPER"|"$APO_LOCAL_NETWORK_PEER:$APO_REMOTE_NETWORK_PEER") ;;
             *) return 1 ;;
         esac
         UPLOADS=$((UPLOADS + 1))
@@ -523,7 +526,7 @@ APO_LOG_FILE=''
     [[ $APO_REBOOT_BOOT_ID == new-boot ]]
     [[ $APO_REBOOT_OBSERVED_BOOT_ID == new-boot ]]
     [[ $APO_REBOOT_HANDSHAKE_STAGE == complete ]]
-    [[ $APO_WORKER_BOOT_ID == new-boot && $UPLOADS == 2 ]]
+    [[ $APO_WORKER_BOOT_ID == new-boot && $UPLOADS == 3 ]]
 
     apo_remote_upload_root() { return 1; }
     if apo_post_reboot_handshake new-boot 30 normal-recovery; then

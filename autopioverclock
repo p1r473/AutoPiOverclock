@@ -230,7 +230,7 @@ Common options:
   --gpu-resolution MHZ     GPU refinement/backoff granularity (default: 25; 1-1000)
   --no-history             Ignore compatible retained tuning history for this new run
   --freshtuning            Reset-only persistent boundary; earlier history becomes audit-only
-  -f                       With reset --freshtuning, delete current and obsolete history ledgers
+  -f                       With reset --freshtuning, delete the current history/history.txt ledger
   --no-max-fan             Do not request maximum Pi PWM fan cooling during tuning/test
   --cpu MHZ                Exact CPU clock for test TARGET
   --gpu MHZ                Exact GPU/V3D clock for test TARGET
@@ -1685,7 +1685,7 @@ apo_start_new_run() {
         apo_summary_line "Automatic selection policy: ${APO_SELECTION_POLICY:-adaptive-refined-v1}"
         apo_summary_line "CPU qualification: ${APO_QUALIFICATION_DURATION_S}s with GPU held at its selected clock"
         apo_summary_line "GPU qualification: ${APO_QUALIFICATION_DURATION_S}s with CPU held at its selected clock"
-        apo_summary_line "Final validation requirement: ${APO_CFG[FINAL_DURATION_S]}s accepted CPU/GPU, RAM-pattern, persistent-storage, and load-transition workload"
+        apo_summary_line "Final validation requirement: ${APO_CFG[FINAL_DURATION_S]}s accepted comprehensive CPU/GPU, RAM, RAM-filesystem, read-only storage, network, and load-transition workload"
         apo_summary_line 'Final credit policy: genuine failures restart from zero; proved network-watchdog reboots retain target-reported completed work'
     fi
     apo_summary_line ''

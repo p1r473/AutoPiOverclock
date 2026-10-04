@@ -23,7 +23,7 @@ mkdir -p "$CONTINUATION_OUTPUT"
 MANUAL_RUN=20260827-010205-abcdef0123456789
 MANUAL_STATE="$CONTINUATION_OUTPUT/tron-${MANUAL_RUN}.state"
 write_state_fixture "$MANUAL_STATE" \
-    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$MANUAL_RUN" \
+    FORMAT_VERSION 1 RUN_SCHEMA 11 RUN_ID "$MANUAL_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND test \
     STATUS INTERRUPTED PHASE MANUAL_TEST APPLY_STATUS NOT_APPLIED \
     CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 \
@@ -42,7 +42,7 @@ ln -sfn "$(basename "$MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.state"
 LONG_MANUAL_RUN=20260905-010205-fedcba9876543210
 LONG_MANUAL_STATE="$CONTINUATION_OUTPUT/tron-${LONG_MANUAL_RUN}.state"
 write_state_fixture "$LONG_MANUAL_STATE" \
-    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$LONG_MANUAL_RUN" \
+    FORMAT_VERSION 1 RUN_SCHEMA 11 RUN_ID "$LONG_MANUAL_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND test \
     STATUS INTERRUPTED PHASE MANUAL_TEST APPLY_STATUS NOT_APPLIED \
     CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 \
@@ -59,7 +59,7 @@ ln -sfn "$(basename "$LONG_MANUAL_STATE")" "$CONTINUATION_OUTPUT/tron-latest.sta
 )
 # Canonical duration matching lets an interrupted one-hour test continue.
 write_state_fixture "$LONG_MANUAL_STATE" \
-    FORMAT_VERSION 1 RUN_SCHEMA 10 RUN_ID "$LONG_MANUAL_RUN" \
+    FORMAT_VERSION 1 RUN_SCHEMA 11 RUN_ID "$LONG_MANUAL_RUN" \
     REMOTE_TARGET "$(id -un)@tron" ORIGIN_COMMAND test \
     STATUS INTERRUPTED PHASE MANUAL_TEST APPLY_STATUS NOT_APPLIED \
     CFG_MANUAL_TEST 1 CFG_MANUAL_CPU 3100 CFG_MANUAL_GPU 1150 \
@@ -247,7 +247,7 @@ grep -Fq 'It then refines the proved pass/fail gap at `--cpu-resolution` granula
 grep -Fq 'Exact CPU evidence lowers only CPU by `--cpu-resolution`; exact GPU evidence lowers only GPU by `--gpu-resolution`.' "$ROOT/README.md"
 grep -Fq 'If the domain is ambiguous, the pair becomes the anchor and a CPU-only reduction is tried first.' "$ROOT/README.md"
 grep -Fq 'A required reduction below either hard minimum fails clearly instead of silently changing the requested range.' "$ROOT/README.md"
-grep -Fq 'one fresh 48-hour combined CPU/GPU, RAM-pattern, and persistent-storage validation by default' "$ROOT/README.md"
+grep -Fq 'one fresh 48-hour comprehensive final-endurance validation by default' "$ROOT/README.md"
 grep -Fq 'test pi@hostname --cpu 3100 --gpu 1150 --final-hours 72' "$ROOT/README.md"
 grep -Fq -- '--qualification-hours 3 --final-hours 72' "$ROOT/README.md"
 quick_start=$(sed -n '/^## Quick start$/,/^## Supported targets$/p' "$ROOT/README.md")

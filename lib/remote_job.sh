@@ -18,6 +18,9 @@ APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC=1
 APO_REMOTE_JOB_FOLLOW_PID=''
 APO_REMOTE_JOB_FOLLOW_FD=''
 APO_REMOTE_JOB_FOLLOW_INPUT_FD=''
+APO_REMOTE_JOB_LAST_LOGGED_TELEMETRY=''
+APO_REMOTE_NETWORK_NEXT_EPOCH=0
+APO_REMOTE_NETWORK_FAILURES=0
 APO_REMOTE_STRESS_CREDIT_ADDED=0
 APO_REMOTE_STRESS_CREDIT_TOTAL=0
 APO_REMOTE_STRESS_CREDIT_REMAINING=0
@@ -30,12 +33,35 @@ apo_remote_job_pending() {
     apo_remote_job_valid_hash "$(apo_state_get REMOTE_STRESS_TOKEN '')" || return 1
     apo_remote_job_valid_hash "$(apo_state_get REMOTE_STRESS_SPEC_HASH '')" || return 1
     apo_remote_job_valid_boot_id "$(apo_state_get REMOTE_STRESS_SOURCE_BOOT_ID '')" || return 1
-    [[ -n $(apo_state_get REMOTE_STRESS_PHASE '') && $(apo_state_get REMOTE_STRESS_DURATION_S '') =~ ^[1-9][0-9]*$ ]]
+    [[ -n $(apo_state_get REMOTE_STRESS_PHASE '') && $(apo_state_get REMOTE_STRESS_DURATION_S '') =~ ^[1-9][0-9]*$ &&
+       $(apo_state_get REMOTE_STRESS_NETWORK_REQUIRED '') =~ ^[01]$ ]]
 }
 
 apo_remote_job_valid_id() { [[ ${1-} =~ ^job-[0-9a-f]{32}$ ]]; }
 apo_remote_job_valid_hash() { [[ ${1-} =~ ^[0-9a-f]{64}$ ]]; }
 apo_remote_job_valid_boot_id() { [[ ${1-} =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; }
+
+apo_remote_job_network_port() {
+    local token=$1
+    apo_remote_job_valid_hash "$token" || return 1
+    printf '%s' "$((20000 + 16#${token:0:4} % 30000))"
+}
+
+apo_remote_network_burst() {
+    local token=$1 output='' port
+    [[ -r ${APO_LOCAL_NETWORK_PEER:-} && -n ${APO_TARGET_HOST:-} ]] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    port=$(apo_remote_job_network_port "$token") || return 1
+    if output=$(python3 "$APO_LOCAL_NETWORK_PEER" client --host "$APO_TARGET_HOST" --port "$port" \
+        --token "$token" --timeout 1 --connect-wait 2.5 2>/dev/null); then
+        [[ $output == NETWORK_BURST_PASS* ]] || return 1
+        if [[ -n ${APO_LOG_FILE:-} ]]; then
+            printf '%(%Y-%m-%d %H:%M:%S)T [INFO] final-network: %s\n' -1 "$output" >>"$APO_LOG_FILE" 2>/dev/null || true
+        fi
+        return 0
+    fi
+    return 1
+}
 
 # Keep enough distinct target telemetry samples to select the newest sample at
 # or before a later proved watchdog request. Strict Batocera proof requires the
@@ -93,6 +119,7 @@ apo_remote_job_durable_pending() {
         REMOTE_STRESS_STATUS REMOTE_STRESS_JOB_ID REMOTE_STRESS_TOKEN
         REMOTE_STRESS_SPEC_HASH REMOTE_STRESS_SOURCE_BOOT_ID
         REMOTE_STRESS_PHASE REMOTE_STRESS_DURATION_S REMOTE_STRESS_SEGMENT_DURATION_S
+        REMOTE_STRESS_NETWORK_REQUIRED
     )
     APO_REMOTE_JOB_DURABLE_REASON='not-proven'
     if [[ -z ${APO_STATE_FILE:-} || ! -f ${APO_STATE_FILE:-} ]]; then
@@ -313,6 +340,7 @@ apo_remote_job_clear_state() {
     apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
     apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
     apo_state_set REMOTE_STRESS_CONFIRMED_SAMPLES ''
+    apo_state_set REMOTE_STRESS_NETWORK_REQUIRED ''
 }
 
 apo_remote_stress_credit_clear() {
@@ -419,6 +447,10 @@ apo_remote_job_follow_stream() {
                         line=$(apo_decode_b64 "$telemetry" || true)
                         if [[ -n $line ]] && apo_progress_line_is_telemetry "$line"; then
                             apo_progress_parse_telemetry_line "$line"
+                            if [[ $line != "$APO_REMOTE_JOB_LAST_LOGGED_TELEMETRY" && -n ${APO_LOG_FILE:-} ]]; then
+                                printf '%s\n' "$line" >>"$APO_LOG_FILE" 2>/dev/null || true
+                                APO_REMOTE_JOB_LAST_LOGGED_TELEMETRY=$line
+                            fi
                             if [[ $line =~ elapsed=([0-9]+)/([0-9]+)s ]]; then
                                 confirmed_elapsed=${BASH_REMATCH[1]}
                                 confirmed_duration=${BASH_REMATCH[2]}
@@ -430,6 +462,23 @@ apo_remote_job_follow_stream() {
                                 fi
                             fi
                             apo_remote_job_progress_tick "$now" "$start" "$duration"
+                        fi
+                    fi
+                    if [[ $(apo_state_get REMOTE_STRESS_NETWORK_REQUIRED 0) == 1 && $now -ge $APO_REMOTE_NETWORK_NEXT_EPOCH ]]; then
+                        if apo_remote_network_burst "$(apo_state_get REMOTE_STRESS_TOKEN '')"; then
+                            APO_REMOTE_NETWORK_FAILURES=0
+                            APO_REMOTE_NETWORK_NEXT_EPOCH=$((now + 5))
+                        else
+                            APO_REMOTE_NETWORK_FAILURES=$((APO_REMOTE_NETWORK_FAILURES + 1))
+                            APO_REMOTE_NETWORK_NEXT_EPOCH=$((now + 1))
+                            if [[ -n ${APO_LOG_FILE:-} ]]; then
+                                printf '%(%Y-%m-%d %H:%M:%S)T [WARN] final-network: authenticated burst failed attempt=%s/5\n' \
+                                    -1 "$APO_REMOTE_NETWORK_FAILURES" >>"$APO_LOG_FILE" 2>/dev/null || true
+                            fi
+                            if (( APO_REMOTE_NETWORK_FAILURES >= 5 )); then
+                                APO_REMOTE_JOB_FOLLOW_ERROR='[FINAL_NETWORK] The controller-to-target final-endurance network workload failed five consecutive authenticated bursts.'
+                                return 1
+                            fi
                         fi
                     fi
                     apo_state_set REMOTE_STRESS_START_EPOCH "$start"
@@ -471,7 +520,7 @@ apo_remote_job_follow_stream() {
 }
 
 apo_validate_remote_job_state() {
-    local status job_id token spec_hash source_boot phase duration segment_duration start_epoch last_seen confirmed_elapsed
+    local status job_id token spec_hash source_boot phase duration segment_duration start_epoch last_seen confirmed_elapsed network_required
     local confirmed_samples entry sample_epoch sample_elapsed previous_epoch=0 previous_elapsed=-1 sample_count=0
     local unknown_context unknown_count network_count network_event network_target
     local credit_context credit_seconds credit_duration credit_event expected_credit_context
@@ -488,11 +537,12 @@ apo_validate_remote_job_state() {
     last_seen=$(apo_state_get REMOTE_STRESS_LAST_SEEN_EPOCH '')
     confirmed_elapsed=$(apo_state_get REMOTE_STRESS_CONFIRMED_ELAPSED_S '')
     confirmed_samples=$(apo_state_get REMOTE_STRESS_CONFIRMED_SAMPLES '')
+    network_required=$(apo_state_get REMOTE_STRESS_NETWORK_REQUIRED '')
     case $status in
         IDLE)
             if [[ -n $job_id || -n $token || -n $spec_hash || -n $source_boot || -n $phase ||
                   -n $duration || -n $segment_duration || -n $start_epoch || -n $last_seen ||
-                  -n $confirmed_elapsed || -n $confirmed_samples ]]; then
+                  -n $confirmed_elapsed || -n $confirmed_samples || -n $network_required ]]; then
                 APO_AUTO_VALIDATION_REASON='Saved detached-stress state retains ownership fields while idle.'
                 return 1
             fi
@@ -500,7 +550,7 @@ apo_validate_remote_job_state() {
         RUNNING)
             apo_remote_job_valid_id "$job_id" && apo_remote_job_valid_hash "$token" &&
                 apo_remote_job_valid_hash "$spec_hash" && apo_remote_job_valid_boot_id "$source_boot" &&
-                [[ -n $phase && $duration =~ ^[1-9][0-9]*$ ]] || {
+                [[ -n $phase && $duration =~ ^[1-9][0-9]*$ && $network_required =~ ^[01]$ ]] || {
                     APO_AUTO_VALIDATION_REASON='Saved detached-stress ownership is incomplete or malformed.'
                     return 1
                 }
@@ -834,7 +884,7 @@ apo_remote_job_fetch_complete() {
     local output_file=$1 temporary_file actual_size='' actual_hash='' size_rc=1 hash_rc=1
     temporary_file="${output_file}.remote-job.${BASHPID}"
     rm -f -- "$temporary_file"
-    apo_remote_job_read_file "$temporary_file" fetch "$APO_REMOTE_WORK_DIR" \
+    apo_remote_job_read_file "$temporary_file" fetch "$APO_REMOTE_STRESS_DIR" \
         "$(apo_state_get REMOTE_STRESS_JOB_ID '')" "$(apo_state_get REMOTE_STRESS_TOKEN '')" \
         "$(apo_state_get REMOTE_STRESS_SPEC_HASH '')" || {
             rm -f -- "$temporary_file"
@@ -858,6 +908,12 @@ apo_remote_job_fetch_complete() {
         rm -f -- "$temporary_file"
         return 1
     fi
+    if ! apo_remote_job_command purge "$APO_REMOTE_STRESS_DIR" \
+        "$(apo_state_get REMOTE_STRESS_JOB_ID '')" "$(apo_state_get REMOTE_STRESS_TOKEN '')" \
+        "$(apo_state_get REMOTE_STRESS_SPEC_HASH '')" >/dev/null 2>&1; then
+        rm -f -- "$temporary_file"
+        return 1
+    fi
     : >"$output_file"
     apo_progress_capture_worker_stream "$output_file" <"$temporary_file"
     rm -f -- "$temporary_file"
@@ -876,8 +932,23 @@ apo_run_remote_stress_capture() {
     local spec_rc=1 token_rc=1 start_rc=1 follow_stream_rc=1 start_shape=empty
     local credit_context credit_seconds credit_duration expected_credit_context
     local launch_attempt=0 launch_attempts=${APO_TRANSIENT_WORKER_ATTEMPTS:-5} launch_reason
+    local network_required controller_ip=none controller_port target_ip=none target_port connection extra
     local -a original_arguments=("$@") segment_arguments=("$@")
     [[ $worker_command == stress && $duration =~ ^[1-9][0-9]*$ ]] || return 2
+    network_required=${original_arguments[5]:-0}
+    [[ $network_required == 0 || $network_required == 1 ]] || return 2
+    [[ -n ${APO_REMOTE_STRESS_DIR:-} && -n ${APO_REMOTE_NETWORK_PEER:-} ]] || return 2
+    if [[ $network_required == 1 ]]; then
+        connection=$(apo_ssh_read 'printf %s "${SSH_CONNECTION:-}"' 2>/dev/null || true)
+        read -r controller_ip controller_port target_ip target_port extra <<<"$connection"
+        if [[ -n $extra || ! $controller_port =~ ^[0-9]+$ || ! $target_port =~ ^[0-9]+$ ||
+              -z $controller_ip || -z $target_ip || $controller_ip == *[^0-9A-Fa-f:.]* ||
+              $target_ip == *[^0-9A-Fa-f:.]* ]]; then
+            apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE \
+                'Could not prove the controller and target interface addresses for the final-endurance network workload.'
+            return 1
+        fi
+    fi
     [[ $launch_attempts =~ ^[1-9][0-9]*$ ]] || launch_attempts=5
     apo_remote_job_stage_log "$phase" entered "duration_valid=1"
     if spec_hash=$(apo_remote_job_spec_hash "$phase" "$worker_command" "${original_arguments[@]}"); then spec_rc=0; else spec_rc=$?; fi
@@ -896,7 +967,8 @@ apo_run_remote_stress_capture() {
            ! apo_remote_job_valid_boot_id "$source_boot" ||
            [[ $(apo_state_get REMOTE_STRESS_SPEC_HASH '') != "$spec_hash" ||
               $(apo_state_get REMOTE_STRESS_PHASE '') != "$phase" ||
-              $(apo_state_get REMOTE_STRESS_DURATION_S '') != "$duration" ]]; then
+               $(apo_state_get REMOTE_STRESS_DURATION_S '') != "$duration" ||
+               $(apo_state_get REMOTE_STRESS_NETWORK_REQUIRED '') != "$network_required" ]]; then
             apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE \
                 'Saved detached-stress ownership does not match the requested gate. Automatic adoption is refused.'
             return 1
@@ -944,6 +1016,7 @@ apo_run_remote_stress_capture() {
         apo_state_set REMOTE_STRESS_LAST_SEEN_EPOCH ''
         apo_state_set REMOTE_STRESS_CONFIRMED_ELAPSED_S ''
         apo_state_set REMOTE_STRESS_CONFIRMED_SAMPLES ''
+        apo_state_set REMOTE_STRESS_NETWORK_REQUIRED "$network_required"
         apo_state_save
         apo_remote_job_stage_log "$phase" ownership-checkpointed "duration_valid=1"
         APO_REMOTE_JOB_LAST_CHECKPOINT_EPOCH=0
@@ -953,6 +1026,9 @@ apo_run_remote_stress_capture() {
         fi
     fi
     segment_arguments[1]=$segment_duration
+    APO_REMOTE_JOB_LAST_LOGGED_TELEMETRY=''
+    APO_REMOTE_NETWORK_NEXT_EPOCH=0
+    APO_REMOTE_NETWORK_FAILURES=0
     apo_remote_job_stage_log "$phase" dispatch-ready "segment_valid=1"
 
     while :; do
@@ -969,8 +1045,9 @@ apo_run_remote_stress_capture() {
         fi
         start_output=''
         apo_remote_job_stage_log "$phase" launcher-call "attempt=$((launch_attempt + 1))"
-        if start_output=$(apo_remote_job_command start "$APO_REMOTE_WORK_DIR" "$job_id" "$token" \
-            "$spec_hash" "$source_boot" "$segment_duration" "$APO_REMOTE_WORKER" "${segment_arguments[@]}" 2>/dev/null); then
+        if start_output=$(apo_remote_job_command start "$APO_REMOTE_STRESS_DIR" "$job_id" "$token" \
+            "$spec_hash" "$source_boot" "$segment_duration" "$APO_REMOTE_WORKER" "$APO_REMOTE_NETWORK_PEER" \
+            "$controller_ip" "$target_ip" "${segment_arguments[@]}" 2>/dev/null); then
             start_rc=0
         else
             start_rc=$?
@@ -1031,7 +1108,7 @@ apo_run_remote_stress_capture() {
         APO_REMOTE_JOB_COMPLETE=0
         APO_REMOTE_JOB_FOLLOW_ERROR=''
         apo_remote_job_stage_log "$phase" follow-call "attempt=$((launch_attempt + 1))"
-        if apo_remote_job_follow_capture "$APO_REMOTE_WORK_DIR" "$job_id" "$token" "$spec_hash"; then follow_stream_rc=0; else follow_stream_rc=$?; fi
+        if apo_remote_job_follow_capture "$APO_REMOTE_STRESS_DIR" "$job_id" "$token" "$spec_hash"; then follow_stream_rc=0; else follow_stream_rc=$?; fi
         remote_rc=$APO_REMOTE_JOB_FOLLOW_TRANSPORT_RC
         apo_remote_job_stage_log "$phase" follow-return "producer_rc=$remote_rc,parser_rc=$follow_stream_rc,complete=$APO_REMOTE_JOB_COMPLETE"
         if (( APO_REMOTE_JOB_COMPLETE == 1 )); then
@@ -1045,6 +1122,9 @@ apo_run_remote_stress_capture() {
         if [[ -z $current_boot ]]; then
             apo_remote_job_wait_for_boot "${phase}-network-wait" "$source_boot"
             current_boot=$APO_REMOTE_JOB_PROBE_BOOT
+        elif [[ $APO_REMOTE_JOB_FOLLOW_ERROR == '[FINAL_NETWORK] '* ]]; then
+            apo_remote_job_emit_structured_failure "$output_file" HARNESS_FAILURE "${APO_REMOTE_JOB_FOLLOW_ERROR#\[FINAL_NETWORK\] }"
+            return 1
         elif [[ -n $APO_REMOTE_JOB_FOLLOW_ERROR && $remote_rc != 255 ]]; then
             apo_remote_job_emit_structured_failure "$output_file" RECOVERY_FAILURE "$APO_REMOTE_JOB_FOLLOW_ERROR"
             return 1

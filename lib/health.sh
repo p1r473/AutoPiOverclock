@@ -79,16 +79,18 @@ apo_health_check() {
 }
 
 apo_run_stress() {
-    local stress_kind=$1 duration=$2 label=$3 io_check=${4:-0} expected_cpu expected_gpu fan_policy
+    local stress_kind=$1 duration=$2 label=$3 io_check=${4:-0} expected_cpu expected_gpu fan_policy telemetry_interval
     local stress_rc=0 stress_class='' stress_reason='' hash_rc=0
     expected_cpu=$(apo_state_get CURRENT_CPU '')
     expected_gpu=$(apo_state_get CURRENT_GPU '')
     [[ -n $expected_cpu ]] || expected_cpu=$APO_NORMAL_CPU
     [[ -n $expected_gpu ]] || expected_gpu=$APO_NORMAL_GPU
     fan_policy=$(apo_current_fan_policy)
+    telemetry_interval=${APO_CFG[TELEMETRY_INTERVAL_S]}
+    if [[ $io_check == 1 ]]; then telemetry_interval=1; fi
     apo_verify_permanent_hash "${label}-pre-stress" || return 1
     if declare -F apo_progress_begin_stress >/dev/null 2>&1; then apo_progress_begin_stress "$duration" "$label"; fi
-    apo_run_worker_capture "$label" stress "$stress_kind" "$duration" "${APO_CFG[MAX_TEMP_C]}" "$APO_MODE_EFFECTIVE" "$APO_DISPLAY_BASELINE" "$io_check" "$expected_cpu" "$expected_gpu" "$APO_THROTTLE_RUNTIME_BASELINE" "${APO_CFG[TELEMETRY_INTERVAL_S]}" "${APO_AUDIO_BASELINE:-}" "$fan_policy" || {
+    apo_run_worker_capture "$label" stress "$stress_kind" "$duration" "${APO_CFG[MAX_TEMP_C]}" "$APO_MODE_EFFECTIVE" "$APO_DISPLAY_BASELINE" "$io_check" "$expected_cpu" "$expected_gpu" "$APO_THROTTLE_RUNTIME_BASELINE" "$telemetry_interval" "${APO_AUDIO_BASELINE:-}" "$fan_policy" || {
         stress_rc=$?
         stress_class=${APO_LAST_CLASS:-HARNESS_FAILURE}
         stress_reason=${APO_LAST_REASON:-The stress worker failed without a reason.}

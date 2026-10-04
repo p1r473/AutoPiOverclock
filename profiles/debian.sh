@@ -4,6 +4,7 @@
 APO_PROFILE=debian
 APO_LOCAL_WORKER="${APO_ROOT}/workers/debian-worker.sh"
 APO_REMOTE_WORK_DIR="/tmp/autopioverclock-${APO_RUN_ID}"
+APO_REMOTE_STRESS_DIR="/var/run/autopioverclock-${APO_RUN_ID}"
 APO_REMOTE_WORKER="${APO_REMOTE_WORK_DIR}/worker.sh"
 APO_BOOT_TIMEOUT=300
 APO_BOOT_SETTLE_SECONDS=15
@@ -11,6 +12,7 @@ APO_BOOT_SETTLE_SECONDS=15
 apo_profile_dependencies_ready() {
     [[ ${APO_DISCOVERY[CPU_STRESS_AVAILABLE]:-0} == 1 ]] || return 1
     [[ ${APO_DISCOVERY[MEMORY_STRESS_AVAILABLE]:-0} == 1 ]] || return 1
+    [[ -n ${APO_DISCOVERY[PYTHON3_BINARY]:-} ]] || return 1
     (( APO_REQUIRE_GPU_STRESS == 0 )) || {
         if [[ ${APO_MODE_EFFECTIVE:-headless} == graphical ]]; then
             [[ ${APO_DISCOVERY[DEBIAN_GRAPHICAL_GPU_AVAILABLE]:-0} == 1 &&
@@ -22,10 +24,10 @@ apo_profile_dependencies_ready() {
 }
 
 apo_profile_install_dependencies() {
-    local packages='stress-ng memtester' description='stress-ng and memtester'
+    local packages='stress-ng memtester python3' description='stress-ng, memtester, and Python 3'
     if (( APO_REQUIRE_GPU_STRESS == 1 )) && [[ ${APO_MODE_EFFECTIVE:-headless} == graphical ]]; then
-        packages='stress-ng memtester cage glmark2-es2-wayland'
-        description='stress-ng, memtester, Cage, and glmark2 Wayland for onscreen GPU validation'
+        packages='stress-ng memtester python3 cage glmark2-es2-wayland'
+        description='stress-ng, memtester, Python 3, Cage, and glmark2 Wayland for onscreen GPU validation'
     fi
     apo_event dependencies INFO '' "Installing Debian stress dependencies: $description"
     if declare -F apo_progress_before_output >/dev/null 2>&1; then apo_progress_before_output; fi

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-alpha.111 - 2026-10-04
+
+- Replaced the alpha.110 final-endurance workload with one comprehensive public path. Candidate sweeps and domain qualifications remain focused; there is no legacy, traditional, mixed, or selectable stress profile.
+- Added concurrent memtester, RAM-backed data and metadata churn, bounded read-only physical-drive activity, authenticated controller-to-target TCP and UDP traffic, and hourly compute-and-memory unload/reload transitions.
+- Moved detached job output and every high-volume endurance artifact to a private 192 MiB `noswap` tmpfs under `/var/run`. Final endurance fails closed if the mount or its `noswap` property cannot be proved and never falls back to SD, USB, persistent `/var`, `/tmp`, or swap.
+- Added one aggregate memory budget that preserves at least the larger of 1 GiB or 20 percent of total RAM for the operating system after accounting for memtester and the RAM workspace.
+- Forced final-endurance telemetry to one-second cadence, retained every distinct sample in the controller run log, and added live memory and companion counters without remote syslog or a separate logging service.
+- Rotated Batocera GPU segments through terrain, multi-light shading, bump mapping, and conditional shader workloads instead of repeating one shader scene.
+- Made a detached-supervisor startup timeout terminate the exact verified process group and remove only its owned unstarted RAM job, preventing hidden stress after the controller reports a launch failure.
+- Advanced run schema to 11 and validation schema to 9 so results from earlier endurance workloads are not accepted as equivalent evidence.
+- Narrowed `reset TARGET --freshtuning -f` to delete only the current `history/history.txt` ledger. It does not inspect or modify any former history filename.
+
 ## 0.1.0-alpha.110 - 2026-10-04
 
 - Accepted graphical benchmark durations after benchmark-specific options so valid Debian `shading`, `bump`, and `conditionals` results are no longer misclassified as incomplete onscreen-render proof.

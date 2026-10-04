@@ -1035,7 +1035,7 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
     source "$ROOT/profiles/batocera.sh"
     # shellcheck disable=SC2030
     declare -Ag APO_DISCOVERY=(
-        [CPU_STRESS_AVAILABLE]=1 [MEMORY_STRESS_AVAILABLE]=1 [MEMTESTER_BINARY]=/fixture/memtester [GLMARK_DATA]=/fixture/data
+        [CPU_STRESS_AVAILABLE]=1 [MEMORY_STRESS_AVAILABLE]=1 [MEMTESTER_BINARY]=/fixture/memtester [PYTHON3_BINARY]=/usr/bin/python3 [GLMARK_DATA]=/fixture/data
         [GLMARK_WAYLAND_BINARY]=/fixture/glmark2-es2-wayland [GLMARK_DRM_BINARY]=''
     )
     # shellcheck disable=SC2030
@@ -1068,7 +1068,7 @@ chmod 755 "$GLMARK_FIXTURE_ROOT/glmark2/usr/bin/glmark2-es2-wayland" "$GLMARK_FI
     source "$ROOT/profiles/debian.sh"
     # shellcheck disable=SC2030
     declare -Ag APO_DISCOVERY=(
-        [CPU_STRESS_AVAILABLE]=1 [MEMORY_STRESS_AVAILABLE]=1 [MEMTESTER_BINARY]=/usr/bin/memtester [STRESS_NG_GPU_AVAILABLE]=1
+        [CPU_STRESS_AVAILABLE]=1 [MEMORY_STRESS_AVAILABLE]=1 [MEMTESTER_BINARY]=/usr/bin/memtester [PYTHON3_BINARY]=/usr/bin/python3 [STRESS_NG_GPU_AVAILABLE]=1
         [DEBIAN_GRAPHICAL_GPU_AVAILABLE]=1 [DEBIAN_GRAPHICAL_GPU_STRATEGY]=cage-wayland-onscreen
     )
     # shellcheck disable=SC2030
@@ -1104,7 +1104,7 @@ APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
     APO_MODE_EFFECTIVE=graphical
     apo_profile_install_dependencies
 '
-grep -Fq 'apt-get install -y --no-install-recommends stress-ng memtester cage glmark2-es2-wayland' "$DEBIAN_INSTALL_CAPTURE"
+grep -Fq 'apt-get install -y --no-install-recommends stress-ng memtester python3 cage glmark2-es2-wayland' "$DEBIAN_INSTALL_CAPTURE"
 APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
     set -Eeuo pipefail
     APO_RUN_ID=fixture-run
@@ -1117,7 +1117,7 @@ APO_ROOT="$ROOT" INSTALL_CAPTURE="$DEBIAN_INSTALL_CAPTURE" bash -c '
     APO_MODE_EFFECTIVE=headless
     apo_profile_install_dependencies
 '
-grep -Fq 'apt-get install -y --no-install-recommends stress-ng memtester' "$DEBIAN_INSTALL_CAPTURE"
+grep -Fq 'apt-get install -y --no-install-recommends stress-ng memtester python3' "$DEBIAN_INSTALL_CAPTURE"
 if grep -Eq 'cage|glmark2' "$DEBIAN_INSTALL_CAPTURE"; then exit 1; fi
 
 # The controller-side cache gate verifies the complete archive before reuse,
@@ -1626,27 +1626,36 @@ for WORKER_NAME in debian batocera; do
     '
 done
 
-# The final memory companion covers 60 percent of currently available RAM
-# without the old 2 GiB ceiling, while always leaving at least 1 GiB free.
+# The final memory plan covers up to 60 percent of currently available RAM
+# while reserving the larger of 1 GiB or 20 percent of total RAM plus scratch.
 for WORKER_NAME in debian batocera; do
     APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${WORKER_NAME}-worker.sh" bash -c '
         set -Eeuo pipefail
         source "$WORKER"
-        awk() { printf "%s\n" "$MEMORY_AVAILABLE_KIB"; }
+        awk() {
+            case $1 in
+                *MemAvailable*) printf "%s\n" "$MEMORY_AVAILABLE_KIB" ;;
+                *MemTotal*) printf "%s\n" "$MEMORY_TOTAL_KIB" ;;
+                *) return 1 ;;
+            esac
+        }
+        MEMORY_TOTAL_KIB=$((16384 * 1024))
         MEMORY_AVAILABLE_KIB=$((16384 * 1024))
         [[ $(memory_test_size_mib) == 9830 ]]
-        MEMORY_AVAILABLE_KIB=$((2048 * 1024))
-        [[ $(memory_test_size_mib) == 1024 ]]
-        MEMORY_AVAILABLE_KIB=$((1280 * 1024))
+        MEMORY_TOTAL_KIB=$((8192 * 1024))
+        MEMORY_AVAILABLE_KIB=$((4096 * 1024))
+        [[ $(memory_test_size_mib) == 2266 ]]
+        MEMORY_TOTAL_KIB=$((2048 * 1024))
+        MEMORY_AVAILABLE_KIB=$((1472 * 1024))
         [[ $(memory_test_size_mib) == 256 ]]
-        MEMORY_AVAILABLE_KIB=$((1200 * 1024))
+        MEMORY_AVAILABLE_KIB=$((1471 * 1024))
         if memory_test_size_mib >/dev/null; then exit 1; fi
     '
 done
 
 # The memory companion must count a complete pass and preserve memtester test
-# failure status. The storage companion must alternate data sources and count
-# only complete write, sync, checksum, and readback cycles.
+# failure status. The RAM-backed filesystem companion alternates data sources
+# and counts only complete data, metadata, checksum, and readback cycles.
 MEMTESTER_FIXTURE="$TEMP_DIR/memtester-fixture"
 cat > "$MEMTESTER_FIXTURE" <<'MEMTESTER_FIXTURE'
 #!/usr/bin/env bash
@@ -1693,22 +1702,22 @@ APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/debian-worker.sh" IO_TEST_ROOT="
         (( io_fixture_calls <= 2 )) || return 1
         printf "%s-cycle-%s\n" "${input##*/}" "$io_fixture_calls" > "$output"
     }
-    sync() { :; }
     sleep() { :; }
-    start_io_activity "$IO_TEST_ROOT/payload.bin" "$IO_TEST_ROOT/io.log" "$IO_TEST_ROOT/io.count"
-    if wait "$stress_io_pid"; then exit 1; else io_rc=$?; fi
+    start_ramfs_activity "$IO_TEST_ROOT/payload.bin" "$IO_TEST_ROOT/io.log" "$IO_TEST_ROOT/io.count" "$(command -v python3)"
+    if wait "$stress_ramfs_pid"; then exit 1; else io_rc=$?; fi
     [[ $io_rc == 1 ]]
     [[ $(<"$IO_TEST_ROOT/io.count") == 2 ]]
-    grep -Eq "IO_CYCLE_PASS=1 source=urandom bytes=67108864 sha256=[0-9a-f]{64}" "$IO_TEST_ROOT/io.log"
-    grep -Eq "IO_CYCLE_PASS=2 source=zero bytes=67108864 sha256=[0-9a-f]{64}" "$IO_TEST_ROOT/io.log"
+    grep -Eq "RAMFS_CYCLE_PASS=1 source=urandom bytes=67108864 files=128 sha256=[0-9a-f]{64}" "$IO_TEST_ROOT/io.log"
+    grep -Eq "RAMFS_CYCLE_PASS=2 source=zero bytes=67108864 files=128 sha256=[0-9a-f]{64}" "$IO_TEST_ROOT/io.log"
 '
 
 # Final endurance classifies a memtester pattern failure as stability evidence
 # while treating a memtester setup failure as a harness fault.
 for MEMORY_EXPECTED_EXIT in 2 1; do
     set +e
-    MEMORY_FAILURE_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_DIR/memory-class-$MEMORY_EXPECTED_EXIT" \
-        WORKER="$ROOT/workers/debian-worker.sh" MEMORY_EXIT="$MEMORY_EXPECTED_EXIT" bash -c '
+    MEMORY_FAILURE_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 STRESS_FIXTURE_ROOT="$TEMP_DIR/memory-class-$MEMORY_EXPECTED_EXIT" \
+        APO_STRESS_NETWORK_REQUIRED=1 APO_STRESS_NETWORK_HELPER=/bin/true APO_STRESS_NETWORK_TOKEN="$(printf 'a%.0s' {1..64})" \
+        APO_STRESS_NETWORK_PORT=32000 WORKER="$ROOT/workers/debian-worker.sh" MEMORY_EXIT="$MEMORY_EXPECTED_EXIT" bash -c '
         set -u -o pipefail
         source "$WORKER"
         current_temp() { printf 50; }
@@ -1718,9 +1727,14 @@ for MEMORY_EXPECTED_EXIT in 2 1; do
         kernel_error_lines() { :; }
         stress-ng() { command /bin/sleep 5; printf "cpu output\n"; }
         memtester() { :; }
+        create_stress_workspace() { stress_work_dir="$STRESS_FIXTURE_ROOT/work"; mkdir -p "$stress_work_dir"; }
         memory_test_size_mib() { printf 256; }
+        memory_reserve_mib() { printf 1024; }
+        root_storage_device() { printf /dev/null; }
         start_memory_activity() { (command /bin/sleep 0.2; exit "$MEMORY_EXIT") & stress_memory_pid=$!; }
-        start_io_activity() { printf "1\n" > "$3"; (command /bin/sleep 5) & stress_io_pid=$!; }
+        start_ramfs_activity() { printf "1\n" > "$3"; (command /bin/sleep 5) & stress_ramfs_pid=$!; }
+        start_storage_read_activity() { printf "1\n" > "$3"; (command /bin/sleep 5) & stress_storage_pid=$!; }
+        start_network_activity() { printf "1 %s\n" "$(date +%s)" > "$2"; (command /bin/sleep 5) & stress_network_pid=$!; }
         terminate_child() { kill -TERM "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
         sleep() { command /bin/sleep 0.3; SECONDS=$((SECONDS + $1)); }
         cmd_stress cpu 20 75 headless "" 1 2400 800 throttled=0x0 60
@@ -1738,10 +1752,11 @@ for MEMORY_EXPECTED_EXIT in 2 1; do
 done
 
 # A long final endurance run deliberately unloads and reloads the compute and
-# memory workloads at each natural hourly segment boundary. Persistent storage
-# activity stays supervised through the ten-second idle interval.
-TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_DIR/load-transition" \
-    WORKER="$ROOT/workers/debian-worker.sh" bash -c '
+# memory workloads at each natural hourly segment boundary. RAM filesystem,
+# read-only storage, and network activity stay supervised through the idle.
+TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 STRESS_FIXTURE_ROOT="$TEMP_DIR/load-transition" \
+    APO_STRESS_NETWORK_REQUIRED=1 APO_STRESS_NETWORK_HELPER=/bin/true APO_STRESS_NETWORK_TOKEN="$(printf 'b%.0s' {1..64})" \
+    APO_STRESS_NETWORK_PORT=32001 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     set -Eeuo pipefail
     source "$WORKER"
     current_temp() { printf 50; }
@@ -1751,7 +1766,10 @@ TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_D
     kernel_error_lines() { :; }
     stress-ng() { :; }
     memtester() { :; }
+    create_stress_workspace() { stress_work_dir="$STRESS_FIXTURE_ROOT/work"; mkdir -p "$stress_work_dir"; }
     memory_test_size_mib() { printf 256; }
+    memory_reserve_mib() { printf 1024; }
+    root_storage_device() { printf /dev/null; }
     launch_debian_cpu_segment() {
         local segment_duration=$1 output_file=$2 segment_number=$3
         printf "segment=%s duration=%s\n" "$segment_number" "$segment_duration" >> "$output_file"
@@ -1764,10 +1782,20 @@ TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_D
         (command /bin/sleep 10) &
         stress_memory_pid=$!
     }
-    start_io_activity() {
+    start_ramfs_activity() {
         printf "1\n" > "$3"
         (command /bin/sleep 10) &
-        stress_io_pid=$!
+        stress_ramfs_pid=$!
+    }
+    start_storage_read_activity() {
+        printf "1\n" > "$3"
+        (command /bin/sleep 10) &
+        stress_storage_pid=$!
+    }
+    start_network_activity() {
+        printf "1 %s\n" "$(date +%s)" > "$2"
+        (command /bin/sleep 10) &
+        stress_network_pid=$!
     }
     terminate_child() { kill -TERM "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
     fixture_poll=0
@@ -1796,13 +1824,15 @@ TRANSITION_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_D
 ' 2>&1)
 [[ $TRANSITION_OUTPUT == *'LOAD_TRANSITION_START=1 idle_seconds=10 elapsed=3600/7200s'* ]]
 [[ $TRANSITION_OUTPUT == *'LOAD_TRANSITION_RELOAD=1 elapsed=3610/7200s'* ]]
-[[ $TRANSITION_OUTPUT == *'MEMORY_LOOPS=1 IO_CYCLES=1 LOAD_TRANSITIONS=1'* ]]
+[[ $TRANSITION_OUTPUT == *'MEMORY_LOOPS=1 RAMFS_CYCLES=1 STORAGE_READS=1 NETWORK_MESSAGES=1 LOAD_TRANSITIONS=1'* ]]
 [[ $TRANSITION_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
 
-# The endurance IO companion is polled every second as an independent safety
+# The endurance RAM filesystem companion is polled every second as a safety
 # workload rather than only when temperature/clock telemetry is due.
 set +e
-DEBIAN_IO_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_DIR/endurance-io" WORKER="$ROOT/workers/debian-worker.sh" bash -c '
+DEBIAN_IO_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 STRESS_FIXTURE_ROOT="$TEMP_DIR/endurance-io" \
+    APO_STRESS_NETWORK_REQUIRED=1 APO_STRESS_NETWORK_HELPER=/bin/true APO_STRESS_NETWORK_TOKEN="$(printf 'c%.0s' {1..64})" \
+    APO_STRESS_NETWORK_PORT=32002 WORKER="$ROOT/workers/debian-worker.sh" bash -c '
     set -u -o pipefail
     source "$WORKER"
     current_temp() { printf 50; }
@@ -1812,8 +1842,13 @@ DEBIAN_IO_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 APO_STRESS_PERSISTENT_DIR="$TEMP_DI
     kernel_error_lines() { :; }
     stress-ng() { command /bin/sleep 2; printf "cpu output\n"; }
     memtester() { command /bin/sleep 2; printf "memory output\n"; }
+    create_stress_workspace() { stress_work_dir="$STRESS_FIXTURE_ROOT/work"; mkdir -p "$stress_work_dir"; }
     memory_test_size_mib() { printf 256; }
-    start_io_activity() { (command /bin/sleep 0.5; exit 7) & stress_io_pid=$!; }
+    memory_reserve_mib() { printf 1024; }
+    root_storage_device() { printf /dev/null; }
+    start_ramfs_activity() { (command /bin/sleep 0.5; exit 7) & stress_ramfs_pid=$!; }
+    start_storage_read_activity() { printf "1\n" > "$3"; (command /bin/sleep 2) & stress_storage_pid=$!; }
+    start_network_activity() { printf "1 %s\n" "$(date +%s)" > "$2"; (command /bin/sleep 2) & stress_network_pid=$!; }
     terminate_child() { kill -TERM "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
     sleep() { command /bin/sleep 0.7; SECONDS=$((SECONDS + $1)); }
     cmd_stress cpu 20 75 headless "" 1 2400 800 throttled=0x0 60
@@ -1823,7 +1858,7 @@ set -e
 [[ $DEBIAN_IO_RC -ne 0 ]]
 [[ $DEBIAN_IO_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
 DEBIAN_IO_REASON_B64=$(awk -F= '/^APO_RESULT_REASON_B64=/{sub(/^[^=]*=/, ""); print; exit}' <<< "$DEBIAN_IO_OUTPUT")
-[[ $(printf '%s' "$DEBIAN_IO_REASON_B64" | base64 --decode) == 'Filesystem activity failed during load with rc=7.' ]]
+[[ $(printf '%s' "$DEBIAN_IO_REASON_B64" | base64 --decode) == 'RAM-backed filesystem activity failed during load with rc=7.' ]]
 
 (
     BOOT_TEST_DIR="$TEMP_DIR/boot-test"
@@ -1878,6 +1913,11 @@ done
 
 write_glmark_launcher "$TEMP_DIR/graphical.sh" 20 "$GPU_BACKEND_BIN/glmark2-es2-wayland" /opt/data /opt/lib graphical "$WAYLAND_RUN" wayland-3
 write_glmark_launcher "$TEMP_DIR/headless.sh" 20 "$GPU_BACKEND_BIN/glmark2-es2-drm" /opt/data /opt/lib headless
+[[ $(batocera_gpu_benchmark 1 20) == 'terrain:duration=20' ]]
+[[ $(batocera_gpu_benchmark 2 20) == 'shading:shading=phong:num-lights=8:model=horse:duration=20' ]]
+[[ $(batocera_gpu_benchmark 3 20) == 'bump:bump-render=height:duration=20' ]]
+[[ $(batocera_gpu_benchmark 4 20) == 'conditionals:fragment-steps=5:vertex-steps=5:duration=20' ]]
+[[ $(batocera_gpu_benchmark 5 20) == 'terrain:duration=20' ]]
 bash -n "$TEMP_DIR/graphical.sh"
 bash -n "$TEMP_DIR/headless.sh"
 grep -q '^export XDG_RUNTIME_DIR=' "$TEMP_DIR/graphical.sh"
@@ -1893,12 +1933,12 @@ GRAPHICAL_LAUNCH_OUTPUT=$(bash "$TEMP_DIR/graphical.sh" 2>&1)
 [[ $GRAPHICAL_LAUNCH_OUTPUT == *$'BACKEND=glmark2-es2-wayland\n'* ]]
 [[ $GRAPHICAL_LAUNCH_OUTPUT == *$'RUNTIME='"$WAYLAND_RUN"$'\n'* ]]
 [[ $GRAPHICAL_LAUNCH_OUTPUT == *$'DISPLAY=wayland-3\n'* ]]
-[[ $GRAPHICAL_LAUNCH_OUTPUT == *'ARGS=--data-path /opt/data --off-screen --size=1280x720 --benchmark shading:duration=20:shading=phong'* ]]
+[[ $GRAPHICAL_LAUNCH_OUTPUT == *'ARGS=--data-path /opt/data --off-screen --size=1280x720 --benchmark terrain:duration=20'* ]]
 HEADLESS_LAUNCH_OUTPUT=$(WAYLAND_DISPLAY=unsafe bash "$TEMP_DIR/headless.sh" 2>&1)
 [[ $HEADLESS_LAUNCH_OUTPUT == *$'GPU_STRATEGY=headless-drm-off-screen\n'* ]]
 [[ $HEADLESS_LAUNCH_OUTPUT == *$'BACKEND=glmark2-es2-drm\n'* ]]
 [[ $HEADLESS_LAUNCH_OUTPUT == *$'DISPLAY=\n'* ]]
-[[ $HEADLESS_LAUNCH_OUTPUT == *'ARGS=--data-path /opt/data --off-screen --size=640x480 --benchmark shading:duration=20:shading=phong'* ]]
+[[ $HEADLESS_LAUNCH_OUTPUT == *'ARGS=--data-path /opt/data --off-screen --size=640x480 --benchmark terrain:duration=20'* ]]
 
 # The graphical launcher runs directly through the compositor. These sentinels
 # make any regression to frontend service control or VT ownership fail loudly.
@@ -1991,16 +2031,20 @@ for WORKER_NAME in debian batocera; do
             terminate_child() { printf "terminated=%s\n" "$1"; }
             stress_cpu_pid=201
             stress_gpu_pid=202
-            stress_io_pid=203
+            stress_ramfs_pid=203
+            stress_storage_pid=204
+            stress_network_pid=205
+            stress_memory_pid=206
             stress_work_dir=
-            stress_io_file=
+            stress_ramfs_file=
+            stress_memory_count_file=
             stress_signal_cleanup 143
             printf "resumed\n"
         )
         signal_rc=$?
         set -e
         [[ $signal_rc -eq 143 ]]
-        [[ $(grep -c "^terminated=" <<< "$signal_output") -eq 3 ]]
+        [[ $(grep -c "^terminated=" <<< "$signal_output") -eq 6 ]]
         [[ $signal_output != *resumed* ]]
 
         sleep 300 & child=$!

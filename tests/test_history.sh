@@ -998,9 +998,9 @@ apo_history_has_legal_axis_headroom 2925 1125 25 25
     purge_ledger_copy=$TMP/fresh-tuning-purge/old-history.txt
     cp -- "$purge_ledger" "$purge_ledger_copy"
     purge_ledger_hash=$(sha256sum "$purge_ledger" | awk 'NR == 1 {print $1}')
-    obsolete_ledger="$APO_HISTORY_DIR/failures.txt"
-    printf 'legacy alpha.97 retained failures\n' > "$obsolete_ledger"
-    obsolete_ledger_hash=$(sha256sum "$obsolete_ledger" | awk 'NR == 1 {print $1}')
+    unmanaged_history_file="$APO_HISTORY_DIR/unmanaged.txt"
+    printf 'must remain untouched\n' > "$unmanaged_history_file"
+    unmanaged_history_hash=$(sha256sum "$unmanaged_history_file" | awk 'NR == 1 {print $1}')
 
     declare -Ag APO_STATE=(
         [FORMAT_VERSION]=1
@@ -1021,10 +1021,10 @@ apo_history_has_legal_axis_headroom 2925 1125 25 25
     apo_history_prepare_fresh_tuning_boundary
     apo_history_commit_fresh_tuning_boundary
     [[ ! -e $purge_ledger && ! -L $purge_ledger ]]
-    [[ ! -e $obsolete_ledger && ! -L $obsolete_ledger ]]
+    [[ -f $unmanaged_history_file && ! -L $unmanaged_history_file ]]
+    [[ $(sha256sum "$unmanaged_history_file" | awk 'NR == 1 {print $1}') == "$unmanaged_history_hash" ]]
     [[ ${APO_STATE[FRESH_TUNING_PURGE_COMMITTED]} == 1 ]]
     [[ ${APO_STATE[FRESH_TUNING_PURGED_LEDGER_HASH]} == "$purge_ledger_hash" ]]
-    [[ ${APO_STATE[FRESH_TUNING_PURGED_OBSOLETE_LEDGER_HASH]} == "$obsolete_ledger_hash" ]]
     [[ ${APO_STATE[FRESH_TUNING_CUTOFF_RECORDS]} == 0 ]]
 
     cp -- "$purge_ledger_copy" "$purge_ledger"
@@ -1049,12 +1049,11 @@ apo_history_has_legal_axis_headroom 2925 1125 25 25
     [[ ${#APO_HISTORY_LEDGER_RECORDS[@]} == 1 ]]
 )
 
-# Controllers upgraded directly from alpha.97 may have only failures.txt. The
-# destructive form removes that obsolete ledger even when history.txt has not
-# yet been created, while recording that no current ledger existed.
+# When history.txt does not exist, the destructive form records that no current
+# ledger existed and leaves every unrelated file in the history directory alone.
 (
-    APO_OUTPUT_DIR=$TMP/fresh-tuning-obsolete-only/runs
-    APO_HISTORY_DIR=$TMP/fresh-tuning-obsolete-only/history
+    APO_OUTPUT_DIR=$TMP/fresh-tuning-no-ledger/runs
+    APO_HISTORY_DIR=$TMP/fresh-tuning-no-ledger/history
     mkdir -p -- "$APO_OUTPUT_DIR" "$APO_HISTORY_DIR"
     APO_COMMAND=reset
     APO_ORIGIN_COMMAND=reset
@@ -1062,9 +1061,9 @@ apo_history_has_legal_axis_headroom 2925 1125 25 25
     APO_FRESH_TUNING=1
     APO_FRESH_TUNING_FORCE=1
     APO_RUN_ID=20261004-060000-abababababababab
-    obsolete_ledger="$APO_HISTORY_DIR/failures.txt"
-    printf 'legacy-only retained failures\n' > "$obsolete_ledger"
-    obsolete_ledger_hash=$(sha256sum "$obsolete_ledger" | awk 'NR == 1 {print $1}')
+    unmanaged_history_file="$APO_HISTORY_DIR/unmanaged.txt"
+    printf 'must remain untouched\n' > "$unmanaged_history_file"
+    unmanaged_history_hash=$(sha256sum "$unmanaged_history_file" | awk 'NR == 1 {print $1}')
     declare -Ag APO_STATE=(
         [FORMAT_VERSION]=1
         [RUN_SCHEMA]="$APO_CURRENT_RUN_SCHEMA"
@@ -1077,9 +1076,10 @@ apo_history_has_legal_axis_headroom 2925 1125 25 25
 
     apo_history_prepare_fresh_tuning_boundary
     apo_history_commit_fresh_tuning_boundary
-    [[ ! -e $obsolete_ledger && ! -L $obsolete_ledger ]]
+    [[ ! -e $APO_HISTORY_DIR/history.txt && ! -L $APO_HISTORY_DIR/history.txt ]]
+    [[ -f $unmanaged_history_file && ! -L $unmanaged_history_file ]]
+    [[ $(sha256sum "$unmanaged_history_file" | awk 'NR == 1 {print $1}') == "$unmanaged_history_hash" ]]
     [[ ${APO_STATE[FRESH_TUNING_PURGED_LEDGER_HASH]} == NONE ]]
-    [[ ${APO_STATE[FRESH_TUNING_PURGED_OBSOLETE_LEDGER_HASH]} == "$obsolete_ledger_hash" ]]
     [[ ${APO_STATE[FRESH_TUNING_PURGE_COMMITTED]} == 1 ]]
 )
 

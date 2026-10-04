@@ -34,6 +34,7 @@ for required in \
     source/lib/controller_watchdog.sh \
     source/lib/remote_job.sh \
     source/tools/remote-stress-job.sh \
+    source/tools/stress-network-peer.py \
     source/tests/fixtures/debian-pass.log \
     source/tests/fixtures/interrupted-tryboot.state; do
     grep -qx "$required" "$TEMP_DIR/tar.list"

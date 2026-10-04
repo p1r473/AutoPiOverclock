@@ -5,9 +5,12 @@ declare -Ag APO_DISCOVERY=()
 APO_PROFILE=''
 APO_LOCAL_WORKER=''
 APO_REMOTE_WORK_DIR=''
+APO_REMOTE_STRESS_DIR=''
 APO_REMOTE_WORKER=''
 APO_LOCAL_REMOTE_JOB=''
 APO_REMOTE_JOB_HELPER=''
+APO_LOCAL_NETWORK_PEER=''
+APO_REMOTE_NETWORK_PEER=''
 APO_BOOT_TIMEOUT=300
 APO_BOOT_SETTLE_SECONDS=15
 APO_MODE_EFFECTIVE=''
@@ -61,13 +64,19 @@ apo_load_profile() {
     source "$profile_file"
     APO_LOCAL_REMOTE_JOB="${APO_ROOT}/tools/remote-stress-job.sh"
     APO_REMOTE_JOB_HELPER="${APO_REMOTE_WORK_DIR}/remote-stress-job.sh"
+    APO_LOCAL_NETWORK_PEER="${APO_ROOT}/tools/stress-network-peer.py"
+    APO_REMOTE_NETWORK_PEER="${APO_REMOTE_WORK_DIR}/stress-network-peer.py"
+    [[ $APO_REMOTE_STRESS_DIR == "/var/run/autopioverclock-${APO_RUN_ID}" ]] ||
+        apo_die 'The profile supplied an unsafe final-endurance RAM workspace.' "$APO_EXIT_INTERNAL"
 }
 
 apo_deploy_worker() {
     [[ -r $APO_LOCAL_WORKER ]] || apo_die "Missing local worker: $APO_LOCAL_WORKER" "$APO_EXIT_INTERNAL"
     [[ -r $APO_LOCAL_REMOTE_JOB ]] || apo_die "Missing local detached-stress helper: $APO_LOCAL_REMOTE_JOB" "$APO_EXIT_INTERNAL"
+    [[ -r $APO_LOCAL_NETWORK_PEER ]] || apo_die "Missing local final-endurance network peer: $APO_LOCAL_NETWORK_PEER" "$APO_EXIT_INTERNAL"
     apo_remote_upload_root "$APO_LOCAL_WORKER" "$APO_REMOTE_WORKER" || apo_die 'Could not deploy the target worker.' "$APO_EXIT_PREFLIGHT"
     apo_remote_upload_root "$APO_LOCAL_REMOTE_JOB" "$APO_REMOTE_JOB_HELPER" || apo_die 'Could not deploy the detached-stress helper.' "$APO_EXIT_PREFLIGHT"
+    apo_remote_upload_root "$APO_LOCAL_NETWORK_PEER" "$APO_REMOTE_NETWORK_PEER" || apo_die 'Could not deploy the final-endurance network peer.' "$APO_EXIT_PREFLIGHT"
     APO_WORKER_DEPLOYED=1
     APO_WORKER_BOOT_ID=$(apo_remote_boot_id || true)
 }
@@ -89,6 +98,11 @@ apo_redeploy_worker_for_boot() {
         APO_LAST_REASON="The local detached-stress helper is missing before $context: $APO_LOCAL_REMOTE_JOB"
         return 1
     }
+    [[ -r $APO_LOCAL_NETWORK_PEER ]] || {
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON="The local final-endurance network peer is missing before $context: $APO_LOCAL_NETWORK_PEER"
+        return 1
+    }
     if ! apo_remote_upload_root "$APO_LOCAL_WORKER" "$APO_REMOTE_WORKER"; then
         APO_LAST_CLASS=HARNESS_FAILURE
         APO_LAST_REASON="The target returned after $context, but its run-isolated worker could not be redeployed."
@@ -99,6 +113,11 @@ apo_redeploy_worker_for_boot() {
         APO_LAST_REASON="The target returned after $context, but its detached-stress helper could not be redeployed."
         return 1
     fi
+    if ! apo_remote_upload_root "$APO_LOCAL_NETWORK_PEER" "$APO_REMOTE_NETWORK_PEER"; then
+        APO_LAST_CLASS=HARNESS_FAILURE
+        APO_LAST_REASON="The target returned after $context, but its final-endurance network peer could not be redeployed."
+        return 1
+    fi
     APO_WORKER_DEPLOYED=1
     APO_WORKER_BOOT_ID=$boot_id
 }
@@ -106,7 +125,7 @@ apo_redeploy_worker_for_boot() {
 apo_ensure_worker_for_boot() {
     local boot_id=$1 context=${2:-current-boot}
     if [[ ${APO_WORKER_BOOT_ID:-} == "$boot_id" ]] &&
-       apo_remote_root_read "test -x $(apo_sh_quote "$APO_REMOTE_WORKER")" >/dev/null 2>&1; then
+       apo_remote_root_read "test -x $(apo_sh_quote "$APO_REMOTE_WORKER") && test -x $(apo_sh_quote "$APO_REMOTE_JOB_HELPER") && test -x $(apo_sh_quote "$APO_REMOTE_NETWORK_PEER")" >/dev/null 2>&1; then
         return 0
     fi
     apo_redeploy_worker_for_boot "$boot_id" "$context"
@@ -342,7 +361,7 @@ apo_store_discovery_state() {
     apo_state_set AUDIO_BASELINE "$APO_AUDIO_BASELINE"
     apo_state_set STORAGE_LAYOUT "$APO_STORAGE_LAYOUT"
     apo_state_set REQUIRE_GPU_STRESS "$APO_REQUIRE_GPU_STRESS"
-    for key in MODEL COMPATIBLE ARCH OS_ID OS_VERSION NORMAL_VOLTAGE_SOURCE PERMANENT_TUNING_PROVENANCE PERMANENT_TUNING_EVIDENCE TRYBOOT_EXISTS TRYBOOT_TYPE TRYBOOT_HASH BOOT_WATCHDOG_TIMEOUT KERNEL_WATCHDOG_TIMEOUT RUNTIME_WATCHDOG WATCHDOG_DEVICE WATCHDOG_RUNTIME_TIMEOUT WATCHDOG_OWNER NETWORK_WATCHDOG_KIND NETWORK_WATCHDOG_TARGET NETWORK_WATCHDOG_CONFIG_HASH NETWORK_WATCHDOG_KEEPER_HASH NETWORK_WATCHDOG_SERVICE_HASH NETWORK_WATCHDOG_SERVICE_ACTIVE NETWORK_WATCHDOG_INSTALL_RUN_ID NETWORK_WATCHDOG_INSTALL_BACKUP NATIVE_NETWORK_WATCHDOG_PRESENT NATIVE_NETWORK_WATCHDOG_READY NATIVE_NETWORK_WATCHDOG_TARGET NATIVE_WATCHDOG_SERVICE_ACTIVE NATIVE_WATCHDOG_CONFIG_INSPECTED ROOT_SOURCE BOOT_SOURCE DISPLAY_PRESENT AUDIO_BASELINE CPU_STRESS_AVAILABLE MEMORY_STRESS_AVAILABLE GPU_STRESS_AVAILABLE STRESS_NG_BINARY MEMTESTER_BINARY STRESS_NG_GPU_AVAILABLE STRESS_NG_GPU_STRATEGY DRM_RENDER_NODE OPENSSL_BINARY GLMARK_BINARY GLMARK_WAYLAND_BINARY GLMARK_DRM_BINARY GLMARK_DATA CAGE_BINARY DISPLAY_DRM_DEVICE DEBIAN_GRAPHICAL_GPU_AVAILABLE DEBIAN_GRAPHICAL_GPU_STRATEGY RECENT_THROTTLED THROTTLE_RECENT_SUPPORTED; do
+    for key in MODEL COMPATIBLE ARCH OS_ID OS_VERSION NORMAL_VOLTAGE_SOURCE PERMANENT_TUNING_PROVENANCE PERMANENT_TUNING_EVIDENCE TRYBOOT_EXISTS TRYBOOT_TYPE TRYBOOT_HASH BOOT_WATCHDOG_TIMEOUT KERNEL_WATCHDOG_TIMEOUT RUNTIME_WATCHDOG WATCHDOG_DEVICE WATCHDOG_RUNTIME_TIMEOUT WATCHDOG_OWNER NETWORK_WATCHDOG_KIND NETWORK_WATCHDOG_TARGET NETWORK_WATCHDOG_CONFIG_HASH NETWORK_WATCHDOG_KEEPER_HASH NETWORK_WATCHDOG_SERVICE_HASH NETWORK_WATCHDOG_SERVICE_ACTIVE NETWORK_WATCHDOG_INSTALL_RUN_ID NETWORK_WATCHDOG_INSTALL_BACKUP NATIVE_NETWORK_WATCHDOG_PRESENT NATIVE_NETWORK_WATCHDOG_READY NATIVE_NETWORK_WATCHDOG_TARGET NATIVE_WATCHDOG_SERVICE_ACTIVE NATIVE_WATCHDOG_CONFIG_INSPECTED ROOT_SOURCE BOOT_SOURCE DISPLAY_PRESENT AUDIO_BASELINE CPU_STRESS_AVAILABLE MEMORY_STRESS_AVAILABLE GPU_STRESS_AVAILABLE STRESS_NG_BINARY MEMTESTER_BINARY PYTHON3_BINARY STRESS_NG_GPU_AVAILABLE STRESS_NG_GPU_STRATEGY DRM_RENDER_NODE OPENSSL_BINARY GLMARK_BINARY GLMARK_WAYLAND_BINARY GLMARK_DRM_BINARY GLMARK_DATA CAGE_BINARY DISPLAY_DRM_DEVICE DEBIAN_GRAPHICAL_GPU_AVAILABLE DEBIAN_GRAPHICAL_GPU_STRATEGY RECENT_THROTTLED THROTTLE_RECENT_SUPPORTED; do
         apo_state_set "DISC_${key}" "${APO_DISCOVERY[$key]:-}"
     done
     apo_state_save
@@ -617,18 +636,20 @@ apo_dependency_description() {
     case $APO_PROFILE in
         debian)
             if [[ ${APO_MODE_EFFECTIVE:-headless} == graphical ]]; then
-                printf 'stress-ng=%s; memtester=%s; cage=%s; glmark-wayland=%s; display-device=%s; gpu-strategy=%s; drm-render-node=%s' \
+                printf 'stress-ng=%s; memtester=%s; python3=%s; cage=%s; glmark-wayland=%s; display-device=%s; gpu-strategy=%s; drm-render-node=%s' \
                     "${APO_DISCOVERY[STRESS_NG_BINARY]:-missing}" \
                     "${APO_DISCOVERY[MEMTESTER_BINARY]:-missing}" \
+                    "${APO_DISCOVERY[PYTHON3_BINARY]:-missing}" \
                     "${APO_DISCOVERY[CAGE_BINARY]:-missing}" \
                     "${APO_DISCOVERY[GLMARK_WAYLAND_BINARY]:-missing}" \
                     "${APO_DISCOVERY[DISPLAY_DRM_DEVICE]:-missing}" \
                     "${APO_DISCOVERY[DEBIAN_GRAPHICAL_GPU_STRATEGY]:-missing}" \
                     "${APO_DISCOVERY[DRM_RENDER_NODE]:-missing}"
             else
-                printf 'stress-ng=%s; memtester=%s; stress-ng-gpu=%s; gpu-strategy=%s; drm-render-node=%s' \
+                printf 'stress-ng=%s; memtester=%s; python3=%s; stress-ng-gpu=%s; gpu-strategy=%s; drm-render-node=%s' \
                     "${APO_DISCOVERY[STRESS_NG_BINARY]:-missing}" \
                     "${APO_DISCOVERY[MEMTESTER_BINARY]:-missing}" \
+                    "${APO_DISCOVERY[PYTHON3_BINARY]:-missing}" \
                     "$([[ ${APO_DISCOVERY[STRESS_NG_GPU_AVAILABLE]:-0} == 1 ]] && printf ready || printf missing)" \
                     "${APO_DISCOVERY[STRESS_NG_GPU_STRATEGY]:-missing}" \
                     "${APO_DISCOVERY[DRM_RENDER_NODE]:-missing}"
@@ -641,9 +662,10 @@ apo_dependency_description() {
                 headless) glmark_binary=${APO_DISCOVERY[GLMARK_DRM_BINARY]:-missing} ;;
                 *) glmark_binary=missing ;;
             esac
-            printf 'openssl=%s; memtester=%s; glmark-binary=%s; glmark-data=%s' \
+            printf 'openssl=%s; memtester=%s; python3=%s; glmark-binary=%s; glmark-data=%s' \
                 "${APO_DISCOVERY[OPENSSL_BINARY]:-missing}" \
                 "${APO_DISCOVERY[MEMTESTER_BINARY]:-missing}" \
+                "${APO_DISCOVERY[PYTHON3_BINARY]:-missing}" \
                 "$glmark_binary" \
                 "${APO_DISCOVERY[GLMARK_DATA]:-missing}"
             ;;

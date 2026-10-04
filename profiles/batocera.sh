@@ -4,6 +4,7 @@
 APO_PROFILE=batocera
 APO_LOCAL_WORKER="${APO_ROOT}/workers/batocera-worker.sh"
 APO_REMOTE_WORK_DIR="/userdata/system/autopioverclock/runs/${APO_RUN_ID}"
+APO_REMOTE_STRESS_DIR="/var/run/autopioverclock-${APO_RUN_ID}"
 APO_REMOTE_WORKER="${APO_REMOTE_WORK_DIR}/worker.sh"
 APO_BOOT_TIMEOUT=300
 APO_BOOT_SETTLE_SECONDS=8
@@ -11,6 +12,7 @@ APO_BOOT_SETTLE_SECONDS=8
 apo_profile_dependencies_ready() {
     [[ ${APO_DISCOVERY[CPU_STRESS_AVAILABLE]:-0} == 1 ]] || return 1
     [[ ${APO_DISCOVERY[MEMORY_STRESS_AVAILABLE]:-0} == 1 && -n ${APO_DISCOVERY[MEMTESTER_BINARY]:-} ]] || return 1
+    [[ -n ${APO_DISCOVERY[PYTHON3_BINARY]:-} ]] || return 1
     (( APO_REQUIRE_GPU_STRESS == 0 )) && return 0
     [[ -n ${APO_DISCOVERY[GLMARK_DATA]:-} ]] || return 1
     case ${APO_MODE_EFFECTIVE:-} in

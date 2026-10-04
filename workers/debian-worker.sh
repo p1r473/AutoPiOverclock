@@ -1020,7 +1020,7 @@ cmd_status_snapshot() {
 cmd_discover() {
     local boot_config tryboot_config boot_mount model compatible os_id os_version gpu_key normal_cpu normal_gpu normal_voltage normal_voltage_source
     local boot_watchdog kernel_watchdog runtime_watchdog watchdog_device watchdog_runtime_timeout_value watchdog_owner root_device boot_source display_baseline display_present audio_baseline permanent_hash
-    local stress_ng_binary memtester_binary memory_stress_available=0 stress_ng_gpu_available stress_ng_gpu_strategy_value render_node tryboot_exists tryboot_type tryboot_hash
+    local stress_ng_binary memtester_binary python3_binary memory_stress_available=0 stress_ng_gpu_available stress_ng_gpu_strategy_value render_node tryboot_exists tryboot_type tryboot_hash
     local glmark_wayland_binary glmark_data cage_binary display_drm_device graphical_gpu_strategy_value graphical_gpu_available=0
     local network_root=/var/lib/autopioverclock/network-watchdog network_config network_keeper network_service
     local observer_config observer_keeper observer_service
@@ -1071,6 +1071,7 @@ cmd_discover() {
     fi
     stress_ng_binary=$(command -v stress-ng 2>/dev/null || true)
     memtester_binary=$(command -v memtester 2>/dev/null || true)
+    python3_binary=$(command -v python3 2>/dev/null || true)
     if [[ -n $memtester_binary ]] && "$memtester_binary" 1M 1 >/dev/null 2>&1; then memory_stress_available=1; fi
     render_node=$(v3d_render_node || true)
     stress_ng_gpu_strategy_value=$([[ -n $stress_ng_binary && -n $render_node ]] && stress_ng_gpu_strategy "$render_node" || true)
@@ -1177,6 +1178,7 @@ cmd_discover() {
     emit_data GPU_STRESS_AVAILABLE "$([[ $stress_ng_gpu_available == 1 || $graphical_gpu_available == 1 ]] && printf 1 || printf 0)"
     emit_data STRESS_NG_BINARY "$stress_ng_binary"
     emit_data MEMTESTER_BINARY "$memtester_binary"
+    emit_data PYTHON3_BINARY "$python3_binary"
     emit_data STRESS_NG_GPU_AVAILABLE "$stress_ng_gpu_available"
     emit_data STRESS_NG_GPU_STRATEGY "$stress_ng_gpu_strategy_value"
     emit_data DRM_RENDER_NODE "$render_node"
@@ -1572,17 +1574,76 @@ terminate_child() {
     wait "$child_pid" 2>/dev/null || true
 }
 
-memory_test_size_mib() {
-    local available_kib available_mib target reserve_limited
+memory_available_mib() {
+    local available_kib
     available_kib=$(awk '$1 == "MemAvailable:" {print $2; exit}' /proc/meminfo 2>/dev/null || true)
     [[ $available_kib =~ ^[1-9][0-9]*$ ]] || return 1
-    available_mib=$((available_kib / 1024))
-    (( available_mib > 1024 )) || return 1
+    printf '%s' "$((available_kib / 1024))"
+}
+
+memory_total_mib() {
+    local total_kib
+    total_kib=$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo 2>/dev/null || true)
+    [[ $total_kib =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s' "$((total_kib / 1024))"
+}
+
+memory_reserve_mib() {
+    local total_mib reserve
+    total_mib=$(memory_total_mib) || return 1
+    reserve=$((total_mib * 20 / 100))
+    (( reserve < 1024 )) && reserve=1024
+    printf '%s' "$reserve"
+}
+
+memory_test_size_mib() {
+    local available_mib reserve_mib scratch_mib=${APO_STRESS_RAM_BUDGET_MIB:-192} target reserve_limited
+    available_mib=$(memory_available_mib) || return 1
+    reserve_mib=$(memory_reserve_mib) || return 1
+    [[ $scratch_mib =~ ^[1-9][0-9]*$ ]] || return 1
     target=$((available_mib * 60 / 100))
-    reserve_limited=$((available_mib - 1024))
+    reserve_limited=$((available_mib - reserve_mib - scratch_mib))
     (( target > reserve_limited )) && target=$reserve_limited
     (( target >= 256 )) || return 1
     printf '%s' "$target"
+}
+
+stress_ram_root_valid() {
+    local root=${APO_STRESS_RAM_ROOT:-} expected_parent resolved
+    [[ $root == /var/run/autopioverclock-* && -d $root && ! -L $root ]] || return 1
+    expected_parent=$(readlink -f -- /var/run 2>/dev/null || true)
+    resolved=$(readlink -f -- "$root" 2>/dev/null || true)
+    [[ -n $expected_parent && $resolved == "$expected_parent"/autopioverclock-* ]] || return 1
+    awk -v expected="$resolved" '
+        $5 == expected {
+            separator = 0
+            for (field = 1; field <= NF; field++) if ($field == "-") { separator = field; break }
+            if (!separator || $(separator + 1) != "tmpfs") next
+            options = $6 "," $(separator + 3)
+            count = split(options, entries, ",")
+            for (index = 1; index <= count; index++) if (entries[index] == "noswap") found = 1
+        }
+        END { exit !found }
+    ' /proc/self/mountinfo
+}
+
+create_stress_workspace() {
+    local final_endurance=$1 workspace_parent resolved_root resolved_workspace
+    if [[ $final_endurance == 1 ]]; then
+        stress_ram_root_valid || return 1
+        workspace_parent="${APO_STRESS_RAM_ROOT}/workspaces"
+        if [[ -e $workspace_parent || -L $workspace_parent ]]; then
+            [[ -d $workspace_parent && ! -L $workspace_parent ]] || return 1
+        else
+            mkdir -m 700 -- "$workspace_parent" || return 1
+        fi
+        stress_work_dir=$(mktemp -d "${workspace_parent}/autopioverclock-stress.XXXXXX") || return 1
+        resolved_root=$(readlink -f -- "$workspace_parent") || return 1
+        resolved_workspace=$(readlink -f -- "$stress_work_dir") || return 1
+        [[ $resolved_workspace == "$resolved_root"/autopioverclock-stress.* ]] || return 1
+    else
+        stress_work_dir=$(mktemp -d /tmp/autopioverclock-stress.XXXXXX) || return 1
+    fi
 }
 
 memtester_exit_is_stability_failure() {
@@ -1613,41 +1674,137 @@ start_memory_activity() {
     stress_memory_pid=$!
 }
 
-start_io_activity() {
-    local destination=$1 output_file=${2:-/dev/null} count_file=${3:-}
+start_ramfs_activity() {
+    local destination=$1 output_file=${2:-/dev/null} count_file=${3:-} python_binary=$4
     (
         trap 'exit 0' TERM INT HUP
-        io_cycle=0
+        ramfs_cycle=0
         while :; do
-            if (( io_cycle % 2 == 0 )); then io_source=/dev/urandom; else io_source=/dev/zero; fi
-            dd if="$io_source" of="${destination}.new" bs=1M count=64 conv=fsync status=none || exit 1
+            if (( ramfs_cycle % 2 == 0 )); then ramfs_source=/dev/urandom; else ramfs_source=/dev/zero; fi
+            dd if="$ramfs_source" of="${destination}.new" bs=1M count=64 conv=fsync status=none || exit 1
             expected_hash=$(sha256sum "${destination}.new" | awk 'NR == 1 {print $1}') || exit 1
             [[ $expected_hash =~ ^[0-9a-f]{64}$ ]] || exit 1
             mv -f "${destination}.new" "$destination" || exit 1
-            sync || exit 1
+            "$python_binary" - "$destination" <<'APO_RAMFS_PY' || exit 1
+import hashlib
+import os
+import sys
+
+payload_path = sys.argv[1]
+root = os.path.dirname(payload_path)
+metadata = os.path.join(root, "metadata")
+os.makedirs(metadata, mode=0o700, exist_ok=True)
+for index in range(128):
+    source = os.path.join(metadata, f"entry-{index:03d}.new")
+    destination = os.path.join(metadata, f"entry-{index:03d}")
+    payload = hashlib.sha256(f"{index}".encode("ascii")).digest() * 128
+    with open(source, "wb", buffering=0) as stream:
+        stream.write(payload)
+        os.fsync(stream.fileno())
+    os.replace(source, destination)
+for index in range(128):
+    destination = os.path.join(metadata, f"entry-{index:03d}")
+    with open(destination, "rb") as stream:
+        if len(stream.read()) != 4096:
+            raise SystemExit(1)
+    os.unlink(destination)
+directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+APO_RAMFS_PY
             actual_hash=$(sha256sum "$destination" | awk 'NR == 1 {print $1}') || exit 1
             [[ $actual_hash == "$expected_hash" ]] || exit 1
-            io_cycle=$((io_cycle + 1))
+            ramfs_cycle=$((ramfs_cycle + 1))
             if [[ -n $count_file ]]; then
-                printf '%s\n' "$io_cycle" > "${count_file}.new" || exit 1
+                printf '%s\n' "$ramfs_cycle" > "${count_file}.new" || exit 1
                 mv -f "${count_file}.new" "$count_file" || exit 1
             fi
-            printf 'IO_CYCLE_PASS=%s source=%s bytes=67108864 sha256=%s\n' "$io_cycle" "${io_source##*/}" "$actual_hash"
+            printf 'RAMFS_CYCLE_PASS=%s source=%s bytes=67108864 files=128 sha256=%s\n' "$ramfs_cycle" "${ramfs_source##*/}" "$actual_hash"
             pause_seconds=0
-            while (( pause_seconds < 600 )); do sleep 1; pause_seconds=$((pause_seconds + 1)); done
+            while (( pause_seconds < 60 )); do sleep 1; pause_seconds=$((pause_seconds + 1)); done
         done
     ) >>"$output_file" 2>&1 &
-    stress_io_pid=$!
+    stress_ramfs_pid=$!
+}
+
+root_storage_device() {
+    local mount_target=/ source parent resolved
+    [[ -d /userdata ]] && mount_target=/userdata
+    if command -v findmnt >/dev/null 2>&1; then
+        source=$(findmnt -n -o SOURCE --target "$mount_target" 2>/dev/null | head -1 || true)
+    else
+        source=$(awk -v target="$mount_target" '$2 == target {print $1; exit}' /proc/mounts 2>/dev/null || true)
+    fi
+    [[ $source == /dev/* ]] || return 1
+    resolved=$(readlink -f -- "$source" 2>/dev/null || true)
+    [[ $resolved == /dev/* && -b $resolved ]] || return 1
+    if command -v lsblk >/dev/null 2>&1; then
+        parent=$(lsblk -ndo PKNAME -- "$resolved" 2>/dev/null | head -1 || true)
+        if [[ $parent =~ ^[A-Za-z0-9._-]+$ && -b /dev/$parent ]]; then resolved=/dev/$parent; fi
+    fi
+    printf '%s' "$resolved"
+}
+
+start_storage_read_activity() {
+    local device=$1 output_file=$2 count_file=$3
+    (
+        trap 'exit 0' TERM INT HUP
+        storage_cycle=0
+        size_bytes=''
+        if command -v blockdev >/dev/null 2>&1; then size_bytes=$(blockdev --getsize64 "$device" 2>/dev/null || true); fi
+        if [[ ! $size_bytes =~ ^[1-9][0-9]*$ && -r /sys/class/block/${device##*/}/size ]]; then
+            size_sectors=$(<"/sys/class/block/${device##*/}/size")
+            [[ $size_sectors =~ ^[1-9][0-9]*$ ]] && size_bytes=$((size_sectors * 512))
+        fi
+        [[ $size_bytes =~ ^[1-9][0-9]*$ ]] || exit 1
+        size_mib=$((size_bytes / 1048576))
+        (( size_mib > 64 )) || exit 1
+        direct_supported=0
+        dd --help 2>&1 | grep -q 'iflag=' && direct_supported=1 || true
+        while :; do
+            skip_mib=$((storage_cycle * 257 % (size_mib - 64)))
+            if (( direct_supported == 1 )); then
+                dd if="$device" of=/dev/null bs=1M skip="$skip_mib" count=64 iflag=direct status=none || exit 1
+            else
+                dd if="$device" of=/dev/null bs=1M skip="$skip_mib" count=64 status=none || exit 1
+            fi
+            storage_cycle=$((storage_cycle + 1))
+            printf '%s\n' "$storage_cycle" >"${count_file}.new" || exit 1
+            mv -f "${count_file}.new" "$count_file" || exit 1
+            printf 'STORAGE_READ_PASS=%s device=%s offset_mib=%s bytes=67108864 direct=%s\n' \
+                "$storage_cycle" "$device" "$skip_mib" "$direct_supported"
+            pause_seconds=0
+            while (( pause_seconds < 300 )); do sleep 1; pause_seconds=$((pause_seconds + 1)); done
+        done
+    ) >>"$output_file" 2>&1 &
+    stress_storage_pid=$!
+}
+
+start_network_activity() {
+    local output_file=$1 marker_file=$2 python_binary=$3
+    "$python_binary" "$APO_STRESS_NETWORK_HELPER" server \
+        --bind "$APO_STRESS_TARGET_IP" --client-ip "$APO_STRESS_CONTROLLER_IP" \
+        --port "$APO_STRESS_NETWORK_PORT" --token "$APO_STRESS_NETWORK_TOKEN" \
+        --marker "$marker_file" >>"$output_file" 2>&1 &
+    stress_network_pid=$!
 }
 
 stress_cpu_pid=''
 stress_gpu_pid=''
-stress_io_pid=''
+stress_ramfs_pid=''
+stress_storage_pid=''
+stress_network_pid=''
 stress_memory_pid=''
 stress_work_dir=''
-stress_io_file=''
-stress_io_output=''
-stress_io_count_file=''
+stress_ramfs_file=''
+stress_ramfs_output=''
+stress_ramfs_count_file=''
+stress_storage_output=''
+stress_storage_count_file=''
+stress_network_output=''
+stress_network_marker=''
 stress_memory_output=''
 stress_memory_count_file=''
 
@@ -1655,12 +1812,16 @@ cleanup_stress() {
     trap '' INT TERM HUP
     if [[ -n ${stress_cpu_pid:-} ]]; then terminate_child "$stress_cpu_pid"; stress_cpu_pid=''; fi
     if [[ -n ${stress_gpu_pid:-} ]]; then terminate_child "$stress_gpu_pid"; stress_gpu_pid=''; fi
-    if [[ -n ${stress_io_pid:-} ]]; then terminate_child "$stress_io_pid"; stress_io_pid=''; fi
+    if [[ -n ${stress_ramfs_pid:-} ]]; then terminate_child "$stress_ramfs_pid"; stress_ramfs_pid=''; fi
+    if [[ -n ${stress_storage_pid:-} ]]; then terminate_child "$stress_storage_pid"; stress_storage_pid=''; fi
+    if [[ -n ${stress_network_pid:-} ]]; then terminate_child "$stress_network_pid"; stress_network_pid=''; fi
     if [[ -n ${stress_memory_pid:-} ]]; then terminate_child "$stress_memory_pid"; stress_memory_pid=''; fi
-    if [[ -n ${stress_io_file:-} ]]; then rm -f -- "$stress_io_file" "${stress_io_file}.new" 2>/dev/null || true; stress_io_file=''; fi
-    if [[ -n ${stress_io_count_file:-} ]]; then rm -f -- "$stress_io_count_file" "${stress_io_count_file}.new" 2>/dev/null || true; stress_io_count_file=''; fi
+    if [[ -n ${stress_ramfs_file:-} ]]; then rm -f -- "$stress_ramfs_file" "${stress_ramfs_file}.new" 2>/dev/null || true; stress_ramfs_file=''; fi
     if [[ -n ${stress_memory_count_file:-} ]]; then rm -f -- "$stress_memory_count_file" "${stress_memory_count_file}.new" 2>/dev/null || true; stress_memory_count_file=''; fi
-    if [[ ${stress_work_dir:-} == /tmp/autopioverclock-stress.* ]]; then rm -rf -- "$stress_work_dir"; fi
+    if [[ ${stress_work_dir:-} == /tmp/autopioverclock-stress.* ||
+          ( -n ${APO_STRESS_RAM_ROOT:-} && ${stress_work_dir:-} == "${APO_STRESS_RAM_ROOT}/workspaces/autopioverclock-stress."* ) ]]; then
+        rm -rf -- "$stress_work_dir"
+    fi
     stress_work_dir=''
 }
 
@@ -1818,13 +1979,13 @@ launch_debian_graphical_gpu_segment() {
 cmd_stress() {
     local stress_kind=$1 duration=$2 max_temp=$3 mode=${4:-headless} baseline=${5:-} io_check=${6:-0} expected_cpu=${7:-0} expected_gpu=${8:-0} throttle_baseline=${9:-throttled=0x0} telemetry_interval=${10:-5} audio_baseline=${11:-} fan_policy=${12:-normal}
     local start_seconds expected_end hard_deadline now_seconds next_log max_seen=0 temp throttle new_errors graphical_errors
-    local kernel_lines cpu_rc=0 gpu_rc=0 io_rc=0 memory_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
+    local kernel_lines cpu_rc=0 gpu_rc=0 ramfs_rc=0 storage_rc=0 network_rc=0 memory_rc=0 failure_class='' failure_reason='' cpu_output gpu_output render_node gpu_strategy
     local arm_sample=0 gpu_sample=0 cpu_clock_seen=0 gpu_clock_seen=0 clock_tolerance=25
     local cpu_alive=0 gpu_alive=0 cpu_dead=0 gpu_dead=0 workloads_complete=0 telemetry_due=0 fan_status=normal-policy elapsed_sample=0
     local cpu_segment_duration=0 gpu_segment_duration=0 cpu_segment_end=0 gpu_segment_end=0
     local cpu_segment_number=0 gpu_segment_number=0 remaining=0 segment_tolerance=0 cpu_segment_bad=0 gpu_segment_bad=0
-    local memory_binary='' memory_size_mib=0 memory_loops=0 io_cycles=0 transition_count=0
-    local persistent_stress_dir=${APO_STRESS_PERSISTENT_DIR:-/var/lib/autopioverclock/stress}
+    local memory_binary='' python_binary='' memory_size_mib=0 memory_reserve=0 memory_available=0 memory_loops=0 ramfs_cycles=0
+    local storage_reads=0 network_messages=0 transition_count=0 storage_device='' network_marker_epoch=0 epoch_now=0
     : "$audio_baseline"
     [[ $telemetry_interval =~ ^[0-9]+$ ]] && (( telemetry_interval >= 1 && telemetry_interval <= 60 )) \
         || { emit_result HARNESS_FAILURE 'Telemetry interval must be an integer from 1 to 60 seconds.'; return 1; }
@@ -1837,9 +1998,11 @@ cmd_stress() {
         *) emit_result HARNESS_FAILURE "Unknown fan policy for stress: $fan_policy"; return 1 ;;
     esac
     command -v stress-ng >/dev/null 2>&1 || { emit_result HARNESS_FAILURE 'stress-ng is not installed.'; return 1; }
-    stress_cpu_pid=''; stress_gpu_pid=''; stress_io_pid=''; stress_memory_pid=''; stress_work_dir=''; stress_io_file=''
-    stress_io_output=''; stress_io_count_file=''; stress_memory_output=''; stress_memory_count_file=''
-    stress_work_dir=$(mktemp -d /tmp/autopioverclock-stress.XXXXXX) || { emit_result HARNESS_FAILURE 'Could not create stress workspace.'; return 1; }
+    stress_cpu_pid=''; stress_gpu_pid=''; stress_ramfs_pid=''; stress_storage_pid=''; stress_network_pid=''; stress_memory_pid=''
+    stress_work_dir=''; stress_ramfs_file=''; stress_ramfs_output=''; stress_ramfs_count_file=''
+    stress_storage_output=''; stress_storage_count_file=''; stress_network_output=''; stress_network_marker=''
+    stress_memory_output=''; stress_memory_count_file=''
+    create_stress_workspace "$io_check" || { emit_result HARNESS_FAILURE 'Could not create a verified final-endurance RAM workspace.'; return 1; }
     cpu_output="$stress_work_dir/cpu.log"; gpu_output="$stress_work_dir/gpu.log"
     trap cleanup_stress EXIT
     trap 'stress_signal_cleanup 130' INT
@@ -1878,25 +2041,35 @@ cmd_stress() {
     esac
     [[ -n $stress_cpu_pid || -n $stress_gpu_pid ]] || { emit_result HARNESS_FAILURE "Unknown stress kind: $stress_kind"; return 1; }
     if [[ $io_check == 1 ]]; then
-        if [[ -e $persistent_stress_dir || -L $persistent_stress_dir ]]; then
-            [[ -d $persistent_stress_dir && ! -L $persistent_stress_dir ]] || { emit_result HARNESS_FAILURE 'The persistent stress directory is unsafe.'; return 1; }
-        else
-            mkdir -p -- "$persistent_stress_dir" || { emit_result HARNESS_FAILURE 'Could not create the persistent stress directory.'; return 1; }
-        fi
-        chmod 700 "$persistent_stress_dir" || { emit_result HARNESS_FAILURE 'Could not protect the persistent stress directory.'; return 1; }
         memory_binary=$(command -v memtester 2>/dev/null || true)
         [[ -n $memory_binary ]] || { emit_result HARNESS_FAILURE 'memtester is unavailable for final endurance.'; return 1; }
+        python_binary=$(command -v python3 2>/dev/null || true)
+        [[ -n $python_binary ]] || { emit_result HARNESS_FAILURE 'python3 is unavailable for final endurance.'; return 1; }
+        [[ ${APO_STRESS_NETWORK_REQUIRED:-0} == 1 && -x ${APO_STRESS_NETWORK_HELPER:-} &&
+           ${APO_STRESS_NETWORK_TOKEN:-} =~ ^[0-9a-f]{64}$ && ${APO_STRESS_NETWORK_PORT:-} =~ ^[0-9]+$ ]] ||
+            { emit_result HARNESS_FAILURE 'The authenticated final-endurance network peer is unavailable or malformed.'; return 1; }
         memory_size_mib=$(memory_test_size_mib || true)
         [[ $memory_size_mib =~ ^[1-9][0-9]*$ ]] || { emit_result HARNESS_FAILURE 'Available RAM is too low or unreadable for the guarded memory workload.'; return 1; }
-        stress_io_file="$persistent_stress_dir/io-$$.bin"
-        stress_io_output="$stress_work_dir/io.log"
-        stress_io_count_file="$stress_work_dir/io.count"
+        memory_reserve=$(memory_reserve_mib || true)
+        storage_device=$(root_storage_device || true)
+        [[ -n $storage_device ]] || { emit_result HARNESS_FAILURE 'Could not prove a safe root-storage block device for read-only endurance activity.'; return 1; }
+        stress_ramfs_file="$stress_work_dir/ramfs-payload.bin"
+        stress_ramfs_output="$stress_work_dir/ramfs.log"
+        stress_ramfs_count_file="$stress_work_dir/ramfs.count"
+        stress_storage_output="$stress_work_dir/storage-read.log"
+        stress_storage_count_file="$stress_work_dir/storage-read.count"
+        stress_network_output="$stress_work_dir/network.log"
+        stress_network_marker="$stress_work_dir/network.marker"
         stress_memory_output="$stress_work_dir/memory.log"
         stress_memory_count_file="$stress_work_dir/memory.count"
-        : > "$stress_io_output"; : > "$stress_memory_output"
-        printf '0\n' > "$stress_io_count_file"; printf '0\n' > "$stress_memory_count_file"
+        : > "$stress_ramfs_output"; : > "$stress_storage_output"; : > "$stress_network_output"; : > "$stress_memory_output"
+        printf '0\n' > "$stress_ramfs_count_file"; printf '0\n' > "$stress_storage_count_file"; printf '0\n' > "$stress_memory_count_file"
+        printf 'FINAL_MEMORY_PLAN memtester_mib=%s ram_tmpfs_cap_mib=%s os_reserve_mib=%s\n' \
+            "$memory_size_mib" "${APO_STRESS_RAM_BUDGET_MIB:-192}" "$memory_reserve"
         start_memory_activity "$memory_binary" "$stress_memory_output" "$stress_memory_count_file" "$memory_size_mib"
-        start_io_activity "$stress_io_file" "$stress_io_output" "$stress_io_count_file"
+        start_ramfs_activity "$stress_ramfs_file" "$stress_ramfs_output" "$stress_ramfs_count_file" "$python_binary"
+        start_storage_read_activity "$storage_device" "$stress_storage_output" "$stress_storage_count_file"
+        start_network_activity "$stress_network_output" "$stress_network_marker" "$python_binary"
     fi
 
     while :; do
@@ -1905,7 +2078,7 @@ cmd_stress() {
         [[ -n $stress_cpu_pid ]] && kill -0 "$stress_cpu_pid" 2>/dev/null && cpu_alive=1
         [[ -n $stress_gpu_pid ]] && kill -0 "$stress_gpu_pid" 2>/dev/null && gpu_alive=1
 
-        # Workload liveness and the IO companion are safety supervision, not
+        # Workload liveness and the final companions are safety supervision, not
         # telemetry.  Poll them every second regardless of the configured
         # telemetry/logging cadence so a clean early exit cannot hide between
         # samples.
@@ -1918,10 +2091,22 @@ cmd_stress() {
             failure_reason="Stress workers exceeded the requested ${duration}s duration plus a 60s shutdown grace period."
             break
         fi
-        if [[ -n $stress_io_pid ]] && ! kill -0 "$stress_io_pid" 2>/dev/null; then
-            wait "$stress_io_pid"; io_rc=$?; stress_io_pid=''
+        if [[ -n $stress_ramfs_pid ]] && ! kill -0 "$stress_ramfs_pid" 2>/dev/null; then
+            wait "$stress_ramfs_pid"; ramfs_rc=$?; stress_ramfs_pid=''
             failure_class=STABILITY_FAILURE
-            failure_reason="Filesystem activity failed during load with rc=$io_rc."
+            failure_reason="RAM-backed filesystem activity failed during load with rc=$ramfs_rc."
+            break
+        fi
+        if [[ -n $stress_storage_pid ]] && ! kill -0 "$stress_storage_pid" 2>/dev/null; then
+            wait "$stress_storage_pid"; storage_rc=$?; stress_storage_pid=''
+            failure_class=STABILITY_FAILURE
+            failure_reason="Read-only physical-storage activity failed during load with rc=$storage_rc."
+            break
+        fi
+        if [[ -n $stress_network_pid ]] && ! kill -0 "$stress_network_pid" 2>/dev/null; then
+            wait "$stress_network_pid"; network_rc=$?; stress_network_pid=''
+            failure_class=HARNESS_FAILURE
+            failure_reason="Authenticated controller-to-target network server exited during load with rc=$network_rc."
             break
         fi
         if [[ -n $stress_memory_pid ]] && ! kill -0 "$stress_memory_pid" 2>/dev/null; then
@@ -1930,6 +2115,17 @@ cmd_stress() {
             if memtester_exit_is_stability_failure "$memory_rc"; then failure_class=STABILITY_FAILURE; else failure_class=HARNESS_FAILURE; fi
             failure_reason="Memory-pattern workload exited during load with rc=$memory_rc."
             break
+        fi
+        if (( io_check == 1 && now_seconds - start_seconds >= 20 )); then
+            network_messages=0; network_marker_epoch=0
+            if [[ -r $stress_network_marker ]]; then read -r network_messages network_marker_epoch <"$stress_network_marker" || true; fi
+            printf -v epoch_now '%(%s)T' -1
+            if [[ ! $network_messages =~ ^[1-9][0-9]*$ || ! $network_marker_epoch =~ ^[1-9][0-9]*$ ||
+                  $epoch_now -lt $network_marker_epoch ]] || (( epoch_now - network_marker_epoch > 20 )); then
+                failure_class=HARNESS_FAILURE
+                failure_reason='The authenticated controller-to-target network workload stopped reporting valid traffic.'
+                break
+            fi
         fi
         # Reap every worker found dead in the same supervision poll. A clean
         # segment completion is accepted only near that segment's deadline,
@@ -2035,7 +2231,17 @@ cmd_stress() {
             fi
             elapsed_sample=$((now_seconds - start_seconds))
             (( elapsed_sample > duration )) && elapsed_sample=$duration
-            printf '%s temp=%sC arm=%sMHz v3d=%sMHz expected=%s/%s %s fan=%s elapsed=%s/%ss\n' "$(date '+%F %T')" "${temp:-unknown}" "$arm_sample" "$gpu_sample" "$expected_cpu" "$expected_gpu" "$throttle" "$fan_status" "$elapsed_sample" "$duration"
+            memory_available=$(memory_available_mib || true)
+            [[ $memory_available =~ ^[0-9]+$ ]] || { failure_class=HARNESS_FAILURE; failure_reason='Available-memory telemetry became unavailable.'; memory_available=unknown; }
+            if (( io_check == 1 )); then
+                [[ -r $stress_memory_count_file ]] && memory_loops=$(<"$stress_memory_count_file")
+                [[ -r $stress_ramfs_count_file ]] && ramfs_cycles=$(<"$stress_ramfs_count_file")
+                [[ -r $stress_storage_count_file ]] && storage_reads=$(<"$stress_storage_count_file")
+                if [[ -r $stress_network_marker ]]; then read -r network_messages network_marker_epoch <"$stress_network_marker" || true; fi
+            fi
+            printf '%s temp=%sC arm=%sMHz v3d=%sMHz expected=%s/%s %s fan=%s mem_available=%sMiB memory_loops=%s ramfs_cycles=%s storage_reads=%s network_messages=%s elapsed=%s/%ss\n' \
+                "$(date '+%F %T')" "${temp:-unknown}" "$arm_sample" "$gpu_sample" "$expected_cpu" "$expected_gpu" "$throttle" "$fan_status" \
+                "$memory_available" "$memory_loops" "$ramfs_cycles" "$storage_reads" "$network_messages" "$elapsed_sample" "$duration"
             next_log=$((now_seconds + telemetry_interval))
         fi
         if [[ -n $failure_class ]]; then break; fi
@@ -2050,14 +2256,21 @@ cmd_stress() {
     if [[ -n $stress_cpu_pid ]]; then wait "$stress_cpu_pid" 2>/dev/null; cpu_rc=$?; stress_cpu_pid=''; fi
     if [[ -n $stress_gpu_pid ]]; then wait "$stress_gpu_pid" 2>/dev/null; gpu_rc=$?; stress_gpu_pid=''; fi
     if [[ -n $stress_memory_pid ]]; then terminate_child "$stress_memory_pid"; stress_memory_pid=''; fi
-    if [[ -n $stress_io_pid ]]; then terminate_child "$stress_io_pid"; stress_io_pid=''; fi
+    if [[ -n $stress_ramfs_pid ]]; then terminate_child "$stress_ramfs_pid"; stress_ramfs_pid=''; fi
+    if [[ -n $stress_storage_pid ]]; then terminate_child "$stress_storage_pid"; stress_storage_pid=''; fi
+    if [[ -n $stress_network_pid ]]; then terminate_child "$stress_network_pid"; stress_network_pid=''; fi
     if [[ -r $stress_memory_count_file ]]; then memory_loops=$(<"$stress_memory_count_file"); fi
-    if [[ -r $stress_io_count_file ]]; then io_cycles=$(<"$stress_io_count_file"); fi
+    if [[ -r $stress_ramfs_count_file ]]; then ramfs_cycles=$(<"$stress_ramfs_count_file"); fi
+    if [[ -r $stress_storage_count_file ]]; then storage_reads=$(<"$stress_storage_count_file"); fi
+    if [[ -r $stress_network_marker ]]; then read -r network_messages network_marker_epoch <"$stress_network_marker" || true; fi
     [[ -f $cpu_output ]] && { printf '%s\n' '--- CPU stress output ---'; cat "$cpu_output"; }
     [[ -f $gpu_output ]] && { printf '%s\n' '--- GPU stress output ---'; cat "$gpu_output"; }
     [[ -n $stress_memory_output && -f $stress_memory_output ]] && { printf '%s\n' '--- Memory stress output ---'; cat "$stress_memory_output"; }
-    [[ -n $stress_io_output && -f $stress_io_output ]] && { printf '%s\n' '--- Persistent I/O output ---'; cat "$stress_io_output"; }
-    printf 'CPU_RC=%s GPU_RC=%s MEMORY_RC=%s IO_RC=%s MEMORY_LOOPS=%s IO_CYCLES=%s LOAD_TRANSITIONS=%s\n' "$cpu_rc" "$gpu_rc" "$memory_rc" "$io_rc" "$memory_loops" "$io_cycles" "$transition_count"
+    [[ -n $stress_ramfs_output && -f $stress_ramfs_output ]] && { printf '%s\n' '--- RAM-backed filesystem output ---'; cat "$stress_ramfs_output"; }
+    [[ -n $stress_storage_output && -f $stress_storage_output ]] && { printf '%s\n' '--- Read-only physical-storage output ---'; cat "$stress_storage_output"; }
+    [[ -n $stress_network_output && -f $stress_network_output ]] && { printf '%s\n' '--- Controller-to-target network output ---'; cat "$stress_network_output"; }
+    printf 'CPU_RC=%s GPU_RC=%s MEMORY_RC=%s RAMFS_RC=%s STORAGE_RC=%s NETWORK_RC=%s MEMORY_LOOPS=%s RAMFS_CYCLES=%s STORAGE_READS=%s NETWORK_MESSAGES=%s LOAD_TRANSITIONS=%s\n' \
+        "$cpu_rc" "$gpu_rc" "$memory_rc" "$ramfs_rc" "$storage_rc" "$network_rc" "$memory_loops" "$ramfs_cycles" "$storage_reads" "$network_messages" "$transition_count"
     printf '%s\n' "$(current_throttle)"
     vcgencmd measure_clock arm 2>/dev/null || true; vcgencmd measure_clock v3d 2>/dev/null || true; vcgencmd pmic_read_adc EXT5V_V 2>/dev/null || true
     if [[ -z $failure_class && ( $cpu_rc -ne 0 || $gpu_rc -ne 0 ) ]]; then
@@ -2073,8 +2286,12 @@ cmd_stress() {
     if [[ -z $failure_class && $io_check == 1 ]]; then
         if [[ ! $memory_loops =~ ^[1-9][0-9]*$ ]]; then
             failure_class=HARNESS_FAILURE; failure_reason='Final endurance ended without one complete memtester pattern pass.'
-        elif [[ ! $io_cycles =~ ^[1-9][0-9]*$ ]]; then
-            failure_class=HARNESS_FAILURE; failure_reason='Final endurance ended without one complete persistent write, sync, and readback cycle.'
+        elif [[ ! $ramfs_cycles =~ ^[1-9][0-9]*$ ]]; then
+            failure_class=HARNESS_FAILURE; failure_reason='Final endurance ended without one complete RAM-backed filesystem churn cycle.'
+        elif [[ ! $storage_reads =~ ^[1-9][0-9]*$ ]]; then
+            failure_class=HARNESS_FAILURE; failure_reason='Final endurance ended without one complete read-only physical-storage cycle.'
+        elif [[ ! $network_messages =~ ^[1-9][0-9]*$ ]]; then
+            failure_class=HARNESS_FAILURE; failure_reason='Final endurance ended without authenticated controller-to-target network traffic.'
         fi
     fi
     if [[ -n $failure_class ]]; then emit_result "$failure_class" "$failure_reason" "$max_seen"; return 1; fi

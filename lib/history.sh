@@ -80,11 +80,6 @@ apo_history_ledger_path() {
     printf '%s/history.txt' "$APO_HISTORY_DIR"
 }
 
-apo_history_obsolete_ledger_path() {
-    [[ -n ${APO_HISTORY_DIR:-} ]] || return 1
-    printf '%s/failures.txt' "$APO_HISTORY_DIR"
-}
-
 apo_history_reset() {
     APO_HISTORY_CPU_FAILURE_BOUNDARY=''
     APO_HISTORY_GPU_FAILURE_BOUNDARY=''
@@ -1563,8 +1558,7 @@ apo_history_find_latest_force_purge() {
         apo_history_load_screen_fields "$source_file" purge_screen \
             FORMAT_VERSION RUN_SCHEMA RUN_ID TARGET_SLUG REMOTE_TARGET ORIGIN_COMMAND \
             RESET_FRESH_TUNING RESET_FRESH_TUNING_FORCE FRESH_TUNING_PURGE_COMMITTED \
-            FRESH_TUNING_PURGED_AT FRESH_TUNING_PURGED_LEDGER_HASH \
-            FRESH_TUNING_PURGED_OBSOLETE_LEDGER_HASH || continue
+            FRESH_TUNING_PURGED_AT FRESH_TUNING_PURGED_LEDGER_HASH || continue
         [[ ${purge_screen[FORMAT_VERSION]:-} == 1 &&
            ${purge_screen[RUN_SCHEMA]:-} == "${APO_CURRENT_RUN_SCHEMA:-}" &&
            ${purge_screen[TARGET_SLUG]:-} == "$APO_TARGET_SLUG" &&
@@ -1588,12 +1582,6 @@ apo_history_find_latest_force_purge() {
         [[ ${purge_screen[FRESH_TUNING_PURGED_LEDGER_HASH]:-} == NONE ||
            ${purge_screen[FRESH_TUNING_PURGED_LEDGER_HASH]:-} =~ ^[0-9a-f]{64}$ ]] || {
             APO_HISTORY_SCAN_ERROR="A destructive fresh-tuning reset state has a malformed ledger hash: $basename"
-            return 1
-        }
-        [[ -z ${purge_screen[FRESH_TUNING_PURGED_OBSOLETE_LEDGER_HASH]:-} ||
-           ${purge_screen[FRESH_TUNING_PURGED_OBSOLETE_LEDGER_HASH]} == NONE ||
-           ${purge_screen[FRESH_TUNING_PURGED_OBSOLETE_LEDGER_HASH]} =~ ^[0-9a-f]{64}$ ]] || {
-            APO_HISTORY_SCAN_ERROR="A destructive fresh-tuning reset state has a malformed obsolete-ledger hash: $basename"
             return 1
         }
         if [[ -z $APO_HISTORY_FORCE_PURGE_RUN_ID ||
@@ -2025,51 +2013,39 @@ apo_history_refresh() {
 apo_history_prepare_fresh_tuning_boundary() {
     (( ${APO_FRESH_TUNING:-0} == 1 )) || return 0
     if (( ${APO_FRESH_TUNING_FORCE:-0} == 1 )); then
-        local ledger_file obsolete_ledger_file ledger_dir candidate_file
+        local ledger_file ledger_dir
         ledger_file=$(apo_history_ledger_path) || {
             APO_HISTORY_SCAN_ERROR='Destructive fresh tuning could not resolve the history ledger path.'
             return 1
         }
-        obsolete_ledger_file=$(apo_history_obsolete_ledger_path) || {
-            APO_HISTORY_SCAN_ERROR='Destructive fresh tuning could not resolve the obsolete history ledger path.'
-            return 1
-        }
         ledger_dir=$(dirname -- "$ledger_file")
-        [[ $(dirname -- "$obsolete_ledger_file") == "$ledger_dir" ]] || {
-            APO_HISTORY_SCAN_ERROR='Destructive fresh tuning resolved inconsistent history directories.'
-            return 1
-        }
         if [[ -e $ledger_dir || -L $ledger_dir ]]; then
             [[ -d $ledger_dir && ! -L $ledger_dir ]] || {
                 APO_HISTORY_SCAN_ERROR='Destructive fresh tuning found an unsafe history directory.'
                 return 1
             }
         fi
-        for candidate_file in "$ledger_file" "$obsolete_ledger_file"; do
-            if [[ -e $candidate_file || -L $candidate_file ]]; then
-                [[ -f $candidate_file && ! -L $candidate_file && -r $candidate_file ]] || {
-                    APO_HISTORY_SCAN_ERROR="Destructive fresh tuning found an unsafe history ledger path: ${candidate_file##*/}"
-                    return 1
-                }
-            fi
-        done
+        if [[ -e $ledger_file || -L $ledger_file ]]; then
+            [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || {
+                APO_HISTORY_SCAN_ERROR='Destructive fresh tuning found an unsafe history ledger path: history.txt'
+                return 1
+            }
+        fi
         return 0
     fi
     apo_history_scan_retained_states || return 1
 }
 
 apo_history_commit_fresh_tuning_purge() {
-    local cutoff_at ledger_file obsolete_ledger_file ledger_dir
-    local ledger_hash=NONE obsolete_ledger_hash=NONE verify_hash deleted_any=0
+    local cutoff_at ledger_file ledger_dir
+    local ledger_hash=NONE verify_hash deleted_any=0
 
     (( ${APO_FRESH_TUNING:-0} == 1 && ${APO_FRESH_TUNING_FORCE:-0} == 1 )) || return 1
     apo_is_safe_run_id "${APO_RUN_ID:-}" || return 1
     cutoff_at=$(apo_now_iso) || return 1
     apo_history_generated_timestamp_is_valid "$cutoff_at" || return 1
     ledger_file=$(apo_history_ledger_path) || return 1
-    obsolete_ledger_file=$(apo_history_obsolete_ledger_path) || return 1
     ledger_dir=$(dirname -- "$ledger_file")
-    [[ $(dirname -- "$obsolete_ledger_file") == "$ledger_dir" ]] || return 1
     if [[ -e $ledger_dir || -L $ledger_dir ]]; then
         [[ -d $ledger_dir && ! -L $ledger_dir ]] || return 1
     fi
@@ -2077,11 +2053,6 @@ apo_history_commit_fresh_tuning_purge() {
         [[ -f $ledger_file && ! -L $ledger_file && -r $ledger_file ]] || return 1
         ledger_hash=$(sha256sum "$ledger_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
         [[ $ledger_hash =~ ^[0-9a-f]{64}$ ]] || return 1
-    fi
-    if [[ -e $obsolete_ledger_file || -L $obsolete_ledger_file ]]; then
-        [[ -f $obsolete_ledger_file && ! -L $obsolete_ledger_file && -r $obsolete_ledger_file ]] || return 1
-        obsolete_ledger_hash=$(sha256sum "$obsolete_ledger_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-        [[ $obsolete_ledger_hash =~ ^[0-9a-f]{64}$ ]] || return 1
     fi
 
     apo_state_set RESET_FRESH_TUNING 1
@@ -2091,7 +2062,6 @@ apo_history_commit_fresh_tuning_purge() {
     apo_state_set FRESH_TUNING_CUTOFF_RECORDS 0
     apo_state_set FRESH_TUNING_PURGED_AT "$cutoff_at"
     apo_state_set FRESH_TUNING_PURGED_LEDGER_HASH "$ledger_hash"
-    apo_state_set FRESH_TUNING_PURGED_OBSOLETE_LEDGER_HASH "$obsolete_ledger_hash"
     apo_state_set FRESH_TUNING_PURGE_COMMITTED 1
     apo_state_save || return 1
 
@@ -2101,14 +2071,6 @@ apo_history_commit_fresh_tuning_purge() {
         [[ $verify_hash == "$ledger_hash" ]] || return 1
         rm -f -- "$ledger_file" || return 1
         [[ ! -e $ledger_file && ! -L $ledger_file ]] || return 1
-        deleted_any=1
-    fi
-    if [[ $obsolete_ledger_hash != NONE ]]; then
-        [[ -f $obsolete_ledger_file && ! -L $obsolete_ledger_file && -r $obsolete_ledger_file ]] || return 1
-        verify_hash=$(sha256sum "$obsolete_ledger_file" 2>/dev/null | awk 'NR == 1 {print $1}' || true)
-        [[ $verify_hash == "$obsolete_ledger_hash" ]] || return 1
-        rm -f -- "$obsolete_ledger_file" || return 1
-        [[ ! -e $obsolete_ledger_file && ! -L $obsolete_ledger_file ]] || return 1
         deleted_any=1
     fi
     if (( deleted_any == 1 )); then
