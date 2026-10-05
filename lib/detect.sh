@@ -133,11 +133,25 @@ apo_ensure_worker_for_boot() {
 
 apo_post_reboot_handshake() {
     local old_boot_id=$1 timeout_seconds=$2 context=${3:-reboot}
-    local new_boot_id
+    local new_boot_id wait_rc=0
     APO_REBOOT_BOOT_ID=''
     APO_REBOOT_OBSERVED_BOOT_ID=''
     APO_REBOOT_HANDSHAKE_STAGE='wait'
-    new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$timeout_seconds" "$context" || true)
+    APO_REBOOT_RETURN_TIMED_OUT=0
+    if new_boot_id=$(apo_wait_for_new_boot "$old_boot_id" "$timeout_seconds" "$context"); then
+        wait_rc=0
+    else
+        wait_rc=$?
+    fi
+    case $wait_rc in
+        0) ;;
+        1)
+            APO_REBOOT_RETURN_TIMED_OUT=1
+            new_boot_id=''
+            ;;
+        2) APO_REBOOT_RETURN_TIMED_OUT=1 ;;
+        *) new_boot_id='' ;;
+    esac
     [[ -n $new_boot_id && $new_boot_id != "$old_boot_id" ]] || {
         APO_LAST_CLASS=HARNESS_FAILURE
         APO_LAST_REASON="No new boot ID was observed after the reboot request for $context; the target either remained on boot $old_boot_id or could not be safely identified."

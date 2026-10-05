@@ -495,6 +495,7 @@ Watchdog hashes: old=$(apo_report_state_value WATCHDOG_REPAIR_OLD_HASH none) exp
 Target watchdog: $(apo_report_state_value NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED) kind=$(apo_report_state_value NETWORK_WATCHDOG_INSTALL_KIND preexisting) installed-by-run=$(apo_report_state_value NETWORK_WATCHDOG_INSTALLED_BY_RUN 0)
 Controller watchdog: $(apo_report_state_value CONTROLLER_WATCHDOG_STATUS NOT_STARTED) provider=$(apo_report_state_value CONTROLLER_WATCHDOG_PROVIDER none) leased=$(apo_report_state_value CONTROLLER_WATCHDOG_LEASED 0) active-leases=$(apo_report_state_value CONTROLLER_WATCHDOG_LEASE_COUNT 0)
 SSH recovery:   $(apo_report_state_value RECOVERY_WAIT_STATUS IDLE) context=$(apo_report_state_value RECOVERY_WAIT_CONTEXT none) extended-waits=$(apo_report_state_value RECOVERY_WAIT_TIMEOUTS 0)
+Reboot gate:    unclean=$(apo_report_state_value UNCLEAN_REBOOT_DETECTED 0) context=$(apo_report_state_value UNCLEAN_REBOOT_CONTEXT none) from=$(apo_report_state_value UNCLEAN_REBOOT_FROM_BOOT_ID none) to=$(apo_report_state_value UNCLEAN_REBOOT_TO_BOOT_ID none)
 Gate retries:   $(apo_report_state_value TRANSIENT_RETRY_COUNT 0)/$APO_TRANSIENT_PHASE_RETRY_MAX context=$(apo_report_state_value TRANSIENT_RETRY_CONTEXT none)
 Failure class:  $(apo_report_state_value FAILURE_CLASS none)
 Failure reason: $(apo_report_sensitive_value "$(apo_report_state_value FAILURE_REASON none)")
@@ -581,6 +582,7 @@ Application:    $(apo_report_state_value APPLY_STATUS NOT_APPLIED)
 Watchdogs:      target=$(apo_report_state_value NETWORK_WATCHDOG_INSTALL_STATUS NOT_NEEDED), controller=$(apo_report_state_value CONTROLLER_WATCHDOG_STATUS NOT_STARTED), controller-provider=$(apo_report_state_value CONTROLLER_WATCHDOG_PROVIDER none)
 Maximum temp:   $(apo_report_state_value RUN_MAX_TEMP pending)C
 SSH recovery:   $(apo_report_state_value RECOVERY_WAIT_STATUS IDLE), extended waits=$(apo_report_state_value RECOVERY_WAIT_TIMEOUTS 0)
+Reboot gate:    unclean=$(apo_report_state_value UNCLEAN_REBOOT_DETECTED 0), context=$(apo_report_state_value UNCLEAN_REBOOT_CONTEXT none)
 Gate retries:   $(apo_report_state_value TRANSIENT_RETRY_COUNT 0)/$APO_TRANSIENT_PHASE_RETRY_MAX, context=$(apo_report_state_value TRANSIENT_RETRY_CONTEXT none)
 Failure:        $(apo_report_state_value FAILURE_CLASS none) — $(apo_report_sensitive_value "$(apo_state_get FAILURE_REASON none)")
 Policy:         $(apo_report_value "$policy")
@@ -709,6 +711,12 @@ apo_generate_report() {
             "$(apo_report_state_value CONTROLLER_WATCHDOG_LEASE_COUNT 0)"
         printf 'Extended SSH recovery: status=%s, context=%s, waits=%s\n' \
             "$(apo_report_state_value RECOVERY_WAIT_STATUS IDLE)" "$(apo_report_state_value RECOVERY_WAIT_CONTEXT none)" "$(apo_report_state_value RECOVERY_WAIT_TIMEOUTS 0)"
+        printf 'Reboot gate: unclean=%s, context=%s, from=%s, to=%s, reason=%s\n' \
+            "$(apo_report_state_value UNCLEAN_REBOOT_DETECTED 0)" \
+            "$(apo_report_state_value UNCLEAN_REBOOT_CONTEXT none)" \
+            "$(apo_report_state_value UNCLEAN_REBOOT_FROM_BOOT_ID none)" \
+            "$(apo_report_state_value UNCLEAN_REBOOT_TO_BOOT_ID none)" \
+            "$(apo_report_sensitive_value "$(apo_report_state_value UNCLEAN_REBOOT_REASON none)")"
         printf 'Automatic gate retries: %s/%s, context=%s\n' \
             "$(apo_report_state_value TRANSIENT_RETRY_COUNT 0)" "$APO_TRANSIENT_PHASE_RETRY_MAX" "$(apo_report_state_value TRANSIENT_RETRY_CONTEXT none)"
         printf 'Failure class: %s\n' "$(apo_report_state_value FAILURE_CLASS none)"

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.113 - 2026-10-05
+
+- Made every requested reboot that misses its ordinary clean-return budget a durable `RECOVERY_FAILURE`. Extended read-only monitoring still reconciles ownership, tryboot cleanup, stock clocks, watchdogs, and health, but a later or manually restored boot can no longer regain `PASS` or start the next candidate.
+- Added explicit unclean-reboot state with source and destination boot IDs, context, and reason so interruption during late-return cleanup cannot erase the failed gate.
+- Added current-boot EXT4 journal recovery, orphan cleanup, deleted-orphan, and recovery-complete signatures to both Debian and Batocera health classification.
+- Advanced run schema to 12 and validation schema to 10 so earlier results produced under the permissive late-return policy are not accepted as equivalent clean-reboot evidence.
+
 ## 0.1.0-alpha.112 - 2026-10-04
 
 - Fixed the detached launcher and both workers so their tmpfs `noswap` verifier no longer assigns to awk's reserved `index()` built-in.

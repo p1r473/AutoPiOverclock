@@ -58,14 +58,14 @@ apo_recovery_wait_begin() {
     local context=$1 timeout_seconds=$2
     apo_recovery_wait_checkpoint WAITING "$context"
     if declare -F apo_progress_reconnect_begin >/dev/null 2>&1; then apo_progress_reconnect_begin "$context"; fi
-    apo_recovery_wait_event WARN "$context" "The target has not returned to SSH after ${timeout_seconds}s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves saved work resumable."
+    apo_recovery_wait_event WARN "$context" "The target has not returned to SSH after ${timeout_seconds}s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; a reboot gate that reaches this deadline cannot receive clean-boot credit, and Ctrl-C leaves saved work resumable."
 }
 
 apo_recovery_wait_finish() {
     local context=$1
     if declare -F apo_progress_reconnect_finish >/dev/null 2>&1; then apo_progress_reconnect_finish; fi
     apo_recovery_wait_checkpoint RETURNED "$context"
-    apo_recovery_wait_event INFO "$context" 'SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.'
+    apo_recovery_wait_event INFO "$context" 'SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health for safe cleanup. An expired reboot gate remains failed.'
 }
 
 apo_recovery_wait_sleep() {
@@ -379,7 +379,7 @@ apo_wait_for_new_boot() {
             if declare -F apo_progress_render >/dev/null 2>&1; then apo_progress_render; fi
             current=$(apo_remote_boot_id_once 2>/dev/null || true)
             if [[ -n $current ]]; then
-                if [[ $current != "$old_boot_id" ]]; then printf '%s' "$current"; return 0; fi
+                if [[ $current != "$old_boot_id" ]]; then printf '%s' "$current"; return 2; fi
             else
                 last_observation=unreachable
                 break
@@ -399,7 +399,9 @@ apo_wait_for_new_boot() {
         if [[ -n $current ]]; then
             apo_recovery_wait_finish "$context"
             printf '%s' "$current"
-            if [[ $current != "$old_boot_id" ]]; then return 0; fi
+            # Exit 2 preserves the observed new boot while telling the parent
+            # handshake that it arrived only after the clean reboot budget.
+            if [[ $current != "$old_boot_id" ]]; then return 2; fi
             return 1
         fi
         if (( SECONDS >= next_notice )); then

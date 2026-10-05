@@ -441,12 +441,33 @@ apo_boot_candidate() {
     return 1
 }
 
+apo_record_unclean_reboot_failure() {
+    local context=$1 from_boot_id=$2 to_boot_id=${3:-unobserved} reason=$4
+    APO_RETURN_NORMAL_RETRY_REQUIRED=0
+    APO_RETURN_NORMAL_RETRY_REASON=''
+    APO_RETURN_NORMAL_RETRY_SOURCE=''
+    apo_state_set UNCLEAN_REBOOT_DETECTED 1
+    apo_state_set UNCLEAN_REBOOT_CONTEXT "$context"
+    apo_state_set UNCLEAN_REBOOT_REASON "$reason"
+    apo_state_set UNCLEAN_REBOOT_FROM_BOOT_ID "$from_boot_id"
+    apo_state_set UNCLEAN_REBOOT_TO_BOOT_ID "$to_boot_id"
+    apo_state_set NORMAL_RETURN_RETRY_PENDING 0
+    apo_state_set NORMAL_RETURN_RETRY_SOURCE ''
+    apo_state_set NORMAL_RETURN_RETRY_REASON ''
+    apo_state_set STATUS FAILED
+    apo_state_set FAILURE_CLASS RECOVERY_FAILURE
+    apo_state_set FAILURE_REASON "$reason"
+    apo_state_save
+    apo_event "$context" WARN RECOVERY_FAILURE "$reason Safe cleanup and stock-health verification may continue, but cannot erase this failure."
+}
+
 apo_return_normal() {
     local context=${1:-normal-recovery} force_normal_reboot=${2:-0} stress_reboot_scope=${3:-none}
     local replay_recovered_stall=${4:-0}
     local old_boot_id new_boot_id tryboot_flag current_boot_id
     local expected_tryboot pending_boot_id reboot_attempts=0 forced_normal_reboot_done=0 controller_reboot_issued=0
     local stalled_reboot_recovered=0 stalled_reboot_from='' fallback_reboot_pending=0 handshake_stage failure_reason stalled_boundary_rc
+    local unclean_reboot_detected=0 unclean_reboot_reason=''
     local fallback_tryboot_hash fallback_ownership_token
     APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
     APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
@@ -564,6 +585,11 @@ apo_return_normal() {
         if ! apo_post_reboot_handshake "$old_boot_id" "$APO_BOOT_TIMEOUT" "$context"; then
             handshake_stage=${APO_REBOOT_HANDSHAKE_STAGE:-wait}
             failure_reason=$APO_LAST_REASON
+            if [[ $handshake_stage == wait && ${APO_REBOOT_RETURN_TIMED_OUT:-0} == 1 ]]; then
+                unclean_reboot_detected=1
+                unclean_reboot_reason="The requested reboot from boot $old_boot_id did not produce a verified new boot inside the ${APO_BOOT_TIMEOUT}s clean reboot budget. This reboot gate failed; any later fallback or manual recovery is cleanup only and cannot receive PASS."
+                apo_record_unclean_reboot_failure "$context" "$old_boot_id" unobserved "$unclean_reboot_reason"
+            fi
             if [[ $handshake_stage == wait && ${APO_PROFILE:-} == batocera && $force_normal_reboot == 0 && $stalled_reboot_recovered == 0 && $reboot_attempts -lt 3 ]]; then
                 stalled_boundary_rc=0
                 apo_verify_stalled_normal_reboot_boundary "$context" "$old_boot_id" || stalled_boundary_rc=$?
@@ -571,7 +597,9 @@ apo_return_normal() {
                     stalled_reboot_recovered=1
                     stalled_reboot_from=$old_boot_id
                     fallback_reboot_pending=1
-                    if (( replay_recovered_stall == 1 )); then
+                    if (( unclean_reboot_detected == 1 )); then
+                        apo_event "$context" WARN RECOVERY_FAILURE "The reboot deadline failure is durable. Issuing one bounded fallback reboot only to restore normal boot; this gate will not replay or advance."
+                    elif (( replay_recovered_stall == 1 )); then
                         if [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 &&
                               $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') != "$context" ]]; then
                             APO_RECOVERY_IN_PROGRESS=0
@@ -595,7 +623,9 @@ apo_return_normal() {
                 if (( stalled_boundary_rc == 2 )) && [[ -n ${APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID:-} ]]; then
                     stalled_reboot_recovered=1
                     stalled_reboot_from=$old_boot_id
-                    if (( replay_recovered_stall == 1 )); then
+                    if (( unclean_reboot_detected == 1 )); then
+                        apo_event "$context" WARN RECOVERY_FAILURE "The reboot deadline failure is durable. Reconciling observed boot $APO_STALLED_NORMAL_REBOOT_OBSERVED_BOOT_ID only for safe cleanup; this gate will not replay or advance."
+                    elif (( replay_recovered_stall == 1 )); then
                         if [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 1 &&
                               $(apo_state_get NORMAL_RETURN_RETRY_SOURCE '') != "$context" ]]; then
                             APO_RECOVERY_IN_PROGRESS=0
@@ -631,6 +661,14 @@ apo_return_normal() {
             return 1
         fi
         new_boot_id=$APO_REBOOT_BOOT_ID
+        if (( ${APO_REBOOT_RETURN_TIMED_OUT:-0} == 1 )); then
+            unclean_reboot_detected=1
+            unclean_reboot_reason="The requested reboot from boot $old_boot_id did not produce a verified new boot inside the ${APO_BOOT_TIMEOUT}s clean reboot budget. Boot $new_boot_id appeared only after that deadline, so delayed or manual recovery cannot receive PASS."
+            apo_record_unclean_reboot_failure "$context" "$old_boot_id" "$new_boot_id" "$unclean_reboot_reason"
+        elif (( unclean_reboot_detected == 1 )); then
+            apo_state_set UNCLEAN_REBOOT_TO_BOOT_ID "$new_boot_id"
+            apo_state_save
+        fi
         sleep "$APO_BOOT_SETTLE_SECONDS"
         if (( force_normal_reboot == 1 && forced_normal_reboot_done == 0 )); then
             forced_normal_reboot_done=1
@@ -663,6 +701,13 @@ apo_return_normal() {
     if ! apo_health_check "$APO_NORMAL_CPU" "$APO_NORMAL_GPU" "$APO_NORMAL_VOLTAGE" "$context"; then
         [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]] || { APO_LAST_CLASS=RECOVERY_FAILURE; APO_LAST_REASON="Normal config returned but failed health: $APO_LAST_REASON"; }
         APO_RECOVERY_IN_PROGRESS=0
+        return 1
+    fi
+    if (( unclean_reboot_detected == 1 )) || [[ $(apo_state_get UNCLEAN_REBOOT_DETECTED 0) == 1 ]]; then
+        APO_RECOVERY_IN_PROGRESS=0
+        APO_LAST_CLASS=RECOVERY_FAILURE
+        APO_LAST_REASON=${unclean_reboot_reason:-$(apo_state_get UNCLEAN_REBOOT_REASON 'The reboot gate did not complete cleanly.')}
+        APO_LAST_REASON+=" The target is back at verified stock health, but this reboot gate failed and automatic candidate advancement is blocked."
         return 1
     fi
     if (( stalled_reboot_recovered == 1 && replay_recovered_stall == 1 )); then

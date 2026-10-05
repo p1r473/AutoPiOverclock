@@ -365,6 +365,23 @@ rm -rf -- "$UPLOAD_TEST_ROOT"
     [[ $(wc -c < "$BOOT_ID_ATTEMPT_FILE") == 1 ]]
 )
 
+# A new boot observed inside the ordinary deadline keeps clean-boot credit.
+(
+    SECONDS=0
+    BOOT_ATTEMPT_FILE=$(mktemp)
+    trap 'rm -f "$BOOT_ATTEMPT_FILE"' EXIT
+    apo_remote_boot_id_once() {
+        printf x >> "$BOOT_ATTEMPT_FILE"
+        if (( $(wc -c < "$BOOT_ATTEMPT_FILE") >= 2 )); then printf new-boot; else printf old-boot; fi
+    }
+    sleep() { SECONDS=$((SECONDS + $1)); }
+    wait_rc=0
+    returned_boot=$(apo_wait_for_new_boot old-boot 10 on-time-boot-fixture) || wait_rc=$?
+    [[ $wait_rc == 0 ]]
+    [[ $returned_boot == new-boot ]]
+    [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 2 ]]
+)
+
 # Every unattended mutating/recovery command keeps observing after its ordinary
 # timeout, without issuing another reboot. A returned host is handed back to
 # the normal boot/ownership reconciliation path.
@@ -386,8 +403,8 @@ APO_LOG_FILE=''
     apo_wait_for_ssh 1 unattended-recovery-fixture 2> "$RECOVERY_NOTICE_FILE"
     [[ $SSH_ATTEMPTS == 7 ]]
     [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
-    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves saved work resumable.' "$RECOVERY_NOTICE_FILE"
-    grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; a reboot gate that reaches this deadline cannot receive clean-boot credit, and Ctrl-C leaves saved work resumable.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health for safe cleanup. An expired reboot gate remains failed.' "$RECOVERY_NOTICE_FILE"
 )
 (
     SECONDS=0
@@ -419,12 +436,14 @@ APO_LOG_FILE=''
         (( $(wc -c < "$BOOT_ATTEMPT_FILE") >= 7 )) && printf new-boot || return 1
     }
     sleep() { SECONDS=$((SECONDS + $1)); }
-    returned_boot=$(apo_wait_for_new_boot old-boot 1 unattended-boot-fixture 2> "$RECOVERY_NOTICE_FILE")
+    wait_rc=0
+    returned_boot=$(apo_wait_for_new_boot old-boot 1 unattended-boot-fixture 2> "$RECOVERY_NOTICE_FILE") || wait_rc=$?
+    [[ $wait_rc == 2 ]]
     [[ $returned_boot == new-boot ]]
     [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 7 ]]
     [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
-    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; Ctrl-C leaves saved work resumable.' "$RECOVERY_NOTICE_FILE"
-    grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health before continuing.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: The target has not returned to SSH after 1s. The unattended operation remains in safe read-only monitoring and will reconcile the boot automatically when SSH returns; a reboot gate that reaches this deadline cannot receive clean-boot credit, and Ctrl-C leaves saved work resumable.' "$RECOVERY_NOTICE_FILE"
+    grep -Fxq 'WARNING: SSH returned after extended recovery monitoring; reconciling boot identity, tryboot ownership, normal clocks, and health for safe cleanup. An expired reboot gate remains failed.' "$RECOVERY_NOTICE_FILE"
 )
 (
     SECONDS=0
@@ -443,7 +462,9 @@ APO_LOG_FILE=''
         esac
     }
     sleep() { SECONDS=$((SECONDS + $1)); }
-    returned_boot=$(apo_wait_for_new_boot old-boot 4 slow-shutdown-fixture 2> "$RECOVERY_NOTICE_FILE")
+    wait_rc=0
+    returned_boot=$(apo_wait_for_new_boot old-boot 4 slow-shutdown-fixture 2> "$RECOVERY_NOTICE_FILE") || wait_rc=$?
+    [[ $wait_rc == 2 ]]
     [[ $returned_boot == new-boot ]]
     [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 7 ]]
     [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
@@ -469,7 +490,9 @@ APO_LOG_FILE=''
         esac
     }
     sleep() { SECONDS=$((SECONDS + $1)); }
-    returned_boot=$(apo_wait_for_new_boot old-boot 4 shutdown-at-timeout-fixture 2> "$RECOVERY_NOTICE_FILE")
+    wait_rc=0
+    returned_boot=$(apo_wait_for_new_boot old-boot 4 shutdown-at-timeout-fixture 2> "$RECOVERY_NOTICE_FILE") || wait_rc=$?
+    [[ $wait_rc == 2 ]]
     [[ $returned_boot == new-boot ]]
     [[ $(wc -c < "$BOOT_ATTEMPT_FILE") == 5 ]]
     [[ $(wc -l < "$RECOVERY_NOTICE_FILE") == 2 ]]
@@ -527,6 +550,25 @@ APO_LOG_FILE=''
     [[ $APO_REBOOT_OBSERVED_BOOT_ID == new-boot ]]
     [[ $APO_REBOOT_HANDSHAKE_STAGE == complete ]]
     [[ $APO_WORKER_BOOT_ID == new-boot && $UPLOADS == 3 ]]
+
+    apo_wait_for_new_boot() { printf delayed-boot; return 2; }
+    apo_post_reboot_handshake new-boot 30 delayed-candidate-boot
+    [[ $APO_REBOOT_BOOT_ID == delayed-boot ]]
+    [[ $APO_REBOOT_RETURN_TIMED_OUT == 1 ]]
+    [[ $APO_REBOOT_HANDSHAKE_STAGE == complete ]]
+
+    apo_wait_for_new_boot() { return 1; }
+    if apo_post_reboot_handshake delayed-boot 30 missed-candidate-boot; then
+        echo 'missed reboot deadline unexpectedly completed its handshake' >&2
+        exit 1
+    fi
+    [[ $APO_REBOOT_RETURN_TIMED_OUT == 1 ]]
+    [[ $APO_REBOOT_HANDSHAKE_STAGE == wait ]]
+
+    apo_wait_for_new_boot() {
+        [[ $2 == 30 ]]
+        case $1 in old-boot) printf new-boot ;; new-boot) printf newer-boot ;; *) return 1 ;; esac
+    }
 
     apo_remote_upload_root() { return 1; }
     if apo_post_reboot_handshake new-boot 30 normal-recovery; then

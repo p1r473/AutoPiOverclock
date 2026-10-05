@@ -776,6 +776,16 @@ EXT4_RC=$?
 set -e
 [[ $EXT4_RC -ne 0 && $EXT4_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
 
+for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh"; do
+    set +e
+    UNCLEAN_BOOT_OUTPUT=$("$worker" classify-kernel-log "$FIXTURES/unclean-ext4-boot.log" 2>&1)
+    UNCLEAN_BOOT_RC=$?
+    set -e
+    [[ $UNCLEAN_BOOT_RC -ne 0 ]]
+    [[ $UNCLEAN_BOOT_OUTPUT == *'orphan cleanup on readonly fs'* ]]
+    [[ $UNCLEAN_BOOT_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+done
+
 assert_worker_kernel_failure() {
     local worker=$1 fixture=$2 output rc
     set +e

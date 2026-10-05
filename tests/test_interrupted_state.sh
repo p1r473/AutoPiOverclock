@@ -50,7 +50,93 @@ reset_recovery_fixture() {
     APO_RECOVERY_UNEXPECTED_CANDIDATE_REBOOT=0
     APO_RECOVERY_UNEXPECTED_REBOOT_FROM=''
     APO_RECOVERY_UNEXPECTED_REBOOT_TO=''
+    APO_REBOOT_RETURN_TIMED_OUT=0
 }
+
+# A new boot that appears only after the clean reboot budget remains a failed
+# reboot gate. Reconciliation still clears owned tryboot state and proves stock
+# health, but it cannot restore PASS or permit the next candidate.
+(
+    reset_recovery_fixture
+    CURRENT_BOOT_ID='candidate-boot'
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID "$CURRENT_BOOT_ID"
+    apo_state_set CANDIDATE_BOOT_ID "$CURRENT_BOOT_ID"
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() {
+        if [[ $CURRENT_BOOT_ID == candidate-boot ]]; then printf 00000001; else printf 00000000; fi
+    }
+    apo_remote_worker() { return 0; }
+    apo_post_reboot_handshake() {
+        [[ $1 == candidate-boot && $3 == delayed-final-normal ]]
+        CURRENT_BOOT_ID='stock-boot'
+        APO_REBOOT_BOOT_ID=$CURRENT_BOOT_ID
+        APO_REBOOT_HANDSHAKE_STAGE=complete
+        APO_REBOOT_RETURN_TIMED_OUT=1
+    }
+    apo_clear_managed_tryboot() { return 0; }
+    apo_health_check() { return 0; }
+    if apo_return_normal delayed-final-normal 0 none 1; then
+        echo 'extended reboot return unexpectedly received clean-boot credit' >&2
+        exit 1
+    fi
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+    [[ $APO_LAST_REASON == *'cannot receive PASS'* ]]
+    [[ $(apo_state_get STATUS) == FAILED ]]
+    [[ $(apo_state_get UNCLEAN_REBOOT_DETECTED) == 1 ]]
+    [[ $(apo_state_get UNCLEAN_REBOOT_CONTEXT) == delayed-final-normal ]]
+    [[ $(apo_state_get UNCLEAN_REBOOT_FROM_BOOT_ID) == candidate-boot ]]
+    [[ $(apo_state_get UNCLEAN_REBOOT_TO_BOOT_ID) == stock-boot ]]
+)
+
+# Batocera may use a bounded fallback reboot to recover a tryboot that stayed
+# reachable past the deadline. The fallback is cleanup only: the missed first
+# reboot remains failed and must not create a replay checkpoint.
+(
+    reset_recovery_fixture
+    APO_PROFILE=batocera
+    CURRENT_BOOT_ID='candidate-boot'
+    HANDSHAKE_CALLS=0
+    apo_state_set TRYBOOT_EXPECTED 1
+    apo_state_set LAST_BOOT_ID "$CURRENT_BOOT_ID"
+    apo_state_set CANDIDATE_BOOT_ID "$CURRENT_BOOT_ID"
+    apo_wait_for_ssh() { return 0; }
+    apo_remote_boot_id() { printf '%s' "$CURRENT_BOOT_ID"; }
+    apo_remote_tryboot_flag() {
+        if [[ $CURRENT_BOOT_ID == candidate-boot ]]; then printf 00000001; else printf 00000000; fi
+    }
+    apo_remote_worker() { return 0; }
+    apo_post_reboot_handshake() {
+        HANDSHAKE_CALLS=$((HANDSHAKE_CALLS + 1))
+        if (( HANDSHAKE_CALLS == 1 )); then
+            APO_REBOOT_HANDSHAKE_STAGE='wait'
+            APO_REBOOT_RETURN_TIMED_OUT=1
+            APO_LAST_CLASS=HARNESS_FAILURE
+            APO_LAST_REASON='No new boot ID was observed before the deadline.'
+            return 1
+        fi
+        CURRENT_BOOT_ID='stock-boot'
+        APO_REBOOT_BOOT_ID=$CURRENT_BOOT_ID
+        APO_REBOOT_HANDSHAKE_STAGE='complete'
+        APO_REBOOT_RETURN_TIMED_OUT=0
+    }
+    apo_verify_stalled_normal_reboot_boundary() { return 0; }
+    apo_clear_managed_tryboot() { return 0; }
+    apo_health_check() { return 0; }
+    if apo_return_normal missed-batocera-final-normal 0 none 1; then
+        echo 'fallback cleanup erased a missed reboot deadline' >&2
+        exit 1
+    fi
+    [[ $HANDSHAKE_CALLS == 2 ]]
+    [[ $APO_LAST_CLASS == RECOVERY_FAILURE ]]
+    [[ $(apo_state_get STATUS) == FAILED ]]
+    [[ $(apo_state_get UNCLEAN_REBOOT_DETECTED) == 1 ]]
+    [[ $(apo_state_get UNCLEAN_REBOOT_FROM_BOOT_ID) == candidate-boot ]]
+    [[ $(apo_state_get UNCLEAN_REBOOT_TO_BOOT_ID) == stock-boot ]]
+    [[ $(apo_state_get NORMAL_RETURN_RETRY_PENDING 0) == 0 ]]
+    [[ $APO_RETURN_NORMAL_RETRY_REQUIRED == 0 ]]
+)
 
 # The exit handler is the last recovery boundary after a signal or an error
 # inside recovery itself. Its traps are already disabled, so an in-progress

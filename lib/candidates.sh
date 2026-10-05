@@ -1516,11 +1516,17 @@ apo_auto_validate_qualification_state() {
 }
 
 apo_validate_recovery_wait_state() {
-    local wait_status wait_context wait_started wait_timeouts
+    local wait_status wait_context wait_started wait_timeouts unclean_detected unclean_context unclean_reason
+    local unclean_from unclean_to
     wait_status=$(apo_state_get RECOVERY_WAIT_STATUS IDLE)
     wait_context=$(apo_state_get RECOVERY_WAIT_CONTEXT '')
     wait_started=$(apo_state_get RECOVERY_WAIT_STARTED_AT '')
     wait_timeouts=$(apo_state_get RECOVERY_WAIT_TIMEOUTS 0)
+    unclean_detected=$(apo_state_get UNCLEAN_REBOOT_DETECTED 0)
+    unclean_context=$(apo_state_get UNCLEAN_REBOOT_CONTEXT '')
+    unclean_reason=$(apo_state_get UNCLEAN_REBOOT_REASON '')
+    unclean_from=$(apo_state_get UNCLEAN_REBOOT_FROM_BOOT_ID '')
+    unclean_to=$(apo_state_get UNCLEAN_REBOOT_TO_BOOT_ID '')
     [[ $wait_timeouts =~ ^[0-9]+$ ]] || { APO_AUTO_VALIDATION_REASON='Saved extended SSH recovery count is malformed'; return 1; }
     case $wait_status in
         IDLE)
@@ -1533,6 +1539,21 @@ apo_validate_recovery_wait_state() {
             [[ -n $wait_context && -z $wait_started ]] || { APO_AUTO_VALIDATION_REASON='Returned SSH recovery state is incomplete'; return 1; }
             ;;
         *) APO_AUTO_VALIDATION_REASON="Saved SSH recovery status is malformed: ${wait_status:-missing}"; return 1 ;;
+    esac
+    case $unclean_detected in
+        0)
+            [[ -z $unclean_context && -z $unclean_reason && -z $unclean_from && -z $unclean_to ]] || {
+                APO_AUTO_VALIDATION_REASON='Clean reboot-gate state retains failure evidence'
+                return 1
+            }
+            ;;
+        1)
+            [[ -n $unclean_context && -n $unclean_reason && -n $unclean_from && -n $unclean_to && $unclean_from != "$unclean_to" ]] || {
+                APO_AUTO_VALIDATION_REASON='Saved unclean reboot-gate evidence is incomplete or contradictory'
+                return 1
+            }
+            ;;
+        *) APO_AUTO_VALIDATION_REASON='Saved unclean reboot-gate marker is malformed'; return 1 ;;
     esac
 }
 
