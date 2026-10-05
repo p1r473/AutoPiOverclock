@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.115 - 2026-10-05
+
+- Stopped treating a boot-time reset from an empty removable USB card reader as stability evidence when every block slot belonging to that exact USB device is present, removable, and reports zero sectors.
+- Kept USB resets fatal when media is present, when the device cannot be proved to be an empty removable mass-storage reader, or when the reset appears after the stress workload begins.
+- Added matching Debian and Batocera regressions for empty-reader boot filtering, inserted media, and post-start USB resets.
+
 ## 0.1.0-alpha.114 - 2026-10-05
 
 - Stopped treating the standalone EXT4 `orphan cleanup on readonly fs` mount notice as a dirty boot. Filesystems using the `orphan_file` feature can emit that notice on a clean read-only mount even when no orphan inode exists.

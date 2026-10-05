@@ -764,6 +764,50 @@ MMC_RC=$?
 set -e
 [[ $MMC_RC -ne 0 && $MMC_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
 
+# A boot-wide health scan ignores a reset from a present mass-storage reader
+# only when every block slot is removable and reports zero sectors. The same
+# reset remains fatal once stress has begun, and inserted media remains fatal.
+EMPTY_USB_ROOT="$TEMP_DIR/empty-reader/usb"
+EMPTY_BLOCK_ROOT="$TEMP_DIR/empty-reader/block"
+EMPTY_BLOCK_DEVICE="$TEMP_DIR/empty-reader/devices/usb2/2-1/2-1:1.0/host0/target0/block/sda"
+EMPTY_READER_LOG="$TEMP_DIR/empty-reader.log"
+mkdir -p "$EMPTY_USB_ROOT/2-1" "$EMPTY_USB_ROOT/2-1:1.0" "$EMPTY_BLOCK_ROOT" "$EMPTY_BLOCK_DEVICE"
+printf '08\n' > "$EMPTY_USB_ROOT/2-1:1.0/bInterfaceClass"
+printf '0\n' > "$EMPTY_BLOCK_DEVICE/size"
+printf '1\n' > "$EMPTY_BLOCK_DEVICE/removable"
+ln -s "$EMPTY_BLOCK_DEVICE" "$EMPTY_BLOCK_ROOT/sda"
+printf 'kernel: ordinary boot line\n' > "$EMPTY_READER_LOG"
+cat "$FIXTURES/root-usb-reset.log" >> "$EMPTY_READER_LOG"
+for worker_name in debian batocera; do
+    EMPTY_READER_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 \
+        APO_USB_DEVICES_ROOT="$EMPTY_USB_ROOT" APO_BLOCK_CLASS_ROOT="$EMPTY_BLOCK_ROOT" \
+        WORKER="$ROOT/workers/${worker_name}-worker.sh" LOG_FILE="$EMPTY_READER_LOG" bash -c '
+            source "$WORKER"
+            kernel_log() { cat "$LOG_FILE"; }
+            kernel_error_lines 1
+        ')
+    [[ -z $EMPTY_READER_OUTPUT ]]
+    STRESS_USB_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 \
+        APO_USB_DEVICES_ROOT="$EMPTY_USB_ROOT" APO_BLOCK_CLASS_ROOT="$EMPTY_BLOCK_ROOT" \
+        WORKER="$ROOT/workers/${worker_name}-worker.sh" LOG_FILE="$EMPTY_READER_LOG" bash -c '
+            source "$WORKER"
+            kernel_log() { cat "$LOG_FILE"; }
+            kernel_error_lines 2
+        ')
+    [[ $STRESS_USB_OUTPUT == *'reset SuperSpeed USB device'* ]]
+done
+printf '2048\n' > "$EMPTY_BLOCK_DEVICE/size"
+for worker_name in debian batocera; do
+    INSERTED_MEDIA_OUTPUT=$(APO_WORKER_LIBRARY_ONLY=1 \
+        APO_USB_DEVICES_ROOT="$EMPTY_USB_ROOT" APO_BLOCK_CLASS_ROOT="$EMPTY_BLOCK_ROOT" \
+        WORKER="$ROOT/workers/${worker_name}-worker.sh" LOG_FILE="$EMPTY_READER_LOG" bash -c '
+            source "$WORKER"
+            kernel_log() { cat "$LOG_FILE"; }
+            kernel_error_lines 1
+        ')
+    [[ $INSERTED_MEDIA_OUTPUT == *'reset SuperSpeed USB device'* ]]
+done
+
 set +e
 BATOCERA_MMC_OUTPUT=$("$ROOT/workers/batocera-worker.sh" classify-kernel-log "$FIXTURES/root-usb-reset.log" /dev/mmcblk0p2 2>&1)
 BATOCERA_MMC_RC=$?

@@ -288,6 +288,55 @@ kernel_log() {
 
 root_source() { findmnt -n -o SOURCE / 2>/dev/null || mount | awk '$3=="/"{print $1; exit}'; }
 
+usb_reset_device_id_from_line() {
+    local line=$1
+    if [[ $line =~ usb[[:space:]]+([0-9]+-[0-9]+([.][0-9]+)*):[[:space:]]+reset[[:space:]].*USB[[:space:]]+device ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    return 1
+}
+
+usb_device_is_empty_removable_reader() {
+    local device_id=$1 usb_root=${APO_USB_DEVICES_ROOT:-/sys/bus/usb/devices}
+    local block_root=${APO_BLOCK_CLASS_ROOT:-/sys/class/block}
+    local interface_file interface_class block_entry block_real block_size removable
+    local mass_storage_interface=0 block_devices=0
+    [[ -d $usb_root/$device_id ]] || return 1
+    for interface_file in "${usb_root}/${device_id}:"*/bInterfaceClass; do
+        [[ -r $interface_file ]] || continue
+        IFS= read -r interface_class < "$interface_file" || return 1
+        [[ $interface_class == 08 ]] && mass_storage_interface=1
+    done
+    (( mass_storage_interface == 1 )) || return 1
+    for block_entry in "$block_root"/*; do
+        [[ -e $block_entry || -L $block_entry ]] || continue
+        block_real=$(readlink -f -- "$block_entry" 2>/dev/null) || return 1
+        case $block_real in
+            *"/$device_id/"*|*"/$device_id:"*) ;;
+            *) continue ;;
+        esac
+        block_devices=$((block_devices + 1))
+        [[ -r $block_entry/size && -r $block_entry/removable ]] || return 1
+        IFS= read -r block_size < "$block_entry/size" || return 1
+        IFS= read -r removable < "$block_entry/removable" || return 1
+        [[ $block_size =~ ^[0-9]+$ && $removable == 1 ]] || return 1
+        (( block_size == 0 )) || return 1
+    done
+    (( block_devices > 0 ))
+}
+
+filter_ignorable_boot_usb_resets() {
+    local line device_id
+    while IFS= read -r line || [[ -n $line ]]; do
+        device_id=$(usb_reset_device_id_from_line "$line" || true)
+        if [[ -n $device_id ]] && usb_device_is_empty_removable_reader "$device_id"; then
+            continue
+        fi
+        printf '%s\n' "$line"
+    done
+}
+
 kernel_error_context() {
     # A stack trace is supporting context, not proof by itself. Preserve bounded
     # context only when a primary stability signature or USB reset is present.
@@ -298,7 +347,11 @@ kernel_error_context() {
 
 kernel_error_lines() {
     local start_line=${1:-1}
-    kernel_log | tail -n "+${start_line}" | kernel_error_context || true
+    if [[ $start_line == 1 ]]; then
+        kernel_log | filter_ignorable_boot_usb_resets | kernel_error_context || true
+    else
+        kernel_log | tail -n "+${start_line}" | kernel_error_context || true
+    fi
 }
 
 graphical_probe_failure_lines() {
