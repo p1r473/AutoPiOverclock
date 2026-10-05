@@ -3,7 +3,7 @@
 set -u -o pipefail
 umask 077
 
-ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Internal error[[:space:]]*:|Unable to handle kernel|RCU.*(detected|self-detected).*stall|kthread starved for|kthread timer wakeup.*happen|hung[_ -]?task|task[[:space:]].*blocked for more than[[:space:]]+[0-9]+[[:space:]]+seconds|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs.*(error|warning|recovery required|orphan cleanup|orphan inode.*deleted|recovery complete)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|watchdog:.*lockup'
+ERROR_PATTERN='under.?voltage|throttl|Hardware Error|SError|Kernel panic|Internal error[[:space:]]*:|Unable to handle kernel|RCU.*(detected|self-detected).*stall|kthread starved for|kthread timer wakeup.*happen|hung[_ -]?task|task[[:space:]].*blocked for more than[[:space:]]+[0-9]+[[:space:]]+seconds|v3d.*(hang|fault|error|timeout)|drm.*(hang|fault|error|timeout)|device offline|I/O error|Buffer I/O error|EXT4-fs.*(error|warning|recovery required|orphan inode.*deleted|truncate.*cleaned up|recovery complete)|BTRFS.*(error|warning)|segfault|Oops:|BUG:|watchdog:.*lockup'
 USB_RESET_PATTERN='usb [0-9.-]+: reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)?[[:space:]]*USB device|reset (low-speed|full-speed|high-speed|SuperSpeed|SuperSpeed Plus)[[:space:]]+USB device'
 GRAPHICAL_PROBE_FAILURE_PATTERN='gpiochip_add_data_with_key: GPIOs [0-9]+[.][.][0-9]+ [(]7inch-touchscreen-p[)] failed to register, -17|rpi_touchscreen_attiny.*(Failed to create gpiochip: -17|probe with driver .* failed with error -17)'
 CLOCK_MARKER_BEGIN='# BEGIN AUTOPIOVERCLOCK MANAGED CLOCKS'

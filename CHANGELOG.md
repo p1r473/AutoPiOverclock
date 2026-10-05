@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.114 - 2026-10-05
+
+- Stopped treating the standalone EXT4 `orphan cleanup on readonly fs` mount notice as a dirty boot. Filesystems using the `orphan_file` feature can emit that notice on a clean read-only mount even when no orphan inode exists.
+- Kept real EXT4 recovery evidence fatal, including journal recovery, filesystem errors and warnings, deleted orphan inodes, completed truncation cleanup, and recovery completion.
+- Added Debian and Batocera regression coverage for the benign orphan-file mount notice, journal recovery, and actual orphan deletion.
+
 ## 0.1.0-alpha.113 - 2026-10-05
 
 - Made every requested reboot that misses its ordinary clean-return budget a durable `RECOVERY_FAILURE`. Extended read-only monitoring still reconciles ownership, tryboot cleanup, stock clocks, watchdogs, and health, but a later or manually restored boot can no longer regain `PASS` or start the next candidate.

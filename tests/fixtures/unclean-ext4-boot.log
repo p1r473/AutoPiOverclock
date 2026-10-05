@@ -1,2 +1,4 @@
+Oct 05 11:00:55 target kernel: EXT4-fs (mmcblk0p2): INFO: recovery required on readonly filesystem
 Oct 05 11:00:55 target kernel: EXT4-fs (mmcblk0p2): orphan cleanup on readonly fs
+Oct 05 11:00:55 target kernel: EXT4-fs (mmcblk0p2): recovery complete
 Oct 05 11:00:55 target kernel: EXT4-fs (mmcblk0p2): mounted filesystem fixture ro with ordered data mode.

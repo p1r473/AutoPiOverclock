@@ -782,8 +782,28 @@ for worker in "$ROOT/workers/debian-worker.sh" "$ROOT/workers/batocera-worker.sh
     UNCLEAN_BOOT_RC=$?
     set -e
     [[ $UNCLEAN_BOOT_RC -ne 0 ]]
-    [[ $UNCLEAN_BOOT_OUTPUT == *'orphan cleanup on readonly fs'* ]]
+    [[ $UNCLEAN_BOOT_OUTPUT == *'recovery required on readonly filesystem'* ]]
     [[ $UNCLEAN_BOOT_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+
+    BENIGN_ORPHAN_OUTPUT=$("$worker" classify-kernel-log "$FIXTURES/benign-ext4-orphan-file-mount.log" 2>&1)
+    [[ $BENIGN_ORPHAN_OUTPUT == *'APO_RESULT_CLASS=PASS'* ]]
+    [[ $BENIGN_ORPHAN_OUTPUT != *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+
+    set +e
+    ORPHAN_DELETED_OUTPUT=$("$worker" classify-kernel-log "$FIXTURES/unclean-ext4-orphan-deleted.log" 2>&1)
+    ORPHAN_DELETED_RC=$?
+    set -e
+    [[ $ORPHAN_DELETED_RC -ne 0 ]]
+    [[ $ORPHAN_DELETED_OUTPUT == *'orphan inode deleted'* ]]
+    [[ $ORPHAN_DELETED_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
+
+    set +e
+    TRUNCATE_CLEANED_OUTPUT=$("$worker" classify-kernel-log "$FIXTURES/unclean-ext4-truncate-cleaned.log" 2>&1)
+    TRUNCATE_CLEANED_RC=$?
+    set -e
+    [[ $TRUNCATE_CLEANED_RC -ne 0 ]]
+    [[ $TRUNCATE_CLEANED_OUTPUT == *'truncate cleaned up'* ]]
+    [[ $TRUNCATE_CLEANED_OUTPUT == *'APO_RESULT_CLASS=STABILITY_FAILURE'* ]]
 done
 
 assert_worker_kernel_failure() {
