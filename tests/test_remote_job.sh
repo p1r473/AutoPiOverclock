@@ -64,6 +64,33 @@ if grep -Eq '^[[:space:]]*set[[:space:]]+[+-]e([[:space:]]|$)' "$HELPER"; then
     echo 'target job helper still mutates its global error mode' >&2
     exit 1
 fi
+
+# Exercise the production mount parser with the exact mountinfo shape observed
+# on Monkeebutt. GNU awk reserves index() as a built-in, so this regression also
+# proves that the loop variable remains portable across the supported targets.
+MOUNTINFO_VALID=$TEMP_DIR/mountinfo-valid
+MOUNTINFO_NO_NOSWAP=$TEMP_DIR/mountinfo-no-noswap
+MOUNTINFO_WRONG_FSTYPE=$TEMP_DIR/mountinfo-wrong-fstype
+cat >"$MOUNTINFO_VALID" <<'EOF'
+91 24 0:36 / /run/autopioverclock-other rw,nosuid,nodev,noexec,relatime shared:74 - tmpfs autopioverclock-stress rw,size=196608k,mode=700,noswap
+92 24 0:37 / /run/autopioverclock-20261004-212214-c4a66c54bfa67869 rw,nosuid,nodev,noexec,relatime shared:75 - tmpfs autopioverclock-stress rw,size=196608k,mode=700,noswap
+EOF
+cat >"$MOUNTINFO_NO_NOSWAP" <<'EOF'
+91 24 0:36 / /run/autopioverclock-other rw,nosuid,nodev,noexec,relatime shared:74 - tmpfs autopioverclock-stress rw,size=196608k,mode=700,noswap
+92 24 0:37 / /run/autopioverclock-20261004-212214-c4a66c54bfa67869 rw,nosuid,nodev,noexec,relatime shared:75 - tmpfs autopioverclock-stress rw,size=196608k,mode=700
+EOF
+cat >"$MOUNTINFO_WRONG_FSTYPE" <<'EOF'
+92 24 8:2 / /run/autopioverclock-20261004-212214-c4a66c54bfa67869 rw,relatime shared:75 - ext4 /dev/mmcblk0p2 rw,noswap
+EOF
+APO_JOB_LIBRARY_ONLY=1 HELPER="$HELPER" MOUNTINFO_VALID="$MOUNTINFO_VALID" \
+    MOUNTINFO_NO_NOSWAP="$MOUNTINFO_NO_NOSWAP" MOUNTINFO_WRONG_FSTYPE="$MOUNTINFO_WRONG_FSTYPE" bash -c '
+        set -Eeuo pipefail
+        source "$HELPER"
+        expected=/run/autopioverclock-20261004-212214-c4a66c54bfa67869
+        mountinfo_has_noswap_tmpfs "$expected" "$MOUNTINFO_VALID"
+        if mountinfo_has_noswap_tmpfs "$expected" "$MOUNTINFO_NO_NOSWAP"; then exit 1; fi
+        if mountinfo_has_noswap_tmpfs "$expected" "$MOUNTINFO_WRONG_FSTYPE"; then exit 1; fi
+    '
 BOOT_ID=$(< /proc/sys/kernel/random/boot_id)
 TOKEN=$(printf 'a%.0s' {1..64})
 SPEC=$(printf 'b%.0s' {1..64})

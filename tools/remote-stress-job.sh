@@ -40,11 +40,9 @@ network_port() {
     printf '%s' "$((20000 + 16#${token:0:4} % 30000))"
 }
 
-ram_root_mount_valid() {
-    local root=$1 expected
-    [[ ${APO_JOB_TEST_ALLOW_NON_TMPFS:-0} == 1 ]] && return 0
-    expected=$(readlink -f -- "$root" 2>/dev/null || true)
-    [[ -n $expected ]] || return 1
+mountinfo_has_noswap_tmpfs() {
+    local expected=$1 mountinfo_file=${2:-/proc/self/mountinfo}
+    [[ -n $expected && -r $mountinfo_file ]] || return 1
     awk -v expected="$expected" '
         $5 == expected {
             separator = 0
@@ -54,12 +52,20 @@ ram_root_mount_valid() {
             if (!separator || $(separator + 1) != "tmpfs") next
             options = $6 "," $(separator + 3)
             count = split(options, entries, ",")
-            for (index = 1; index <= count; index++) {
-                if (entries[index] == "noswap") found = 1
+            for (entry_no = 1; entry_no <= count; entry_no++) {
+                if (entries[entry_no] == "noswap") found = 1
             }
         }
         END { exit !found }
-    ' /proc/self/mountinfo
+    ' "$mountinfo_file"
+}
+
+ram_root_mount_valid() {
+    local root=$1 expected
+    [[ ${APO_JOB_TEST_ALLOW_NON_TMPFS:-0} == 1 ]] && return 0
+    expected=$(readlink -f -- "$root" 2>/dev/null || true)
+    [[ -n $expected ]] || return 1
+    mountinfo_has_noswap_tmpfs "$expected"
 }
 
 ram_root_path_valid() {
@@ -97,7 +103,10 @@ prepare_ram_root() {
         mkdir -m 700 -- "$root" || return 1
     fi
     mount -t tmpfs -o "size=${APO_JOB_RAM_MIB}M,noswap,mode=0700,nodev,nosuid,noexec" autopioverclock-stress "$root" || return 1
-    ram_root_mount_valid "$root"
+    if ram_root_mount_valid "$root"; then return 0; fi
+    umount -- "$root" 2>/dev/null || true
+    rmdir -- "$root" 2>/dev/null || true
+    return 1
 }
 
 job_status_log() {
@@ -577,5 +586,7 @@ main() {
     esac
 }
 
-trap 'job_error_trace "$?" "$LINENO"' ERR
-main "$@"
+if [[ ${APO_JOB_LIBRARY_ONLY:-0} != 1 ]]; then
+    trap 'job_error_trace "$?" "$LINENO"' ERR
+    main "$@"
+fi

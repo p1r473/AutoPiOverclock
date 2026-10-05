@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.112 - 2026-10-04
+
+- Fixed the detached launcher and both workers so their tmpfs `noswap` verifier no longer assigns to awk's reserved `index()` built-in.
+- Added production-parser regressions using the exact mountinfo record shape observed on Monkeebutt, plus negative checks for missing `noswap` and a non-tmpfs filesystem.
+- Made a newly mounted run tmpfs tear itself down if its post-mount proof fails, avoiding a leaked empty mount after a verifier error.
+
 ## 0.1.0-alpha.111 - 2026-10-04
 
 - Replaced the alpha.110 final-endurance workload with one comprehensive public path. Candidate sweeps and domain qualifications remain focused; there is no legacy, traditional, mixed, or selectable stress profile.

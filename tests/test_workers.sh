@@ -5,6 +5,35 @@ FIXTURES="$ROOT/tests/fixtures"
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
+# Both worker profiles must accept the exact noswap tmpfs record observed on
+# Monkeebutt and reject either a missing noswap option or a persistent filesystem.
+MOUNTINFO_VALID=$TEMP_DIR/mountinfo-valid
+MOUNTINFO_NO_NOSWAP=$TEMP_DIR/mountinfo-no-noswap
+MOUNTINFO_WRONG_FSTYPE=$TEMP_DIR/mountinfo-wrong-fstype
+cat >"$MOUNTINFO_VALID" <<'EOF'
+91 24 0:36 / /run/autopioverclock-other rw,nosuid,nodev,noexec,relatime shared:74 - tmpfs autopioverclock-stress rw,size=196608k,mode=700,noswap
+92 24 0:37 / /run/autopioverclock-20261004-212214-c4a66c54bfa67869 rw,nosuid,nodev,noexec,relatime shared:75 - tmpfs autopioverclock-stress rw,size=196608k,mode=700,noswap
+EOF
+cat >"$MOUNTINFO_NO_NOSWAP" <<'EOF'
+91 24 0:36 / /run/autopioverclock-other rw,nosuid,nodev,noexec,relatime shared:74 - tmpfs autopioverclock-stress rw,size=196608k,mode=700,noswap
+92 24 0:37 / /run/autopioverclock-20261004-212214-c4a66c54bfa67869 rw,nosuid,nodev,noexec,relatime shared:75 - tmpfs autopioverclock-stress rw,size=196608k,mode=700
+EOF
+cat >"$MOUNTINFO_WRONG_FSTYPE" <<'EOF'
+92 24 8:2 / /run/autopioverclock-20261004-212214-c4a66c54bfa67869 rw,relatime shared:75 - ext4 /dev/mmcblk0p2 rw,noswap
+EOF
+for worker_name in debian batocera; do
+    APO_WORKER_LIBRARY_ONLY=1 WORKER="$ROOT/workers/${worker_name}-worker.sh" \
+        MOUNTINFO_VALID="$MOUNTINFO_VALID" MOUNTINFO_NO_NOSWAP="$MOUNTINFO_NO_NOSWAP" \
+        MOUNTINFO_WRONG_FSTYPE="$MOUNTINFO_WRONG_FSTYPE" bash -c '
+            set -Eeuo pipefail
+            source "$WORKER"
+            expected=/run/autopioverclock-20261004-212214-c4a66c54bfa67869
+            stress_mountinfo_has_noswap_tmpfs "$expected" "$MOUNTINFO_VALID"
+            if stress_mountinfo_has_noswap_tmpfs "$expected" "$MOUNTINFO_NO_NOSWAP"; then exit 1; fi
+            if stress_mountinfo_has_noswap_tmpfs "$expected" "$MOUNTINFO_WRONG_FSTYPE"; then exit 1; fi
+        '
+done
+
 # A newly booted target can accept SSH before its configured application stack
 # is ready.  Both profiles must retry the whole readiness probe instead of
 # failing on the first process, service, audio, or graphical miss.

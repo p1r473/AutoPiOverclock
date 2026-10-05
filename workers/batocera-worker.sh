@@ -2012,23 +2012,29 @@ memory_test_size_mib() {
     printf '%s' "$target"
 }
 
-stress_ram_root_valid() {
-    local root=${APO_STRESS_RAM_ROOT:-} expected_parent resolved
-    [[ $root == /var/run/autopioverclock-* && -d $root && ! -L $root ]] || return 1
-    expected_parent=$(readlink -f -- /var/run 2>/dev/null || true)
-    resolved=$(readlink -f -- "$root" 2>/dev/null || true)
-    [[ -n $expected_parent && $resolved == "$expected_parent"/autopioverclock-* ]] || return 1
-    awk -v expected="$resolved" '
+stress_mountinfo_has_noswap_tmpfs() {
+    local expected=$1 mountinfo_file=${2:-/proc/self/mountinfo}
+    [[ -n $expected && -r $mountinfo_file ]] || return 1
+    awk -v expected="$expected" '
         $5 == expected {
             separator = 0
             for (field = 1; field <= NF; field++) if ($field == "-") { separator = field; break }
             if (!separator || $(separator + 1) != "tmpfs") next
             options = $6 "," $(separator + 3)
             count = split(options, entries, ",")
-            for (index = 1; index <= count; index++) if (entries[index] == "noswap") found = 1
+            for (entry_no = 1; entry_no <= count; entry_no++) if (entries[entry_no] == "noswap") found = 1
         }
         END { exit !found }
-    ' /proc/self/mountinfo
+    ' "$mountinfo_file"
+}
+
+stress_ram_root_valid() {
+    local root=${APO_STRESS_RAM_ROOT:-} expected_parent resolved
+    [[ $root == /var/run/autopioverclock-* && -d $root && ! -L $root ]] || return 1
+    expected_parent=$(readlink -f -- /var/run 2>/dev/null || true)
+    resolved=$(readlink -f -- "$root" 2>/dev/null || true)
+    [[ -n $expected_parent && $resolved == "$expected_parent"/autopioverclock-* ]] || return 1
+    stress_mountinfo_has_noswap_tmpfs "$resolved"
 }
 
 create_stress_workspace() {
